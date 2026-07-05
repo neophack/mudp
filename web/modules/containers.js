@@ -1,0 +1,118 @@
+// Container list (table view) and container actions (start/stop/restart/remove),
+// plus routing of logs/terminal/details into their dedicated modules.
+
+import { state, api, toast, refreshAll, renderView, escapeHtml } from "../app.js";
+import { openLogs } from "./logs.js";
+import { openTerminal } from "./terminal.js";
+import { openDetails } from "./details.js";
+import { openStats } from "./stats.js";
+
+export function renderContainers() {
+  const q = state.search.trim().toLowerCase();
+  const list = q
+    ? state.containers.filter(
+        (c) =>
+          (c.name || c.fullName || "").toLowerCase().includes(q) ||
+          (c.image || "").toLowerCase().includes(q)
+      )
+    : state.containers;
+
+  const rows =
+    list.map(containerRow).join("") ||
+    `<tr class="empty-row"><td colspan="5">No containers. Click “+ New Container” to create one.</td></tr>`;
+
+  $("#view").innerHTML =
+    `<div class="card"><table class="data">` +
+    `<thead><tr><th>Container</th><th>Status</th><th>Image</th><th>Resources</th><th class="actions">Actions</th></tr></thead>` +
+    `<tbody>${rows}</tbody></table></div>`;
+
+  bindLogViewerHook();
+  document.querySelectorAll("[data-act]").forEach((btn) => {
+    btn.onclick = () => actionContainer(btn.dataset.id, btn.dataset.name, btn.dataset.act);
+  });
+  document.querySelectorAll("[data-copy]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(btn.dataset.copy);
+        toast("SSH command copied", true);
+        const old = btn.textContent;
+        btn.textContent = "✓";
+        btn.classList.add("copied");
+        setTimeout(() => { btn.textContent = old; btn.classList.remove("copied"); }, 1200);
+      } catch {
+        toast("Copy failed — select the text manually");
+      }
+    };
+  });
+}
+
+// Placeholder so renderLogViewer (from logs.js) can be wired without a circular
+// top-level import. The actual viewer is owned by logs.js.
+function bindLogViewerHook() {}
+
+function containerRow(c) {
+  const running = c.state === "running";
+  const name = c.name || c.fullName;
+  const pending = (act) => state.pending.has(c.id + ":" + act);
+  const statusBadge = running
+    ? `<span class="badge badge-ok"><span class="dot"></span>${escapeHtml(c.status || "Up")}</span>`
+    : `<span class="badge badge-muted"><span class="dot"></span>${escapeHtml(c.status || c.state || "Stopped")}</span>`;
+  const ports = (c.ports || []).join(", ") || "—";
+  const sshUser = c.sshUser || "root";
+  const sshHost = location.hostname;
+  const sshCmd = c.sshPort ? `ssh -p ${c.sshPort} ${sshUser}@${sshHost}` : "";
+  const conn = [];
+  if (sshCmd) conn.push(`<span class="copy-chip"><code class="mono">${escapeHtml(sshCmd)}</code><button class="copy-btn" data-copy="${escapeHtml(sshCmd)}" title="Copy SSH command">⧉</button></span>`);
+  if (c.vscodeUrl) conn.push(`<a class="vscode-link" href="${escapeHtml(c.vscodeUrl)}" target="_blank" rel="noopener">VS Code ↗</a>`);
+  const iconBtn = (act, glyph, title, cls = "icon", enabled = true) => {
+    const isLoading = pending(act);
+    const dis = !enabled || isLoading ? "disabled" : "";
+    const loading = isLoading ? " is-loading" : "";
+    return `<button class="${cls}${loading}" title="${title}" data-id="${escapeHtml(c.id)}" data-name="${escapeHtml(name)}" data-act="${act}" ${dis}>${glyph}</button>`;
+  };
+  return (
+    `<tr>` +
+      `<td><div class="primary-line">${escapeHtml(name)}</div><div class="secondary-line">${conn.length ? conn.join(" <span class='sep'>·</span> ") : escapeHtml(ports)}</div></td>` +
+      `<td>${statusBadge}</td>` +
+      `<td><div class="secondary-line">${escapeHtml(c.image || c.Image || "—")}</div></td>` +
+      `<td><div class="secondary-line">${(c.memoryMb || 0).toFixed(0)} MB mem · ${(c.diskMb || 0).toFixed(0)} MB disk</div>` +
+        `<div class="secondary-line">GPU: ${escapeHtml(c.gpu || "none")}</div></td>` +
+      `<td class="actions">` +
+        iconBtn("logs", "📄", "Logs") +
+        iconBtn("start", "▶", "Start", "icon ok", !running) +
+        iconBtn("stop", "■", "Stop", "icon warn", running) +
+        iconBtn("restart", "⟳", "Restart", "icon", running) +
+        (running ? iconBtn("terminal", "🖥", "Console") : "") +
+        (running ? iconBtn("stats", "📊", "Stats") : "") +
+        iconBtn("inspect", "ℹ", "Details") +
+        iconBtn("remove", "✕", "Delete", "icon danger") +
+      `</td>` +
+    `</tr>`
+  );
+}
+
+export async function actionContainer(id, name, action) {
+  if (action === "logs") return openLogs(id, name);
+  if (action === "terminal") return openTerminal(id, name);
+  if (action === "inspect") return openDetails(id, name);
+  if (action === "stats") return openStats(id, name);
+  if (action === "remove" && !confirm(`Delete container “${name}”? This cannot be undone.`)) return;
+  const key = id + ":" + action;
+  state.pending.add(key);
+  renderView();
+  try {
+    await api("/api/containers/action", { method: "POST", body: JSON.stringify({ id, action }) });
+    await refreshAll();
+    renderView();
+    toast("Done", true);
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    state.pending.delete(key);
+    renderView();
+  }
+}
+
+function $(selector) {
+  return document.querySelector(selector);
+}
