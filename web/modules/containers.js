@@ -6,6 +6,7 @@ import { openLogs } from "./logs.js";
 import { openTerminal } from "./terminal.js";
 import { openDetails } from "./details.js";
 import { openStats } from "./stats.js";
+import { openFiles } from "./files.js";
 
 export function renderContainers() {
   const q = state.search.trim().toLowerCase();
@@ -82,6 +83,7 @@ function containerRow(c) {
         iconBtn("start", "▶", "Start", "icon ok", !running) +
         iconBtn("stop", "■", "Stop", "icon warn", running) +
         iconBtn("restart", "⟳", "Restart", "icon", running) +
+        iconBtn("files", "📁", "Files") +
         (running ? iconBtn("terminal", "🖥", "Console") : "") +
         (running ? iconBtn("stats", "📊", "Stats") : "") +
         iconBtn("inspect", "ℹ", "Details") +
@@ -96,6 +98,7 @@ export async function actionContainer(id, name, action) {
   if (action === "terminal") return openTerminal(id, name);
   if (action === "inspect") return openDetails(id, name);
   if (action === "stats") return openStats(id, name);
+  if (action === "files") return openFiles(id, name);
   if (action === "remove" && !confirm(`Delete container “${name}”? This cannot be undone.`)) return;
   const key = id + ":" + action;
   state.pending.add(key);

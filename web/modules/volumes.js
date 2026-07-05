@@ -24,20 +24,20 @@ export function renderVolumes() {
   if (nb) nb.onclick = openCreateVolume;
   const pb = $("#pruneVolumes");
   if (pb) pb.onclick = pruneVolumes;
-  document.querySelectorAll("[data-vol-delete]").forEach((btn) => {
-    btn.onclick = () => deleteVolume(btn.dataset.volDelete, btn.dataset.volName);
+  document.querySelectorAll("[data-vol-fullname]").forEach((btn) => {
+    btn.onclick = () => deleteVolume(btn.dataset.volFullname, btn.dataset.volName);
   });
 }
 
 function volumeRow(v) {
   return (
     `<tr>` +
-      `<td><div class="primary-line">${escapeHtml(v.name)}</div><div class="secondary-line mono">${escapeHtml(v.name)}</div></td>` +
+      `<td><div class="primary-line">${escapeHtml(v.name)}</div><div class="secondary-line mono">${escapeHtml(v.fullName || v.name)}</div></td>` +
       `<td><div class="secondary-line">${escapeHtml(v.driver)}</div></td>` +
       `<td>${fmtMB(v.sizeMb)}</td>` +
       `<td>${v.inUse ? `<span class="badge badge-ok">in use</span>` : `<span class="badge badge-muted">free</span>`}</td>` +
       `<td><div class="secondary-line">${escapeHtml(v.owner || "—")}</div></td>` +
-      `<td class="actions">${canMutate() ? `<button class="icon danger" title="Delete" data-vol-delete="1" data-vol-name="${escapeHtml(v.name)}">✕</button>` : "—"}</td>` +
+      `<td class="actions">${canMutate() ? `<button class="icon danger" title="Delete" data-vol-name="${escapeHtml(v.name)}" data-vol-fullname="${escapeHtml(v.fullName || v.name)}">✕</button>` : "—"}</td>` +
     `</tr>`
   );
 }
@@ -73,10 +73,10 @@ function openCreateVolume() {
   };
 }
 
-async function deleteVolume(_, name) {
+async function deleteVolume(fullName, name) {
   if (!confirm(`Delete volume “${name}”? Data inside is lost.`)) return;
   try {
-    await api("/api/volumes/delete", { method: "POST", body: JSON.stringify({ name, force: false }) });
+    await api("/api/volumes/delete", { method: "POST", body: JSON.stringify({ name: fullName, force: false }) });
     await refreshAll();
     renderView();
     toast("Volume deleted", true);

@@ -1,0 +1,390 @@
+// Standalone public share page. Baidu-Netdisk-style browsing + save-to-directory.
+
+const state = {
+  token: "",
+  path: "",
+  items: [],
+  selected: new Set(),
+  share: null,
+  me: null,
+  pickerPath: "",
+  pickerItems: [],
+};
+
+const $ = (s) => document.querySelector(s);
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || res.statusText);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+function fmtBytes(n) {
+  if (!n) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function escapeHtml(v) {
+  return String(v ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+}
+
+function getToken() {
+  const meta = document.querySelector('meta[name="share-token"]');
+  return meta?.content || window.__SHARE_TOKEN__ || location.pathname.split("/").pop();
+}
+
+function getPath() {
+  return state.path || "";
+}
+
+function joinPath(a, b) {
+  return [a, b].filter((x) => x != null && x !== "").join("/");
+}
+
+function iconFor(item) {
+  return item.dir ? "📁" : "📄";
+}
+
+// ---------- Auth ----------
+
+async function loadMe() {
+  try {
+    state.me = await api("/api/me");
+    if (state.me && state.me.authenticated !== false) {
+      $("#loginBtn").hidden = true;
+      $("#userLabel").textContent = state.me.username;
+      $("#userLabel").hidden = false;
+      $("#saveSelectedBtn").disabled = state.selected.size === 0;
+    } else {
+      state.me = null;
+      $("#loginBtn").hidden = false;
+      $("#userLabel").hidden = true;
+      $("#saveSelectedBtn").disabled = true;
+    }
+  } catch {
+    state.me = null;
+    $("#loginBtn").hidden = false;
+    $("#userLabel").hidden = true;
+    $("#saveSelectedBtn").disabled = true;
+  }
+}
+
+// ---------- Share listing ----------
+
+async function loadShare(path = "") {
+  state.path = path;
+  $("#shareBody").innerHTML = `<div class="share-loading">正在加载文件列表…</div>`;
+  try {
+    const data = await api(`/api/netdisk/share/public?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(path)}`);
+    state.share = data.share;
+    state.items = data.items || [];
+    renderShareMeta();
+    renderBreadcrumb(path);
+    renderItems();
+  } catch (e) {
+    $("#shareBody").innerHTML = `<div class="share-error">${escapeHtml(e.message)}</div>`;
+    $("#shareName").textContent = "加载失败";
+  }
+}
+
+function renderShareMeta() {
+  const s = state.share;
+  if (!s) return;
+  $("#shareName").textContent = s.name;
+  $("#shareOwner").textContent = `分享者：${escapeHtml(s.owner || "未知")}`;
+  $("#shareExpiry").innerHTML = s.permanent
+    ? `<span class="badge badge-accent">永久有效</span>`
+    : s.expired
+      ? `<span class="badge badge-danger">已过期</span>`
+      : `有效期至：${escapeHtml(s.expiresAt ? new Date(s.expiresAt).toLocaleString() : "7 天")}`;
+  const total = state.items.reduce((sum, f) => sum + (f.size || 0), 0);
+  const dirs = state.items.filter((f) => f.dir).length;
+  const files = state.items.length - dirs;
+  $("#shareStats").textContent = `共 ${state.items.length} 项 · ${fmtBytes(total)}${dirs ? ` · ${dirs} 个文件夹` : ""}${files ? ` · ${files} 个文件` : ""}`;
+}
+
+function renderBreadcrumb(path) {
+  const parts = path.split("/").filter(Boolean);
+  const home = document.createElement("button");
+  home.className = "linklike";
+  home.textContent = "全部文件";
+  home.onclick = () => loadShare("");
+  const nav = $("#breadcrumb");
+  nav.innerHTML = "";
+  nav.appendChild(home);
+  let built = "";
+  parts.forEach((part, i) => {
+    built = joinPath(built, part);
+    const isLast = i === parts.length - 1;
+    const sep = document.createElement("span");
+    sep.className = "sep";
+    sep.textContent = "/";
+    nav.appendChild(sep);
+    if (isLast) {
+      const span = document.createElement("span");
+      span.textContent = escapeHtml(part);
+      nav.appendChild(span);
+    } else {
+      const btn = document.createElement("button");
+      btn.className = "linklike";
+      btn.textContent = escapeHtml(part);
+      btn.onclick = () => loadShare(built);
+      nav.appendChild(btn);
+    }
+  });
+}
+
+function renderItems() {
+  if (!state.items.length) {
+    $("#shareBody").innerHTML = "";
+    $("#shareEmpty").hidden = false;
+    return;
+  }
+  $("#shareEmpty").hidden = true;
+  const rows = state.items.map((f) => {
+    const checked = state.selected.has(f.path) ? "checked" : "";
+    const nameCell = f.dir
+      ? `<button class="share-name linklike" data-open="${escapeHtml(f.path)}">${iconFor(f)} ${escapeHtml(f.name)}</button>`
+      : `<span class="share-name">${iconFor(f)} ${escapeHtml(f.name)}</span>`;
+    return `<tr data-path="${escapeHtml(f.path)}">
+      <td class="chk-cell"><input type="checkbox" class="chk share-select" data-path="${escapeHtml(f.path)}" ${checked}></td>
+      <td>${nameCell}</td>
+      <td class="share-size">${f.dir ? "-" : fmtBytes(f.size)}</td>
+      <td class="share-time">${escapeHtml(new Date(f.modTime).toLocaleString())}</td>
+      <td class="actions"><a class="ghost-link" href="/api/netdisk/share/download?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(f.path)}&ts=${Date.now()}">下载</a></td>
+    </tr>`;
+  }).join("");
+  $("#shareBody").innerHTML = `<table class="data share-table"><thead><tr><th class="chk-col"><input type="checkbox" class="chk" id="selectAllBox"></th><th>文件名</th><th>大小</th><th>修改时间</th><th class="actions">操作</th></tr></thead><tbody>${rows}</tbody></table>`;
+
+  // Bind events
+  document.querySelectorAll("[data-open]").forEach((btn) => {
+    btn.onclick = () => loadShare(btn.dataset.open);
+  });
+  document.querySelectorAll(".share-select").forEach((cb) => {
+    cb.onchange = () => toggleSelection(cb.dataset.path, cb.checked);
+  });
+  const allSelected = state.items.length > 0 && state.items.every((f) => state.selected.has(f.path));
+  const selectAllBox = $("#selectAllBox");
+  if (selectAllBox) {
+    selectAllBox.checked = allSelected;
+    selectAllBox.onchange = (e) => {
+      state.items.forEach((f) => {
+        if (e.target.checked) state.selected.add(f.path);
+        else state.selected.delete(f.path);
+      });
+      renderItems();
+      updateSelectionBar();
+    };
+  }
+  const selectAllToolbar = $("#selectAll");
+  if (selectAllToolbar) selectAllToolbar.checked = allSelected;
+}
+
+function toggleSelection(path, checked) {
+  if (checked) state.selected.add(path);
+  else state.selected.delete(path);
+  renderItems();
+  updateSelectionBar();
+}
+
+function updateSelectionBar() {
+  const count = state.selected.size;
+  const btn = $("#saveSelectedBtn");
+  btn.disabled = !state.me || count === 0;
+  btn.textContent = count ? `保存到网盘（已选 ${count} 项）` : "保存到网盘";
+}
+
+// ---------- Directory picker ----------
+
+function openPicker() {
+  if (!state.me) {
+    $("#loginBackdrop").hidden = false;
+    return;
+  }
+  if (state.selected.size === 0) {
+    toast("请至少选择一项");
+    return;
+  }
+  state.pickerPath = "";
+  $("#pickerBackdrop").hidden = false;
+  loadPicker("");
+}
+
+async function loadPicker(path) {
+  state.pickerPath = path;
+  try {
+    const data = await api(`/api/netdisk?path=${encodeURIComponent(path)}`);
+    state.pickerItems = (data.items || []).filter((f) => f.dir);
+    renderPicker();
+  } catch (e) {
+    $("#pickerList").innerHTML = `<div class="share-error">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderPicker() {
+  const path = state.pickerPath;
+  $("#pickerPath").textContent = "/" + (path || "");
+  $("#pickerUp").disabled = !path;
+
+  // Tree sidebar: quick roots (could be expanded later; keep it simple for now).
+  $("#pickerTree").innerHTML = `<div class="picker-tree-item active">我的网盘</div>`;
+
+  // Main list
+  if (!state.pickerItems.length) {
+    $("#pickerList").innerHTML = `<div class="share-empty">该文件夹为空</div>`;
+  } else {
+    const rows = state.pickerItems.map((f) => {
+      return `<div class="picker-row" data-open="${escapeHtml(f.path)}">
+        <span class="picker-folder-icon">📁</span>
+        <span class="picker-folder-name">${escapeHtml(f.name)}</span>
+      </div>`;
+    }).join("");
+    $("#pickerList").innerHTML = rows;
+    document.querySelectorAll("#pickerList .picker-row").forEach((row) => {
+      row.onclick = () => loadPicker(row.dataset.open);
+    });
+  }
+
+  const defaultName = state.share?.name || "来自分享";
+  $("#pickerHint").textContent = `将保存到：/${escapeHtml(path || "")}/${escapeHtml(defaultName)}`;
+}
+
+async function pickerMkdir() {
+  const name = prompt("新建文件夹名称");
+  if (!name) return;
+  const newPath = joinPath(state.pickerPath, name);
+  try {
+    await api("/api/netdisk/mkdir", { method: "POST", body: JSON.stringify({ path: newPath }) });
+    toast("文件夹创建成功", true);
+    await loadPicker(state.pickerPath);
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+async function confirmSave() {
+  const defaultName = state.share?.name || "来自分享";
+  const to = joinPath(state.pickerPath, defaultName);
+  const paths = [...state.selected];
+  const btn = $("#confirmPicker");
+  btn.disabled = true;
+  btn.classList.add("is-loading");
+  try {
+    const data = await api("/api/netdisk/share/save", {
+      method: "POST",
+      body: JSON.stringify({ token: state.token, paths, to, policy: "rename" }),
+    });
+    const saved = data.count || 0;
+    const errors = (data.results || []).filter((r) => r.status === "error").length;
+    if (errors) {
+      toast(`保存完成：${saved} 项成功，${errors} 项失败`);
+    } else {
+      toast(`成功保存 ${saved} 项到网盘`, true);
+    }
+    closePicker();
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("is-loading");
+  }
+}
+
+function closePicker() {
+  $("#pickerBackdrop").hidden = true;
+}
+
+// ---------- Login prompt ----------
+
+function openLogin() {
+  $("#loginBackdrop").hidden = false;
+}
+
+function closeLogin() {
+  $("#loginBackdrop").hidden = true;
+}
+
+function goLogin() {
+  location.href = "/?redirect=" + encodeURIComponent(location.pathname + location.search);
+}
+
+// ---------- Toast ----------
+
+function toast(msg, ok = false) {
+  const el = document.createElement("div");
+  el.className = `toast ${ok ? "ok" : ""}`;
+  el.textContent = msg;
+  $("#toastContainer").appendChild(el);
+  setTimeout(() => el.remove(), 3400);
+}
+
+// ---------- Init ----------
+
+async function init() {
+  state.token = getToken();
+  if (!state.token) {
+    $("#shareBody").innerHTML = `<div class="share-error">分享链接无效</div>`;
+    return;
+  }
+  await loadMe();
+  await loadShare();
+
+  bindEvents();
+}
+
+function bindEvents() {
+  $("#selectAll").onchange = (e) => {
+    state.items.forEach((f) => {
+      if (e.target.checked) state.selected.add(f.path);
+      else state.selected.delete(f.path);
+    });
+    renderItems();
+    updateSelectionBar();
+  };
+
+  $("#saveSelectedBtn").onclick = openPicker;
+  $("#downloadAllBtn").onclick = () => {
+    if (!state.items.length) return;
+    if (state.items.length === 1) {
+      location.href = `/api/netdisk/share/download?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(state.items[0].path)}&ts=${Date.now()}`;
+      return;
+    }
+    // Multiple top-level items: download each in turn.
+    state.items.forEach((f, i) => {
+      setTimeout(() => {
+        const a = document.createElement("a");
+        a.href = `/api/netdisk/share/download?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(f.path)}&ts=${Date.now()}`;
+        a.download = "";
+        a.click();
+      }, i * 300);
+    });
+  };
+
+  $("#loginBtn").onclick = openLogin;
+  $("#closeLogin").onclick = closeLogin;
+  $("#goLogin").onclick = goLogin;
+
+  $("#closePicker").onclick = closePicker;
+  $("#cancelPicker").onclick = closePicker;
+  $("#confirmPicker").onclick = confirmSave;
+  $("#pickerUp").onclick = () => {
+    const parts = state.pickerPath.split("/").filter(Boolean);
+    parts.pop();
+    loadPicker(parts.join("/"));
+  };
+  $("#pickerMkdir").onclick = pickerMkdir;
+}
+
+init();

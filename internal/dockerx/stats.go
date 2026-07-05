@@ -142,8 +142,14 @@ func parseStats(body []byte) StatsSample {
 		s.CPUPercent = round2((cpuDelta / sysDelta) * float64(cpus) * 100)
 	}
 
-	// Memory: usage minus cache (page cache) for the working set.
-	usage := r.MemoryStats.Usage - r.MemoryStats.Stats.Cache
+	// Memory: usage minus cache (page cache) for the working set. Guard against
+	// Docker reporting more cache than total usage, which would underflow uint64.
+	usage := r.MemoryStats.Usage
+	if r.MemoryStats.Stats.Cache > usage {
+		usage = 0
+	} else {
+		usage -= r.MemoryStats.Stats.Cache
+	}
 	s.MemoryMB = round2(float64(usage) / 1024 / 1024)
 	s.MemoryLimitMB = round2(float64(r.MemoryStats.Limit) / 1024 / 1024)
 	if s.MemoryLimitMB > 0 {

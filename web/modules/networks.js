@@ -19,7 +19,7 @@ export function renderNetworks() {
   const nb = $("#newNetBtn");
   if (nb) nb.onclick = openCreateNetwork;
   document.querySelectorAll("[data-net-delete]").forEach((btn) => {
-    btn.onclick = () => deleteNetwork(btn.dataset.netName);
+    btn.onclick = () => deleteNetwork(btn.dataset.netFullname, btn.dataset.netName);
   });
 }
 
@@ -35,7 +35,7 @@ function networkRow(n) {
       `<td><div class="secondary-line mono">${escapeHtml(n.subnet || "—")}</div></td>` +
       `<td>${n.containers || 0}</td>` +
       `<td><div class="secondary-line">${escapeHtml(n.owner || "system")}</div></td>` +
-      `<td class="actions">${canMutate() && !sys ? `<button class="icon danger" title="Delete" data-net-name="${escapeHtml(n.name)}">✕</button>` : "—"}</td>` +
+      `<td class="actions">${canMutate() && !sys ? `<button class="icon danger" title="Delete" data-net-name="${escapeHtml(n.name)}" data-net-fullname="${escapeHtml(n.fullName || n.name)}">✕</button>` : "—"}</td>` +
     `</tr>`
   );
 }
@@ -71,10 +71,10 @@ function openCreateNetwork() {
   };
 }
 
-async function deleteNetwork(name) {
+async function deleteNetwork(fullName, name) {
   if (!confirm(`Delete network “${name}”?`)) return;
   try {
-    await api("/api/networks/delete", { method: "POST", body: JSON.stringify({ name }) });
+    await api("/api/networks/delete", { method: "POST", body: JSON.stringify({ name: fullName }) });
     await refreshAll();
     renderView();
     toast("Network deleted", true);

@@ -3,6 +3,7 @@ package dockerx
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"strings"
@@ -51,9 +52,9 @@ type ContainerStats struct {
 
 // ResourceStats counts a Docker resource kind plus its on-disk footprint.
 type ResourceStats struct {
-	Count   int     `json:"count"`
-	SizeB   int64   `json:"sizeBytes"`
-	SizeMB  float64 `json:"sizeMb"`
+	Count  int     `json:"count"`
+	SizeB  int64   `json:"sizeBytes"`
+	SizeMB float64 `json:"sizeMb"`
 }
 
 // SystemInfo gathers the environment snapshot used by the dashboard. Every
@@ -191,6 +192,15 @@ func managedVolumeFilter() filters.Args {
 // round2 rounds to two decimals using a small epsilon to absorb binary
 // float representation drift (e.g. 1.005 stored as 1.00499999...).
 func round2(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	if v >= float64(math.MaxInt64)/100 {
+		return float64(math.MaxInt64) / 100
+	}
+	if v <= float64(math.MinInt64)/100 {
+		return float64(math.MinInt64) / 100
+	}
 	return float64(int(v*100+0.5+1e-9)) / 100
 }
 

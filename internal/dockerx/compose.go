@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -149,6 +150,12 @@ func (p *ComposeProject) run(ctx context.Context, args []string, progress func(l
 	// Drain any buffered tail, then await process exit.
 	pr.Close()
 	waitErr := <-waitCh
+	if scanErr := scanner.Err(); scanErr != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("docker compose output: %w", scanErr)
+	}
 	if waitErr != nil {
 		if last == "" {
 			last = "docker compose exited non-zero"
@@ -182,9 +189,14 @@ func SplitEnvLines(raw string) map[string]string {
 
 // MarshalEnv turns a map back into KEY=VALUE lines, sorted for determinism.
 func MarshalEnv(env map[string]string) ([]byte, error) {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	var b bytes.Buffer
-	for k, v := range env {
-		fmt.Fprintf(&b, "%s=%s\n", k, v)
+	for _, k := range keys {
+		fmt.Fprintf(&b, "%s=%s\n", k, env[k])
 	}
 	return b.Bytes(), nil
 }

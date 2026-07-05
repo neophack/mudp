@@ -89,11 +89,21 @@ export async function readSSE(res, onEvent) {
   if (buffer.trim()) handle(buffer);
 }
 
-// Backdrop click closes the topmost modal.
+// Backdrop click closes the topmost modal — but only when the press both
+// started AND ended on the backdrop itself. This avoids closing the modal when
+// the user drags to select text inside an input and releases the mouse over the
+// backdrop ring (a plain `click` check on e.target would fire in that case and
+// kill the New Container form mid-selection).
+let pressStartedOnBackdrop = false;
+document.addEventListener("mousedown", (e) => {
+  pressStartedOnBackdrop = !!(e.target.classList && e.target.classList.contains("modal-backdrop"));
+});
 document.addEventListener("click", (e) => {
-  if (e.target.classList && e.target.classList.contains("modal-backdrop")) {
+  const endedOnBackdrop = !!(e.target.classList && e.target.classList.contains("modal-backdrop"));
+  if (pressStartedOnBackdrop && endedOnBackdrop) {
     closeModal();
   }
+  pressStartedOnBackdrop = false;
 });
 
 // Esc closes the topmost modal. Standard app convention; no modifier needed.

@@ -70,11 +70,18 @@ func (a *App) volumeDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if err := a.docker.RemoveVolume(r.Context(), req.Name, u.Username, u.Role == "admin", req.Force); err != nil {
+	name := req.Name
+	if !strings.HasPrefix(name, dockerx.Prefix) {
+		// Backward compatibility: the UI used to send the display name.
+		// Resolve it using the caller's username; admins deleting another
+		// user's volume must send the full Docker name.
+		name = dockerx.VolumeFullName(u.Username, name)
+	}
+	if err := a.docker.RemoveVolume(r.Context(), name, u.Username, u.Role == "admin", req.Force); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.record(r, "volume.delete", req.Name)
+	a.record(r, "volume.delete", name)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

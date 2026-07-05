@@ -60,6 +60,10 @@ func (a *App) userUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	target, _ := a.db.UserByID(req.ID)
+	if req.PortPrefix < 0 || req.PortPrefix > 655 {
+		writeErr(w, http.StatusBadRequest, "port prefix must be between 0 and 655")
+		return
+	}
 	if err := a.db.UpdateUser(req.ID, req.Password, req.Role, req.ContainerCap, req.Disabled); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

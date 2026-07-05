@@ -35,6 +35,7 @@ export const state = {
   netdisk: { path: "", items: [], quota: null },
   disks: [],
   scripts: { sshScript: "", vscodeScript: "" },
+  fusedImages: [],
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
   search: "",
   logViewer: { open: false, title: "", content: "", id: "", tail: 300 },
@@ -45,6 +46,7 @@ export const state = {
   terminal: { open: false, id: "", name: "", term: null, ws: null, fitAddon: null },
   modal: { open: false, kind: "", data: null },
   tab: "dashboard",
+  sidebarCollapsed: localStorage.getItem("mudp:sidebar") === "collapsed",
 };
 
 // Role helpers mirror the backend ranks. Higher rank = more powerful.
@@ -131,8 +133,8 @@ export async function refreshAll() {
   const jobs = [api("/api/images"), api("/api/containers"), api("/api/dashboard"), api("/api/volumes"), api("/api/networks"), api("/api/stacks")];
   const labels = ["images", "containers", "dashboard", "volumes", "networks", "stacks"];
   if (isAdmin()) {
-    jobs.push(api("/api/users"), api("/api/groups"), api("/api/admin/usage"), api("/api/scripts"), api("/api/admin/audit?limit=200"));
-    labels.push("users", "groups", "usage", "scripts", "audit");
+    jobs.push(api("/api/users"), api("/api/groups"), api("/api/admin/usage"), api("/api/scripts"), api("/api/admin/audit?limit=200"), api("/api/scripts/fused/list"));
+    labels.push("users", "groups", "usage", "scripts", "audit", "fusedImages");
   }
   const out = await Promise.all(jobs);
   out.forEach((v, i) => {
@@ -142,19 +144,29 @@ export async function refreshAll() {
 
 // ---------------- Shell + tab router ----------------
 
-const NAV_ICONS = {
-  dashboard: "DB",
-  netdisk: "FD",
-  containers: "CT",
-  images: "IM",
-  volumes: "VL",
-  networks: "NW",
-  stacks: "ST",
-  users: "US",
-  usage: "RS",
-  audit: "AU",
-  disks: "DK",
-  scripts: "SE",
+// Lucide (ISC license) 24×24 stroke icons, inlined so the embedded app stays
+// fully offline. `currentColor` lets each icon inherit the sidebar's dark /
+// active / accent colour — no font file or CDN needed.
+const svgIcon = (body) =>
+  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+
+const ICONS = {
+  dashboard: svgIcon('<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>'),
+  netdisk: svgIcon('<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>'),
+  containers: svgIcon('<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>'),
+  images: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>'),
+  volumes: svgIcon('<path d="M10 16h.01"/><path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M21.946 12.013H2.054"/><path d="M6 16h.01"/>'),
+  networks: svgIcon('<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>'),
+  stacks: svgIcon('<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/>'),
+  users: svgIcon('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/>'),
+  usage: svgIcon('<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>'),
+  audit: svgIcon('<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>'),
+  disks: svgIcon('<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>'),
+  scripts: svgIcon('<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>'),
+  logout: svgIcon('<path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>'),
+  // panel-left-close shown when expanded (click to collapse); panel-left when collapsed.
+  collapse: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'),
+  expand: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>'),
 };
 
 function label(tab) {
@@ -199,22 +211,27 @@ export function render() {
   const admin = isAdmin();
   const tabs = ["dashboard", "netdisk", "containers", "usage", "images", "volumes", "networks", "stacks", ...(admin ? ["users", "audit", "disks", "scripts"] : [])];
 
+  const collapsed = state.sidebarCollapsed;
   $("#app").innerHTML =
-    `<section class="shell">` +
-      `<aside>` +
-        `<div class="brand"><span class="dot"></span> MUDP</div>` +
+    `<section class="shell${collapsed ? " sidebar-collapsed" : ""}">` +
+      `<aside class="${collapsed ? "collapsed" : ""}">` +
+        `<div class="brand">` +
+          `<span class="dot"></span>` +
+          `<span class="brand-text">MUDP</span>` +
+          `<button id="sidebarToggle" class="sidebar-toggle" title="${collapsed ? "Expand" : "Collapse"} sidebar" aria-label="Toggle sidebar">${collapsed ? ICONS.expand : ICONS.collapse}</button>` +
+        `</div>` +
         `<nav>` +
           tabs
             .map(
               (tab) =>
-                `<button class="${state.tab === tab ? "active" : ""}" data-tab="${tab}"><span class="ico">${NAV_ICONS[tab] || ""}</span>${label(tab)}</button>`
+                `<button class="${state.tab === tab ? "active" : ""}" data-tab="${tab}" title="${label(tab)}"><span class="ico">${ICONS[tab] || ""}</span><span class="nav-label">${label(tab)}</span></button>`
             )
             .join("") +
         `</nav>` +
         `<div class="profile">` +
           `<strong>${escapeHtml(state.me.username)}</strong>` +
           `<span>${escapeHtml(state.me.role)}${state.me.groups?.length ? " · " + escapeHtml(state.me.groups.join(", ")) : ""}</span>` +
-          `<button id="logout">Logout</button>` +
+          `<button id="logout" title="Logout">${ICONS.logout}<span class="nav-label">Logout</span></button>` +
         `</div>` +
       `</aside>` +
       `<section class="work">` +
@@ -242,6 +259,14 @@ export function render() {
       render();
     };
   });
+  const toggle = $("#sidebarToggle");
+  if (toggle) {
+    toggle.onclick = () => {
+      state.sidebarCollapsed = !state.sidebarCollapsed;
+      localStorage.setItem("mudp:sidebar", state.sidebarCollapsed ? "collapsed" : "expanded");
+      render();
+    };
+  }
   $("#logout").onclick = async () => {
     await api("/api/logout", { method: "POST" });
     state.me = null;

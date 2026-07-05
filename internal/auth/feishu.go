@@ -139,7 +139,10 @@ func (f *FeishuClient) do(req *http.Request, out any) error {
 		return err
 	}
 	defer res.Body.Close()
-	raw, _ := io.ReadAll(res.Body)
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		return fmt.Errorf("feishu read body: %w", err)
+	}
 	if res.StatusCode >= 400 {
 		return fmt.Errorf("feishu http %d: %s", res.StatusCode, string(raw))
 	}

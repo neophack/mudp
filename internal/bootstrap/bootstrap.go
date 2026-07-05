@@ -15,6 +15,9 @@ type Config struct {
 	VSCodeScript   string
 	OrigEntrypoint []string
 	OrigCmd        []string
+	// BaseRef is the base image reference for the fused-image Dockerfile (FROM).
+	// Only used by FusedContext; the runtime-injection Tarball ignores it.
+	BaseRef string
 }
 
 func Tarball(cfg Config) (*bytes.Buffer, error) {

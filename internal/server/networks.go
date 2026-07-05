@@ -69,10 +69,15 @@ func (a *App) networkDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if err := a.docker.RemoveNetwork(r.Context(), req.Name, u.Username, u.Role == "admin"); err != nil {
+	name := req.Name
+	if !strings.HasPrefix(name, dockerx.Prefix) {
+		// Backward compatibility: the UI used to send the display name.
+		name = dockerx.NetworkFullName(u.Username, name)
+	}
+	if err := a.docker.RemoveNetwork(r.Context(), name, u.Username, u.Role == "admin"); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.record(r, "network.delete", req.Name)
+	a.record(r, "network.delete", name)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

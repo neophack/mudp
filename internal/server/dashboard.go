@@ -11,24 +11,24 @@ import (
 // standalone usage endpoint.
 type usageRow struct {
 	store.User
-	Containers int     `json:"containers"`
-	MemoryMB   float64 `json:"memoryMb"`
-	DiskMB     float64 `json:"diskMb"`
-	GPU        string  `json:"gpu"`
-	GPUPercent float64 `json:"gpuPct"`
-	GPUMemoryMB float64 `json:"gpuMemMb"`
+	Containers       int     `json:"containers"`
+	MemoryMB         float64 `json:"memoryMb"`
+	DiskMB           float64 `json:"diskMb"`
+	GPU              string  `json:"gpu"`
+	GPUPercent       float64 `json:"gpuPct"`
+	GPUMemoryMB      float64 `json:"gpuMemMb"`
 	GPUMemoryTotalMB float64 `json:"gpuMemTotalMb"`
-	GPUMemoryPct float64 `json:"gpuMemPct"`
+	GPUMemoryPct     float64 `json:"gpuMemPct"`
 }
 
 // dashboardResponse aggregates everything the home screen renders in one round
 // trip: environment info, the caller's container rollup, and (admin only) the
 // per-user usage summary.
 type dashboardResponse struct {
-	System     dockerx.SystemInfo `json:"system"`
-	Mine       mineRollup         `json:"mine"`
-	Usage      []usageRow         `json:"usage,omitempty"`
-	IsAdmin    bool               `json:"isAdmin"`
+	System  dockerx.SystemInfo `json:"system"`
+	Mine    mineRollup         `json:"mine"`
+	Usage   []usageRow         `json:"usage,omitempty"`
+	IsAdmin bool               `json:"isAdmin"`
 }
 
 type mineRollup struct {

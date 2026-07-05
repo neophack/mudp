@@ -1,10 +1,13 @@
 package dockerx
 
 import (
+	"archive/tar"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -90,6 +93,39 @@ type CreateOptions struct {
 	// Progress is an optional callback fired at each creation stage.
 	// stage is one of: image, bootstrap, create, copy, start, ssh, vscode, done.
 	Progress func(stage, msg string)
+	// FusedPlan, when set, requests a fused derived image (base + SSH/VSCode
+	// pre-installed) for this create. The server computes the cache key and
+	// references; CreateContainer builds the image lazily on a cache miss or
+	// reuses it on a hit. If the build fails, CreateContainer falls back to the
+	// runtime-injection path. Nil means "use the legacy runtime-injection path".
+	FusedPlan *FusedPlan
+}
+
+// FusedPlan describes how to build or reuse a fused derived image. The cache
+// key ties the image to a specific (base image ID + script bodies + flags)
+// combination so admin script edits or base image updates trigger a rebuild.
+type FusedPlan struct {
+	CacheKey       string   // SHA256(baseImageID + scriptHash + flags)
+	FusedRef       string   // local tag, e.g. mudp-fused-<base>-<short>:latest
+	BaseRef        string   // the base image reference for FROM
+	BaseImageID    string   // immutable Docker image ID of the base
+	OrigEntrypoint []string // base image entrypoint, replayed by the runtime script
+	OrigCmd        []string // base image cmd, replayed by the runtime script
+	// ScriptHash is the hash of the SSH+VSCode script bodies, included in logs
+	// and used by the server for cache-key construction.
+	ScriptHash string
+	// EnableSSH/EnableVSCode mirror the CreateOptions flags at plan time; the
+	// fused image is built with exactly these enables.
+	EnableSSH    bool
+	EnableVSCode bool
+	// AccessPassword is baked only as a build placeholder; the real per-container
+	// password is applied at runtime via the MUDP_ACCESS_PASSWORD env var.
+	AccessPassword string
+	SSHScript      string
+	VSCodeScript   string
+	// Auth is optional base64 registry auth, forwarded to the build so a
+	// FROM <private-registry>/... works.
+	Auth string
 }
 
 // ExecConn wraps a live exec attach used by the WebSocket terminal.
@@ -148,6 +184,14 @@ func New() (*Client, error) {
 
 // NewWithHost builds a Docker client. When host is empty the SDK reads
 // DOCKER_HOST (or falls back to the platform default socket).
+// Close releases the underlying Docker client connections.
+func (d *Client) Close() error {
+	if d.c == nil {
+		return nil
+	}
+	return d.c.Close()
+}
+
 func NewWithHost(host string) (*Client, error) {
 	opts := []client.Opt{client.WithAPIVersionNegotiation()}
 	if host == "" {
@@ -189,6 +233,117 @@ func PublicImageName(name string) string {
 func MUDPImageRef(display string) string {
 	display = strings.TrimPrefix(Slug(display), Prefix)
 	return Prefix + display + ":latest"
+}
+
+// MUDPFusedRef builds the local tag for a fused derived image. It combines the
+// base image's slug with a short hash of the cache key so multiple base images
+// (and rebuilt variants) coexist, and keeps the mudp- prefix so the image shows
+// up in managed lists. Example: mudp-fused-ubuntu-3f9a:latest.
+func MUDPFusedRef(baseRef, cacheKey string) string {
+	short := cacheKey
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return Prefix + "fused-" + Slug(baseRef) + "-" + short + ":latest"
+}
+
+// resolveFusedImage returns the image reference to use for a fused create: the
+// cached fused ref if the image already exists, or builds it and returns the
+// new ref. On any failure it returns "" so the caller falls back to the
+// runtime-injection path. Progress is streamed through emit.
+func (d *Client) resolveFusedImage(ctx context.Context, plan *FusedPlan, emit func(stage, msg string)) string {
+	if plan == nil {
+		return ""
+	}
+	// Cache hit: the fused image is already local.
+	if exists, _ := d.ImageExists(ctx, plan.FusedRef); exists {
+		emit("bootstrap", "Using cached optimized image "+PublicImageName(plan.FusedRef))
+		return plan.FusedRef
+	}
+	// Cache miss: build it once. This is the slow step that subsequent creates
+	// avoid entirely.
+	if err := d.buildFused(ctx, plan, emit); err != nil {
+		emit("bootstrap", "Optimized image build failed ("+err.Error()+"); falling back to runtime install")
+		return ""
+	}
+	return plan.FusedRef
+}
+
+// BuildFusedImage unconditionally (re)builds the fused derived image described
+// by plan, streaming each build line through emit. Used by the manual admin
+// "Build SSH/VSCode Image" action so a Rebuild actually rebuilds even when a
+// cached image exists. Returns an error if the build fails.
+func (d *Client) BuildFusedImage(ctx context.Context, plan *FusedPlan, emit func(stage, msg string)) error {
+	if plan == nil {
+		return fmt.Errorf("no fused plan")
+	}
+	return d.buildFused(ctx, plan, emit)
+}
+
+// buildFused is the shared core: it assembles the fused build context, drives
+// `docker build`, and tags the result. emit receives each stage message and
+// build line. Both the lazy create path (resolveFusedImage) and the explicit
+// admin build (BuildFusedImage) go through here.
+func (d *Client) buildFused(ctx context.Context, plan *FusedPlan, emit func(stage, msg string)) error {
+	emit("bootstrap", "Building optimized image (one-time, may take a few minutes)…")
+	buildCtx, err := bootstrap.FusedContext(bootstrap.Config{
+		EnableSSH:      plan.EnableSSH,
+		EnableVSCode:   plan.EnableVSCode,
+		AccessPassword: plan.AccessPassword,
+		SSHScript:      plan.SSHScript,
+		VSCodeScript:   plan.VSCodeScript,
+		OrigEntrypoint: plan.OrigEntrypoint,
+		OrigCmd:        plan.OrigCmd,
+		BaseRef:        plan.BaseRef,
+	})
+	if err != nil {
+		return fmt.Errorf("prepare build context: %w", err)
+	}
+	// BuildImage packs a Dockerfile + named context files into its own tar, so
+	// unpack the fused context tar we just built into those two pieces.
+	dockerfile, contextFiles := unpackFusedContext(buildCtx)
+	labels := map[string]string{
+		"mudp.fused":      "true",
+		"mudp.base":       plan.BaseRef,
+		"mudp.cacheKey":   plan.CacheKey,
+		"mudp.scriptHash": plan.ScriptHash,
+	}
+	if err := d.BuildImage(ctx, BuildOptions{
+		Dockerfile:   dockerfile,
+		Tags:         []string{plan.FusedRef},
+		ContextFiles: contextFiles,
+		Labels:       labels,
+		Auth:         plan.Auth,
+	}, func(line string) { emit("bootstrap", line) }); err != nil {
+		return err
+	}
+	emit("bootstrap", "Optimized image ready")
+	return nil
+}
+
+// unpackFusedContext reads a fused build-context tar (as produced by
+// bootstrap.FusedContext) and returns the Dockerfile body plus a name→body map
+// of the other entries, suitable for BuildImage.
+func unpackFusedContext(buf *bytes.Buffer) (string, map[string]string) {
+	tr := tar.NewReader(buf)
+	dockerfile := ""
+	files := map[string]string{}
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			break
+		}
+		if hdr.Name == "Dockerfile" {
+			dockerfile = string(body)
+		} else {
+			files[hdr.Name] = string(body)
+		}
+	}
+	return dockerfile, files
 }
 
 func (d *Client) PullAndTag(ctx context.Context, sourceRef, display string) (string, error) {
@@ -392,12 +547,24 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	hostCfg := &container.HostConfig{PortBindings: portMap, RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyMode(normalizeRestartPolicy(opts.RestartPolicy))}}
 	// Mounts: parse "source:target[:ro]" into bind or volume mounts. Sources
 	// starting with "/" or "." are binds; everything else is a named volume.
+	// Only the user's own managed volumes and the netdisk bind are allowed.
 	for _, m := range opts.Mounts {
 		mount, err := parseMount(m)
 		if err != nil {
 			return "", err
 		}
+		if err := d.validateMountSource(ctx, opts.Username, &mount); err != nil {
+			return "", err
+		}
 		hostCfg.Mounts = append(hostCfg.Mounts, mount)
+	}
+	resolvedNetworks := make([]string, 0, len(opts.Networks))
+	for _, n := range opts.Networks {
+		full, err := d.validateNetworkAttachment(ctx, opts.Username, n)
+		if err != nil {
+			return "", err
+		}
+		resolvedNetworks = append(resolvedNetworks, full)
 	}
 	if opts.MountNetdisk && strings.TrimSpace(opts.NetdiskPath) != "" {
 		hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{
@@ -427,6 +594,46 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		WorkingDir:   imageInfo.Config.WorkingDir,
 	}
 	if opts.SSH || opts.VSCode {
+		// Try the fused derived-image path first: build-or-reuse a pre-installed
+		// image so container start skips the slow per-boot install. Falls back to
+		// runtime injection below if the build fails or no plan was supplied.
+		if fusedRef := d.resolveFusedImage(ctx, opts.FusedPlan, emit); fusedRef != "" {
+			// The fused image already has SSH/VSCode installed and its ENTRYPOINT
+			// runs the per-boot runtime script. Supply the access password via env.
+			containerCfg.Image = fusedRef
+			containerCfg.Env = append(containerCfg.Env, "MUDP_ACCESS_PASSWORD="+opts.AccessPassword)
+			// No entrypoint override, no CopyToContainer — the fused image is self-contained.
+			emit("create", "Creating container")
+			resp, err := d.c.ContainerCreate(ctx, containerCfg, hostCfg,
+				networkingConfig(resolvedNetworks), &v1.Platform{}, name)
+			if err != nil {
+				return "", err
+			}
+			emit("start", "Starting container")
+			if err := d.c.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+				_ = d.c.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+				return "", err
+			}
+			if opts.SSH {
+				emit("ssh", "Waiting for SSH to come up")
+				if err := d.waitForReady(ctx, resp.ID, 22); err != nil {
+					emit("ssh", "SSH not ready yet — the link will appear once it is up")
+				} else {
+					emit("ssh", "SSH ready")
+				}
+			}
+			if opts.VSCode {
+				emit("vscode", "Waiting for VS Code Server to come up")
+				if err := d.waitForReady(ctx, resp.ID, 13337); err != nil {
+					emit("vscode", "VS Code not ready yet — the link will appear once it is up")
+				} else {
+					emit("vscode", "VS Code ready")
+				}
+			}
+			emit("done", "Container created")
+			return resp.ID, nil
+		}
+		// Fallback: runtime injection of the bootstrap scripts.
 		emit("bootstrap", "Generating bootstrap scripts")
 		payload, err := bootstrap.Tarball(bootstrap.Config{
 			EnableSSH:      opts.SSH,
@@ -444,7 +651,7 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		emit("create", "Creating container")
 		resp, err := d.c.ContainerCreate(ctx, containerCfg,
 			hostCfg,
-			networkingConfig(opts.Networks),
+			networkingConfig(resolvedNetworks),
 			&v1.Platform{},
 			name,
 		)
@@ -458,17 +665,24 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		}
 		emit("start", "Starting container")
 		if err := d.c.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-			return resp.ID, err
+			_ = d.c.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+			return "", err
 		}
 		if opts.SSH {
 			emit("ssh", "Waiting for SSH to come up")
-			d.waitForReady(ctx, resp.ID, 22)
-			emit("ssh", "SSH ready")
+			if err := d.waitForReady(ctx, resp.ID, 22); err != nil {
+				emit("ssh", "SSH not ready yet — install may still be running; the link will appear once it is up")
+			} else {
+				emit("ssh", "SSH ready")
+			}
 		}
 		if opts.VSCode {
 			emit("vscode", "Waiting for VS Code Server to come up")
-			d.waitForReady(ctx, resp.ID, 13337)
-			emit("vscode", "VS Code ready")
+			if err := d.waitForReady(ctx, resp.ID, 13337); err != nil {
+				emit("vscode", "VS Code not ready yet — install may still be running; the link will appear once it is up")
+			} else {
+				emit("vscode", "VS Code ready")
+			}
 		}
 		emit("done", "Container created")
 		return resp.ID, nil
@@ -477,7 +691,7 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	resp, err := d.c.ContainerCreate(ctx,
 		containerCfg,
 		hostCfg,
-		networkingConfig(opts.Networks),
+		networkingConfig(resolvedNetworks),
 		&v1.Platform{},
 		name,
 	)
@@ -486,7 +700,8 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	}
 	emit("start", "Starting container")
 	if err := d.c.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return resp.ID, err
+		_ = d.c.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		return "", err
 	}
 	emit("done", "Container created")
 	return resp.ID, nil
@@ -686,32 +901,102 @@ func (d *Client) SetAccessPassword(ctx context.Context, id, password string) err
 	return nil
 }
 
-// waitForReady polls the container's published port map until the given private
-// port is bound to a host port, or the context expires. It never returns an
-// error: ready status is advisory only.
-func (d *Client) waitForReady(ctx context.Context, id string, privatePort uint16) {
-	deadline, cancel := context.WithTimeout(ctx, 90*time.Second)
+// readyMarkerFor maps a service's private port to the bootstrap marker file
+// the entrypoint touches once its install script ran to completion (under
+// set -eu, so the marker only appears on success — see bootstrap.go).
+var readyMarkerFor = map[uint16]string{
+	22:    "/tmp/mudp/ssh.ready",
+	13337: "/tmp/mudp/vscode.ready",
+}
+
+// errNotReady is returned by waitForReady when the service does not come up
+// before the deadline. Callers treat it as advisory (the container is kept).
+var errNotReady = errors.New("service did not become ready in time")
+
+// waitForReady blocks until the bootstrap install for privatePort has finished
+// (its marker file exists in the container) AND the published host port accepts
+// a TCP connection. code-server's network install can take minutes, so the
+// deadline is generous. Returns errNotReady on timeout; the caller keeps the
+// container either way and surfaces a message to the user.
+func (d *Client) waitForReady(ctx context.Context, id string, privatePort uint16) error {
+	marker := readyMarkerFor[privatePort]
+	deadline, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	for {
 		if deadline.Err() != nil {
-			return
+			return errNotReady
 		}
-		inspect, err := d.c.ContainerInspect(ctx, id)
-		if err == nil {
-			for _, b := range inspect.NetworkSettings.Ports {
-				for _, pb := range b {
-					if pb.HostPort != "" {
-						return
-					}
+		if d.markerExists(ctx, id, marker) {
+			if hostPort := d.publishedHostPort(ctx, id, privatePort); hostPort != "" {
+				if conn, err := net.DialTimeout("tcp", "127.0.0.1:"+hostPort, 2*time.Second); err == nil {
+					_ = conn.Close()
+					return nil
 				}
 			}
 		}
 		select {
 		case <-deadline.Done():
-			return
-		case <-time.After(2 * time.Second):
+			return errNotReady
+		case <-time.After(3 * time.Second):
 		}
 	}
+}
+
+// markerExists runs `test -f <marker>` inside the container and reports whether
+// the marker file is present (i.e. the bootstrap install script completed).
+func (d *Client) markerExists(ctx context.Context, id, marker string) bool {
+	if marker == "" {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	execCfg := container.ExecOptions{Cmd: []string{"/bin/sh", "-c", "test -f " + marker}}
+	resp, err := d.c.ContainerExecCreate(probeCtx, id, execCfg)
+	if err != nil {
+		return false
+	}
+	// Attach to drive the exec to completion, then read its exit code.
+	attach, err := d.c.ContainerExecAttach(probeCtx, resp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return false
+	}
+	_, _ = io.Copy(io.Discard, attach.Reader)
+	attach.Close()
+	inspect, err := d.c.ContainerExecInspect(probeCtx, resp.ID)
+	if err != nil {
+		return false
+	}
+	return inspect.ExitCode == 0
+}
+
+// publishedHostPort returns the host port Docker bound to the given container
+// private port (e.g. 22 -> "2222"), or "" if none is published yet.
+func (d *Client) publishedHostPort(ctx context.Context, id string, privatePort uint16) string {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	inspect, err := d.c.ContainerInspect(probeCtx, id)
+	if err != nil {
+		return ""
+	}
+	target := nat.Port(fmt.Sprintf("%d/tcp", privatePort))
+	for port, bindings := range inspect.NetworkSettings.Ports {
+		if port != target {
+			continue
+		}
+		for _, pb := range bindings {
+			if pb.HostPort != "" {
+				return pb.HostPort
+			}
+		}
+	}
+	return ""
+}
+
+// serviceReady is a lightweight, list-time readiness check: it reports whether
+// a service's bootstrap marker exists in the container. Used by ListContainers
+// to show SSH/VSCode links only once the install has actually completed.
+func (d *Client) serviceReady(ctx context.Context, id string, privatePort uint16) bool {
+	return d.markerExists(ctx, id, readyMarkerFor[privatePort])
 }
 
 func (d *Client) ListContainers(ctx context.Context, username string, admin bool) ([]Container, error) {
@@ -764,6 +1049,16 @@ func (d *Client) ListContainers(ctx context.Context, username string, admin bool
 			out[i].GPUMemoryMB = gpu.MemoryMB
 			out[i].GPUMemoryTotalMB = gpu.MemoryTotalMB
 			out[i].GPUMemoryPct = gpu.MemoryPct
+		}
+		// Only surface SSH/VSCode connection info once the bootstrap install
+		// has actually finished (its marker file is present), so users never
+		// get a link to a service that isn't listening yet.
+		if out[i].SSHPort != "" && !d.serviceReady(ctx, out[i].ID, 22) {
+			out[i].SSHPort = ""
+			out[i].SSHUser = ""
+		}
+		if out[i].VSCodeURL != "" && !d.serviceReady(ctx, out[i].ID, 13337) {
+			out[i].VSCodeURL = ""
 		}
 	}
 	return out, nil
@@ -1122,6 +1417,10 @@ func (d *Client) Logs(ctx context.Context, id string, tail int) (string, error) 
 		if size <= 0 {
 			continue
 		}
+		const maxLogFrame = 16 << 20 // 16 MiB per log frame
+		if size > maxLogFrame {
+			return "", fmt.Errorf("log frame exceeds maximum size")
+		}
 		payload := make([]byte, size)
 		if _, err := io.ReadFull(reader, payload); err != nil {
 			return "", err
@@ -1172,6 +1471,51 @@ func networkingConfig(names []string) *network.NetworkingConfig {
 		cfg.EndpointsConfig[n] = &network.EndpointSettings{}
 	}
 	return cfg
+}
+
+// validateMountSource ensures a mount source is either the user's own managed
+// volume or an allowed bind. Bind mounts are rejected outright except for the
+// netdisk path, which is handled separately via MountNetdisk. Named volumes are
+// resolved to their full Docker name and verified to exist and be owned by the
+// user, preventing cross-user volume access or host path exposure.
+func (d *Client) validateMountSource(ctx context.Context, username string, m *mount.Mount) error {
+	source := strings.TrimSpace(m.Source)
+	target := strings.TrimSpace(m.Target)
+	if source == "" || target == "" {
+		return fmt.Errorf("mount has empty source or target")
+	}
+	if m.Type == mount.TypeBind {
+		return fmt.Errorf("bind mount %q is not allowed; use the netdisk option or a managed volume", source)
+	}
+	full := VolumeFullName(username, source)
+	vol, err := d.c.VolumeInspect(ctx, full)
+	if err != nil {
+		return fmt.Errorf("volume %q not found", source)
+	}
+	if vol.Labels[ManagedLabel] != "true" || vol.Labels[UserLabel] != username {
+		return fmt.Errorf("volume %q is not yours", source)
+	}
+	m.Source = full
+	return nil
+}
+
+// validateNetworkAttachment resolves a network name to its full Docker name and
+// verifies it is managed by mudp and owned by the user. This prevents users from
+// attaching to another user's network or to unmanaged system networks.
+func (d *Client) validateNetworkAttachment(ctx context.Context, username, name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("network name is empty")
+	}
+	full := NetworkFullName(username, name)
+	info, err := d.c.NetworkInspect(ctx, full, network.InspectOptions{})
+	if err != nil {
+		return "", fmt.Errorf("network %q not found", name)
+	}
+	if info.Labels[ManagedLabel] != "true" || info.Labels[UserLabel] != username {
+		return "", fmt.Errorf("network %q is not yours", name)
+	}
+	return full, nil
 }
 
 // LogsStream returns a live-following reader for a container's logs. The caller

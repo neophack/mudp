@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -30,15 +31,21 @@ import (
 )
 
 type App struct {
-	cfg    config.Config
-	db     *store.DB
-	docker *dockerx.Client
-	auth   auth.Signer
+	cfg          config.Config
+	db           *store.DB
+	docker       *dockerx.Client
+	auth         auth.Signer
+	lastSnapshot time.Time
+	registryMu   sync.Mutex
 }
 
 type contextKey string
 
 const userKey contextKey = "user"
+
+// maxWSFrameSize caps the payload of a single WebSocket frame to prevent a
+// malicious client from asking the server to allocate arbitrary memory.
+const maxWSFrameSize = 1 << 20 // 1 MiB
 
 func New(cfg config.Config, db *store.DB) (*App, error) {
 	dc, err := dockerx.NewWithHost(cfg.DockerHost)
@@ -46,6 +53,14 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 		return nil, err
 	}
 	return &App{cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret)}, nil
+}
+
+// Close releases resources held by the app, such as the Docker client.
+func (a *App) Close() error {
+	if a.docker == nil {
+		return nil
+	}
+	return a.docker.Close()
 }
 
 func (a *App) Routes() http.Handler {
@@ -77,6 +92,9 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/containers/action", a.containerAction)
 		r.Get("/api/containers/inspect", a.inspectContainer)
 		r.Get("/api/containers/terminal", a.containerTerminal)
+		r.Get("/api/containers/files/list", a.containerFilesList)
+		r.Get("/api/containers/files/download", a.containerFilesDownload)
+		r.Post("/api/containers/files/copy", a.containerFilesCopy)
 		r.Get("/api/images", a.images)
 		r.Get("/api/groups", a.groups)
 		r.Post("/api/groups", a.groups)
@@ -141,6 +159,9 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/users/groups", a.setUserGroups)
 		r.Get("/api/scripts", a.scripts)
 		r.Post("/api/scripts", a.scripts)
+		r.Post("/api/scripts/fused/build/stream", a.fusedBuildStream)
+		r.Get("/api/scripts/fused/list", a.fusedList)
+		r.Post("/api/scripts/fused/delete", a.fusedDelete)
 		r.Get("/api/registries", a.registries)
 		r.Post("/api/registries", a.registries)
 		r.Post("/api/registries/delete", a.registryDelete)
@@ -170,7 +191,12 @@ func (a *App) staticHandler() http.Handler {
 	if a.cfg.WebDir != "" {
 		return http.StripPrefix("/", http.FileServer(http.Dir(a.cfg.WebDir)))
 	}
-	content, _ := fs.Sub(web.Files, ".")
+	content, err := fs.Sub(web.Files, ".")
+	if err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeErr(w, http.StatusInternalServerError, "static assets unavailable")
+		})
+	}
 	return http.FileServer(http.FS(content))
 }
 
@@ -224,8 +250,8 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	u, err := a.db.Authenticate(req.Username, req.Password)
@@ -291,8 +317,8 @@ func (a *App) users(w http.ResponseWriter, r *http.Request) {
 			ContainerCap int     `json:"containerCap"`
 			PortPrefix   int     `json:"portPrefix"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid json")
+		if err := decodeJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if req.Role == "" {
@@ -306,13 +332,23 @@ func (a *App) users(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "username and password are required")
 			return
 		}
+		if req.PortPrefix < 0 || req.PortPrefix > 655 {
+			writeErr(w, http.StatusBadRequest, "port prefix must be between 0 and 655")
+			return
+		}
 		if err := a.db.CreateUser(req.Username, req.Password, req.Role, req.GroupIDs, req.ContainerCap); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if req.PortPrefix > 0 {
-			if created, err := a.db.UserByUsername(req.Username); err == nil {
-				_ = a.db.UpdateUserPortPrefix(created.ID, req.PortPrefix)
+			created, err := a.db.UserByUsername(req.Username)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if err := a.db.UpdateUserPortPrefix(created.ID, req.PortPrefix); err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
 			}
 		}
 		a.record(r, "user.create", req.Username)
@@ -335,7 +371,7 @@ func (a *App) groups(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Name string `json:"name"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
+		if err := decodeJSON(r, &req); err != nil || strings.TrimSpace(req.Name) == "" {
 			writeErr(w, http.StatusBadRequest, "group name is required")
 			return
 		}
@@ -363,8 +399,8 @@ func (a *App) scripts(w http.ResponseWriter, r *http.Request) {
 		respond(w, cfg, err)
 	case http.MethodPost:
 		var req store.ScriptSettings
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid json")
+		if err := decodeJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if strings.TrimSpace(req.SSHScript) == "" || strings.TrimSpace(req.VSCodeScript) == "" {
@@ -389,8 +425,8 @@ func parsePullRequest(r *http.Request) (pullRequest, error) {
 		DisplayName string  `json:"name"`
 		GroupIDs    []int64 `json:"groupIds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return pullRequest{}, errors.New("invalid json")
+	if err := decodeJSON(r, &req); err != nil {
+		return pullRequest{}, err
 	}
 	req.DisplayName = dockerx.PublicImageName(req.DisplayName)
 	if req.DisplayName == "" {
@@ -516,7 +552,7 @@ func (a *App) setImageGroups(w http.ResponseWriter, r *http.Request) {
 		ImageID  int64   `json:"imageId"`
 		GroupIDs []int64 `json:"groupIds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ImageID == 0 {
+	if err := decodeJSON(r, &req); err != nil || req.ImageID == 0 {
 		writeErr(w, http.StatusBadRequest, "image id is required")
 		return
 	}
@@ -537,7 +573,7 @@ func (a *App) deleteImage(w http.ResponseWriter, r *http.Request) {
 		ImageID   int64  `json:"imageId"`
 		DockerRef string `json:"dockerRef"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ImageID == 0 || strings.TrimSpace(req.DockerRef) == "" {
+	if err := decodeJSON(r, &req); err != nil || req.ImageID == 0 || strings.TrimSpace(req.DockerRef) == "" {
 		writeErr(w, http.StatusBadRequest, "image id and docker ref are required")
 		return
 	}
@@ -561,8 +597,8 @@ func (a *App) containers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req createRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid json")
+		if err := decodeJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		opts, err := a.validateCreate(r.Context(), u, &req)
@@ -625,6 +661,11 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	if err != nil {
 		return dockerx.CreateOptions{}, err
 	}
+	// Resolve a fused derived-image plan when SSH/VSCode is enabled, so the
+	// container boots from a pre-installed image (fast, no network) instead of
+	// re-running the install at every start. Returns nil on any miss/error,
+	// which makes CreateContainer fall back to runtime injection.
+	fusedPlan := a.resolveFusedPlan(ctx, img.DockerRef, scripts.SSHScript, scripts.VSCodeScript, req.SSH, req.VSCode, req.AccessPassword)
 	mountNetdisk := true
 	if req.MountNetdisk != nil {
 		mountNetdisk = *req.MountNetdisk
@@ -650,7 +691,142 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, NetdiskPath: netdiskPath,
 		RestartPolicy: req.RestartPolicy,
+		FusedPlan: fusedPlan,
 	}, nil
+}
+
+// resolveFusedPlan computes the fused-image cache key for a (base image + script
+// bodies + flags) combination and returns a build/reuse plan. On a cache hit
+// (the fused image row exists AND the image is still present locally) it fills
+// FusedRef so CreateContainer reuses it. On a miss it returns a plan carrying
+// everything CreateContainer needs to build lazily. Returns nil if SSH/VSCode
+// are both off, the base image can't be inspected, or any error occurs — in all
+// those cases CreateContainer falls back to the runtime-injection path.
+func (a *App) resolveFusedPlan(ctx context.Context, baseRef, sshScript, vscodeScript string, enableSSH, enableVSCode bool, accessPassword string) *dockerx.FusedPlan {
+	if !enableSSH && !enableVSCode {
+		return nil
+	}
+	info, err := a.docker.InspectImage(ctx, baseRef)
+	if err != nil {
+		return nil // base image missing/uninspectable — fall back gracefully
+	}
+	scriptHash := hashScripts(sshScript, vscodeScript)
+	cacheKey := fusedCacheKey(info.ID, scriptHash, enableSSH, enableVSCode)
+	// Cache hit: row exists and the image is still local.
+	if fused, ok, _ := a.db.GetFusedImage(cacheKey); ok {
+		if exists, _ := a.docker.ImageExists(ctx, fused.FusedRef); exists {
+			return makeFusedPlan(baseRef, info.ID, info.Config.Entrypoint, info.Config.Cmd,
+				scriptHash, cacheKey, fused.FusedRef,
+				enableSSH, enableVSCode, accessPassword, sshScript, vscodeScript, a.registryAuthForRef(baseRef))
+		}
+		// Stale row (image was pruned); drop it so we rebuild cleanly.
+		_ = a.db.DeleteFusedImage(cacheKey)
+	}
+	fusedRef := dockerx.MUDPFusedRef(baseRef, cacheKey)
+	// Pre-record the row so concurrent creates can see the in-flight build; the
+	// real tag is created by CreateContainer. If the build fails we leave the
+	// row (harmless — next miss rebuilds), matching the "fall back" semantics.
+	_ = a.db.SaveFusedImage(store.FusedImage{
+		CacheKey:     cacheKey,
+		BaseRef:      baseRef,
+		BaseImageID:  info.ID,
+		FusedRef:     fusedRef,
+		EnableSSH:    enableSSH,
+		EnableVSCode: enableVSCode,
+		ScriptHash:   scriptHash,
+	})
+	return makeFusedPlan(baseRef, info.ID, info.Config.Entrypoint, info.Config.Cmd,
+		scriptHash, cacheKey, fusedRef,
+		enableSSH, enableVSCode, accessPassword, sshScript, vscodeScript, a.registryAuthForRef(baseRef))
+}
+
+// fusedPlanForBuild builds a plan for the manual admin "Build SSH/VSCode Image"
+// action. Unlike resolveFusedPlan it (a) returns an error instead of nil on
+// failure so the handler can surface it, (b) does not short-circuit on a cache
+// hit (a manual build is a rebuild request), and (c) uses a placeholder
+// password since the real per-container password is applied at runtime via env.
+// It does NOT pre-record the fused_images row — that is recorded by the caller
+// only after the build succeeds, so fusedList's orphan-pruning (which deletes
+// rows whose image isn't present yet) can't nuke an in-flight build.
+func (a *App) fusedPlanForBuild(ctx context.Context, baseRef, sshScript, vscodeScript string, enableSSH, enableVSCode bool) (*dockerx.FusedPlan, error) {
+	if !enableSSH && !enableVSCode {
+		return nil, errors.New("either SSH or VSCode must be selected")
+	}
+	info, err := a.docker.InspectImage(ctx, baseRef)
+	if err != nil {
+		return nil, fmt.Errorf("inspect base image %q: %w", baseRef, err)
+	}
+	scriptHash := hashScripts(sshScript, vscodeScript)
+	cacheKey := fusedCacheKey(info.ID, scriptHash, enableSSH, enableVSCode)
+	fusedRef := dockerx.MUDPFusedRef(baseRef, cacheKey)
+	return makeFusedPlan(baseRef, info.ID, info.Config.Entrypoint, info.Config.Cmd,
+		scriptHash, cacheKey, fusedRef,
+		enableSSH, enableVSCode, "mudp-build-placeholder", sshScript, vscodeScript, a.registryAuthForRef(baseRef)), nil
+}
+
+// recordFusedImage persists a fused_images row after a successful build so the
+// status card reflects it. Safe to call repeatedly (upsert).
+func (a *App) recordFusedImage(plan *dockerx.FusedPlan) {
+	_ = a.db.SaveFusedImage(store.FusedImage{
+		CacheKey:     plan.CacheKey,
+		BaseRef:      plan.BaseRef,
+		BaseImageID:  plan.BaseImageID,
+		FusedRef:     plan.FusedRef,
+		EnableSSH:    plan.EnableSSH,
+		EnableVSCode: plan.EnableVSCode,
+		ScriptHash:   plan.ScriptHash,
+	})
+}
+
+// makeFusedPlan assembles a *dockerx.FusedPlan from its inputs. Shared by the
+// lazy-create path and the manual-build path so the struct shape stays in one
+// place. Pass the base image's id/entrypoint/cmd extracted from InspectImage.
+func makeFusedPlan(baseRef, baseImageID string, origEntrypoint, origCmd []string,
+	scriptHash, cacheKey, fusedRef string, enableSSH, enableVSCode bool,
+	accessPassword, sshScript, vscodeScript, auth string) *dockerx.FusedPlan {
+	return &dockerx.FusedPlan{
+		CacheKey:       cacheKey,
+		FusedRef:       fusedRef,
+		BaseRef:        baseRef,
+		BaseImageID:    baseImageID,
+		OrigEntrypoint: origEntrypoint,
+		OrigCmd:        origCmd,
+		ScriptHash:     scriptHash,
+		EnableSSH:      enableSSH,
+		EnableVSCode:   enableVSCode,
+		AccessPassword: accessPassword,
+		SSHScript:      sshScript,
+		VSCodeScript:   vscodeScript,
+		Auth:           auth,
+	}
+}
+
+// hashScripts returns a hex SHA256 of the SSH+VSCode script bodies so admin
+// edits change the cache key and trigger a fused-image rebuild.
+func hashScripts(sshScript, vscodeScript string) string {
+	h := sha256.New()
+	h.Write([]byte(sshScript))
+	h.Write([]byte{0})
+	h.Write([]byte(vscodeScript))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// fusedCacheKey is the primary cache key for a fused image: a hex SHA256 of the
+// base image ID, the script hash, and the enable flags. Two creates with the
+// same key reuse the same fused image.
+func fusedCacheKey(baseImageID, scriptHash string, ssh, vscode bool) string {
+	h := sha256.New()
+	h.Write([]byte(baseImageID))
+	h.Write([]byte{0})
+	h.Write([]byte(scriptHash))
+	h.Write([]byte{0})
+	if ssh {
+		h.Write([]byte{1})
+	}
+	if vscode {
+		h.Write([]byte{1})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // createStream runs container creation while streaming progress events over
@@ -662,8 +838,8 @@ func (a *App) createStream(w http.ResponseWriter, r *http.Request) {
 	}
 	u := currentUser(r)
 	var req createRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	opts, err := a.validateCreate(r.Context(), u, &req)
@@ -728,7 +904,7 @@ func (a *App) containerAction(w http.ResponseWriter, r *http.Request) {
 		Action string `json:"action"`
 		Tail   int    `json:"tail"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+	if err := decodeJSON(r, &req); err != nil || req.ID == "" {
 		writeErr(w, http.StatusBadRequest, "id and action are required")
 		return
 	}
@@ -808,8 +984,8 @@ func (a *App) feishuSettings(w http.ResponseWriter, r *http.Request) {
 		respond(w, cfg, err)
 	case http.MethodPost:
 		var req store.FeishuConfig
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid json")
+		if err := decodeJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		// Treat a blank app secret on save as "keep existing".
@@ -947,7 +1123,7 @@ func (a *App) setUserGroups(w http.ResponseWriter, r *http.Request) {
 		UserID   int64   `json:"userId"`
 		GroupIDs []int64 `json:"groupIds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == 0 {
+	if err := decodeJSON(r, &req); err != nil || req.UserID == 0 {
 		writeErr(w, http.StatusBadRequest, "userId is required")
 		return
 	}
@@ -1266,10 +1442,17 @@ func readWSFrame(r io.Reader) (opcode byte, payload []byte, err error) {
 		if _, err := io.ReadFull(r, ext[:]); err != nil {
 			return 0, nil, err
 		}
-		length = 0
+		length64 := int64(0)
 		for i := 0; i < 8; i++ {
-			length = length<<8 | int(ext[i])
+			length64 = length64<<8 | int64(ext[i])
 		}
+		if length64 > int64(maxWSFrameSize) {
+			return 0, nil, fmt.Errorf("websocket frame too large")
+		}
+		length = int(length64)
+	}
+	if length > maxWSFrameSize {
+		return 0, nil, fmt.Errorf("websocket frame too large")
 	}
 	var mask [4]byte
 	if masked {
@@ -1295,13 +1478,20 @@ func readWSFrame(r io.Reader) (opcode byte, payload []byte, err error) {
 // Messages use a tiny JSON protocol: {type:"stdin",data} | {type:"resize",cols,rows}
 // outbound, and raw exec bytes are forwarded as text frames.
 func pumpTerminal(ctx context.Context, dc *dockerx.Client, conn net.Conn, bufRW *bufio.ReadWriter, exec dockerx.ExecConn) {
+	const idleTimeout = 5 * time.Minute
+	closeBoth := func() {
+		_ = conn.Close()
+		_ = exec.Hijacked.Conn.Close()
+	}
 	done := make(chan struct{})
 	defer close(done)
+	defer closeBoth()
 
 	// exec -> websocket
 	go func() {
-		_, _ = io.Copy(frameWriter{conn: conn}, exec.Hijacked.Reader)
-		_ = writeWSMessage(conn, wsClose, nil)
+		defer func() { _ = writeWSMessage(conn, wsClose, nil) }()
+		fw := &deadlineFrameWriter{conn: conn, timeout: 30 * time.Second}
+		_, _ = io.Copy(fw, exec.Hijacked.Reader)
 		select {
 		case <-done:
 		default:
@@ -1310,6 +1500,14 @@ func pumpTerminal(ctx context.Context, dc *dockerx.Client, conn net.Conn, bufRW 
 
 	// websocket -> exec
 	for {
+		if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		opcode, payload, err := readWSFrame(bufRW.Reader)
 		if err != nil {
 			return
@@ -1336,13 +1534,32 @@ func pumpTerminal(ctx context.Context, dc *dockerx.Client, conn net.Conn, bufRW 
 				_ = dc.ResizeExec(ctx, exec.ExecID, msg.Rows, msg.Cols)
 				continue
 			case "stdin":
+				_ = exec.Hijacked.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 				_, _ = exec.Hijacked.Conn.Write([]byte(msg.Data))
 				continue
 			}
 		}
 		// Fall back: treat raw bytes as stdin (works with binary terminals too).
+		_ = exec.Hijacked.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 		_, _ = exec.Hijacked.Conn.Write(payload)
 	}
+}
+
+// deadlineFrameWriter wraps a net.Conn and sets a write deadline before each
+// WebSocket frame, preventing a slow/absent client from blocking the exec pump.
+type deadlineFrameWriter struct {
+	conn    net.Conn
+	timeout time.Duration
+}
+
+func (f *deadlineFrameWriter) Write(p []byte) (int, error) {
+	if err := f.conn.SetWriteDeadline(time.Now().Add(f.timeout)); err != nil {
+		return 0, err
+	}
+	if err := writeWSMessage(f.conn, wsText, p); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // frameWriter adapts raw exec output into WebSocket text frames.

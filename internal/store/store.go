@@ -95,6 +95,20 @@ type NetdiskShare struct {
 	Expired   bool     `json:"expired"`
 }
 
+// FusedImage is a cached derived image that pre-installs SSH/VSCode for a
+// specific base image + script body combination, so container start skips the
+// slow per-boot install. Keyed by CacheKey (a hash of those inputs).
+type FusedImage struct {
+	CacheKey     string `json:"cacheKey"`
+	BaseRef      string `json:"baseRef"`
+	BaseImageID  string `json:"baseImageId"`
+	FusedRef     string `json:"fusedRef"`
+	EnableSSH    bool   `json:"enableSsh"`
+	EnableVSCode bool   `json:"enableVscode"`
+	ScriptHash   string `json:"scriptHash"`
+	CreatedAt    string `json:"createdAt"`
+}
+
 func Open(path string) (*DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -111,11 +125,35 @@ func Open(path string) (*DB, error) {
 		pragma foreign_keys = on;
 		pragma busy_timeout = 5000;
 		pragma synchronous = normal;
+		pragma wal_autocheckpoint = 1000;
 	`); err != nil {
 		return nil, err
 	}
 	return &DB{DB: db}, nil
 }
+
+// execIgnoring runs stmt and returns nil when the error message contains any
+// of the ignored fragments. It is used for idempotent schema migrations where
+// the target object may already exist.
+func execIgnoring(db *sql.DB, stmt string, ignore ...string) error {
+	_, err := db.Exec(stmt)
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	for _, frag := range ignore {
+		if strings.Contains(msg, frag) {
+			return nil
+		}
+	}
+	return err
+}
+
+// Common SQLite error message fragments treated as idempotent during migration.
+const (
+	sqliteDuplicateColumn = "duplicate column"
+	sqliteDuplicateIndex  = "index .* already exists"
+)
 
 func (db *DB) Migrate(adminUser, adminPassword string) error {
 	stmts := []string{
@@ -199,6 +237,16 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			expires_at text not null default '',
 			permanent integer not null default 0
 		)`,
+		`create table if not exists fused_images (
+			cache_key text primary key,
+			base_ref text not null,
+			base_image_id text not null,
+			fused_ref text not null,
+			enable_ssh integer not null,
+			enable_vscode integer not null,
+			script_hash text not null,
+			created_at text not null
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -206,16 +254,38 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 		}
 	}
 	// Add feishu_open_id column if missing (idempotent across older DBs).
-	db.Exec(`alter table users add column feishu_open_id text default ''`)
-	db.Exec(`alter table users add column port_prefix integer not null default 0`)
-	db.Exec(`alter table groups add column netdisk_path text not null default ''`)
-	db.Exec(`create unique index if not exists idx_users_feishu_open_id on users(feishu_open_id) where feishu_open_id != ''`)
-	db.Exec(`create index if not exists idx_audit_created on audit_logs(created_at desc)`)
-	db.Exec(`create index if not exists idx_resource_samples_created on resource_samples(created_at desc)`)
-	db.Exec(`create index if not exists idx_resource_samples_user_created on resource_samples(user_id, created_at desc)`)
-	db.Exec(`alter table netdisk_shares add column expires_at text not null default ''`)
-	db.Exec(`alter table netdisk_shares add column permanent integer not null default 0`)
-	db.Exec(`create index if not exists idx_netdisk_shares_owner on netdisk_shares(owner_id, created_at desc)`)
+	// ALTER TABLE ADD COLUMN is safe to ignore when the column already exists;
+	// other errors are surfaced so the schema cannot end up inconsistent.
+	if err := execIgnoring(db.DB, `alter table users add column feishu_open_id text default ''`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
+	if err := execIgnoring(db.DB, `alter table users add column port_prefix integer not null default 0`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
+	if err := execIgnoring(db.DB, `alter table groups add column netdisk_path text not null default ''`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
+	if err := execIgnoring(db.DB, `alter table netdisk_shares add column expires_at text not null default ''`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
+	if err := execIgnoring(db.DB, `alter table netdisk_shares add column permanent integer not null default 0`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`create unique index if not exists idx_users_feishu_open_id on users(feishu_open_id) where feishu_open_id != ''`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`create index if not exists idx_audit_created on audit_logs(created_at desc)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`create index if not exists idx_resource_samples_created on resource_samples(created_at desc)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`create index if not exists idx_resource_samples_user_created on resource_samples(user_id, created_at desc)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`create index if not exists idx_netdisk_shares_owner on netdisk_shares(owner_id, created_at desc)`); err != nil {
+		return err
+	}
 	if err := db.widenRoleConstraint(); err != nil {
 		return err
 	}
@@ -231,7 +301,63 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 	if err := db.EnsurePendingGroup(); err != nil {
 		return err
 	}
+	if err := db.upgradeDefaultScripts(); err != nil {
+		return err
+	}
 	return db.ensureDefaultScripts()
+}
+
+// legacySSHScriptMarkers / legacyVSCodeScriptMarkers identify the previous
+// default bootstrap scripts (the ones that started daemons unconditionally,
+// which broke fused-image builds). upgradeDefaultScripts replaces any stored
+// script matching these exact legacy bodies with the current default, so
+// existing deployments get the build-safe version automatically. Admin-edited
+// scripts that don't match are left untouched.
+var legacySSHScriptMarkers = []string{
+	`/usr/sbin/sshd || sshd || true`, // pre-MUDP_BUILD_PHASE guard: sshd started at build
+}
+var legacyVSCodeScriptMarkers = []string{
+	`nohup code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
+`,
+}
+
+// upgradeDefaultScripts replaces stored scripts that still contain the legacy
+// daemon-start lines (and lack the MUDP_BUILD_PHASE guard) with the current
+// defaults. It only acts on scripts that look like the old defaults; admin
+// customizations are preserved.
+func (db *DB) upgradeDefaultScripts() error {
+	cfg, err := db.ScriptSettings()
+	if err != nil {
+		return err
+	}
+	updated := ScriptSettings{}
+	needUpdate := false
+	if !strings.Contains(cfg.SSHScript, "MUDP_BUILD_PHASE") && containsAny(cfg.SSHScript, legacySSHScriptMarkers) {
+		updated.SSHScript = defaultSSHScript()
+		needUpdate = true
+	} else {
+		updated.SSHScript = cfg.SSHScript
+	}
+	if !strings.Contains(cfg.VSCodeScript, "MUDP_BUILD_PHASE") && containsAny(cfg.VSCodeScript, legacyVSCodeScriptMarkers) {
+		updated.VSCodeScript = defaultVSCodeScript()
+		needUpdate = true
+	} else {
+		updated.VSCodeScript = cfg.VSCodeScript
+	}
+	if !needUpdate {
+		return nil
+	}
+	return db.SaveScriptSettings(updated)
+}
+
+// containsAny reports whether s contains any of the substrings.
+func containsAny(s string, subs []string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // widenRoleConstraint relaxes an older users.role CHECK that only allowed
@@ -262,12 +388,13 @@ func (db *DB) widenRoleConstraint() error {
 			role text not null,
 			disabled integer not null default 0,
 			container_cap integer not null default 10,
+			port_prefix integer not null default 0,
 			created_at text not null,
 			last_login_at text,
 			feishu_open_id text default ''
 		)`,
-		`insert into users(id, username, password_hash, role, disabled, container_cap, created_at, last_login_at, feishu_open_id)
-		 select id, username, password_hash, role, disabled, container_cap, created_at, last_login_at, feishu_open_id from users_old`,
+		`insert into users(id, username, password_hash, role, disabled, container_cap, port_prefix, created_at, last_login_at, feishu_open_id)
+		 select id, username, password_hash, role, disabled, container_cap, port_prefix, created_at, last_login_at, feishu_open_id from users_old`,
 		`drop table users_old`,
 	}
 	for _, s := range steps {
@@ -569,11 +696,15 @@ if [ -f /etc/ssh/sshd_config ]; then
   grep -q '^PermitRootLogin yes' /etc/ssh/sshd_config || echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
   grep -q '^PasswordAuthentication yes' /etc/ssh/sshd_config || echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
 fi
-if command -v service >/dev/null 2>&1; then
-  service ssh start || true
-fi
-if command -v sshd >/dev/null 2>&1; then
-  /usr/sbin/sshd || sshd || true
+# Start sshd only at container runtime, never during a fused-image build (where
+# MUDP_BUILD_PHASE=1), otherwise the daemon would hang or be killed mid-build.
+if [ -z "${MUDP_BUILD_PHASE:-}" ]; then
+  if command -v service >/dev/null 2>&1; then
+    service ssh start || true
+  fi
+  if command -v sshd >/dev/null 2>&1; then
+    /usr/sbin/sshd || sshd || true
+  fi
 fi
 `
 }
@@ -612,7 +743,11 @@ password: ${MUDP_ACCESS_PASSWORD}
 cert: false
 user-data-dir: /root/.local/share/code-server
 EOF
-nohup code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
+# Start code-server only at container runtime, never during a fused-image build
+# (MUDP_BUILD_PHASE=1), where launching it would hang the build.
+if [ -z "${MUDP_BUILD_PHASE:-}" ]; then
+  nohup code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
+fi
 `
 }
 
@@ -706,18 +841,25 @@ func (db *DB) CreateFeishuUser(openID, name string) (*User, error) {
 	if strings.TrimSpace(username) == "" {
 		username = "feishu-" + openID
 	}
-	// Avoid username collisions with existing accounts.
 	base := username
-	for i := 1; ; i++ {
-		var existing int
-		if err := db.QueryRow(`select count(*) from users where username=?`, username).Scan(&existing); err != nil {
+	// Retry a few times if another request claims the generated username
+	// between the existence check and the insert.
+	for i := 0; i < 10; i++ {
+		if i > 0 {
+			username = fmt.Sprintf("%s-%d", base, i)
+		}
+		u, err := db.createFeishuUserTx(openID, username)
+		if err == nil {
+			return u, nil
+		}
+		if !isSQLiteConstraintError(err) {
 			return nil, err
 		}
-		if existing == 0 {
-			break
-		}
-		username = fmt.Sprintf("%s-%d", base, i)
 	}
+	return nil, errors.New("could not allocate a unique username")
+}
+
+func (db *DB) createFeishuUserTx(openID, username string) (*User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(openID), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
@@ -727,6 +869,13 @@ func (db *DB) CreateFeishuUser(openID, name string) (*User, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
+	var existing int
+	if err := tx.QueryRow(`select count(*) from users where username=?`, username).Scan(&existing); err != nil {
+		return nil, err
+	}
+	if existing != 0 {
+		return nil, errors.New("duplicate username")
+	}
 	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,created_at,feishu_open_id) values(?,?,?,?,?,?)`,
 		username, string(hash), "user", 10, time.Now().Format(time.RFC3339), openID)
 	if err != nil {
@@ -744,6 +893,14 @@ func (db *DB) CreateFeishuUser(openID, name string) (*User, error) {
 		return nil, err
 	}
 	return db.UserByID(uid)
+}
+
+func isSQLiteConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "UNIQUE constraint failed") ||
+		strings.Contains(err.Error(), "constraint failed")
 }
 
 func pendingGroupIDTx(tx *sql.Tx) (int64, error) {
@@ -854,6 +1011,24 @@ func (db *DB) Audit(actor, action, target string) {
 	}
 	_, _ = db.Exec(`insert into audit_logs(actor, action, target, created_at) values(?,?,?,?)`,
 		actor, action, target, time.Now().Format(time.RFC3339))
+}
+
+// PruneAuditLogs deletes audit entries older than the given time.
+func (db *DB) PruneAuditLogs(before time.Time) error {
+	_, err := db.Exec(`delete from audit_logs where created_at < ?`, before.Format(time.RFC3339))
+	return err
+}
+
+// PruneResourceSamples deletes resource samples older than the given time.
+func (db *DB) PruneResourceSamples(before time.Time) error {
+	_, err := db.Exec(`delete from resource_samples where created_at < ?`, before.Format(time.RFC3339))
+	return err
+}
+
+// Checkpoint runs a WAL truncate checkpoint to bound the WAL file size.
+func (db *DB) Checkpoint() error {
+	_, err := db.Exec(`pragma wal_checkpoint(TRUNCATE)`)
+	return err
 }
 
 // AuditFilter narrows AuditList results. Empty fields match everything.
@@ -1255,5 +1430,81 @@ func (db *DB) SaveRegistries(items []Registry) error {
 func (db *DB) setSetting(key, value string) error {
 	_, err := db.Exec(`insert into settings(key, value) values(?, ?)
 		on conflict(key) do update set value=excluded.value`, key, value)
+	return err
+}
+
+// --- Fused image cache ------------------------------------------------------
+
+// GetFusedImage returns the cached derived image for a cache key, or ok=false
+// when there is no row yet.
+func (db *DB) GetFusedImage(cacheKey string) (FusedImage, bool, error) {
+	var f FusedImage
+	var ssh, vscode int
+	err := db.QueryRow(`select cache_key, base_ref, base_image_id, fused_ref,
+		enable_ssh, enable_vscode, script_hash, created_at
+		from fused_images where cache_key=?`, cacheKey).
+		Scan(&f.CacheKey, &f.BaseRef, &f.BaseImageID, &f.FusedRef,
+			&ssh, &vscode, &f.ScriptHash, &f.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return FusedImage{}, false, nil
+		}
+		return FusedImage{}, false, err
+	}
+	f.EnableSSH = ssh == 1
+	f.EnableVSCode = vscode == 1
+	return f, true, nil
+}
+
+// SaveFusedImage inserts or replaces a fused-image cache entry.
+func (db *DB) SaveFusedImage(f FusedImage) error {
+	ssh, vscode := 0, 0
+	if f.EnableSSH {
+		ssh = 1
+	}
+	if f.EnableVSCode {
+		vscode = 1
+	}
+	_, err := db.Exec(`insert into fused_images
+		(cache_key, base_ref, base_image_id, fused_ref, enable_ssh, enable_vscode, script_hash, created_at)
+		values(?,?,?,?,?,?,?,?)
+		on conflict(cache_key) do update set
+			base_ref=excluded.base_ref, base_image_id=excluded.base_image_id,
+			fused_ref=excluded.fused_ref, enable_ssh=excluded.enable_ssh,
+			enable_vscode=excluded.enable_vscode, script_hash=excluded.script_hash,
+			created_at=excluded.created_at`,
+		f.CacheKey, f.BaseRef, f.BaseImageID, f.FusedRef, ssh, vscode, f.ScriptHash,
+		time.Now().Format(time.RFC3339))
+	return err
+}
+
+// ListFusedImages returns all cached fused images, newest first.
+func (db *DB) ListFusedImages() ([]FusedImage, error) {
+	rows, err := db.Query(`select cache_key, base_ref, base_image_id, fused_ref,
+		enable_ssh, enable_vscode, script_hash, created_at
+		from fused_images order by created_at desc`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FusedImage
+	for rows.Next() {
+		var f FusedImage
+		var ssh, vscode int
+		if err := rows.Scan(&f.CacheKey, &f.BaseRef, &f.BaseImageID, &f.FusedRef,
+			&ssh, &vscode, &f.ScriptHash, &f.CreatedAt); err != nil {
+			return nil, err
+		}
+		f.EnableSSH = ssh == 1
+		f.EnableVSCode = vscode == 1
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// DeleteFusedImage drops a cache entry (e.g. when the underlying image was
+// pruned out from under us).
+func (db *DB) DeleteFusedImage(cacheKey string) error {
+	_, err := db.Exec(`delete from fused_images where cache_key=?`, cacheKey)
 	return err
 }

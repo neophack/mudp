@@ -371,19 +371,42 @@ func (a *App) containerLogsStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	buf := make([]byte, 32*1024)
+
+	// Read in a dedicated goroutine so a blocked Docker log follower does not
+	// keep this handler alive after the client disconnects.
+	readCh := make(chan []byte, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(readCh)
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := rc.Read(buf)
+			if n > 0 {
+				// Copy the slice because buf is reused after the next Read.
+				out := make([]byte, n)
+				copy(out, buf[:n])
+				readCh <- out
+			}
+			if err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+
 	for {
-		n, err := rc.Read(buf)
-		if n > 0 {
-			send("log", map[string]string{"line": string(buf[:n])})
+		select {
+		case data, ok := <-readCh:
+			if !ok {
+				return
+			}
+			send("log", map[string]string{"line": string(data)})
 			if flusher != nil {
 				flusher.Flush()
 			}
-		}
-		if err != nil {
+		case <-errCh:
 			return
-		}
-		if r.Context().Err() != nil {
+		case <-r.Context().Done():
 			return
 		}
 	}

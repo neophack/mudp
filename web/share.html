@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="share-token" content="">
+  <title>MUDP Netdisk Share</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script>window.__SHARE_TOKEN__ = "";</script>
+</head>
+<body class="share-page">
+  <div class="share-wrap">
+    <header class="share-header">
+      <a class="share-brand" href="/">MUDP Netdisk</a>
+      <div class="share-header-actions">
+        <button id="loginBtn" class="ghost" hidden>登录</button>
+        <span id="userLabel" class="hint" hidden></span>
+      </div>
+    </header>
+
+    <main class="share-card">
+      <div class="share-head">
+        <div class="share-icon" id="shareIcon">📁</div>
+        <div class="share-meta">
+          <h1 id="shareName">Loading…</h1>
+          <div class="share-sub">
+            <span id="shareOwner"></span>
+            <span class="sep">·</span>
+            <span id="shareExpiry"></span>
+            <span class="sep">·</span>
+            <span id="shareStats"></span>
+          </div>
+        </div>
+        <div class="share-head-actions">
+          <button id="saveSelectedBtn" class="primary" disabled>保存到网盘</button>
+          <button id="downloadAllBtn" class="ghost">全部下载</button>
+        </div>
+      </div>
+
+      <div class="share-toolbar">
+        <label class="check"><input type="checkbox" id="selectAll"> 全选</label>
+        <nav class="share-breadcrumb" id="breadcrumb"></nav>
+      </div>
+
+      <div class="share-body" id="shareBody">
+        <div class="share-loading">正在加载文件列表…</div>
+      </div>
+      <div class="share-empty" id="shareEmpty" hidden>该分享中没有文件</div>
+    </main>
+  </div>
+
+  <!-- Directory picker modal -->
+  <div class="modal-backdrop" id="pickerBackdrop" hidden>
+    <div class="modal wide picker-modal">
+      <div class="modal-head">
+        <div>
+          <h2>选择保存位置</h2>
+          <p class="hint" style="margin-top:4px">选择您网盘中的文件夹，或新建文件夹后保存</p>
+        </div>
+        <button class="icon" id="closePicker">✕</button>
+      </div>
+      <div class="picker-layout">
+        <aside class="picker-tree" id="pickerTree"></aside>
+        <section class="picker-main">
+          <div class="picker-toolbar">
+            <button class="ghost" id="pickerUp">↑ 上一级</button>
+            <div class="picker-path" id="pickerPath">/</div>
+            <button class="ghost" id="pickerMkdir">+ 新建文件夹</button>
+          </div>
+          <div class="picker-list" id="pickerList"></div>
+        </section>
+      </div>
+      <div class="modal-foot">
+        <span class="hint" id="pickerHint"></span>
+        <div class="modal-tools">
+          <button class="ghost" id="cancelPicker">取消</button>
+          <button class="primary" id="confirmPicker">保存到这里</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Login prompt modal -->
+  <div class="modal-backdrop" id="loginBackdrop" hidden>
+    <div class="modal">
+      <div class="modal-head"><h2>需要登录</h2></div>
+      <div class="modal-body">
+        <p>请先登录 MUDP，然后才能将分享的文件保存到您的网盘。</p>
+      </div>
+      <div class="modal-foot">
+        <button class="ghost" id="closeLogin">取消</button>
+        <button class="primary" id="goLogin">去登录</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Result / progress toast container -->
+  <div id="toastContainer"></div>
+
+  <script type="module" src="/share.js"></script>
+</body>
+</html>

@@ -117,9 +117,9 @@ func (d *Client) CreateNetwork(ctx context.Context, opts CreateNetworkOptions) (
 	}
 	full := NetworkFullName(opts.Username, name)
 	labels := map[string]string{
-		ManagedLabel:   "true",
-		UserLabel:      opts.Username,
-		NameLabel:      name,
+		ManagedLabel:     "true",
+		UserLabel:        opts.Username,
+		NameLabel:        name,
 		"mudp.createdAt": time.Now().Format(time.RFC3339),
 	}
 	for k, v := range opts.Labels {

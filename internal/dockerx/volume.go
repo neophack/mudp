@@ -11,7 +11,8 @@ import (
 
 // Volume is the UI-facing volume record.
 type Volume struct {
-	Name       string            `json:"name"`
+	Name       string            `json:"name"`     // display name
+	FullName   string            `json:"fullName"` // actual Docker volume name
 	Driver     string            `json:"driver"`
 	Mountpoint string            `json:"mountpoint"`
 	Scope      string            `json:"scope"`
@@ -24,11 +25,11 @@ type Volume struct {
 
 // CreateVolumeOptions describes a volume to create.
 type CreateVolumeOptions struct {
-	Username string
-	Name     string // display name (without mudp- prefix)
-	Driver   string
+	Username   string
+	Name       string // display name (without mudp- prefix)
+	Driver     string
 	DriverOpts map[string]string
-	Labels   map[string]string
+	Labels     map[string]string
 }
 
 // VolumeFullName builds the mudp-namespaced volume name for a user.
@@ -56,6 +57,7 @@ func (d *Client) ListVolumes(ctx context.Context, username string, admin bool) (
 		}
 		vol := Volume{
 			Name:       labelToDisplay(v.Name),
+			FullName:   v.Name,
 			Driver:     v.Driver,
 			Mountpoint: v.Mountpoint,
 			Scope:      v.Scope,
@@ -84,9 +86,9 @@ func (d *Client) CreateVolume(ctx context.Context, opts CreateVolumeOptions) (st
 	}
 	full := VolumeFullName(opts.Username, name)
 	labels := map[string]string{
-		ManagedLabel:   "true",
-		UserLabel:      opts.Username,
-		NameLabel:      name,
+		ManagedLabel: "true",
+		UserLabel:    opts.Username,
+		NameLabel:    name,
 	}
 	for k, v := range opts.Labels {
 		labels[k] = v

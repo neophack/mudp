@@ -18,6 +18,8 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request) {
 		}
 		respond(w, items, err)
 	case http.MethodPost:
+		a.registryMu.Lock()
+		defer a.registryMu.Unlock()
 		var req struct {
 			ID       int64  `json:"id"`
 			Name     string `json:"name"`
@@ -83,6 +85,8 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request) {
 
 // registryDelete removes a stored registry.
 func (a *App) registryDelete(w http.ResponseWriter, r *http.Request) {
+	a.registryMu.Lock()
+	defer a.registryMu.Unlock()
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return

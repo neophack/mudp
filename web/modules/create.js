@@ -20,8 +20,12 @@ export function openCreateModal() {
   const imageOptions = state.images
     .map((img) => `<option value="${escapeHtml(img.name)}">${escapeHtml(img.name)}</option>`)
     .join("");
+  // System networks (bridge/host/none) are shown read-only on the Networks view
+  // but cannot be attached to — validateNetworkAttachment rejects anything
+  // lacking the mudp-managed label, so never expose them as checkable options.
   const myNetworks = (state.networks || [])
-    .map((n) => `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}"> ${escapeHtml(n.name)}${n.system ? ' <span class="hint">(system)</span>' : ""}</label>`)
+    .filter((n) => !n.system)
+    .map((n) => `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}"> ${escapeHtml(n.name)}</label>`)
     .join("");
   const myVolumes = (state.volumes || []).map((v) => v.name);
   const prefix = Number(state.me?.portPrefix || 0);
@@ -41,7 +45,7 @@ export function openCreateModal() {
         `</select>` +
         `<textarea name="env" placeholder="Environment variables, one KEY=VALUE per line"></textarea>` +
         `<textarea name="ports" placeholder="Port mappings, one host:container per line\n${escapeHtml(portHint)}"></textarea>` +
-        `<textarea name="mounts" placeholder="Volume/bind mounts, one source:target[:ro] per line${myVolumes.length ? '\nAvailable volumes: ' + escapeHtml(myVolumes.join(', ')) : ''}"></textarea>` +
+        `<textarea name="mounts" placeholder="Managed volume mounts, one volume-name:target[:ro] per line${myVolumes.length ? '\nAvailable volumes: ' + escapeHtml(myVolumes.join(', ')) : ''}"></textarea>` +
         (myNetworks ? `<label class="field-label">Networks</label><div class="check-grid">${myNetworks}</div>` : "") +
         `<label class="field-label">Restart policy</label>` +
         `<select name="restartPolicy">` +

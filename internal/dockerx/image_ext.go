@@ -5,27 +5,30 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/registry"
 )
 
 // ImageDetail is a richer image record for the admin image list, including
 // which containers currently use it.
 type ImageDetail struct {
-	ID        string   `json:"id"`
-	Tags      []string `json:"tags"`
-	SizeMB    float64  `json:"sizeMb"`
-	Created   int64    `json:"created"`
-	InUseBy   int      `json:"inUseBy"`
-	Dangling  bool     `json:"dangling"`
-	MudpTag   bool     `json:"mudpTag"`
+	ID       string   `json:"id"`
+	Tags     []string `json:"tags"`
+	SizeMB   float64  `json:"sizeMb"`
+	Created  int64    `json:"created"`
+	InUseBy  int      `json:"inUseBy"`
+	Dangling bool     `json:"dangling"`
+	MudpTag  bool     `json:"mudpTag"`
 }
 
 // ListImagesDetailed returns all local images with usage counts. Used by the
@@ -72,34 +75,57 @@ func (d *Client) ListImagesDetailed(ctx context.Context) ([]ImageDetail, error) 
 
 // BuildOptions describes an image build.
 type BuildOptions struct {
-	Dockerfile string            // raw Dockerfile body
-	Tags       []string          // resulting image tags
-	BuildArgs  map[string]*string // --build-arg values
-	Auth       string            // base64 registry auth for FROM pulls
+	Dockerfile   string             // raw Dockerfile body
+	Tags         []string           // resulting image tags
+	BuildArgs    map[string]*string // --build-arg values
+	Auth         string             // base64 registry auth for FROM pulls
+	ContextFiles map[string]string  // extra files to include in the build context (name -> body)
+	Labels       map[string]string  // labels applied to the built image
 }
 
 // BuildImage builds an image from a Dockerfile body, streaming build progress
-// (the JSON status lines docker emits) through progress.
+// (the JSON status lines docker emits) through progress. The build context is
+// the Dockerfile plus any ContextFiles.
 func (d *Client) BuildImage(ctx context.Context, opts BuildOptions, progress func(line string)) error {
-	// Pack the Dockerfile into a tar build context.
+	// Pack the Dockerfile (and any extra context files) into a tar build context.
 	buf := &bytes.Buffer{}
 	tw := tar.NewWriter(buf)
-	hdr := &tar.Header{Name: "Dockerfile", Mode: 0644, Size: int64(len(opts.Dockerfile))}
-	if err := tw.WriteHeader(hdr); err != nil {
+	writeCtx := func(name string, body string) error {
+		hdr := &tar.Header{Name: name, Mode: 0644, Size: int64(len(body))}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := writeCtx("Dockerfile", opts.Dockerfile); err != nil {
 		return err
 	}
-	if _, err := tw.Write([]byte(opts.Dockerfile)); err != nil {
-		return err
+	for name, body := range opts.ContextFiles {
+		if err := writeCtx(name, body); err != nil {
+			return err
+		}
 	}
 	if err := tw.Close(); err != nil {
 		return err
 	}
-	resp, err := d.c.ImageBuild(ctx, bytes.NewReader(buf.Bytes()), build.ImageBuildOptions{
+	buildOpts := build.ImageBuildOptions{
 		Dockerfile: "Dockerfile",
 		Tags:       opts.Tags,
 		BuildArgs:  opts.BuildArgs,
+		Labels:     opts.Labels,
 		Remove:     true,
-	})
+	}
+	// Forward registry auth so FROM <private-registry>/... works. The single
+	// base64 blob resolves to one registry host; AuthConfigs is keyed by host.
+	if opts.Auth != "" {
+		if host, ac, ok := decodeAuthForBuild(opts.Auth); ok {
+			buildOpts.AuthConfigs = map[string]registry.AuthConfig{host: ac}
+		}
+	}
+	resp, err := d.c.ImageBuild(ctx, bytes.NewReader(buf.Bytes()), buildOpts)
 	if err != nil {
 		return err
 	}
@@ -131,6 +157,58 @@ func (d *Client) BuildImage(ctx context.Context, opts BuildOptions, progress fun
 		}
 	}
 	return scanner.Err()
+}
+
+// decodeAuthForBuild reverses a base64 auth blob into the registry host and an
+// AuthConfig for build.ImageBuildOptions.AuthConfigs. The host is taken from
+// the embedded ServerAddress when present, otherwise callers should key by the
+// FROM ref's host themselves; here we return ServerAddress as-is (Docker fills
+// it from the ref at build time when empty).
+func decodeAuthForBuild(b64 string) (string, registry.AuthConfig, bool) {
+	raw, err := base64.URLEncoding.DecodeString(b64)
+	if err != nil {
+		// Some callers use std encoding.
+		raw, err = base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return "", registry.AuthConfig{}, false
+		}
+	}
+	var ac registry.AuthConfig
+	if err := json.Unmarshal(raw, &ac); err != nil {
+		return "", registry.AuthConfig{}, false
+	}
+	host := ac.ServerAddress
+	if host == "" {
+		host = "docker.io"
+	}
+	return host, ac, true
+}
+
+// ImageExists reports whether an image with the given reference (or ID prefix)
+// is present in the local image store.
+func (d *Client) ImageExists(ctx context.Context, ref string) (bool, error) {
+	refs, err := d.c.ImageList(ctx, image.ListOptions{All: true})
+	if err != nil {
+		return false, err
+	}
+	for _, im := range refs {
+		for _, t := range im.RepoTags {
+			if t == ref {
+				return true, nil
+			}
+		}
+		if strings.HasPrefix(im.ID, ref) || im.ID == ref {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// InspectImage returns the full image metadata for a reference. Used to read a
+// base image's Entrypoint/Cmd/ID when generating a fused derived image.
+func (d *Client) InspectImage(ctx context.Context, ref string) (types.ImageInspect, error) {
+	info, _, err := d.c.ImageInspectWithRaw(ctx, ref)
+	return info, err
 }
 
 // PruneImages removes dangling images. Returns count + bytes reclaimed.
