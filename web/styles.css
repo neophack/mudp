@@ -270,7 +270,8 @@ a:hover { text-decoration: underline; }
   justify-content: center;
   gap: 18px;
 }
-.login-hero .brand-lg { font-size: 34px; font-weight: 800; letter-spacing: -0.5px; }
+.login-hero .brand-lg { font-size: 34px; font-weight: 800; letter-spacing: 0; line-height: 1.12; max-width: 460px; }
+.login-hero .brand-subtitle { color: rgba(255, 255, 255, 0.72); font-size: 14px; font-weight: 700; letter-spacing: 0; text-transform: uppercase; }
 .login-hero p { color: rgba(255, 255, 255, 0.78); font-size: 14px; line-height: 1.7; max-width: 380px; }
 .login-hero ul { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; color: rgba(255,255,255,0.85); font-size: 13px; }
 .login-hero ul li::before { content: "▸ "; color: #6ea1ff; }
@@ -555,6 +556,10 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   padding: 24px;
   z-index: 50;
 }
+/* [hidden] must win over .modal-backdrop's display:grid, otherwise backdrop
+   modals toggled via the hidden attribute (e.g. the share-page login/picker
+   modals) stay visible and cannot be dismissed. */
+.modal-backdrop[hidden] { display: none; }
 .modal {
   background: #fff;
   border-radius: var(--radius);
@@ -771,9 +776,37 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 .files-pane .pane-head h3 { margin: 0; font-size: 14px; }
 .files-pane .pane-head .pane-path { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .files-pane .pane-scroll { flex: 1; min-height: 0; overflow: auto; padding: 4px; }
-.files-table { width: 100%; }
-.files-table td { padding: 4px 8px; font-size: 13px; }
-.files-table .chk-col { width: 28px; }
+.files-table { width: 100%; border-collapse: collapse; }
+.files-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-2, #f7f8fa);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  color: var(--text-muted, #6b7280);
+  white-space: nowrap;
+}
+.files-table td {
+  padding: 5px 8px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-light, #f0f0f0);
+  white-space: nowrap;
+}
+.files-table tbody tr:hover { background: var(--hover, #f3f4f6); }
+.files-table .chk-col { width: 28px; text-align: center; }
+.files-table .name-col { width: auto; min-width: 140px; }
+.files-table .name-col button.link,
+.files-table .name-col span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.files-table .size-col { width: 70px; text-align: right; }
+.files-table .mode-col { width: 90px; text-align: left; color: var(--text-muted, #6b7280); }
+.files-table .time-col { width: 150px; text-align: left; color: var(--text-muted, #6b7280); }
 .files-table .actions { width: 36px; text-align: right; }
 .files-table button.link {
   background: none;
@@ -782,9 +815,11 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   cursor: pointer;
   color: inherit;
   text-align: left;
-  text-decoration: underline;
+  text-decoration: none;
 }
-.files-table .ghost-link { cursor: pointer; }
+.files-table button.link:hover { text-decoration: underline; }
+.files-table .ghost-link { cursor: pointer; opacity: 0.6; }
+.files-table .ghost-link:hover { opacity: 1; }
 
 /* ---------- Pending screen ---------- */
 .pending-wrap {
@@ -965,6 +1000,95 @@ textarea.stack-editor { min-height: 320px; font-size: 12.5px; line-height: 1.5; 
 .log-output.nowrap { white-space: pre; overflow-x: auto; }
 
 /* ---------- Public share page ---------- */
+/* ---------- Netdisk (in-app) ---------- */
+.netdisk-stack { gap: 14px; }
+.netdisk-card { padding: 0; overflow: hidden; }
+.netdisk-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  background: #fafbfc;
+}
+.netdisk-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.netdisk-title h2 { margin: 0; font-size: 15px; font-weight: 700; }
+.netdisk-title span { font-size: 12px; color: var(--muted); }
+.netdisk-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.netdisk-pathbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--workspace);
+}
+.netdisk-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  min-width: 0;
+}
+.netdisk-crumbs > span { color: var(--muted); }
+.netdisk-used { font-size: 12px; color: var(--ink-soft); white-space: nowrap; }
+.netdisk-used strong { color: var(--ink); font-weight: 700; }
+
+/* Compact, flat table — tighter than the default data table. */
+.netdisk-table { table-layout: fixed; }
+.netdisk-table th {
+  padding: 8px 12px;
+  font-size: 11px;
+  background: #fafbfc;
+}
+.netdisk-table td { padding: 7px 12px; }
+.netdisk-table col.col-name { width: auto; }
+.netdisk-table col.col-size { width: 96px; }
+.netdisk-table col.col-time { width: 150px; }
+.netdisk-table th.actions,
+.netdisk-table td.actions { width: 300px; }
+.netdisk-table tr:hover td { background: #f8f9fd; }
+
+.netdisk-file { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.netdisk-icon {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+}
+.netdisk-icon svg { width: 100%; height: 100%; display: block; }
+.netdisk-icon.folder svg { fill: #f5a623; }
+.netdisk-icon.file svg { fill: #8a90a0; }
+.netdisk-name-link {
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 13px;
+}
+.netdisk-name-link:hover { color: var(--accent); text-decoration: underline; }
+.netdisk-size,
+.netdisk-time { color: var(--ink-soft); font-size: 12px; white-space: nowrap; }
+.netdisk-row-actions { white-space: nowrap; text-align: right; display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
+.netdisk-row-actions button,
+.netdisk-row-actions .ghost-link {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.netdisk-row-actions button.icon { padding: 0 6px; min-width: 28px; }
+
+@media (max-width: 860px) {
+  .netdisk-toolbar { flex-direction: column; align-items: stretch; }
+  .netdisk-actions { justify-content: flex-end; }
+  .netdisk-table th:nth-child(3),
+  .netdisk-table td:nth-child(3) { display: none; }
+}
+
 .share-page {
   background: var(--bg);
   min-height: 100vh;
@@ -1022,6 +1146,7 @@ textarea.stack-editor { min-height: 320px; font-size: 12.5px; line-height: 1.5; 
   font-size: 26px;
   flex-shrink: 0;
 }
+.share-icon svg { width: 30px; height: 30px; fill: var(--accent); }
 .share-meta {
   flex: 1;
   min-width: 0;
@@ -1111,6 +1236,17 @@ textarea.stack-editor { min-height: 320px; font-size: 12.5px; line-height: 1.5; 
   gap: 8px;
   font-weight: 600;
 }
+.share-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.share-ico {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+}
+.share-ico svg { width: 100%; height: 100%; display: block; }
+.share-ico.folder svg { fill: #f5a623; }
+.share-ico.file svg { fill: #8a90a0; }
 .share-size,
 .share-time {
   color: var(--ink-soft);
@@ -1207,8 +1343,13 @@ textarea.stack-editor { min-height: 320px; font-size: 12.5px; line-height: 1.5; 
   background: var(--accent-soft);
 }
 .picker-folder-icon {
-  font-size: 18px;
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
 }
+.picker-folder-icon svg { width: 100%; height: 100%; display: block; fill: #f5a623; }
 .picker-folder-name {
   font-size: 13px;
   font-weight: 500;

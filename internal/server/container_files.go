@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -16,7 +17,8 @@ import (
 )
 
 // containerFilesList enumerates the children of a directory inside a container.
-// Works on stopped containers (reads the writable layer via the archive API).
+// Running containers are listed via a fast exec path; stopped containers fall back
+// to the slower Docker archive API.
 // GET /api/containers/files/list?id=&path=
 func (a *App) containerFilesList(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
@@ -42,14 +44,11 @@ func (a *App) containerFilesList(w http.ResponseWriter, r *http.Request) {
 	items := make([]fileItem, 0, len(entries))
 	for _, e := range entries {
 		items = append(items, fileItem{
-			Name: e.Name, Path: e.Path, Dir: e.Dir, Size: e.Size,
+			Name: e.Name, Path: e.Path, Dir: e.Dir, Size: e.Size, Mode: e.Mode,
 			ModTime: e.ModTime.Format(time.RFC3339),
 		})
 	}
-	dir := strings.TrimRight(p, "/")
-	if dir == "" {
-		dir = "/"
-	}
+	dir := cleanDisplayContainerPath(p)
 	writeJSON(w, http.StatusOK, map[string]any{"path": dir, "items": items})
 }
 
@@ -199,6 +198,12 @@ func (a *App) copyNetdiskToContainer(ctx context.Context, u *store.User, req con
 	if err != nil {
 		return 0, err
 	}
+	destDir := cleanDisplayContainerPath(req.DestDir)
+	if st, err := a.docker.ContainerFileStat(ctx, req.ID, destDir); err != nil {
+		return 0, err
+	} else if !st.Mode.IsDir() {
+		return 0, fmt.Errorf("destination %s is not a directory", destDir)
+	}
 	copied := 0
 	for _, src := range req.Paths {
 		full, _, err := cleanUserPath(root, src)
@@ -218,12 +223,23 @@ func (a *App) copyNetdiskToContainer(ctx context.Context, u *store.User, req con
 			err := tarHostPath(pw, full, info)
 			_ = pw.CloseWithError(err)
 		}()
-		if err := a.docker.ContainerFileUpload(ctx, req.ID, req.DestDir, pr); err != nil {
+		if err := a.docker.ContainerFileUpload(ctx, req.ID, destDir, pr); err != nil {
 			return copied, err
 		}
 		copied++
 	}
 	return copied, nil
+}
+
+func cleanDisplayContainerPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		p = "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return path.Clean(p)
 }
 
 // tarHostPath writes a tar of the host path `full` (file or directory, walked

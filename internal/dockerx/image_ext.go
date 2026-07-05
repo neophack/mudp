@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/build"
@@ -81,12 +82,31 @@ type BuildOptions struct {
 	Auth         string             // base64 registry auth for FROM pulls
 	ContextFiles map[string]string  // extra files to include in the build context (name -> body)
 	Labels       map[string]string  // labels applied to the built image
+	NoCache      bool               // disable Docker layer cache; used for force-rebuilds
 }
 
 // BuildImage builds an image from a Dockerfile body, streaming build progress
 // (the JSON status lines docker emits) through progress. The build context is
 // the Dockerfile plus any ContextFiles.
-func (d *Client) BuildImage(ctx context.Context, opts BuildOptions, progress func(line string)) error {
+func (d *Client) BuildImage(ctx context.Context, opts BuildOptions, progress func(line string)) (err error) {
+	// Remove any existing image with the same tags before rebuilding so the old
+	// image does not become an untagged <none> dangling image. Ignore errors:
+	// the image may be in use by a container, in which case Docker will untag it
+	// naturally during build.
+	for _, tag := range opts.Tags {
+		_, _ = d.c.ImageRemove(ctx, tag, image.RemoveOptions{Force: true, PruneChildren: true})
+	}
+	danglingBefore := d.danglingImageIDs(ctx)
+	defer func() {
+		if err == nil {
+			return
+		}
+		removed := d.removeNewDanglingImages(danglingBefore)
+		if removed > 0 && progress != nil {
+			progress(fmt.Sprintf("Cleaned up %d dangling image(s) from failed build", removed))
+		}
+	}()
+
 	// Pack the Dockerfile (and any extra context files) into a tar build context.
 	buf := &bytes.Buffer{}
 	tw := tar.NewWriter(buf)
@@ -117,6 +137,7 @@ func (d *Client) BuildImage(ctx context.Context, opts BuildOptions, progress fun
 		BuildArgs:  opts.BuildArgs,
 		Labels:     opts.Labels,
 		Remove:     true,
+		NoCache:    opts.NoCache,
 	}
 	// Forward registry auth so FROM <private-registry>/... works. The single
 	// base64 blob resolves to one registry host; AuthConfigs is keyed by host.
@@ -157,6 +178,51 @@ func (d *Client) BuildImage(ctx context.Context, opts BuildOptions, progress fun
 		}
 	}
 	return scanner.Err()
+}
+
+func (d *Client) danglingImageIDs(ctx context.Context) map[string]struct{} {
+	imgs, err := d.c.ImageList(ctx, image.ListOptions{All: true})
+	if err != nil {
+		return nil
+	}
+	ids := make(map[string]struct{}, len(imgs))
+	for _, im := range imgs {
+		if isDanglingImage(im.RepoTags) {
+			ids[im.ID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+func isDanglingImage(tags []string) bool {
+	if len(tags) == 0 {
+		return true
+	}
+	for _, tag := range tags {
+		if !strings.Contains(tag, "<none>") {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *Client) removeNewDanglingImages(before map[string]struct{}) int {
+	if before == nil {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	after := d.danglingImageIDs(ctx)
+	removed := 0
+	for id := range after {
+		if _, existed := before[id]; existed {
+			continue
+		}
+		if _, err := d.c.ImageRemove(ctx, id, image.RemoveOptions{Force: true, PruneChildren: true}); err == nil {
+			removed++
+		}
+	}
+	return removed
 }
 
 // decodeAuthForBuild reverses a base64 auth blob into the registry host and an
@@ -220,6 +286,55 @@ func (d *Client) PruneImages(ctx context.Context) (int, int64, error) {
 		return 0, 0, err
 	}
 	return len(report.ImagesDeleted), int64(report.SpaceReclaimed), nil
+}
+
+// ManagedImageInfo describes a locally-tagged mudp image discovered by
+// ScanManagedImages. It carries the labels needed to reconstruct cache rows.
+type ManagedImageInfo struct {
+	Ref         string
+	BaseRef     string
+	BaseImageID string
+	CacheKey    string
+	ScriptHash  string
+	Service     string
+	Labels      map[string]string
+}
+
+// ScanManagedImages lists all local images tagged with the mudp prefix and
+// returns their metadata (base image, cache key, script hash, service). This is
+// used on startup to rebuild fused-image/layer cache rows from the Docker image
+// store so the Settings page stays in sync across restarts.
+func (d *Client) ScanManagedImages(ctx context.Context) ([]ManagedImageInfo, error) {
+	imgs, err := d.c.ImageList(ctx, image.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	var out []ManagedImageInfo
+	for _, img := range imgs {
+		for _, tag := range img.RepoTags {
+			if !strings.HasPrefix(tag, Prefix) || strings.Contains(tag, "<none>") {
+				continue
+			}
+			info, _, err := d.c.ImageInspectWithRaw(ctx, tag)
+			if err != nil {
+				continue
+			}
+			labels := info.Config.Labels
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			out = append(out, ManagedImageInfo{
+				Ref:         tag,
+				BaseRef:     labels["mudp.base"],
+				BaseImageID: labels["mudp.baseImageID"],
+				CacheKey:    labels["mudp.cacheKey"],
+				ScriptHash:  labels["mudp.scriptHash"],
+				Service:     labels["mudp.service"],
+				Labels:      labels,
+			})
+		}
+	}
+	return out, nil
 }
 
 // ImportImage imports an image from a tar reader (docker load).

@@ -13,8 +13,8 @@ export function renderSettings() {
   $("#view").innerHTML =
     `<div class="stack">` +
       `<div class="card"><div class="card-head"><h2>Bootstrap Scripts</h2><div class="head-tools">` +
-        `<button class="primary" id="buildSshBtn">Build SSH Image</button>` +
-        `<button class="primary" id="buildVscodeBtn">Build VS Code Image</button>` +
+        `<button class="primary" id="buildSshBtn">Build SSH Layer</button>` +
+        `<button class="primary" id="buildVscodeBtn">Build VS Code Layer</button>` +
       `</div></div>` +
         `<div class="card-body"><form id="scriptSettings" class="compact">` +
           `<h3>SSH Bootstrap</h3>` +
@@ -24,11 +24,11 @@ export function renderSettings() {
           `<button>Save Scripts</button>` +
         `</form></div>` +
       `</div>` +
-      // Fused-image status card: shows which base images are pre-built and when.
-      `<div class="card"><div class="card-head"><h2>Fused Images</h2></div>` +
+      // Fused-layer status card: shows which incremental layers are pre-built.
+      `<div class="card"><div class="card-head"><h2>Fused Layers</h2></div>` +
         `<table class="data">` +
-          `<thead><tr><th>Base image</th><th>Services</th><th>Status</th><th class="actions">Actions</th></tr></thead>` +
-          `<tbody>${(state.fusedImages || []).map(fusedRow).join("") || `<tr class="empty-row"><td colspan="4">No pre-built images yet. Use the buttons above to build one.</td></tr>`}</tbody>` +
+          `<thead><tr><th>Base image</th><th>Service</th><th>Status</th><th class="actions">Actions</th></tr></thead>` +
+          `<tbody>${(state.fusedLayers || []).map(layerRow).join("") || `<tr class="empty-row"><td colspan="4">No pre-built layers yet. Use the buttons above to build one.</td></tr>`}</tbody>` +
         `</table>` +
       `</div>` +
       `<div class="card"><div class="card-head"><h2>Registries</h2>` +
@@ -101,31 +101,40 @@ export function renderSettings() {
   if (buildSsh) buildSsh.onclick = () => openFusedBuildModal("ssh");
   const buildVscode = $("#buildVscodeBtn");
   if (buildVscode) buildVscode.onclick = () => openFusedBuildModal("vscode");
+
   document.querySelectorAll("[data-fused-rebuild]").forEach((btn) => {
     btn.onclick = () => openFusedBuildModal(btn.dataset.fusedRebuild, btn.dataset.fusedBase);
   });
   document.querySelectorAll("[data-fused-delete]").forEach((btn) => {
-    btn.onclick = () => deleteFused(btn.dataset.fusedDelete, btn.dataset.fusedBase);
+    btn.onclick = () => deleteLayer(btn.dataset.fusedDelete, btn.dataset.fusedBase);
   });
 }
 
-// fusedRow renders one row of the Fused Images status card.
-function fusedRow(f) {
-  const services = [];
-  if (f.enableSsh) services.push("SSH");
-  if (f.enableVscode) services.push("VSCode");
+// layerRow renders one row of the Fused Layers status card.
+function layerRow(f) {
+  const service = f.service === "ssh" ? "SSH" : f.service === "vscode" ? "VSCode" : f.service || "—";
   const when = f.createdAt ? new Date(f.createdAt).toLocaleString() : "";
+  const name = displayNameFromRef(f.baseRef) || f.baseRef || "—";
   return (
     `<tr>` +
-      `<td><div class="primary-line">${escapeHtml(f.baseRef || "—")}</div></td>` +
-      `<td>${services.join(" + ") || "—"}</td>` +
+      `<td><div class="primary-line">${escapeHtml(name)}</div><div class="secondary-line mono">${escapeHtml(f.layerRef || "")}</div></td>` +
+      `<td>${service}</td>` +
       `<td><span class="ok">Ready ✓</span>${when ? ` <span class="hint">${escapeHtml(when)}</span>` : ""}</td>` +
       `<td class="actions">` +
-        `<button class="ghost" data-fused-rebuild="${f.enableVscode ? "vscode" : "ssh"}" data-fused-base="${escapeHtml(f.baseRef)}">Rebuild</button>` +
-        `<button class="icon danger" data-fused-delete="${escapeHtml(f.fusedRef)}" data-fused-base="${escapeHtml(f.baseRef)}">✕</button>` +
+        `<button class="ghost" data-fused-rebuild="${escapeHtml(f.service)}" data-fused-base="${escapeHtml(f.baseRef)}">Rebuild</button>` +
+        `<button class="icon danger" data-fused-delete="${escapeHtml(f.layerRef)}" data-fused-base="${escapeHtml(f.baseRef)}">✕</button>` +
       `</td>` +
     `</tr>`
   );
+}
+
+// displayNameFromRef turns a managed image reference like "mudp-ubuntu:latest"
+// into a human-readable image name like "ubuntu". For non-managed refs it
+// returns the input unchanged.
+function displayNameFromRef(ref) {
+  if (!ref) return "";
+  const m = ref.match(/^mudp-(.+?):latest$/);
+  return m ? m[1] : ref;
 }
 
 // openFusedBuildModal shows a base-image picker then starts the build. If
@@ -142,10 +151,10 @@ function openFusedBuildModal(which, presetBase) {
   const label = which === "ssh" ? "SSH" : "VS Code";
   showModal({
     kind: "fusedBuild",
-    title: `Build ${label} Image`,
+    title: `Build ${label} Layer`,
     body:
       `<div class="compact">` +
-        `<p class="hint">Pre-builds a derived image with ${label} installed so containers boot fast. Build runs once per base image; later changes to the scripts trigger a rebuild automatically.</p>` +
+        `<p class="hint">Pre-builds an incremental ${label} layer. This layer is merged into the final fused image when a container with ${label} enabled is created.</p>` +
         `<label class="field-label">Base image</label>` +
         `<select id="fusedBaseImage">${opts}</select>` +
       `</div>`,
@@ -165,12 +174,12 @@ function openFusedBuildModal(which, presetBase) {
 // state alone.
 function streamFusedBuild(which, baseImage) {
   const label = which === "ssh" ? "SSH" : "VS Code";
-  state.pull = { active: true, logs: "", error: "", finished: false, fusedRef: "", name: `${label} · ${baseImage}`, which, baseImage };
+  state.pull = { active: true, logs: "", error: "", finished: false, validated: false, layerRef: "", name: `${label} · ${baseImage}`, which, baseImage };
   renderFusedProgress();
   (async () => {
     let streamError = null;
     try {
-      const res = await fetch("/api/scripts/fused/build/stream", {
+      const res = await fetch("/api/scripts/fused/layers/build/stream", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
@@ -185,9 +194,9 @@ function streamFusedBuild(which, baseImage) {
       } else {
         await readSSE(res, (event, data) => {
           if (event === "progress") {
-            // The first progress event carries the fusedRef so we can verify the
+            // The first progress event carries the layerRef so we can verify the
             // build result later even if the stream drops.
-            if (!state.pull.fusedRef && data.fusedRef) state.pull.fusedRef = data.fusedRef;
+            if (!state.pull.layerRef && data.layerRef) state.pull.layerRef = data.layerRef;
             state.pull.logs += (data.message || "") + "\n";
             renderFusedProgress();
           } else if (event === "error") {
@@ -198,10 +207,13 @@ function streamFusedBuild(which, baseImage) {
             toast(streamError);
           } else if (event === "done") {
             state.pull.finished = true;
-            state.pull.fusedRef = data.fusedRef || state.pull.fusedRef;
-            state.pull.logs += `[done] ${label} image ready\n`;
+            state.pull.layerRef = data.layerRef || state.pull.layerRef;
+            state.pull.validated = data.validated === "true";
+            state.pull.logs += state.pull.validated
+              ? `[done] ${label} layer ready and validated ✓\n`
+              : `[done] ${label} layer ready\n`;
             renderFusedProgress();
-            toast(`${label} image ready`, true);
+            toast(state.pull.validated ? `${label} layer ready and validated` : `${label} layer ready`, true);
           }
         });
       }
@@ -211,18 +223,18 @@ function streamFusedBuild(which, baseImage) {
       // status check below instead of surfacing this directly.
       streamError = err.message;
     }
-    // Always reconcile with the server's view of the built image. If the fused
-    // image is present, the build succeeded regardless of how the stream ended.
+    // Always reconcile with the server's view of the built layer. If the layer
+    // is present, the build succeeded regardless of how the stream ended.
     if (!state.pull.finished) {
-      const ok = await verifyFusedReady();
+      const ok = await verifyLayerReady();
       if (ok) {
         state.pull.error = "";
         state.pull.finished = true;
-        state.pull.logs += `[done] ${label} image ready\n`;
+        state.pull.logs += `[done] ${label} layer ready\n`;
         renderFusedProgress();
-        toast(`${label} image ready`, true);
+        toast(`${label} layer ready`, true);
       } else if (streamError) {
-        // Only surface the connection error if the image really isn't there.
+        // Only surface the connection error if the layer really isn't there.
         state.pull.error = streamError;
         state.pull.logs += `[error] ${streamError}\n`;
         renderFusedProgress();
@@ -239,17 +251,15 @@ function streamFusedBuild(which, baseImage) {
   })();
 }
 
-// verifyFusedReady asks the server whether the fused image we kicked off is now
-// built and present. Retries a few times because Docker may take a moment to
-// make a freshly-built image visible to ImageList. Returns true if it is ready.
-// Used after the SSE stream ends to distinguish "stream dropped but build
-// succeeded" from real failures.
-async function verifyFusedReady() {
-  if (!state.pull.fusedRef) return false;
+// verifyLayerReady asks the server whether the layer we kicked off is now built
+// and present. Retries a few times because Docker may take a moment to make a
+// freshly-built image visible to ImageList.
+async function verifyLayerReady() {
+  if (!state.pull.layerRef) return false;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      const items = (await api("/api/scripts/fused/list")) || [];
-      if (items.some((f) => f.fusedRef === state.pull.fusedRef)) return true;
+      const items = (await api("/api/scripts/fused/layers/list")) || [];
+      if (items.some((f) => f.layerRef === state.pull.layerRef)) return true;
     } catch {
       // ignore and retry
     }
@@ -264,8 +274,8 @@ function renderFusedProgress() {
   const statusBox = state.pull.error
     ? `<div class="error-box">✗ ${escapeHtml(state.pull.error)}</div>`
     : done
-      ? `<div class="step done"><span class="step-icon">✓</span><span class="step-label">${escapeHtml(state.pull.name)} image ready</span></div>`
-      : `<div class="step active"><span class="step-icon"><span class="spinner"></span></span><span class="step-label">Building ${escapeHtml(state.pull.name)}</span></div>`;
+      ? `<div class="step done"><span class="step-icon">✓</span><span class="step-label">${escapeHtml(state.pull.name)} layer ${state.pull.validated ? "ready and validated" : "ready"}</span></div>`
+      : `<div class="step active"><span class="step-icon"><span class="spinner"></span></span><span class="step-label">Building ${escapeHtml(state.pull.name)} layer</span></div>`;
   setModalBody(
     statusBox +
       `<pre class="log-output">${escapeHtml(state.pull.logs || "")}</pre>` +
@@ -280,13 +290,13 @@ function renderFusedProgress() {
   if (log) log.scrollTop = log.scrollHeight;
 }
 
-async function deleteFused(fusedRef, baseRef) {
-  if (!confirm(`Delete the fused image for “${baseRef}”? Containers will fall back to runtime install.`)) return;
+async function deleteLayer(layerRef, baseRef) {
+  if (!confirm(`Delete the fused layer for “${baseRef}”? The layer will be rebuilt on the next container create.`)) return;
   try {
-    await api("/api/scripts/fused/delete", { method: "POST", body: JSON.stringify({ fusedRef }) });
+    await api("/api/scripts/fused/layers/delete", { method: "POST", body: JSON.stringify({ layerRef }) });
     await refreshAll();
     renderView();
-    toast("Fused image deleted", true);
+    toast("Fused layer deleted", true);
   } catch (err) {
     toast(err.message);
   }

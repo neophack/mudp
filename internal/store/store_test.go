@@ -247,3 +247,56 @@ func TestRegistriesCRUD(t *testing.T) {
 		t.Errorf("expected 1 after replace, got %d", len(items))
 	}
 }
+
+func TestFusedLayerCRUD(t *testing.T) {
+	db := newTestDB(t)
+
+	layer := FusedLayer{
+		CacheKey:    "ssh-key-1",
+		BaseRef:     "ubuntu:22.04",
+		BaseImageID: "sha256:abc",
+		LayerRef:    "mudp-layer-ssh-ubuntu-abc:latest",
+		Service:     "ssh",
+		ScriptHash:  "hash-ssh",
+	}
+	if err := db.SaveFusedLayer(layer); err != nil {
+		t.Fatalf("SaveFusedLayer: %v", err)
+	}
+
+	got, ok, err := db.GetFusedLayer(layer.CacheKey)
+	if err != nil {
+		t.Fatalf("GetFusedLayer: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetFusedLayer returned ok=false after save")
+	}
+	if got.LayerRef != layer.LayerRef || got.Service != layer.Service {
+		t.Fatalf("GetFusedLayer returned unexpected layer: %+v", got)
+	}
+
+	layers, err := db.ListFusedLayers()
+	if err != nil {
+		t.Fatalf("ListFusedLayers: %v", err)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("expected 1 layer, got %d", len(layers))
+	}
+
+	// Upsert: save again with a different layer_ref should update.
+	layer.LayerRef = "mudp-layer-ssh-ubuntu-xyz:latest"
+	if err := db.SaveFusedLayer(layer); err != nil {
+		t.Fatalf("SaveFusedLayer upsert: %v", err)
+	}
+	got, ok, _ = db.GetFusedLayer(layer.CacheKey)
+	if !ok || got.LayerRef != layer.LayerRef {
+		t.Fatalf("upsert did not update layer_ref: %+v", got)
+	}
+
+	if err := db.DeleteFusedLayer(layer.CacheKey); err != nil {
+		t.Fatalf("DeleteFusedLayer: %v", err)
+	}
+	_, ok, _ = db.GetFusedLayer(layer.CacheKey)
+	if ok {
+		t.Fatal("layer still exists after delete")
+	}
+}

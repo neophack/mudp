@@ -109,6 +109,19 @@ type FusedImage struct {
 	CreatedAt    string `json:"createdAt"`
 }
 
+// FusedLayer is a single-service incremental layer image. It captures the file
+// system delta produced by installing SSH or VSCode on top of a base image.
+// Multiple final fused images can reuse the same layer via COPY --from.
+type FusedLayer struct {
+	CacheKey    string `json:"cacheKey"`
+	BaseRef     string `json:"baseRef"`
+	BaseImageID string `json:"baseImageId"`
+	LayerRef    string `json:"layerRef"`
+	Service     string `json:"service"` // "ssh" or "vscode"
+	ScriptHash  string `json:"scriptHash"`
+	CreatedAt   string `json:"createdAt"`
+}
+
 func Open(path string) (*DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -244,6 +257,15 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			fused_ref text not null,
 			enable_ssh integer not null,
 			enable_vscode integer not null,
+			script_hash text not null,
+			created_at text not null
+		)`,
+		`create table if not exists fused_layers (
+			cache_key text primary key,
+			base_ref text not null,
+			base_image_id text not null,
+			layer_ref text not null,
+			service text not null,
 			script_hash text not null,
 			created_at text not null
 		)`,
@@ -664,6 +686,8 @@ install_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y openssh-server
+    apt-get clean || true
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
     return 0
   fi
   if have_cmd apk; then
@@ -672,10 +696,12 @@ install_packages() {
   fi
   if have_cmd dnf; then
     dnf install -y openssh-server openssh-clients
+    dnf clean all || true
     return 0
   fi
   if have_cmd yum; then
     yum install -y openssh-server openssh-clients
+    yum clean all || true
     return 0
   fi
   echo "No supported package manager found for SSH bootstrap." >&2
@@ -721,18 +747,23 @@ if ! have_cmd code-server; then
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
       apt-get install -y curl
+      apt-get clean || true
+      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
     elif have_cmd apk; then
       apk add --no-cache curl
     elif have_cmd dnf; then
       dnf install -y curl
+      dnf clean all || true
     elif have_cmd yum; then
       yum install -y curl
+      yum clean all || true
     else
       echo "curl is required to install code-server." >&2
       exit 1
     fi
   fi
   curl -fsSL https://code-server.dev/install.sh | sh
+  rm -rf /root/.cache /tmp/* /var/tmp/*
 fi
 
 mkdir -p /root/.config/code-server /root/.local/share/code-server /workspace /tmp/mudp
@@ -1506,5 +1537,66 @@ func (db *DB) ListFusedImages() ([]FusedImage, error) {
 // pruned out from under us).
 func (db *DB) DeleteFusedImage(cacheKey string) error {
 	_, err := db.Exec(`delete from fused_images where cache_key=?`, cacheKey)
+	return err
+}
+
+// --- Fused layer cache ------------------------------------------------------
+
+// GetFusedLayer returns the cached layer for a cache key, or ok=false when
+// there is no row yet.
+func (db *DB) GetFusedLayer(cacheKey string) (FusedLayer, bool, error) {
+	var f FusedLayer
+	err := db.QueryRow(`select cache_key, base_ref, base_image_id, layer_ref,
+		service, script_hash, created_at
+		from fused_layers where cache_key=?`, cacheKey).
+		Scan(&f.CacheKey, &f.BaseRef, &f.BaseImageID, &f.LayerRef,
+			&f.Service, &f.ScriptHash, &f.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return FusedLayer{}, false, nil
+		}
+		return FusedLayer{}, false, err
+	}
+	return f, true, nil
+}
+
+// SaveFusedLayer inserts or replaces a fused-layer cache entry.
+func (db *DB) SaveFusedLayer(f FusedLayer) error {
+	_, err := db.Exec(`insert into fused_layers
+		(cache_key, base_ref, base_image_id, layer_ref, service, script_hash, created_at)
+		values(?,?,?,?,?,?,?)
+		on conflict(cache_key) do update set
+			base_ref=excluded.base_ref, base_image_id=excluded.base_image_id,
+			layer_ref=excluded.layer_ref, service=excluded.service,
+			script_hash=excluded.script_hash, created_at=excluded.created_at`,
+		f.CacheKey, f.BaseRef, f.BaseImageID, f.LayerRef, f.Service, f.ScriptHash,
+		time.Now().Format(time.RFC3339))
+	return err
+}
+
+// ListFusedLayers returns all cached fused layers, newest first.
+func (db *DB) ListFusedLayers() ([]FusedLayer, error) {
+	rows, err := db.Query(`select cache_key, base_ref, base_image_id, layer_ref,
+		service, script_hash, created_at
+		from fused_layers order by created_at desc`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FusedLayer
+	for rows.Next() {
+		var f FusedLayer
+		if err := rows.Scan(&f.CacheKey, &f.BaseRef, &f.BaseImageID, &f.LayerRef,
+			&f.Service, &f.ScriptHash, &f.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// DeleteFusedLayer drops a layer cache entry.
+func (db *DB) DeleteFusedLayer(cacheKey string) error {
+	_, err := db.Exec(`delete from fused_layers where cache_key=?`, cacheKey)
 	return err
 }

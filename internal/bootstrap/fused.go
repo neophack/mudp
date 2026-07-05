@@ -7,24 +7,19 @@ import (
 	"strings"
 )
 
-// FusedContext builds a Docker build-context tar for a fused derived image.
-// The resulting image pre-installs SSH/VSCode at build time (the slow, network
-// steps) and runs only the fast, per-boot configuration at container start.
+// FusedContext builds a Docker build-context tar for the final fused derived
+// image. It uses multi-stage builds to merge independent SSH/VSCode layer
+// images into the base image, so each layer is only built once and can be
+// reused across final combinations (ssh-only, vscode-only, both).
 //
-// The context contains:
-//   - Dockerfile          (FROM base, COPY + RUN the build script, ENTRYPOINT the runtime script)
-//   - mudp-bootstrap/fused-build.sh   (install-time: apt/apk/dnf/yum/zypper + code-server)
-//   - mudp-bootstrap/fused-runtime.sh (boot-time: password, host keys, start daemons, markers)
-//   - mudp-bootstrap/ssh.sh / vscode.sh (the admin-customized install bodies, sourced by build.sh)
-//
-// The base image's Entrypoint/Cmd are captured and replayed by the runtime
-// script (the same passthrough logic as the runtime-injection entrypoint), so
-// fused images behave like the base image after bootstrap.
-func FusedContext(cfg Config) (*bytes.Buffer, error) {
+// The resulting context contains:
+//   - Dockerfile          (FROM base + COPY --from=<layer> /mudp-layer-root/ / + ENTRYPOINT)
+//   - mudp-bootstrap/fused-runtime.sh (boot-time entrypoint)
+func FusedContext(cfg Config, sshLayerRef, vscodeLayerRef string) (*bytes.Buffer, error) {
 	if (cfg.EnableSSH || cfg.EnableVSCode) && strings.TrimSpace(cfg.AccessPassword) == "" {
 		return nil, fmt.Errorf("access password is required when SSH or VS Code is enabled")
 	}
-	dockerfile, err := fusedDockerfile(cfg)
+	dockerfile, err := fusedDockerfile(cfg, sshLayerRef, vscodeLayerRef)
 	if err != nil {
 		return nil, err
 	}
@@ -33,60 +28,107 @@ func FusedContext(cfg Config) (*bytes.Buffer, error) {
 		Body string
 	}{
 		{Name: "Dockerfile", Body: dockerfile},
-		{Name: "mudp-bootstrap/fused-build.sh", Body: fusedBuildScript(cfg)},
 		{Name: "mudp-bootstrap/fused-runtime.sh", Body: fusedRuntimeScript(cfg)},
 	}
-	if cfg.EnableSSH {
+	return tarballFromFiles(files)
+}
+
+// LayerContext builds a Docker build-context tar for a single-service layer
+// image. A layer image is not runnable on its own; it only exposes the file
+// system changes produced by installing SSH or VSCode under /mudp-layer-root.
+// The service argument must be "ssh" or "vscode".
+func LayerContext(cfg Config, service string) (*bytes.Buffer, error) {
+	service = strings.ToLower(strings.TrimSpace(service))
+	if service != "ssh" && service != "vscode" {
+		return nil, fmt.Errorf("layer service must be ssh or vscode, got %q", service)
+	}
+	layerCfg := cfg
+	layerCfg.EnableSSH = service == "ssh"
+	layerCfg.EnableVSCode = service == "vscode"
+	if strings.TrimSpace(layerCfg.AccessPassword) == "" {
+		return nil, fmt.Errorf("access password is required when building a layer")
+	}
+
+	dockerfile, err := layerDockerfile(layerCfg)
+	if err != nil {
+		return nil, err
+	}
+	files := []struct {
+		Name string
+		Body string
+	}{
+		{Name: "Dockerfile", Body: dockerfile},
+		{Name: "mudp-bootstrap/fused-build.sh", Body: fusedBuildScript(layerCfg)},
+	}
+	if layerCfg.EnableSSH {
 		files = append(files, struct {
 			Name string
 			Body string
 		}{Name: "mudp-bootstrap/ssh.sh", Body: cfg.SSHScript})
 	}
-	if cfg.EnableVSCode {
+	if layerCfg.EnableVSCode {
 		files = append(files, struct {
 			Name string
 			Body string
 		}{Name: "mudp-bootstrap/vscode.sh", Body: cfg.VSCodeScript})
 	}
-	buf := &bytes.Buffer{}
-	tw := tar.NewWriter(buf)
-	for _, f := range files {
-		body := f.Body
-		hdr := &tar.Header{Name: f.Name, Mode: 0755, Size: int64(len(body))}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return nil, err
-		}
-		if _, err := tw.Write([]byte(body)); err != nil {
-			return nil, err
-		}
-	}
-	if err := tw.Close(); err != nil {
-		return nil, err
-	}
-	return buf, nil
+	return tarballFromFiles(files)
 }
 
-// fusedDockerfile renders the Dockerfile for the fused image. The build runs
-// the install script once; the resulting image's ENTRYPOINT is the runtime
-// script which performs per-boot configuration. The placeholder password is
-// required because the install scripts may reference $MUDP_ACCESS_PASSWORD
-// even during install (e.g. seeding code-server config); the real per-container
-// password is supplied at container start via the same env var.
-func fusedDockerfile(cfg Config) (string, error) {
+// fusedDockerfile renders the multi-stage Dockerfile for the final fused image.
+// It starts from the base image, copies file-system deltas from any enabled
+// layer images, installs the runtime entrypoint, and sets it as ENTRYPOINT.
+//
+// Layer copy order matters: later COPYs overwrite earlier ones for files that
+// exist in both. The SSH layer modifies base system files (/etc/ssh/sshd_config),
+// so it is copied last when both services are enabled so those modifications
+// survive.
+func fusedDockerfile(cfg Config, sshLayerRef, vscodeLayerRef string) (string, error) {
+	if cfg.EnableSSH && sshLayerRef == "" {
+		return "", fmt.Errorf("ssh layer reference is required when SSH is enabled")
+	}
+	if cfg.EnableVSCode && vscodeLayerRef == "" {
+		return "", fmt.Errorf("vscode layer reference is required when VS Code is enabled")
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "FROM %s\n", cfg.BaseRef)
-	b.WriteString("COPY mudp-bootstrap/ /mudp-bootstrap/\n")
-	b.WriteString("RUN MUDP_ACCESS_PASSWORD='mudp-build-placeholder' /bin/sh /mudp-bootstrap/fused-build.sh\n")
+	if cfg.EnableVSCode {
+		fmt.Fprintf(&b, "COPY --from=%s /mudp-layer-root/ /\n", vscodeLayerRef)
+	}
+	if cfg.EnableSSH {
+		fmt.Fprintf(&b, "COPY --from=%s /mudp-layer-root/ /\n", sshLayerRef)
+	}
+	b.WriteString("COPY mudp-bootstrap/fused-runtime.sh /mudp-bootstrap/fused-runtime.sh\n")
 	b.WriteString(`ENTRYPOINT ["/bin/sh", "/mudp-bootstrap/fused-runtime.sh"]` + "\n")
 	return b.String(), nil
 }
 
-// fusedBuildScript is the install-time script run during `docker build` (once,
-// baked into the image layer). It performs only the slow, network-bound work:
-// installing openssh-server, code-server, and base sshd_config. It deliberately
-// skips setting a password or starting daemons — those are per-container and
-// happen at runtime. The ssh.sh/vscode.sh bodies are sourced for the heavy
-// lifting; this wrapper just ensures the environment is set up.
+// layerDockerfile renders the Dockerfile for a single-service layer image.
+// The layer has no ENTRYPOINT because it is only used as a source for
+// COPY --from in the final fused image. Its final stage is scratch and contains
+// only /mudp-layer-root, the exported delta from the install stage.
+func layerDockerfile(cfg Config) (string, error) {
+	if !cfg.EnableSSH && !cfg.EnableVSCode {
+		return "", fmt.Errorf("a layer must enable exactly one service")
+	}
+	if cfg.EnableSSH && cfg.EnableVSCode {
+		return "", fmt.Errorf("a layer must enable exactly one service, not both")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "FROM %s AS build\n", cfg.BaseRef)
+	b.WriteString("COPY mudp-bootstrap/ /mudp-bootstrap/\n")
+	b.WriteString("RUN MUDP_ACCESS_PASSWORD='mudp-build-placeholder' /bin/sh /mudp-bootstrap/fused-build.sh\n")
+	b.WriteString("FROM scratch\n")
+	b.WriteString("COPY --from=build /mudp-layer-root/ /mudp-layer-root/\n")
+	return b.String(), nil
+}
+
+// fusedBuildScript is the install-time script run during `docker build` of a
+// layer image. It performs only the slow, network-bound work: installing
+// openssh-server or code-server and base sshd_config. It deliberately skips
+// setting a password or starting daemons — those are per-container and happen
+// at runtime. The ssh.sh/vscode.sh bodies are sourced for the heavy lifting;
+// this wrapper just ensures the environment is set up.
 func fusedBuildScript(cfg Config) string {
 	lines := []string{
 		"#!/bin/sh",
@@ -96,6 +138,64 @@ func fusedBuildScript(cfg Config) string {
 		"mkdir -p /var/run/sshd /tmp/mudp /root/.config/code-server",
 		"",
 		"have_cmd() { command -v \"$1\" >/dev/null 2>&1; }",
+		"",
+		"have_gnu_tar_incremental() { tar --help 2>/dev/null | grep -q -- '--listed-incremental'; }",
+		"",
+		"snapshot_tree() {",
+		"  out=\"$1\"",
+		"  find / \\( -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /tmp -o -path /mudp-bootstrap -o -path /mudp-layer-root \\) -prune -o -exec sh -c '",
+		"    for p do",
+		"      [ -e \"$p\" ] || [ -L \"$p\" ] || continue",
+		"      stat -c \"%F\\t%a\\t%u\\t%g\\t%s\\t%Y\\t%n\" \"$p\" 2>/dev/null || true",
+		"    done",
+		"  ' sh {} + 2>/dev/null | sort > \"$out\"",
+		"}",
+		"",
+		"snapshot_base() {",
+		"  if have_gnu_tar_incremental; then",
+		"    tar --listed-incremental=/tmp/mudp/base.snar -cf /dev/null --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/tmp --exclude=/mudp-bootstrap --exclude=/mudp-layer-root / 2>/dev/null || true",
+		"  else",
+		"    snapshot_tree /tmp/mudp/before.snapshot",
+		"  fi",
+		"}",
+		"",
+		"cleanup_build_caches() {",
+		"  if have_cmd apt-get; then",
+		"    apt-get clean >/dev/null 2>&1 || true",
+		"    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /var/cache/debconf/*-old",
+		"  fi",
+		"  if have_cmd dnf; then dnf clean all >/dev/null 2>&1 || true; fi",
+		"  if have_cmd yum; then yum clean all >/dev/null 2>&1 || true; fi",
+		"  if have_cmd zypper; then zypper clean -a >/dev/null 2>&1 || true; fi",
+		"  if have_cmd pip; then pip cache purge >/dev/null 2>&1 || true; fi",
+		"  if have_cmd pip3; then pip3 cache purge >/dev/null 2>&1 || true; fi",
+		"  if have_cmd npm; then npm cache clean --force >/dev/null 2>&1 || true; fi",
+		"  if have_cmd yarn; then yarn cache clean >/dev/null 2>&1 || true; fi",
+		"  if have_cmd pnpm; then pnpm store prune >/dev/null 2>&1 || true; fi",
+		"  rm -rf /root/.cache /var/tmp/*",
+		"  for p in /tmp/*; do",
+		"    [ \"$p\" = /tmp/mudp ] && continue",
+		"    rm -rf \"$p\"",
+		"  done",
+		"}",
+		"",
+		"export_layer_delta() {",
+		"  before=\"$1\"",
+		"  after=\"$2\"",
+		"  mkdir -p /mudp-layer-root",
+		"  if have_gnu_tar_incremental && [ -f /tmp/mudp/base.snar ]; then",
+		"    tar --listed-incremental=/tmp/mudp/base.snar -cf /tmp/mudp/layer.tar --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/tmp --exclude=/mudp-bootstrap --exclude=/mudp-layer-root / 2>/dev/null || true",
+		"    if [ -s /tmp/mudp/layer.tar ]; then",
+		"      tar -C /mudp-layer-root -xf /tmp/mudp/layer.tar 2>/dev/null || true",
+		"    fi",
+		"    return 0",
+		"  fi",
+		"  list=/tmp/mudp/layer-files.txt",
+		"  comm -13 \"$before\" \"$after\" | cut -f7- | sed 's#^/##' | grep -v '^$' > \"$list\" || true",
+		"  if [ -s \"$list\" ]; then",
+		"    tar -C / -cf - -T \"$list\" 2>/dev/null | tar -C /mudp-layer-root -xf -",
+		"  fi",
+		"}",
 		"",
 		"install_packages() {",
 		"  if have_cmd apt-get; then",
@@ -129,10 +229,11 @@ func fusedBuildScript(cfg Config) string {
 		// only install packages and write config, NOT start daemons or background
 		// services (those would hang the build or be killed when RUN ends).
 		"export MUDP_BUILD_PHASE=1",
+		"snapshot_base",
 	}
 	if cfg.EnableSSH {
 		// Run the admin-supplied SSH install body. The default script guards its
-		// daemon-start lines with [ -z \"$MUDP_BUILD_PHASE\" ] so the build only
+		// daemon-start lines with [ -z "$MUDP_BUILD_PHASE" ] so the build only
 		// installs openssh-server + sshd_config + host keys, never starts sshd.
 		lines = append(lines,
 			"if [ -f /mudp-bootstrap/ssh.sh ]; then",
@@ -148,7 +249,7 @@ func fusedBuildScript(cfg Config) string {
 	if cfg.EnableVSCode {
 		// code-server install is the slowest step; baking it is the main win.
 		// The default vscode.sh guards its `nohup code-server &` start with
-		// [ -z \"$MUDP_BUILD_PHASE\" ] so the build installs the binary only.
+		// [ -z "$MUDP_BUILD_PHASE" ] so the build installs the binary only.
 		lines = append(lines,
 			"if [ -f /mudp-bootstrap/vscode.sh ]; then",
 			"  /bin/sh /mudp-bootstrap/vscode.sh",
@@ -157,7 +258,12 @@ func fusedBuildScript(cfg Config) string {
 			"",
 		)
 	}
-	lines = append(lines, "echo \"=== MUDP fused build completed $(date -u +%Y-%m-%dT%H:%M:%SZ) ===\"")
+	lines = append(lines,
+		"cleanup_build_caches",
+		"snapshot_tree /tmp/mudp/after.snapshot",
+		"export_layer_delta /tmp/mudp/before.snapshot /tmp/mudp/after.snapshot",
+		"echo \"=== MUDP fused build completed $(date -u +%Y-%m-%dT%H:%M:%SZ) ===\"",
+	)
 	return strings.Join(lines, "\n")
 }
 
@@ -182,14 +288,26 @@ func fusedRuntimeScript(cfg Config) string {
 	if cfg.EnableSSH {
 		lines = append(lines,
 			"if [ -n \"${MUDP_ACCESS_PASSWORD:-}\" ]; then",
-			"  printf '%%s\\n' \"root:${MUDP_ACCESS_PASSWORD}\" | chpasswd 2>/dev/null || true",
+			"  printf '%s\\n' \"root:${MUDP_ACCESS_PASSWORD}\" | chpasswd 2>/dev/null || true",
 			"fi",
 			"command -v ssh-keygen >/dev/null 2>&1 && ssh-keygen -A >/dev/null 2>&1 || true",
-			"if command -v service >/dev/null 2>&1; then service ssh start 2>/dev/null || true; fi",
+			"if [ -f /etc/ssh/sshd_config ]; then",
+			"  sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config || true",
+			"  sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true",
+			"  grep -q '^PermitRootLogin yes' /etc/ssh/sshd_config || echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config || true",
+			"  grep -q '^PasswordAuthentication yes' /etc/ssh/sshd_config || echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config || true",
+			"fi",
 			"if command -v sshd >/dev/null 2>&1; then",
 			"  pgrep -x sshd >/dev/null 2>&1 || (/usr/sbin/sshd 2>/dev/null || sshd 2>/dev/null || true)",
 			"fi",
-			"touch /tmp/mudp/ssh.ready",
+			"if ! pgrep -x sshd >/dev/null 2>&1 && command -v service >/dev/null 2>&1; then",
+			"  service ssh start 2>/dev/null || true",
+			"fi",
+			"if pgrep -x sshd >/dev/null 2>&1; then",
+			"  touch /tmp/mudp/ssh.ready",
+			"else",
+			"  echo 'ERROR: sshd is not running' >&2",
+			"fi",
 			"",
 		)
 	}
@@ -237,4 +355,23 @@ func fusedRuntimeScript(cfg Config) string {
 		lines = append(lines, "exec tail -f /dev/null")
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// tarballFromFiles packs a list of named files into a build-context tar.
+func tarballFromFiles(files []struct{ Name, Body string }) (*bytes.Buffer, error) {
+	buf := &bytes.Buffer{}
+	tw := tar.NewWriter(buf)
+	for _, f := range files {
+		hdr := &tar.Header{Name: f.Name, Mode: 0755, Size: int64(len(f.Body))}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return nil, err
+		}
+		if _, err := tw.Write([]byte(f.Body)); err != nil {
+			return nil, err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return buf, nil
 }

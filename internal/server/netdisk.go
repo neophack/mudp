@@ -25,6 +25,7 @@ type fileItem struct {
 	Path    string `json:"path"`
 	Dir     bool   `json:"dir"`
 	Size    int64  `json:"size"`
+	Mode    string `json:"mode"`
 	ModTime string `json:"modTime"`
 }
 

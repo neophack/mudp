@@ -53,8 +53,13 @@ function joinPath(a, b) {
   return [a, b].filter((x) => x != null && x !== "").join("/");
 }
 
+const FOLDER_SVG = '<svg viewBox="0 0 24 24"><path d="M3 6.8C3 5.8 3.8 5 4.8 5h5.1l2 2.2h7.3c1 0 1.8.8 1.8 1.8v1H3V6.8Z"/><path d="M3 9h18l-1.2 8.2c-.1 1-1 1.8-2 1.8H6.2c-1 0-1.8-.7-2-1.8L3 9Z"/></svg>';
+const FILE_SVG = '<svg viewBox="0 0 24 24"><path d="M6 3.5h8.4L19 8.1v12.1c0 1-.8 1.8-1.8 1.8H6.8c-1 0-1.8-.8-1.8-1.8V5.3c0-1 .8-1.8 1.8-1.8Z"/><path d="M14 3.8V8h4.2"/><path d="M8.5 12h7M8.5 15h7M8.5 18h4.5"/></svg>';
+
 function iconFor(item) {
-  return item.dir ? "📁" : "📄";
+  const cls = item.dir ? "share-ico folder" : "share-ico file";
+  const svg = item.dir ? FOLDER_SVG : FILE_SVG;
+  return `<span class="${cls}" aria-hidden="true">${svg}</span>`;
 }
 
 // ---------- Auth ----------
@@ -156,8 +161,8 @@ function renderItems() {
   const rows = state.items.map((f) => {
     const checked = state.selected.has(f.path) ? "checked" : "";
     const nameCell = f.dir
-      ? `<button class="share-name linklike" data-open="${escapeHtml(f.path)}">${iconFor(f)} ${escapeHtml(f.name)}</button>`
-      : `<span class="share-name">${iconFor(f)} ${escapeHtml(f.name)}</span>`;
+      ? `<button class="share-name linklike" data-open="${escapeHtml(f.path)}">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></button>`
+      : `<span class="share-name">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></span>`;
     return `<tr data-path="${escapeHtml(f.path)}">
       <td class="chk-cell"><input type="checkbox" class="chk share-select" data-path="${escapeHtml(f.path)}" ${checked}></td>
       <td>${nameCell}</td>
@@ -247,7 +252,7 @@ function renderPicker() {
   } else {
     const rows = state.pickerItems.map((f) => {
       return `<div class="picker-row" data-open="${escapeHtml(f.path)}">
-        <span class="picker-folder-icon">📁</span>
+        <span class="picker-folder-icon">${FOLDER_SVG}</span>
         <span class="picker-folder-name">${escapeHtml(f.name)}</span>
       </div>`;
     }).join("");
@@ -385,6 +390,27 @@ function bindEvents() {
     loadPicker(parts.join("/"));
   };
   $("#pickerMkdir").onclick = pickerMkdir;
+
+  // Click on the backdrop ring (not the modal contents) closes the top modal.
+  let pressOnBackdrop = false;
+  document.addEventListener("mousedown", (e) => {
+    pressOnBackdrop = !!(e.target.classList && e.target.classList.contains("modal-backdrop"));
+  });
+  document.addEventListener("click", (e) => {
+    const endedOnBackdrop = !!(e.target.classList && e.target.classList.contains("modal-backdrop"));
+    if (pressOnBackdrop && endedOnBackdrop) closeTopModal();
+    pressOnBackdrop = false;
+  });
+  // Esc closes the top modal.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeTopModal();
+  });
+}
+
+function closeTopModal() {
+  // Picker takes precedence over the login prompt when both are shown.
+  if (!$("#pickerBackdrop").hidden) closePicker();
+  else if (!$("#loginBackdrop").hidden) closeLogin();
 }
 
 init();

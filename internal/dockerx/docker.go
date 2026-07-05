@@ -114,6 +114,10 @@ type FusedPlan struct {
 	// ScriptHash is the hash of the SSH+VSCode script bodies, included in logs
 	// and used by the server for cache-key construction.
 	ScriptHash string
+	// SSHScriptHash/VSCodeScriptHash are the hashes of the individual service
+	// scripts, stored as image labels so rows can be reconstructed on startup.
+	SSHScriptHash    string
+	VSCodeScriptHash string
 	// EnableSSH/EnableVSCode mirror the CreateOptions flags at plan time; the
 	// fused image is built with exactly these enables.
 	EnableSSH    bool
@@ -123,6 +127,14 @@ type FusedPlan struct {
 	AccessPassword string
 	SSHScript      string
 	VSCodeScript   string
+	// SSHLayerRef/VSCodeLayerRef are the local tags of the incremental layer
+	// images used by the multi-stage fused build. They are computed from the
+	// base image ID and the corresponding single script body so the layers can
+	// be reused across final-image combinations.
+	SSHLayerRef      string
+	VSCodeLayerRef   string
+	SSHLayerCacheKey string
+	VSCodeLayerCacheKey string
 	// Auth is optional base64 registry auth, forwarded to the build so a
 	// FROM <private-registry>/... works.
 	Auth string
@@ -247,6 +259,24 @@ func MUDPFusedRef(baseRef, cacheKey string) string {
 	return Prefix + "fused-" + Slug(baseRef) + "-" + short + ":latest"
 }
 
+// MUDPFusedSSHLayerRef builds the local tag for the SSH incremental layer.
+func MUDPFusedSSHLayerRef(baseRef, cacheKey string) string {
+	short := cacheKey
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return Prefix + "layer-ssh-" + Slug(baseRef) + "-" + short + ":latest"
+}
+
+// MUDPFusedVSCodeLayerRef builds the local tag for the VSCode incremental layer.
+func MUDPFusedVSCodeLayerRef(baseRef, cacheKey string) string {
+	short := cacheKey
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return Prefix + "layer-vscode-" + Slug(baseRef) + "-" + short + ":latest"
+}
+
 // resolveFusedImage returns the image reference to use for a fused create: the
 // cached fused ref if the image already exists, or builds it and returns the
 // new ref. On any failure it returns "" so the caller falls back to the
@@ -262,7 +292,7 @@ func (d *Client) resolveFusedImage(ctx context.Context, plan *FusedPlan, emit fu
 	}
 	// Cache miss: build it once. This is the slow step that subsequent creates
 	// avoid entirely.
-	if err := d.buildFused(ctx, plan, emit); err != nil {
+	if err := d.buildFused(ctx, plan, emit, false); err != nil {
 		emit("bootstrap", "Optimized image build failed ("+err.Error()+"); falling back to runtime install")
 		return ""
 	}
@@ -277,15 +307,42 @@ func (d *Client) BuildFusedImage(ctx context.Context, plan *FusedPlan, emit func
 	if plan == nil {
 		return fmt.Errorf("no fused plan")
 	}
-	return d.buildFused(ctx, plan, emit)
+	return d.buildFused(ctx, plan, emit, true)
 }
 
-// buildFused is the shared core: it assembles the fused build context, drives
-// `docker build`, and tags the result. emit receives each stage message and
-// build line. Both the lazy create path (resolveFusedImage) and the explicit
-// admin build (BuildFusedImage) go through here.
-func (d *Client) buildFused(ctx context.Context, plan *FusedPlan, emit func(stage, msg string)) error {
+// BuildFusedLayer unconditionally (re)builds a single-service incremental layer
+// image described by plan. Used by the admin "Build SSH Layer" / "Build VS Code
+// Layer" actions in Settings. The service argument must be "ssh" or "vscode".
+func (d *Client) BuildFusedLayer(ctx context.Context, plan *FusedPlan, service string, emit func(stage, msg string)) error {
+	if plan == nil {
+		return fmt.Errorf("no fused plan")
+	}
+	return d.buildLayer(ctx, plan, service, emit, true)
+}
+
+// buildFused is the shared core: it builds any missing incremental layer
+// images (SSH/VSCode) and then merges them into the final fused image using a
+// multi-stage Dockerfile. emit receives each stage message and build line.
+// Both the lazy create path (resolveFusedImage) and the explicit admin build
+// (BuildFusedImage) go through here. When force is true the build bypasses
+// Docker's layer cache so admin Rebuild actions actually rerun the scripts.
+func (d *Client) buildFused(ctx context.Context, plan *FusedPlan, emit func(stage, msg string), force bool) error {
 	emit("bootstrap", "Building optimized image (one-time, may take a few minutes)…")
+
+	// Ensure incremental layer images exist. Layers are keyed only by the base
+	// image and the corresponding single script, so they are reused across final
+	// combinations.
+	if plan.EnableSSH {
+		if err := d.buildLayer(ctx, plan, "ssh", emit, force); err != nil {
+			return fmt.Errorf("build ssh layer: %w", err)
+		}
+	}
+	if plan.EnableVSCode {
+		if err := d.buildLayer(ctx, plan, "vscode", emit, force); err != nil {
+			return fmt.Errorf("build vscode layer: %w", err)
+		}
+	}
+
 	buildCtx, err := bootstrap.FusedContext(bootstrap.Config{
 		EnableSSH:      plan.EnableSSH,
 		EnableVSCode:   plan.EnableVSCode,
@@ -295,29 +352,95 @@ func (d *Client) buildFused(ctx context.Context, plan *FusedPlan, emit func(stag
 		OrigEntrypoint: plan.OrigEntrypoint,
 		OrigCmd:        plan.OrigCmd,
 		BaseRef:        plan.BaseRef,
-	})
+	}, plan.SSHLayerRef, plan.VSCodeLayerRef)
 	if err != nil {
 		return fmt.Errorf("prepare build context: %w", err)
 	}
 	// BuildImage packs a Dockerfile + named context files into its own tar, so
 	// unpack the fused context tar we just built into those two pieces.
 	dockerfile, contextFiles := unpackFusedContext(buildCtx)
-	labels := map[string]string{
-		"mudp.fused":      "true",
-		"mudp.base":       plan.BaseRef,
-		"mudp.cacheKey":   plan.CacheKey,
-		"mudp.scriptHash": plan.ScriptHash,
-	}
 	if err := d.BuildImage(ctx, BuildOptions{
 		Dockerfile:   dockerfile,
 		Tags:         []string{plan.FusedRef},
 		ContextFiles: contextFiles,
-		Labels:       labels,
-		Auth:         plan.Auth,
+		Labels: map[string]string{
+			"mudp.fused":         "true",
+			"mudp.base":          plan.BaseRef,
+			"mudp.baseImageID":   plan.BaseImageID,
+			"mudp.cacheKey":      plan.CacheKey,
+			"mudp.scriptHash":    plan.ScriptHash,
+			"mudp.enable.ssh":    fmt.Sprintf("%t", plan.EnableSSH),
+			"mudp.enable.vscode": fmt.Sprintf("%t", plan.EnableVSCode),
+		},
+		Auth:    plan.Auth,
+		NoCache: force,
 	}, func(line string) { emit("bootstrap", line) }); err != nil {
 		return err
 	}
 	emit("bootstrap", "Optimized image ready")
+	return nil
+}
+
+// buildLayer builds or reuses a single-service incremental layer image. When
+// force is true it always rebuilds (manual Settings action); otherwise it
+// returns early if the layer already exists (lazy container-create path).
+func (d *Client) buildLayer(ctx context.Context, plan *FusedPlan, service string, emit func(stage, msg string), force bool) error {
+	var layerRef string
+	switch service {
+	case "ssh":
+		layerRef = plan.SSHLayerRef
+	case "vscode":
+		layerRef = plan.VSCodeLayerRef
+	default:
+		return fmt.Errorf("unknown layer service: %s", service)
+	}
+	if !force {
+		if exists, _ := d.ImageExists(ctx, layerRef); exists {
+			emit("bootstrap", "Reusing cached "+service+" layer "+PublicImageName(layerRef))
+			return nil
+		}
+	}
+	emit("bootstrap", "Building "+service+" layer "+PublicImageName(layerRef)+"…")
+	buildCtx, err := bootstrap.LayerContext(bootstrap.Config{
+		EnableSSH:      plan.EnableSSH,
+		EnableVSCode:   plan.EnableVSCode,
+		AccessPassword: plan.AccessPassword,
+		SSHScript:      plan.SSHScript,
+		VSCodeScript:   plan.VSCodeScript,
+		OrigEntrypoint: plan.OrigEntrypoint,
+		OrigCmd:        plan.OrigCmd,
+		BaseRef:        plan.BaseRef,
+	}, service)
+	if err != nil {
+		return fmt.Errorf("prepare %s layer context: %w", service, err)
+	}
+	dockerfile, contextFiles := unpackFusedContext(buildCtx)
+	if err := d.BuildImage(ctx, BuildOptions{
+		Dockerfile:   dockerfile,
+		Tags:         []string{layerRef},
+		ContextFiles: contextFiles,
+		Labels: func() map[string]string {
+			labels := map[string]string{
+				"mudp.fused.layer": "true",
+				"mudp.base":        plan.BaseRef,
+				"mudp.baseImageID": plan.BaseImageID,
+				"mudp.service":     service,
+			}
+			if service == "ssh" {
+				labels["mudp.cacheKey"] = plan.SSHLayerCacheKey
+				labels["mudp.scriptHash"] = plan.SSHScriptHash
+			} else {
+				labels["mudp.cacheKey"] = plan.VSCodeLayerCacheKey
+				labels["mudp.scriptHash"] = plan.VSCodeScriptHash
+			}
+			return labels
+		}(),
+		Auth:    plan.Auth,
+		NoCache: force,
+	}, func(line string) { emit("bootstrap", line) }); err != nil {
+		return err
+	}
+	emit("bootstrap", service+" layer ready")
 	return nil
 }
 

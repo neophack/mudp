@@ -36,6 +36,7 @@ export const state = {
   disks: [],
   scripts: { sshScript: "", vscodeScript: "" },
   fusedImages: [],
+  fusedLayers: [],
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
   search: "",
   logViewer: { open: false, title: "", content: "", id: "", tail: 300 },
@@ -133,8 +134,8 @@ export async function refreshAll() {
   const jobs = [api("/api/images"), api("/api/containers"), api("/api/dashboard"), api("/api/volumes"), api("/api/networks"), api("/api/stacks")];
   const labels = ["images", "containers", "dashboard", "volumes", "networks", "stacks"];
   if (isAdmin()) {
-    jobs.push(api("/api/users"), api("/api/groups"), api("/api/admin/usage"), api("/api/scripts"), api("/api/admin/audit?limit=200"), api("/api/scripts/fused/list"));
-    labels.push("users", "groups", "usage", "scripts", "audit", "fusedImages");
+    jobs.push(api("/api/users"), api("/api/groups"), api("/api/admin/usage"), api("/api/scripts"), api("/api/admin/audit?limit=200"), api("/api/scripts/fused/list"), api("/api/scripts/fused/layers/list"));
+    labels.push("users", "groups", "usage", "scripts", "audit", "fusedImages", "fusedLayers");
   }
   const out = await Promise.all(jobs);
   out.forEach((v, i) => {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"time"
 
@@ -63,6 +64,13 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 	// and does not start with stale records from a previous process.
 	a.collectResourceSnapshot(ctx)
 	a.pruneOldData(ctx)
+	// Reconcile Docker image store with database rows so fused layers/images
+	// built before the last shutdown are still visible in Settings. Then prune
+	// any pre-existing dangling images left over from older builds.
+	a.syncFusedCache(ctx)
+	if n, reclaimed, err := a.docker.PruneImages(ctx); err == nil && n > 0 {
+		log.Printf("pruned %d dangling images (%d bytes reclaimed)", n, reclaimed)
+	}
 
 	stop := make(chan struct{})
 	go func() {

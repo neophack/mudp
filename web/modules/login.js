@@ -11,7 +11,8 @@ export async function renderLogin() {
   $("#app").innerHTML =
     `<section class="login-wrap">` +
       `<div class="login-hero">` +
-        `<div class="brand-lg">MUDP</div>` +
+        `<div class="brand-lg">Multi User Docker Platform</div>` +
+        `<div class="brand-subtitle">MUDP</div>` +
         `<p>A compact, self-hosted container console. Manage Docker workloads, GPU access, SSH and web-based VS Code — all from one clean panel.</p>` +
         `<ul>` +
           `<li>One-click containers with SSH &amp; VS Code</li>` +

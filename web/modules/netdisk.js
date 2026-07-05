@@ -14,17 +14,24 @@ export async function renderNetdisk() {
     $("#view").innerHTML = `<div class="card"><div class="card-body"><div class="error-box">${escapeHtml(err.message)}</div></div></div>`;
     return;
   }
-  const rows = state.netdisk.items.map(fileRow).join("") || `<tr class="empty-row"><td colspan="5">No files.</td></tr>`;
+  const rows = sortedItems(state.netdisk.items).map(fileRow).join("") || `<tr class="empty-row"><td colspan="5">No files.</td></tr>`;
+  const fileCount = state.netdisk.items.filter((f) => !f.dir).length;
+  const folderCount = state.netdisk.items.length - fileCount;
   $("#view").innerHTML =
-    `<div class="stack">` +
-      `<div class="card"><div class="card-head"><h2>Files</h2><div class="head-tools">` +
-        `<button class="ghost" id="upDir">Up</button>` +
-        `<button class="ghost" id="mkdirBtn">New Folder</button>` +
-        `<label class="buttonlike"><input id="uploadFiles" type="file" multiple> Upload</label>` +
-      `</div></div>` +
-      `<div class="card-body"><div class="kv"><span>Path</span><strong class="mono">/${escapeHtml(state.netdisk.path || "")}</strong></div>` +
-      `<div class="kv"><span>Used</span><strong>${fmtBytes(state.netdisk.quota?.usedBytes || 0)}</strong></div></div>` +
-      `<table class="data"><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Modified</th><th class="actions">Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+    `<div class="stack netdisk-stack">` +
+      `<div class="card netdisk-card"><div class="netdisk-toolbar">` +
+        `<div class="netdisk-title"><h2>我的网盘</h2><span>${folderCount} folders, ${fileCount} files</span></div>` +
+        `<div class="head-tools netdisk-actions">` +
+          `<button class="ghost" id="upDir">Up</button>` +
+          `<button class="ghost" id="mkdirBtn">New Folder</button>` +
+          `<label class="buttonlike"><input id="uploadFiles" type="file" multiple> Upload</label>` +
+        `</div>` +
+      `</div>` +
+      `<div class="netdisk-pathbar">` +
+        `<div class="netdisk-crumbs">${breadcrumbs(state.netdisk.path)}</div>` +
+        `<div class="netdisk-used">Used <strong>${fmtBytes(state.netdisk.quota?.usedBytes || 0)}</strong></div>` +
+      `</div>` +
+      `<table class="data netdisk-table"><thead><tr><th>Name</th><th>Size</th><th>Modified</th><th class="actions">Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` +
       `<div class="card"><div class="card-head"><h2>External Links</h2><label class="check"><input type="checkbox" id="permanentShare"> Permanent new links</label></div>` +
       `<table class="data"><thead><tr><th>Name</th><th>Link</th><th>Expires</th><th class="actions">Actions</th></tr></thead><tbody>${shareRows(state.netdisk.shares || [])}</tbody></table></div>` +
       (isAdmin() ? `<div class="card"><div class="card-head"><h2>All External Links</h2><div class="head-tools"><label class="check compact-check" for="selectAllShares"><input type="checkbox" id="selectAllShares"><span>Select all</span></label><button class="danger" id="deleteSelectedShares">Delete Selected</button></div></div>` +
@@ -36,6 +43,12 @@ export async function renderNetdisk() {
     state.netdisk.path = parts.join("/");
     renderNetdisk();
   };
+  document.querySelectorAll("[data-crumb]").forEach((btn) => {
+    btn.onclick = () => {
+      state.netdisk.path = btn.dataset.crumb;
+      renderNetdisk();
+    };
+  });
   $("#mkdirBtn").onclick = async () => {
     const name = prompt("Folder name");
     if (!name) return;
@@ -99,9 +112,34 @@ export async function renderNetdisk() {
 function fileRow(f) {
   const href = downloadURL(f.path);
   const name = f.dir
-    ? `<button class="linklike" data-open="${escapeHtml(f.path)}">${escapeHtml(f.name)}</button>`
-    : `<a href="${href}">${escapeHtml(f.name)}</a>`;
-  return `<tr><td><div class="primary-line">${name}</div></td><td>${f.dir ? "Folder" : "File"}</td><td>${f.dir ? "-" : fmtBytes(f.size)}</td><td>${escapeHtml(new Date(f.modTime).toLocaleString())}</td><td class="actions"><a class="ghost-link" href="${href}">Download</a><button class="ghost" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">Rename</button><button class="ghost" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">Share</button><button class="icon danger" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">Del</button></td></tr>`;
+    ? `<button class="linklike netdisk-name-link" data-open="${escapeHtml(f.path)}">${escapeHtml(f.name)}</button>`
+    : `<a class="netdisk-name-link" href="${href}">${escapeHtml(f.name)}</a>`;
+  return `<tr><td><div class="netdisk-file"><span class="netdisk-icon ${f.dir ? "folder" : "file"}" aria-hidden="true">${fileIcon(f.dir)}</span><div class="primary-line">${name}</div></div></td><td class="netdisk-size">${f.dir ? "-" : fmtBytes(f.size)}</td><td class="netdisk-time">${escapeHtml(new Date(f.modTime).toLocaleString())}</td><td class="actions netdisk-row-actions"><a class="ghost-link" href="${href}">Download</a><button class="ghost" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">Rename</button><button class="ghost" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">Share</button><button class="icon danger" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">Del</button></td></tr>`;
+}
+
+function sortedItems(items) {
+  return [...(items || [])].sort((a, b) => {
+    if (a.dir !== b.dir) return a.dir ? -1 : 1;
+    return String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
+  });
+}
+
+function breadcrumbs(path) {
+  const parts = (path || "").split("/").filter(Boolean);
+  const crumbs = [`<button class="linklike" data-crumb="">全部文件</button>`];
+  let acc = "";
+  parts.forEach((part) => {
+    acc = joinPath(acc, part);
+    crumbs.push(`<span>/</span><button class="linklike" data-crumb="${escapeHtml(acc)}">${escapeHtml(part)}</button>`);
+  });
+  return crumbs.join("");
+}
+
+function fileIcon(dir) {
+  if (dir) {
+    return `<svg viewBox="0 0 24 24" focusable="false"><path d="M3 6.8C3 5.8 3.8 5 4.8 5h5.1l2 2.2h7.3c1 0 1.8.8 1.8 1.8v1H3V6.8Z"/><path d="M3 9h18l-1.2 8.2c-.1 1-1 1.8-2 1.8H6.2c-1 0-1.8-.7-2-1.8L3 9Z"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" focusable="false"><path d="M6 3.5h8.4L19 8.1v12.1c0 1-.8 1.8-1.8 1.8H6.8c-1 0-1.8-.8-1.8-1.8V5.3c0-1 .8-1.8 1.8-1.8Z"/><path d="M14 3.8V8h4.2"/><path d="M8.5 12h7M8.5 15h7M8.5 18h4.5"/></svg>`;
 }
 
 function shareRows(shares) {

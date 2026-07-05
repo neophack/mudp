@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"mudp/internal/dockerx"
@@ -77,6 +78,7 @@ func (a *App) imageBuildStream(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 		cancel()
 	}()
+	sseKeepalive(ctx, send)
 	err := a.docker.BuildImage(ctx, dockerx.BuildOptions{
 		Dockerfile: req.Dockerfile,
 		Tags:       req.Tags,
@@ -236,6 +238,7 @@ func (a *App) imagePush(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 		cancel()
 	}()
+	sseKeepalive(ctx, send)
 	err := a.docker.PushImage(ctx, req.Ref, auth, func(line string) {
 		send("progress", map[string]string{"message": line})
 	})
@@ -265,8 +268,11 @@ func (a *App) registryAuthForRef(ref string) string {
 
 // sseSender returns a closure that writes one SSE event and flushes.
 func sseSender(w http.ResponseWriter, flusher http.Flusher) func(event string, payload any) {
+	var mu sync.Mutex
 	return func(event string, payload any) {
 		body, _ := json.Marshal(payload)
+		mu.Lock()
+		defer mu.Unlock()
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, body)
 		if flusher != nil {
 			flusher.Flush()

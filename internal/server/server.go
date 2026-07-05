@@ -159,9 +159,11 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/users/groups", a.setUserGroups)
 		r.Get("/api/scripts", a.scripts)
 		r.Post("/api/scripts", a.scripts)
-		r.Post("/api/scripts/fused/build/stream", a.fusedBuildStream)
+		r.Post("/api/scripts/fused/layers/build/stream", a.fusedBuildStream)
 		r.Get("/api/scripts/fused/list", a.fusedList)
 		r.Post("/api/scripts/fused/delete", a.fusedDelete)
+		r.Get("/api/scripts/fused/layers/list", a.fusedLayerList)
+		r.Post("/api/scripts/fused/layers/delete", a.fusedLayerDelete)
 		r.Get("/api/registries", a.registries)
 		r.Post("/api/registries", a.registries)
 		r.Post("/api/registries/delete", a.registryDelete)
@@ -740,15 +742,14 @@ func (a *App) resolveFusedPlan(ctx context.Context, baseRef, sshScript, vscodeSc
 		enableSSH, enableVSCode, accessPassword, sshScript, vscodeScript, a.registryAuthForRef(baseRef))
 }
 
-// fusedPlanForBuild builds a plan for the manual admin "Build SSH/VSCode Image"
-// action. Unlike resolveFusedPlan it (a) returns an error instead of nil on
-// failure so the handler can surface it, (b) does not short-circuit on a cache
-// hit (a manual build is a rebuild request), and (c) uses a placeholder
-// password since the real per-container password is applied at runtime via env.
-// It does NOT pre-record the fused_images row — that is recorded by the caller
-// only after the build succeeds, so fusedList's orphan-pruning (which deletes
-// rows whose image isn't present yet) can't nuke an in-flight build.
+// fusedPlanForBuild builds a plan for the manual admin "Build SSH Layer" /
+// "Build VS Code Layer" action in Settings. It only supports a single service
+// at a time because Settings pre-builds incremental layers, not final fused
+// images. The final image is assembled later when a container is created.
 func (a *App) fusedPlanForBuild(ctx context.Context, baseRef, sshScript, vscodeScript string, enableSSH, enableVSCode bool) (*dockerx.FusedPlan, error) {
+	if enableSSH && enableVSCode {
+		return nil, errors.New("only one layer service may be built at a time")
+	}
 	if !enableSSH && !enableVSCode {
 		return nil, errors.New("either SSH or VSCode must be selected")
 	}
@@ -778,26 +779,61 @@ func (a *App) recordFusedImage(plan *dockerx.FusedPlan) {
 	})
 }
 
+// recordFusedLayer persists a fused_layers row after a successful layer build
+// so the Settings status card reflects it. Safe to call repeatedly (upsert).
+func (a *App) recordFusedLayer(plan *dockerx.FusedPlan, service string) {
+	var f store.FusedLayer
+	switch service {
+	case "ssh":
+		f = store.FusedLayer{
+			CacheKey:    plan.SSHLayerCacheKey,
+			BaseRef:     plan.BaseRef,
+			BaseImageID: plan.BaseImageID,
+			LayerRef:    plan.SSHLayerRef,
+			Service:     "ssh",
+			ScriptHash:  hashScripts(plan.SSHScript, ""),
+		}
+	case "vscode":
+		f = store.FusedLayer{
+			CacheKey:    plan.VSCodeLayerCacheKey,
+			BaseRef:     plan.BaseRef,
+			BaseImageID: plan.BaseImageID,
+			LayerRef:    plan.VSCodeLayerRef,
+			Service:     "vscode",
+			ScriptHash:  hashScripts("", plan.VSCodeScript),
+		}
+	}
+	_ = a.db.SaveFusedLayer(f)
+}
+
 // makeFusedPlan assembles a *dockerx.FusedPlan from its inputs. Shared by the
 // lazy-create path and the manual-build path so the struct shape stays in one
 // place. Pass the base image's id/entrypoint/cmd extracted from InspectImage.
 func makeFusedPlan(baseRef, baseImageID string, origEntrypoint, origCmd []string,
 	scriptHash, cacheKey, fusedRef string, enableSSH, enableVSCode bool,
 	accessPassword, sshScript, vscodeScript, auth string) *dockerx.FusedPlan {
+	sshLayerKey := sshLayerCacheKey(baseImageID, sshScript)
+	vscodeLayerKey := vscodeLayerCacheKey(baseImageID, vscodeScript)
 	return &dockerx.FusedPlan{
-		CacheKey:       cacheKey,
-		FusedRef:       fusedRef,
-		BaseRef:        baseRef,
-		BaseImageID:    baseImageID,
-		OrigEntrypoint: origEntrypoint,
-		OrigCmd:        origCmd,
-		ScriptHash:     scriptHash,
-		EnableSSH:      enableSSH,
-		EnableVSCode:   enableVSCode,
-		AccessPassword: accessPassword,
-		SSHScript:      sshScript,
-		VSCodeScript:   vscodeScript,
-		Auth:           auth,
+		CacheKey:            cacheKey,
+		FusedRef:            fusedRef,
+		BaseRef:             baseRef,
+		BaseImageID:         baseImageID,
+		OrigEntrypoint:      origEntrypoint,
+		OrigCmd:             origCmd,
+		ScriptHash:          scriptHash,
+		SSHScriptHash:       hashScripts(sshScript, ""),
+		VSCodeScriptHash:    hashScripts("", vscodeScript),
+		EnableSSH:           enableSSH,
+		EnableVSCode:        enableVSCode,
+		AccessPassword:      accessPassword,
+		SSHScript:           sshScript,
+		VSCodeScript:        vscodeScript,
+		SSHLayerRef:         dockerx.MUDPFusedSSHLayerRef(baseRef, sshLayerKey),
+		VSCodeLayerRef:      dockerx.MUDPFusedVSCodeLayerRef(baseRef, vscodeLayerKey),
+		SSHLayerCacheKey:    sshLayerKey,
+		VSCodeLayerCacheKey: vscodeLayerKey,
+		Auth:                auth,
 	}
 }
 
@@ -813,19 +849,47 @@ func hashScripts(sshScript, vscodeScript string) string {
 
 // fusedCacheKey is the primary cache key for a fused image: a hex SHA256 of the
 // base image ID, the script hash, and the enable flags. Two creates with the
-// same key reuse the same fused image.
+// same key reuse the same fused image. The version prefix is bumped when the
+// final-image build recipe changes so stale images are not reused.
 func fusedCacheKey(baseImageID, scriptHash string, ssh, vscode bool) string {
 	h := sha256.New()
+	h.Write([]byte("v2"))
+	h.Write([]byte{0})
 	h.Write([]byte(baseImageID))
 	h.Write([]byte{0})
 	h.Write([]byte(scriptHash))
 	h.Write([]byte{0})
 	if ssh {
-		h.Write([]byte{1})
+		h.Write([]byte("ssh"))
 	}
+	h.Write([]byte{0})
 	if vscode {
-		h.Write([]byte{1})
+		h.Write([]byte("vscode"))
 	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// sshLayerCacheKey identifies the SSH incremental layer independently of the
+// VSCode script. It changes only when the base image or the SSH script changes.
+func sshLayerCacheKey(baseImageID, sshScript string) string {
+	h := sha256.New()
+	h.Write([]byte(baseImageID))
+	h.Write([]byte{0})
+	h.Write([]byte("ssh-layer"))
+	h.Write([]byte{0})
+	h.Write([]byte(sshScript))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// vscodeLayerCacheKey identifies the VSCode incremental layer independently of
+// the SSH script. It changes only when the base image or the VSCode script changes.
+func vscodeLayerCacheKey(baseImageID, vscodeScript string) string {
+	h := sha256.New()
+	h.Write([]byte(baseImageID))
+	h.Write([]byte{0})
+	h.Write([]byte("vscode-layer"))
+	h.Write([]byte{0})
+	h.Write([]byte(vscodeScript))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -862,8 +926,11 @@ func (a *App) createStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
+	var sendMu sync.Mutex
 	send := func(event string, payload any) {
 		body, _ := json.Marshal(payload)
+		sendMu.Lock()
+		defer sendMu.Unlock()
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, body)
 		if flusher != nil {
 			flusher.Flush()
@@ -885,12 +952,33 @@ func (a *App) createStream(w http.ResponseWriter, r *http.Request) {
 		cancel()
 	}()
 
+	// Keep the SSE connection alive through reverse proxies during long-running
+	// operations (e.g., fused image builds).
+	sseKeepalive(ctx, send)
+
 	id, err := a.docker.CreateContainer(ctx, opts)
 	if err != nil {
 		send("error", map[string]string{"message": err.Error()})
 		return
 	}
 	send("done", map[string]string{"id": id})
+}
+
+// sseKeepalive sends periodic ping events on an SSE stream so reverse proxies
+// and browsers do not close idle long-running connections.
+func sseKeepalive(ctx context.Context, send func(event string, payload any)) {
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				send("ping", map[string]int64{"ts": time.Now().Unix()})
+			}
+		}
+	}()
 }
 
 func (a *App) containerAction(w http.ResponseWriter, r *http.Request) {

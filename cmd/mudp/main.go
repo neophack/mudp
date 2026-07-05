@@ -42,9 +42,12 @@ func main() {
 		Handler:           app.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1 MiB
+		// WriteTimeout is intentionally disabled: long-running Server-Sent Events
+		// streams (container creation, fused image builds) can run for many
+		// minutes. Each handler uses its own context deadline instead.
+		WriteTimeout:   0,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MiB
 	}
 
 	go func() {
