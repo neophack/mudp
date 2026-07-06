@@ -31,12 +31,17 @@ import (
 )
 
 type App struct {
-	cfg          config.Config
-	db           *store.DB
-	docker       *dockerx.Client
-	auth         auth.Signer
-	lastSnapshot time.Time
-	registryMu   sync.Mutex
+	cfg              config.Config
+	db               *store.DB
+	docker           *dockerx.Client
+	auth             auth.Signer
+	lastSnapshot     time.Time
+	cacheMu          sync.RWMutex
+	refreshMu        sync.Mutex
+	cachedSystem     dockerx.SystemInfo
+	cachedContainers []dockerx.Container
+	cacheAt          time.Time
+	registryMu       sync.Mutex
 }
 
 type contextKey string
@@ -137,6 +142,7 @@ func (a *App) Routes() http.Handler {
 		r.Use(a.minRoleMiddleware(rankOperator))
 		r.Post("/api/images/pull", a.pullImage)
 		r.Post("/api/images/pull/stream", a.pullImageStream)
+		r.Post("/api/images/register", a.imageRegister)
 		r.Post("/api/images/delete", a.deleteImage)
 		r.Post("/api/images/groups", a.setImageGroups)
 		r.Post("/api/images/build/stream", a.imageBuildStream)
@@ -317,7 +323,6 @@ func (a *App) users(w http.ResponseWriter, r *http.Request) {
 			Role         string  `json:"role"`
 			GroupIDs     []int64 `json:"groupIds"`
 			ContainerCap int     `json:"containerCap"`
-			PortPrefix   int     `json:"portPrefix"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
@@ -334,24 +339,9 @@ func (a *App) users(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "username and password are required")
 			return
 		}
-		if req.PortPrefix < 0 || req.PortPrefix > 655 {
-			writeErr(w, http.StatusBadRequest, "port prefix must be between 0 and 655")
-			return
-		}
 		if err := a.db.CreateUser(req.Username, req.Password, req.Role, req.GroupIDs, req.ContainerCap); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
-		}
-		if req.PortPrefix > 0 {
-			created, err := a.db.UserByUsername(req.Username)
-			if err != nil {
-				writeErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			if err := a.db.UpdateUserPortPrefix(created.ID, req.PortPrefix); err != nil {
-				writeErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
 		}
 		a.record(r, "user.create", req.Username)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -591,8 +581,7 @@ func (a *App) containers(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	switch r.Method {
 	case http.MethodGet:
-		items, err := a.docker.ListContainers(r.Context(), u.Username, u.Role == "admin")
-		respond(w, items, err)
+		writeJSON(w, http.StatusOK, a.runtimeContainers(u.Username, u.Role == "admin"))
 	case http.MethodPost:
 		if !canMutate(u) {
 			writeErr(w, http.StatusForbidden, "read-only role cannot create containers")
@@ -626,6 +615,8 @@ type createRequest struct {
 	GPUs           string   `json:"gpus"`
 	SSH            bool     `json:"ssh"`
 	VSCode         bool     `json:"vscode"`
+	Forward8080    bool     `json:"forward8080"`
+	Forward80      bool     `json:"forward80"`
 	AccessPassword string   `json:"accessPassword"`
 	PortsRaw       string   `json:"ports"`
 	MountsRaw      string   `json:"mounts"`
@@ -689,11 +680,12 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	return dockerx.CreateOptions{
 		Username: u.Username, Name: req.Name, ImageRef: img.DockerRef, ImageName: img.DisplayName,
 		Env: normalizeEnv(req.Env), GPUs: req.GPUs, SSH: req.SSH, VSCode: req.VSCode,
+		Forward8080: req.Forward8080, Forward80: req.Forward80,
 		AccessPassword: req.AccessPassword, SSHScript: scripts.SSHScript, VSCodeScript: scripts.VSCodeScript,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, NetdiskPath: netdiskPath,
 		RestartPolicy: req.RestartPolicy,
-		FusedPlan: fusedPlan,
+		FusedPlan:     fusedPlan,
 	}, nil
 }
 
@@ -1133,7 +1125,7 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 	u, err := a.db.UserByFeishu(fu.OpenID)
 	if err != nil {
 		// First login: create the user in the pending group.
-		u, err = a.db.CreateFeishuUser(fu.OpenID, fu.Name)
+		u, err = a.db.CreateFeishuUser(fu.OpenID, fu.Username(), fu.Comment)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return

@@ -146,17 +146,8 @@ func (a *App) fusedList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := a.db.ListFusedImages()
-	// Prune rows whose image was removed out from under us so the UI stays honest.
-	// Only delete when we can confirm the image is really gone; transient Docker
-	// errors should not wipe database records.
 	if err == nil {
-		for _, f := range items {
-			exists, existsErr := a.docker.ImageExists(r.Context(), f.FusedRef)
-			if existsErr == nil && !exists {
-				_ = a.db.DeleteFusedImage(f.CacheKey)
-			}
-		}
-		items, _ = a.db.ListFusedImages()
+		go a.pruneMissingFusedImages(items)
 	}
 	respond(w, items, err)
 }
@@ -170,19 +161,32 @@ func (a *App) fusedLayerList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := a.db.ListFusedLayers()
-	// Prune rows whose layer image was removed out from under us. Only delete
-	// when we can confirm the image is really gone; transient Docker errors should
-	// not wipe database records.
 	if err == nil {
-		for _, f := range items {
-			exists, existsErr := a.docker.ImageExists(r.Context(), f.LayerRef)
-			if existsErr == nil && !exists {
-				_ = a.db.DeleteFusedLayer(f.CacheKey)
-			}
-		}
-		items, _ = a.db.ListFusedLayers()
+		go a.pruneMissingFusedLayers(items)
 	}
 	respond(w, items, err)
+}
+
+func (a *App) pruneMissingFusedImages(items []store.FusedImage) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, f := range items {
+		exists, err := a.docker.ImageExists(ctx, f.FusedRef)
+		if err == nil && !exists {
+			_ = a.db.DeleteFusedImage(f.CacheKey)
+		}
+	}
+}
+
+func (a *App) pruneMissingFusedLayers(items []store.FusedLayer) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, f := range items {
+		exists, err := a.docker.ImageExists(ctx, f.LayerRef)
+		if err == nil && !exists {
+			_ = a.db.DeleteFusedLayer(f.CacheKey)
+		}
+	}
 }
 
 // fusedDelete removes a cached fused image (both the Docker image and its row).

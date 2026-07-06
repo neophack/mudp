@@ -13,15 +13,21 @@ export function renderDashboard() {
   const sys = d.system || {};
   const mine = d.mine || {};
   const healthy = !!sys.healthy;
+  // Non-admins see only their own resource counts; admins see the whole
+  // platform. A short label keeps the scope obvious.
+  const scopeHint = admin
+    ? ""
+    : `<p class="hint dash-scope">Showing your resources only.</p>`;
 
   $("#view").innerHTML =
     `<div class="dash-stack">` +
+      scopeHint +
       // Row 1: four uniform stat tiles
       `<div class="dash-tiles">` +
         statTile("Containers", sys.containers?.total ?? 0, `${sys.containers?.running ?? 0} running`, "📦") +
-        statTile("Images", sys.images?.count ?? 0, fmtMB(sys.images?.sizeMb), "🖼") +
+        statTile("Images", sys.images?.count ?? 0, admin ? fmtMB(sys.images?.sizeMb) : `${sys.images?.count ?? 0} in use`, "🖼") +
         statTile("Volumes", sys.volumes?.count ?? 0, fmtMB(sys.volumes?.sizeMb), "💾") +
-        statTile("Networks", sys.networks ?? 0, "managed + system", "🌐") +
+        statTile("Networks", sys.networks ?? 0, admin ? "managed + system" : "mine + system", "🌐") +
       `</div>` +
       // Row 2: environment (wide) + donut chart
       `<div class="dash-row-2">` +

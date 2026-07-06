@@ -1,7 +1,7 @@
 // Stacks: deploy docker-compose projects via the host's `docker compose` CLI.
 // Compose body + env live in the DB; deploys stream progress over SSE.
 
-import { state, api, toast, refreshAll, renderView, canMutate } from "../app.js";
+import { state, api, toast, refreshSection, renderView, canMutate } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 
 const SAMPLE = `services:
@@ -99,7 +99,7 @@ function openStackEditor(stack) {
     else payload.id = stack.id;
     try {
       const r = await api("/api/stacks", { method: "POST", body: JSON.stringify(payload) });
-      await refreshAll();
+      await refreshSection("stacks");
       renderView();
       closeModal();
       toast(isNew ? "Stack saved" : "Stack updated", true);
@@ -193,11 +193,8 @@ async function streamStack(res, doneVerb) {
       state.stackRun.logs += `[${event}] ${data.message || ""}\n`;
       renderStackProgress();
       toast(`Stack ${doneVerb}`, true);
-      setTimeout(async () => {
-        closeModal();
-        await refreshAll();
-        renderView();
-      }, 800);
+      refreshSection("stacks", "containers").then(() => renderView());
+      setTimeout(() => closeModal(), 800);
     }
   });
 }
@@ -206,7 +203,7 @@ async function deleteStack(id, name) {
   if (!confirm(`Delete stack “${name}”? This removes the stored definition. Run Down first if you want to stop its containers.`)) return;
   try {
     await api("/api/stacks/delete", { method: "POST", body: JSON.stringify({ id }) });
-    await refreshAll();
+    await refreshSection("stacks", "containers");
     renderView();
     toast("Stack deleted", true);
   } catch (err) {

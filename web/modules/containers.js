@@ -62,9 +62,14 @@ function containerRow(c) {
   const sshUser = c.sshUser || "root";
   const sshHost = location.hostname;
   const sshCmd = c.sshPort ? `ssh -p ${c.sshPort} ${sshUser}@${sshHost}` : "";
+  // Docker on Linux binds to 0.0.0.0 so the backend URL contains 127.0.0.1.
+  // Replace it with the server hostname the browser is already connected to.
+  const fixUrl = (url) => url ? url.replace(/^(https?:\/\/)(127\.0\.0\.1|0\.0\.0\.0|::1)(:\d+)/, `$1${location.hostname}$3`) : url;
   const conn = [];
   if (sshCmd) conn.push(`<span class="copy-chip"><code class="mono">${escapeHtml(sshCmd)}</code><button class="copy-btn" data-copy="${escapeHtml(sshCmd)}" title="Copy SSH command">⧉</button></span>`);
-  if (c.vscodeUrl) conn.push(`<a class="vscode-link" href="${escapeHtml(c.vscodeUrl)}" target="_blank" rel="noopener">VS Code ↗</a>`);
+  if (c.vscodeUrl) conn.push(`<a class="vscode-link" href="${escapeHtml(fixUrl(c.vscodeUrl))}" target="_blank" rel="noopener">VS Code ↗</a>`);
+  if (c.http8080Url) conn.push(`<a class="vscode-link" href="${escapeHtml(fixUrl(c.http8080Url))}" target="_blank" rel="noopener">8080 ↗</a>`);
+  if (c.http80Url) conn.push(`<a class="vscode-link" href="${escapeHtml(fixUrl(c.http80Url))}" target="_blank" rel="noopener">80 ↗</a>`);
   const iconBtn = (act, glyph, title, cls = "icon", enabled = true) => {
     const isLoading = pending(act);
     const dis = !enabled || isLoading ? "disabled" : "";

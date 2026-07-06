@@ -13,6 +13,7 @@ import { renderStacks } from "./modules/stacks.js";
 import { renderUsers } from "./modules/users.js";
 import { renderUsage } from "./modules/usage.js";
 import { renderAudit } from "./modules/audit.js";
+import { renderBootstrap } from "./modules/bootstrap.js";
 import { renderSettings } from "./modules/settings.js";
 import { renderNetdisk } from "./modules/netdisk.js";
 import { renderDisks } from "./modules/disks.js";
@@ -37,6 +38,7 @@ export const state = {
   scripts: { sshScript: "", vscodeScript: "" },
   fusedImages: [],
   fusedLayers: [],
+  fusedLoaded: false,
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
   search: "",
   logViewer: { open: false, title: "", content: "", id: "", tail: 300 },
@@ -130,24 +132,51 @@ export async function load() {
   }
 }
 
+const SECTION_URLS = {
+  images: "/api/images",
+  containers: "/api/containers",
+  dashboard: "/api/dashboard",
+  volumes: "/api/volumes",
+  networks: "/api/networks",
+  stacks: "/api/stacks",
+  users: "/api/users",
+  groups: "/api/groups",
+  scripts: "/api/scripts",
+  audit: "/api/admin/audit?limit=200",
+};
+
+// Refresh only the specified data sections. Faster than refreshAll() for
+// post-operation updates where only one or two endpoints are affected.
+export async function refreshSection(...keys) {
+  const out = await Promise.all(keys.map((k) => api(SECTION_URLS[k]).catch(() => null)));
+  keys.forEach((k, i) => {
+    if (out[i] !== null) {
+      state[k] = out[i] || (k === "scripts" ? { sshScript: "", vscodeScript: "" } : []);
+    }
+  });
+  if (keys.includes("dashboard") && state.dashboard?.usage) {
+    state.usage = state.dashboard.usage;
+  }
+}
+
 export async function refreshAll() {
   const jobs = [api("/api/images"), api("/api/containers"), api("/api/dashboard"), api("/api/volumes"), api("/api/networks"), api("/api/stacks")];
   const labels = ["images", "containers", "dashboard", "volumes", "networks", "stacks"];
   if (isAdmin()) {
-    jobs.push(api("/api/users"), api("/api/groups"), api("/api/admin/usage"), api("/api/scripts"), api("/api/admin/audit?limit=200"), api("/api/scripts/fused/list"), api("/api/scripts/fused/layers/list"));
-    labels.push("users", "groups", "usage", "scripts", "audit", "fusedImages", "fusedLayers");
+    jobs.push(api("/api/users"), api("/api/groups"), api("/api/scripts"), api("/api/admin/audit?limit=200"));
+    labels.push("users", "groups", "scripts", "audit");
   }
   const out = await Promise.all(jobs);
   out.forEach((v, i) => {
     state[labels[i]] = v || (labels[i] === "scripts" ? { sshScript: "", vscodeScript: "" } : []);
   });
+  if (state.dashboard?.usage) {
+    state.usage = state.dashboard.usage;
+  }
 }
 
 // ---------------- Shell + tab router ----------------
 
-// Lucide (ISC license) 24×24 stroke icons, inlined so the embedded app stays
-// fully offline. `currentColor` lets each icon inherit the sidebar's dark /
-// active / accent colour — no font file or CDN needed.
 const svgIcon = (body) =>
   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 
@@ -163,9 +192,9 @@ const ICONS = {
   usage: svgIcon('<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>'),
   audit: svgIcon('<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>'),
   disks: svgIcon('<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>'),
+  bootstrap: svgIcon('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>'),
   scripts: svgIcon('<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>'),
   logout: svgIcon('<path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>'),
-  // panel-left-close shown when expanded (click to collapse); panel-left when collapsed.
   collapse: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'),
   expand: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>'),
 };
@@ -184,6 +213,7 @@ function label(tab) {
       usage: "Usage",
       audit: "Activity Log",
       disks: "Disks",
+      bootstrap: "Bootstrap",
       scripts: "Settings",
     }[tab] || tab
   );
@@ -203,14 +233,15 @@ function subtitle(tab) {
       usage: "Per-user and per-container CPU, memory, disk, GPU, and process usage.",
       audit: "Recent management actions across the platform.",
       disks: "Host disk overview, mount helpers, and database backups.",
-      scripts: "Bootstrap scripts, Feishu SSO, and system settings.",
+      bootstrap: "Manage bootstrap scripts and fused layers for SSH and VS Code.",
+      scripts: "Configure registries, Feishu SSO, and system settings.",
     }[tab] || ""
   );
 }
 
 export function render() {
   const admin = isAdmin();
-  const tabs = ["dashboard", "netdisk", "containers", "usage", "images", "volumes", "networks", "stacks", ...(admin ? ["users", "audit", "disks", "scripts"] : [])];
+  const tabs = ["dashboard", "netdisk", "containers", "usage", "images", "volumes", "networks", "stacks", ...(admin ? ["users", "audit", "disks", "bootstrap", "scripts"] : [])];
 
   const collapsed = state.sidebarCollapsed;
   $("#app").innerHTML =
@@ -231,7 +262,7 @@ export function render() {
         `</nav>` +
         `<div class="profile">` +
           `<strong>${escapeHtml(state.me.username)}</strong>` +
-          `<span>${escapeHtml(state.me.role)}${state.me.groups?.length ? " · " + escapeHtml(state.me.groups.join(", ")) : ""}</span>` +
+          `<span>${escapeHtml(state.me.role)}${state.me.groups?.length ? " - " + escapeHtml(state.me.groups.join(", ")) : ""}</span>` +
           `<button id="logout" title="Logout">${ICONS.logout}<span class="nav-label">Logout</span></button>` +
         `</div>` +
       `</aside>` +
@@ -243,11 +274,11 @@ export function render() {
           `</div>` +
           `<div class="head-actions">` +
             (state.tab === "containers"
-              ? `<div class="search"><input id="searchBox" placeholder="Search containers…" value="${escapeHtml(state.search)}"></div>`
+              ? `<div class="search"><input id="searchBox" placeholder="Search containers" value="${escapeHtml(state.search)}"></div>`
               : "") +
             (state.tab === "containers" && canMutate() ? `<button class="primary" id="newContainerBtn">+ New Container</button>` : "") +
             (state.tab === "images" && canMutate() ? `<button class="primary" id="pullImageBtn">+ Pull Image</button>` : "") +
-            `<button class="ghost" id="refresh">↻ Refresh</button>` +
+            `<button class="ghost" id="refresh">Refresh</button>` +
           `</div>` +
         `</header>` +
         `<div id="view"></div>` +
@@ -309,12 +340,10 @@ export function renderView() {
   if (state.tab === "usage") return renderUsage();
   if (state.tab === "audit") return renderAudit();
   if (state.tab === "disks") return renderDisks();
+  if (state.tab === "bootstrap") return renderBootstrap();
   if (state.tab === "scripts") return renderSettings();
 }
 
-// Re-exported so modules (login/pending) can drive transitions without a
-// circular import on render/renderPending/renderView themselves.
 export { renderLogin, renderPending };
 
 load();
-

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -13,7 +13,7 @@
     <header class="share-header">
       <a class="share-brand" href="/">MUDP Netdisk</a>
       <div class="share-header-actions">
-        <button id="loginBtn" class="ghost" hidden>登录</button>
+        <button id="loginBtn" class="ghost" hidden>Login</button>
         <span id="userLabel" class="hint" hidden></span>
       </div>
     </header>
@@ -32,20 +32,20 @@
           </div>
         </div>
         <div class="share-head-actions">
-          <button id="saveSelectedBtn" class="primary" disabled>保存到网盘</button>
-          <button id="downloadAllBtn" class="ghost">全部下载</button>
+          <button id="saveSelectedBtn" class="primary" disabled>Save to Netdisk</button>
+          <button id="downloadAllBtn" class="ghost">Download All</button>
         </div>
       </div>
 
       <div class="share-toolbar">
-        <label class="check"><input type="checkbox" id="selectAll"> 全选</label>
+        <label class="check"><input type="checkbox" id="selectAll"> Select All</label>
         <nav class="share-breadcrumb" id="breadcrumb"></nav>
       </div>
 
       <div class="share-body" id="shareBody">
-        <div class="share-loading">正在加载文件列表…</div>
+        <div class="share-loading">Loading file list…</div>
       </div>
-      <div class="share-empty" id="shareEmpty" hidden>该分享中没有文件</div>
+      <div class="share-empty" id="shareEmpty" hidden>No files in this share</div>
     </main>
   </div>
 
@@ -54,8 +54,8 @@
     <div class="modal wide picker-modal">
       <div class="modal-head">
         <div>
-          <h2>选择保存位置</h2>
-          <p class="hint" style="margin-top:4px">选择您网盘中的文件夹，或新建文件夹后保存</p>
+          <h2>Choose Save Location</h2>
+          <p class="hint" style="margin-top:4px">Choose a folder in your netdisk, or create a new folder to save into</p>
         </div>
         <button class="icon" id="closePicker">✕</button>
       </div>
@@ -63,9 +63,9 @@
         <aside class="picker-tree" id="pickerTree"></aside>
         <section class="picker-main">
           <div class="picker-toolbar">
-            <button class="ghost" id="pickerUp">↑ 上一级</button>
+            <button class="ghost" id="pickerUp">↑ Up</button>
             <div class="picker-path" id="pickerPath">/</div>
-            <button class="ghost" id="pickerMkdir">+ 新建文件夹</button>
+            <button class="ghost" id="pickerMkdir">+ New Folder</button>
           </div>
           <div class="picker-list" id="pickerList"></div>
         </section>
@@ -73,8 +73,8 @@
       <div class="modal-foot">
         <span class="hint" id="pickerHint"></span>
         <div class="modal-tools">
-          <button class="ghost" id="cancelPicker">取消</button>
-          <button class="primary" id="confirmPicker">保存到这里</button>
+          <button class="ghost" id="cancelPicker">Cancel</button>
+          <button class="primary" id="confirmPicker">Save Here</button>
         </div>
       </div>
     </div>
@@ -83,13 +83,13 @@
   <!-- Login prompt modal -->
   <div class="modal-backdrop" id="loginBackdrop" hidden>
     <div class="modal">
-      <div class="modal-head"><h2>需要登录</h2></div>
+      <div class="modal-head"><h2>Login Required</h2></div>
       <div class="modal-body">
-        <p>请先登录 MUDP，然后才能将分享的文件保存到您的网盘。</p>
+        <p>Please log in to MUDP before saving shared files to your netdisk.</p>
       </div>
       <div class="modal-foot">
-        <button class="ghost" id="closeLogin">取消</button>
-        <button class="primary" id="goLogin">去登录</button>
+        <button class="ghost" id="closeLogin">Cancel</button>
+        <button class="primary" id="goLogin">Log In</button>
       </div>
     </div>
   </div>

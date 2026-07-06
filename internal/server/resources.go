@@ -4,10 +4,52 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
+	"mudp/internal/dockerx"
 	"mudp/internal/store"
 )
+
+func (a *App) refreshRuntimeCache(ctx context.Context) {
+	a.refreshMu.Lock()
+	defer a.refreshMu.Unlock()
+
+	sys := a.docker.SystemInfo(ctx)
+	containers, err := a.docker.ListContainersWithSize(ctx, "", true)
+	if err != nil {
+		containers = nil
+	}
+	a.cacheMu.Lock()
+	a.cachedSystem = sys
+	if err == nil {
+		a.cachedContainers = containers
+	}
+	a.cacheAt = time.Now()
+	a.cacheMu.Unlock()
+}
+
+func (a *App) runtimeSystem() dockerx.SystemInfo {
+	a.cacheMu.RLock()
+	defer a.cacheMu.RUnlock()
+	return a.cachedSystem
+}
+
+func (a *App) runtimeContainers(username string, admin bool) []dockerx.Container {
+	a.cacheMu.RLock()
+	defer a.cacheMu.RUnlock()
+	out := make([]dockerx.Container, 0, len(a.cachedContainers))
+	for _, c := range a.cachedContainers {
+		if !admin {
+			owner := c.Labels["mudp.user"]
+			if owner != username && !strings.HasPrefix("/"+c.FullName, dockerx.UserContainerPrefix(username)) {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
+}
 
 // collectResourceSnapshot gathers one resource sample for every container and
 // persists it. It is safe to call concurrently; overlapping runs are skipped
@@ -20,24 +62,31 @@ func (a *App) collectResourceSnapshot(ctx context.Context) []store.ResourceSampl
 	if err != nil {
 		return nil
 	}
+	a.refreshRuntimeCache(ctx)
+	containers := a.runtimeContainers("", true)
+	usersByName := map[string]store.User{}
+	for _, u := range users {
+		usersByName[u.Username] = u
+	}
 	var samples []store.ResourceSample
 	now := time.Now().Format(time.RFC3339)
-	for _, u := range users {
-		containers, _ := a.docker.ListContainers(ctx, u.Username, false)
-		for _, c := range containers {
-			s := store.ResourceSample{
-				UserID: u.ID, Username: u.Username, ContainerID: c.ID, Container: c.Name,
-				MemoryMB: c.MemoryMB, DiskMB: c.DiskMB, CreatedAt: now,
-			}
-			if c.State == "running" {
-				if one, err := a.docker.SampleStats(ctx, c.ID); err == nil {
-					s.CPUPercent = one.CPUPercent
-					s.MemoryMB = one.MemoryMB
-				}
-			}
-			s.GPUPercent = c.GPUPercent
-			samples = append(samples, s)
+	for _, c := range containers {
+		u, ok := usersByName[c.Labels["mudp.user"]]
+		if !ok {
+			continue
 		}
+		s := store.ResourceSample{
+			UserID: u.ID, Username: u.Username, ContainerID: c.ID, Container: c.Name,
+			MemoryMB: c.MemoryMB, DiskMB: c.DiskMB, CreatedAt: now,
+		}
+		if c.State == "running" {
+			if one, err := a.docker.SampleStats(ctx, c.ID); err == nil {
+				s.CPUPercent = one.CPUPercent
+				s.MemoryMB = one.MemoryMB
+			}
+		}
+		s.GPUPercent = c.GPUPercent
+		samples = append(samples, s)
 	}
 	if err := a.db.SaveResourceSamples(samples); err == nil {
 		a.lastSnapshot = time.Now()
@@ -56,6 +105,7 @@ func (a *App) resourceHistory(w http.ResponseWriter, r *http.Request) {
 // sampling, audit/resource pruning, and WAL checkpointing. The returned
 // function stops the jobs; call it during graceful shutdown.
 func (a *App) StartBackgroundJobs(ctx context.Context) func() {
+	cache := time.NewTicker(15 * time.Second)
 	sample := time.NewTicker(60 * time.Second)
 	prune := time.NewTicker(24 * time.Hour)
 	checkpoint := time.NewTicker(60 * time.Minute)
@@ -76,6 +126,8 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 	go func() {
 		for {
 			select {
+			case <-cache.C:
+				a.refreshRuntimeCache(ctx)
 			case <-sample.C:
 				a.collectResourceSnapshot(ctx)
 			case <-prune.C:
@@ -85,6 +137,7 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 					// Best-effort; noisy logs on shutdown are unhelpful.
 				}
 			case <-stop:
+				cache.Stop()
 				sample.Stop()
 				prune.Stop()
 				checkpoint.Stop()
@@ -105,10 +158,5 @@ func (a *App) pruneOldData(ctx context.Context) {
 }
 
 func (a *App) adminProcesses(w http.ResponseWriter, r *http.Request) {
-	items, err := a.docker.ListContainers(r.Context(), "", true)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, a.docker.TopProcesses(r.Context(), items))
+	writeJSON(w, http.StatusOK, a.docker.TopProcesses(r.Context(), a.runtimeContainers("", true)))
 }

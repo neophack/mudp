@@ -1,7 +1,7 @@
 // Volumes: list, create, delete, prune. mudp-managed volumes are namespaced
 // per user; admins see everyone's.
 
-import { state, api, toast, refreshAll, renderView, canMutate } from "../app.js";
+import { state, api, toast, refreshSection, renderView, canMutate } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 export function renderVolumes() {
@@ -63,7 +63,7 @@ function openCreateVolume() {
     };
     try {
       await api("/api/volumes", { method: "POST", body: JSON.stringify(payload) });
-      await refreshAll();
+      await refreshSection("volumes");
       renderView();
       closeModal();
       toast("Volume created", true);
@@ -77,7 +77,7 @@ async function deleteVolume(fullName, name) {
   if (!confirm(`Delete volume “${name}”? Data inside is lost.`)) return;
   try {
     await api("/api/volumes/delete", { method: "POST", body: JSON.stringify({ name: fullName, force: false }) });
-    await refreshAll();
+    await refreshSection("volumes");
     renderView();
     toast("Volume deleted", true);
   } catch (err) {
@@ -89,7 +89,7 @@ async function pruneVolumes() {
   if (!confirm("Remove all your unused (dangling) volumes?")) return;
   try {
     const r = await api("/api/volumes/prune", { method: "POST" });
-    await refreshAll();
+    await refreshSection("volumes");
     renderView();
     toast(`Reclaimed ${r.removed || 0} volume(s), ${fmtMB((r.bytesFreed || 0) / 1024 / 1024)}`, true);
   } catch (err) {

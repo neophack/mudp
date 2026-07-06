@@ -73,10 +73,10 @@ function settingsCard(i) {
     : `<p class="hint">No networks available.</p>`;
   const policySelect = editable
     ? `<select id="editRestart">` +
-      `<option value="unless-stopped" ${policy === "unless-stopped" ? "selected" : ""}>开机自启 (unless-stopped)</option>` +
-      `<option value="always" ${policy === "always" ? "selected" : ""}>总是重启 (always)</option>` +
-      `<option value="on-failure" ${policy === "on-failure" ? "selected" : ""}>失败时重启 (on-failure)</option>` +
-      `<option value="no" ${policy === "no" ? "selected" : ""}>不自动重启 (no)</option>` +
+      `<option value="unless-stopped" ${policy === "unless-stopped" ? "selected" : ""}>Start on boot (unless-stopped)</option>` +
+      `<option value="always" ${policy === "always" ? "selected" : ""}>Always restart (always)</option>` +
+      `<option value="on-failure" ${policy === "on-failure" ? "selected" : ""}>Restart on failure (on-failure)</option>` +
+      `<option value="no" ${policy === "no" ? "selected" : ""}>Do not auto-restart (no)</option>` +
       `</select>`
     : `<dd>${escapeHtml(i.restartPolicy || "-")}</dd>`;
   return (

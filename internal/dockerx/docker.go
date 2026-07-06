@@ -2,7 +2,6 @@ package dockerx
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -24,6 +23,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 	"github.com/opencontainers/image-spec/specs-go/v1"
 	"mudp/internal/bootstrap"
@@ -64,6 +64,8 @@ type Container struct {
 	SSHPort          string            `json:"sshPort,omitempty"`
 	SSHUser          string            `json:"sshUser,omitempty"`
 	VSCodeURL        string            `json:"vscodeUrl,omitempty"`
+	HTTP8080URL      string            `json:"http8080Url,omitempty"`
+	HTTP80URL        string            `json:"http80Url,omitempty"`
 	CreatedAt        int64             `json:"createdAt"`
 }
 
@@ -76,6 +78,8 @@ type CreateOptions struct {
 	GPUs           string
 	SSH            bool
 	VSCode         bool
+	Forward8080    bool
+	Forward80      bool
 	AccessPassword string
 	SSHScript      string
 	VSCodeScript   string
@@ -131,9 +135,9 @@ type FusedPlan struct {
 	// images used by the multi-stage fused build. They are computed from the
 	// base image ID and the corresponding single script body so the layers can
 	// be reused across final-image combinations.
-	SSHLayerRef      string
-	VSCodeLayerRef   string
-	SSHLayerCacheKey string
+	SSHLayerRef         string
+	VSCodeLayerRef      string
+	SSHLayerCacheKey    string
 	VSCodeLayerCacheKey string
 	// Auth is optional base64 registry auth, forwarded to the build so a
 	// FROM <private-registry>/... works.
@@ -657,6 +661,22 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		exposed["13337/tcp"] = struct{}{}
 		portMap["13337/tcp"] = []nat.PortBinding{{HostPort: hostPort}}
 	}
+	if opts.Forward8080 {
+		hostPort, err := nextPort()
+		if err != nil {
+			return "", err
+		}
+		exposed["8080/tcp"] = struct{}{}
+		portMap["8080/tcp"] = []nat.PortBinding{{HostPort: hostPort}}
+	}
+	if opts.Forward80 {
+		hostPort, err := nextPort()
+		if err != nil {
+			return "", err
+		}
+		exposed["80/tcp"] = struct{}{}
+		portMap["80/tcp"] = []nat.PortBinding{{HostPort: hostPort}}
+	}
 	labels := map[string]string{
 		ManagedLabel:          "true",
 		UserLabel:             opts.Username,
@@ -665,6 +685,8 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		"mudp.gpu":            opts.GPUs,
 		"mudp.ssh":            fmt.Sprint(opts.SSH),
 		"mudp.vscode":         fmt.Sprint(opts.VSCode),
+		"mudp.forward8080":    fmt.Sprint(opts.Forward8080),
+		"mudp.forward80":      fmt.Sprint(opts.Forward80),
 		"mudp.connectionUser": "root",
 	}
 	hostCfg := &container.HostConfig{PortBindings: portMap, RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyMode(normalizeRestartPolicy(opts.RestartPolicy))}}
@@ -1123,8 +1145,16 @@ func (d *Client) serviceReady(ctx context.Context, id string, privatePort uint16
 }
 
 func (d *Client) ListContainers(ctx context.Context, username string, admin bool) ([]Container, error) {
+	return d.listContainers(ctx, username, admin, false)
+}
+
+func (d *Client) ListContainersWithSize(ctx context.Context, username string, admin bool) ([]Container, error) {
+	return d.listContainers(ctx, username, admin, true)
+}
+
+func (d *Client) listContainers(ctx context.Context, username string, admin, includeSize bool) ([]Container, error) {
 	args := filters.NewArgs(filters.Arg("label", "mudp.managed=true"))
-	list, err := d.c.ContainerList(ctx, container.ListOptions{All: true, Size: true, Filters: args})
+	list, err := d.c.ContainerList(ctx, container.ListOptions{All: true, Size: includeSize, Filters: args})
 	if err != nil {
 		return nil, err
 	}
@@ -1162,16 +1192,24 @@ func (d *Client) ListContainers(ctx context.Context, username string, admin bool
 			ID: c.ID, Name: display, FullName: full, Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
 			SSHPort: mappedPort(c.Ports, 22), SSHUser: sshUser(c.Labels), VSCodeURL: vscodeURL(c.Ports),
+			HTTP8080URL: httpURL(c.Ports, 8080), HTTP80URL: httpURL(c.Ports, 80),
 		})
 	}
 	for i := range out {
-		mem, _ := d.memoryMB(ctx, out[i].ID)
-		out[i].MemoryMB = mem
-		if gpu, _ := d.GPUUsage(ctx, out[i].GPU); gpu.MemoryTotalMB > 0 || gpu.Percent > 0 {
-			out[i].GPUPercent = gpu.Percent
-			out[i].GPUMemoryMB = gpu.MemoryMB
-			out[i].GPUMemoryTotalMB = gpu.MemoryTotalMB
-			out[i].GPUMemoryPct = gpu.MemoryPct
+		if out[i].State == "running" {
+			mem, _ := d.memoryMB(ctx, out[i].ID)
+			out[i].MemoryMB = mem
+			if gpu, _ := d.GPUUsage(ctx, out[i].GPU); gpu.MemoryTotalMB > 0 || gpu.Percent > 0 {
+				out[i].GPUPercent = gpu.Percent
+				out[i].GPUMemoryMB = gpu.MemoryMB
+				out[i].GPUMemoryTotalMB = gpu.MemoryTotalMB
+				out[i].GPUMemoryPct = gpu.MemoryPct
+			}
+		} else {
+			out[i].SSHPort = ""
+			out[i].SSHUser = ""
+			out[i].VSCodeURL = ""
+			continue
 		}
 		// Only surface SSH/VSCode connection info once the bootstrap install
 		// has actually finished (its marker file is present), so users never
@@ -1207,8 +1245,14 @@ func sshUser(labels map[string]string) string {
 }
 
 func vscodeURL(ports []container.Port) string {
+	return httpURL(ports, 13337)
+}
+
+// httpURL returns the host-side http:// URL for the given container private
+// port (e.g. 8080 or 80) when it is published, mirroring vscodeURL's logic.
+func httpURL(ports []container.Port, privatePort uint16) string {
 	for _, p := range ports {
-		if p.PrivatePort == 13337 && p.PublicPort > 0 {
+		if p.PrivatePort == privatePort && p.PublicPort > 0 {
 			host := p.IP
 			if host == "" || host == "0.0.0.0" || host == "::" {
 				host = "127.0.0.1"
@@ -1220,7 +1264,7 @@ func vscodeURL(ports []container.Port) string {
 }
 
 func (d *Client) memoryMB(ctx context.Context, id string) (float64, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
 	defer cancel()
 	resp, err := d.c.ContainerStatsOneShot(ctx, id)
 	if err != nil {
@@ -1526,30 +1570,28 @@ func (d *Client) Logs(ctx context.Context, id string, tail int) (string, error) 
 		return "", err
 	}
 	defer rc.Close()
-	reader := bufio.NewReader(rc)
-	var b strings.Builder
-	for {
-		header := make([]byte, 8)
-		if _, err := io.ReadFull(reader, header); err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				break
-			}
+
+	// mudp containers are created with a TTY, so the logs stream is raw (no
+	// 8-byte multiplexed framing header). For TTY-less containers Docker sends
+	// a multiplexed stream that must be demuxed via stdcopy. Handling both
+	// paths here avoids misinterpreting raw log bytes as a frame header, which
+	// previously produced "log frame exceeds maximum size" and corrupted output.
+	if inspect.Config.Tty {
+		out, err := io.ReadAll(rc)
+		if err != nil {
 			return "", err
 		}
-		size := int(header[4])<<24 | int(header[5])<<16 | int(header[6])<<8 | int(header[7])
-		if size <= 0 {
-			continue
-		}
-		const maxLogFrame = 16 << 20 // 16 MiB per log frame
-		if size > maxLogFrame {
-			return "", fmt.Errorf("log frame exceeds maximum size")
-		}
-		payload := make([]byte, size)
-		if _, err := io.ReadFull(reader, payload); err != nil {
-			return "", err
-		}
-		b.Write(payload)
+		return string(out), nil
 	}
+	var stdout, stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, rc); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	if stderr.Len() > 0 {
+		b.WriteString(stderr.String())
+	}
+	b.WriteString(stdout.String())
 	return b.String(), nil
 }
 

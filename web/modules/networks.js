@@ -1,6 +1,6 @@
 // Networks: list, create, delete. mudp-managed networks are namespaced per user.
 
-import { state, api, toast, refreshAll, renderView, canMutate } from "../app.js";
+import { state, api, toast, refreshSection, renderView, canMutate } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 export function renderNetworks() {
@@ -61,7 +61,7 @@ function openCreateNetwork() {
     };
     try {
       await api("/api/networks", { method: "POST", body: JSON.stringify(payload) });
-      await refreshAll();
+      await refreshSection("networks");
       renderView();
       closeModal();
       toast("Network created", true);
@@ -75,7 +75,7 @@ async function deleteNetwork(fullName, name) {
   if (!confirm(`Delete network “${name}”?`)) return;
   try {
     await api("/api/networks/delete", { method: "POST", body: JSON.stringify({ name: fullName }) });
-    await refreshAll();
+    await refreshSection("networks");
     renderView();
     toast("Network deleted", true);
   } catch (err) {

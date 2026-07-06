@@ -41,9 +41,11 @@ type mineRollup struct {
 
 func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
-	sys := a.docker.SystemInfo(r.Context())
+	// Admins see platform-wide counts; everyone else sees only their own
+	// resource footprint so the dashboard reflects what they actually own.
+	sys := a.dashboardSystem(u.Username, u.Role == "admin")
 
-	items, _ := a.docker.ListContainers(r.Context(), u.Username, u.Role == "admin")
+	items := a.runtimeContainers(u.Username, u.Role == "admin")
 	mine := mineRollup{Cap: u.ContainerCap}
 	for _, c := range items {
 		// Admins see everyone; only count the caller's own here.
@@ -59,7 +61,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 
 	resp := dashboardResponse{System: sys, Mine: mine, IsAdmin: u.Role == "admin"}
 	if u.Role == "admin" {
-		resp.Usage = buildUsage(r, a)
+		resp.Usage = buildUsageFromContainers(r, a, items)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -67,16 +69,50 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 // buildUsage computes the admin per-user usage table. Extracted so the
 // dashboard and the standalone usage endpoint share one implementation.
 func buildUsage(r *http.Request, a *App) []usageRow {
+	items := a.runtimeContainers("", true)
+	return buildUsageFromContainers(r, a, items)
+}
+
+func (a *App) dashboardSystem(username string, admin bool) dockerx.SystemInfo {
+	sys := a.runtimeSystem()
+	if admin {
+		return sys
+	}
+	items := a.runtimeContainers(username, false)
+	cs := dockerx.ContainerStats{Total: len(items)}
+	for _, c := range items {
+		switch c.State {
+		case "running":
+			cs.Running++
+		case "paused":
+			cs.Paused++
+		case "exited", "dead", "created":
+			cs.Stopped++
+		}
+	}
+	sys.Containers = cs
+	return sys
+}
+
+func buildUsageFromContainers(r *http.Request, a *App, items []dockerx.Container) []usageRow {
 	users, err := a.db.Users()
 	if err != nil {
 		return nil
 	}
-	var out []usageRow
+	byUser := map[string][]dockerx.Container{}
+	for _, c := range items {
+		owner := c.Labels["mudp.user"]
+		if owner == "" {
+			continue
+		}
+		byUser[owner] = append(byUser[owner], c)
+	}
+	out := make([]usageRow, 0, len(users))
 	for _, u := range users {
-		items, _ := a.docker.ListContainers(r.Context(), u.Username, false)
-		row := usageRow{User: u, Containers: len(items)}
+		userItems := byUser[u.Username]
+		row := usageRow{User: u, Containers: len(userItems)}
 		gpus := map[string]bool{}
-		for _, c := range items {
+		for _, c := range userItems {
 			row.MemoryMB += c.MemoryMB
 			row.DiskMB += c.DiskMB
 			if c.GPU != "" && c.GPU != "none" {

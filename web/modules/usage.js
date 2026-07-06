@@ -3,11 +3,15 @@
 import { state, api, isAdmin } from "../app.js";
 
 export async function renderUsage() {
-  const [history, processes] = await Promise.all([
+  const [history, processes, usage] = await Promise.all([
     api("/api/resources/history").catch(() => []),
     isAdmin() ? api("/api/admin/processes").catch(() => []) : Promise.resolve([]),
+    isAdmin() ? api("/api/admin/usage").catch(() => state.usage || []) : Promise.resolve(null),
   ]);
-  const usage = isAdmin()
+  if (isAdmin() && usage) {
+    state.usage = usage;
+  }
+  const rows = isAdmin()
     ? state.usage
     : [{
         username: state.me?.username || "me",
@@ -25,7 +29,7 @@ export async function renderUsage() {
       `<div class="card-head"><h2>Resource Usage</h2></div>` +
       `<table class="data">` +
         `<thead><tr><th>User</th><th>Containers</th><th>Memory</th><th>Disk</th><th>GPU</th><th>GPU Usage</th><th>GPU Memory</th></tr></thead>` +
-        `<tbody>${usage
+        `<tbody>${rows
           .map(
             (u) =>
               `<tr>` +

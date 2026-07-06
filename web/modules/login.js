@@ -29,7 +29,7 @@ export async function renderLogin() {
           `<button class="primary">Sign In</button>` +
           `<p class="hint">Default: admin / admin123 (override with env vars before first launch).</p>` +
           (feishuOn
-            ? `<div class="login-divider">or</div><button type="button" class="login-feishu" id="feishuLogin">使用飞书登录</button>`
+            ? `<div class="login-divider">or</div><button type="button" class="login-feishu" id="feishuLogin">Sign in with Feishu</button>`
             : ``) +
         `</form>` +
       `</div>` +

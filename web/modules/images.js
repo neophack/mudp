@@ -1,6 +1,6 @@
 // Images list, pull modal with SSE progress, and image deletion.
 
-import { state, api, toast, refreshAll, renderView, isAdmin, canMutate } from "../app.js";
+import { state, api, toast, refreshSection, renderView, isAdmin, canMutate } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 
 export function renderImages() {
@@ -12,6 +12,7 @@ export function renderImages() {
         (canEdit ? `<div class="head-tools">` +
           `<button class="ghost" id="buildImageBtn" title="Build from Dockerfile">🔨 Build</button>` +
           `<button class="ghost" id="importImageBtn" title="Load tarball">⬆ Import</button>` +
+          `<button class="ghost" id="registerImageBtn" title="Register existing local image">📋 Register</button>` +
           `<button class="primary" id="pullImageBtn">+ Pull Image</button>` +
         `</div>` : "") +
       `</div>` +
@@ -27,6 +28,8 @@ export function renderImages() {
   if (buildBtn) buildBtn.onclick = openBuildModal;
   const importBtn = $("#importImageBtn");
   if (importBtn) importBtn.onclick = openImportModal;
+  const registerBtn = $("#registerImageBtn");
+  if (registerBtn) registerBtn.onclick = openRegisterModal;
 }
 
 function imageRow(image) {
@@ -121,11 +124,8 @@ export async function streamPull(payload) {
         state.pull.logs += `[done] Published as ${data.dockerRef}\n`;
         renderPullProgress();
         toast("Image pulled", true);
-        setTimeout(async () => {
-          closeModal();
-          await refreshAll();
-          renderView();
-        }, 700);
+        refreshSection("images").then(() => renderView());
+        setTimeout(() => closeModal(), 700);
       }
     });
   } catch (err) {
@@ -143,7 +143,7 @@ export async function deleteImage(imageId, dockerRef) {
       method: "POST",
       body: JSON.stringify({ imageId: Number(imageId), dockerRef }),
     });
-    await refreshAll();
+    await refreshSection("images");
     renderView();
     toast("Image deleted", true);
   } catch (err) {
@@ -157,12 +157,17 @@ WORKDIR /workspace
 `;
 
 export function openBuildModal() {
+  const groupChecks = state.groups
+    .map((g) => `<label class="check"><input type="checkbox" name="groupIds" value="${g.id}"> ${escapeHtml(g.name)}</label>`)
+    .join("");
   showModal({
     kind: "build",
     title: "Build Image",
     body:
       `<form id="buildForm" class="compact">` +
         `<input name="tags" placeholder="Tags, comma-separated (e.g. myapp:1.0)" required>` +
+        `<input name="name" placeholder="Display name (optional, derived from first tag)">` +
+        `<div style="display:flex;flex-wrap:wrap;gap:8px 14px;">${groupChecks || '<span class="hint">No groups yet.</span>'}</div>` +
         `<textarea name="buildArgs" placeholder="Build args, one KEY=VALUE per line (optional)"></textarea>` +
         `<label class="field-label">Dockerfile</label>` +
         `<textarea name="dockerfile" class="mono stack-editor" spellcheck="false">${escapeHtml(SAMPLE_DOCKERFILE)}</textarea>` +
@@ -170,9 +175,12 @@ export function openBuildModal() {
     foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="buildSubmit">Build</button>`,
   });
   $("#buildSubmit").onclick = async () => {
-    const fd = new FormData($("#buildForm"));
+    const form = $("#buildForm");
+    const fd = new FormData(form);
     const payload = {
       tags: String(fd.get("tags") || "").split(",").map((s) => s.trim()).filter(Boolean),
+      name: (fd.get("name") || "").trim(),
+      groupIds: [...form.querySelectorAll("input[name=groupIds]:checked")].map((i) => Number(i.value)),
       buildArgs: parseKV(fd.get("buildArgs") || ""),
       dockerfile: fd.get("dockerfile"),
     };
@@ -215,11 +223,8 @@ async function streamBuild(payload) {
         state.pull.logs += `[done] Built ${(data.tags || []).join(", ")}\n`;
         renderBuildProgress();
         toast("Image built", true);
-        setTimeout(async () => {
-          closeModal();
-          await refreshAll();
-          renderView();
-        }, 800);
+        refreshSection("images").then(() => renderView());
+        setTimeout(() => closeModal(), 800);
       }
     });
   } catch (err) {
@@ -297,11 +302,8 @@ async function streamImport(file) {
         state.pull.logs += "[done] Image loaded\n";
         renderImportProgress();
         toast("Image imported", true);
-        setTimeout(async () => {
-          closeModal();
-          await refreshAll();
-          renderView();
-        }, 800);
+        refreshSection("images").then(() => renderView());
+        setTimeout(() => closeModal(), 800);
       }
     });
   } catch (err) {
@@ -320,6 +322,50 @@ function renderImportProgress() {
   );
   const log = document.querySelector(".modal-body .log-output");
   if (log) log.scrollTop = log.scrollHeight;
+}
+
+export function openRegisterModal() {
+  const groupChecks = state.groups
+    .map((g) => `<label class="check"><input type="checkbox" name="groupIds" value="${g.id}"> ${escapeHtml(g.name)}</label>`)
+    .join("");
+  showModal({
+    kind: "register",
+    title: "Register Local Image",
+    body:
+      `<form id="registerForm" class="compact">` +
+        `<input name="dockerRef" placeholder="Existing local image tag, e.g. ubuntu:22.04" required>` +
+        `<input name="name" placeholder="Display name (optional, derived from tag)">` +
+        `<div style="display:flex;flex-wrap:wrap;gap:8px 14px;">${groupChecks || '<span class="hint">No groups yet.</span>'}</div>` +
+      `</form>`,
+    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="registerSubmit">Register</button>`,
+  });
+  $("#registerSubmit").onclick = async () => {
+    const form = $("#registerForm");
+    const fd = new FormData(form);
+    const payload = {
+      dockerRef: (fd.get("dockerRef") || "").trim(),
+      name: (fd.get("name") || "").trim(),
+      groupIds: [...form.querySelectorAll("input[name=groupIds]:checked")].map((i) => Number(i.value)),
+    };
+    if (!payload.dockerRef) {
+      toast("Image tag is required");
+      return;
+    }
+    $("#registerSubmit").disabled = true;
+    try {
+      await api("/api/images/register", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      closeModal();
+      await refreshSection("images");
+      renderView();
+      toast("Image registered", true);
+    } catch (err) {
+      toast(err.message);
+      $("#registerSubmit").disabled = false;
+    }
+  };
 }
 
 function parseKV(raw) {

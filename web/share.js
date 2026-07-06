@@ -90,7 +90,7 @@ async function loadMe() {
 
 async function loadShare(path = "") {
   state.path = path;
-  $("#shareBody").innerHTML = `<div class="share-loading">正在加载文件列表…</div>`;
+  $("#shareBody").innerHTML = `<div class="share-loading">Loading file list…</div>`;
   try {
     const data = await api(`/api/netdisk/share/public?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(path)}`);
     state.share = data.share;
@@ -100,7 +100,7 @@ async function loadShare(path = "") {
     renderItems();
   } catch (e) {
     $("#shareBody").innerHTML = `<div class="share-error">${escapeHtml(e.message)}</div>`;
-    $("#shareName").textContent = "加载失败";
+    $("#shareName").textContent = "Load failed";
   }
 }
 
@@ -108,23 +108,23 @@ function renderShareMeta() {
   const s = state.share;
   if (!s) return;
   $("#shareName").textContent = s.name;
-  $("#shareOwner").textContent = `分享者：${escapeHtml(s.owner || "未知")}`;
+  $("#shareOwner").textContent = `Shared by: ${escapeHtml(s.owner || "Unknown")}`;
   $("#shareExpiry").innerHTML = s.permanent
-    ? `<span class="badge badge-accent">永久有效</span>`
+    ? `<span class="badge badge-accent">Permanent</span>`
     : s.expired
-      ? `<span class="badge badge-danger">已过期</span>`
-      : `有效期至：${escapeHtml(s.expiresAt ? new Date(s.expiresAt).toLocaleString() : "7 天")}`;
+      ? `<span class="badge badge-danger">Expired</span>`
+      : `Expires: ${escapeHtml(s.expiresAt ? new Date(s.expiresAt).toLocaleString() : "7 days")}`;
   const total = state.items.reduce((sum, f) => sum + (f.size || 0), 0);
   const dirs = state.items.filter((f) => f.dir).length;
   const files = state.items.length - dirs;
-  $("#shareStats").textContent = `共 ${state.items.length} 项 · ${fmtBytes(total)}${dirs ? ` · ${dirs} 个文件夹` : ""}${files ? ` · ${files} 个文件` : ""}`;
+  $("#shareStats").textContent = `Total ${state.items.length} items · ${fmtBytes(total)}${dirs ? ` · ${dirs} folder(s)` : ""}${files ? ` · ${files} file(s)` : ""}`;
 }
 
 function renderBreadcrumb(path) {
   const parts = path.split("/").filter(Boolean);
   const home = document.createElement("button");
   home.className = "linklike";
-  home.textContent = "全部文件";
+  home.textContent = "All Files";
   home.onclick = () => loadShare("");
   const nav = $("#breadcrumb");
   nav.innerHTML = "";
@@ -168,10 +168,10 @@ function renderItems() {
       <td>${nameCell}</td>
       <td class="share-size">${f.dir ? "-" : fmtBytes(f.size)}</td>
       <td class="share-time">${escapeHtml(new Date(f.modTime).toLocaleString())}</td>
-      <td class="actions"><a class="ghost-link" href="/api/netdisk/share/download?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(f.path)}&ts=${Date.now()}">下载</a></td>
+      <td class="actions"><a class="ghost-link" href="/api/netdisk/share/download?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(f.path)}&ts=${Date.now()}">Download</a></td>
     </tr>`;
   }).join("");
-  $("#shareBody").innerHTML = `<table class="data share-table"><thead><tr><th class="chk-col"><input type="checkbox" class="chk" id="selectAllBox"></th><th>文件名</th><th>大小</th><th>修改时间</th><th class="actions">操作</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $("#shareBody").innerHTML = `<table class="data share-table"><thead><tr><th class="chk-col"><input type="checkbox" class="chk" id="selectAllBox"></th><th>Name</th><th>Size</th><th>Modified</th><th class="actions">Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
 
   // Bind events
   document.querySelectorAll("[data-open]").forEach((btn) => {
@@ -208,7 +208,7 @@ function updateSelectionBar() {
   const count = state.selected.size;
   const btn = $("#saveSelectedBtn");
   btn.disabled = !state.me || count === 0;
-  btn.textContent = count ? `保存到网盘（已选 ${count} 项）` : "保存到网盘";
+  btn.textContent = count ? `Save to Netdisk (${count} selected)` : "Save to Netdisk";
 }
 
 // ---------- Directory picker ----------
@@ -219,7 +219,7 @@ function openPicker() {
     return;
   }
   if (state.selected.size === 0) {
-    toast("请至少选择一项");
+    toast("Please select at least one item");
     return;
   }
   state.pickerPath = "";
@@ -244,11 +244,11 @@ function renderPicker() {
   $("#pickerUp").disabled = !path;
 
   // Tree sidebar: quick roots (could be expanded later; keep it simple for now).
-  $("#pickerTree").innerHTML = `<div class="picker-tree-item active">我的网盘</div>`;
+  $("#pickerTree").innerHTML = `<div class="picker-tree-item active">My Netdisk</div>`;
 
   // Main list
   if (!state.pickerItems.length) {
-    $("#pickerList").innerHTML = `<div class="share-empty">该文件夹为空</div>`;
+    $("#pickerList").innerHTML = `<div class="share-empty">This folder is empty</div>`;
   } else {
     const rows = state.pickerItems.map((f) => {
       return `<div class="picker-row" data-open="${escapeHtml(f.path)}">
@@ -262,17 +262,17 @@ function renderPicker() {
     });
   }
 
-  const defaultName = state.share?.name || "来自分享";
-  $("#pickerHint").textContent = `将保存到：/${escapeHtml(path || "")}/${escapeHtml(defaultName)}`;
+  const defaultName = state.share?.name || "From Share";
+  $("#pickerHint").textContent = `Will save to: /${escapeHtml(path || "")}/${escapeHtml(defaultName)}`;
 }
 
 async function pickerMkdir() {
-  const name = prompt("新建文件夹名称");
+  const name = prompt("New folder name");
   if (!name) return;
   const newPath = joinPath(state.pickerPath, name);
   try {
     await api("/api/netdisk/mkdir", { method: "POST", body: JSON.stringify({ path: newPath }) });
-    toast("文件夹创建成功", true);
+    toast("Folder created", true);
     await loadPicker(state.pickerPath);
   } catch (e) {
     toast(e.message);
@@ -280,7 +280,7 @@ async function pickerMkdir() {
 }
 
 async function confirmSave() {
-  const defaultName = state.share?.name || "来自分享";
+  const defaultName = state.share?.name || "From Share";
   const to = joinPath(state.pickerPath, defaultName);
   const paths = [...state.selected];
   const btn = $("#confirmPicker");
@@ -294,9 +294,9 @@ async function confirmSave() {
     const saved = data.count || 0;
     const errors = (data.results || []).filter((r) => r.status === "error").length;
     if (errors) {
-      toast(`保存完成：${saved} 项成功，${errors} 项失败`);
+      toast(`Save complete: ${saved} succeeded, ${errors} failed`);
     } else {
-      toast(`成功保存 ${saved} 项到网盘`, true);
+      toast(`Successfully saved ${saved} items to netdisk`, true);
     }
     closePicker();
   } catch (e) {
@@ -340,7 +340,7 @@ function toast(msg, ok = false) {
 async function init() {
   state.token = getToken();
   if (!state.token) {
-    $("#shareBody").innerHTML = `<div class="share-error">分享链接无效</div>`;
+    $("#shareBody").innerHTML = `<div class="share-error">Invalid share link</div>`;
     return;
   }
   await loadMe();

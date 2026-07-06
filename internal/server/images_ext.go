@@ -38,6 +38,8 @@ func (a *App) imageBuildStream(w http.ResponseWriter, r *http.Request) {
 		Dockerfile string            `json:"dockerfile"`
 		Tags       []string          `json:"tags"`
 		BuildArgs  map[string]string `json:"buildArgs"`
+		Name       string            `json:"name"`
+		GroupIDs   []int64           `json:"groupIds"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -92,6 +94,30 @@ func (a *App) imageBuildStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.record(r, "image.build", strings.Join(req.Tags, ","))
+	// Register the first tag in the mudp image catalog so it shows in the
+	// images list immediately after the build, without requiring a separate
+	// "Register" step.
+	if len(req.Tags) > 0 {
+		displayName := strings.TrimSpace(req.Name)
+		if displayName == "" {
+			displayName = dockerx.PublicImageName(req.Tags[0])
+		}
+		if displayName != "" {
+			mudpRef := dockerx.MUDPImageRef(displayName)
+			if err := a.docker.TagImage(r.Context(), req.Tags[0], mudpRef); err == nil {
+				if dbErr := a.db.SaveImage(displayName, mudpRef, req.Tags[0]); dbErr == nil && len(req.GroupIDs) > 0 {
+					u := currentUser(r)
+					imgs, _ := a.db.ImagesForUser(u.ID, true)
+					for _, img := range imgs {
+						if img.DisplayName == displayName {
+							_ = a.db.SetImageGroups(img.ID, req.GroupIDs)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
 	send("done", map[string][]string{"tags": req.Tags})
 }
 
@@ -248,6 +274,58 @@ func (a *App) imagePush(w http.ResponseWriter, r *http.Request) {
 	}
 	a.record(r, "image.push", req.Ref)
 	send("done", map[string]string{"ref": req.Ref})
+}
+
+// imageRegister registers an existing local Docker image into the managed image
+// list by tagging it under the mudp- namespace, without pulling from a registry.
+func (a *App) imageRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot register images")
+		return
+	}
+	var req struct {
+		DockerRef string  `json:"dockerRef"`
+		Name      string  `json:"name"`
+		GroupIDs  []int64 `json:"groupIds"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.DockerRef = strings.TrimSpace(req.DockerRef)
+	if req.DockerRef == "" {
+		writeErr(w, http.StatusBadRequest, "dockerRef is required")
+		return
+	}
+	displayName := dockerx.PublicImageName(req.Name)
+	if displayName == "" {
+		displayName = dockerx.PublicImageName(req.DockerRef)
+	}
+	mudpRef := dockerx.MUDPImageRef(displayName)
+	if err := a.docker.TagImage(r.Context(), req.DockerRef, mudpRef); err != nil {
+		writeErr(w, http.StatusBadRequest, "image not found locally: "+err.Error())
+		return
+	}
+	if err := a.db.SaveImage(displayName, mudpRef, req.DockerRef); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(req.GroupIDs) > 0 {
+		imgs, _ := a.db.ImagesForUser(u.ID, true)
+		for _, img := range imgs {
+			if img.DisplayName == displayName {
+				_ = a.db.SetImageGroups(img.ID, req.GroupIDs)
+				break
+			}
+		}
+	}
+	a.record(r, "image.register", req.DockerRef+"→"+mudpRef)
+	writeJSON(w, http.StatusOK, map[string]string{"dockerRef": mudpRef, "name": displayName})
 }
 
 // registryAuthForRef resolves the registry auth blob for an image ref from the

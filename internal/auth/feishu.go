@@ -22,8 +22,28 @@ const (
 
 // FeishuUser is the minimal profile returned after a successful OIDC login.
 type FeishuUser struct {
-	OpenID string
-	Name   string
+	OpenID  string
+	Name    string
+	Comment string
+}
+
+// Username returns a login-safe username derived from the OpenID by keeping
+// only letters and digits. This avoids non-ASCII names and special characters
+// in system identifiers.
+func (fu FeishuUser) Username() string {
+	if fu.OpenID == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range fu.OpenID {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "feishu-" + fu.OpenID
+	}
+	return b.String()
 }
 
 // FeishuClient performs the OIDC code-for-token exchange and user info lookup.
@@ -117,8 +137,10 @@ func (f *FeishuClient) UserInfo(ctx context.Context, accessToken string) (Feishu
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 		Data struct {
-			OpenID string `json:"open_id"`
-			Name   string `json:"name"`
+			OpenID          string `json:"open_id"`
+			Name            string `json:"name"`
+			Email           string `json:"email"`
+			EnterpriseEmail string `json:"enterprise_email"`
 		} `json:"data"`
 	}
 	if err := f.do(req, &resp); err != nil {
@@ -130,7 +152,7 @@ func (f *FeishuClient) UserInfo(ctx context.Context, accessToken string) (Feishu
 	if resp.Data.OpenID == "" {
 		return FeishuUser{}, errors.New("feishu returned empty open_id")
 	}
-	return FeishuUser{OpenID: resp.Data.OpenID, Name: strings.TrimSpace(resp.Data.Name)}, nil
+	return FeishuUser{OpenID: resp.Data.OpenID, Name: strings.TrimSpace(resp.Data.Name), Comment: strings.TrimSpace(resp.Data.Name)}, nil
 }
 
 func (f *FeishuClient) do(req *http.Request, out any) error {

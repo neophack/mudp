@@ -27,6 +27,7 @@ type User struct {
 	Disabled     bool     `json:"disabled"`
 	ContainerCap int      `json:"containerCap"`
 	FeishuOpenID string   `json:"feishuOpenId,omitempty"`
+	Comment      string   `json:"comment,omitempty"`
 }
 
 // ValidRole reports whether r is one of the supported RBAC roles.
@@ -183,7 +184,8 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			container_cap integer not null default 10,
 			port_prefix integer not null default 0,
 			created_at text not null,
-			last_login_at text
+			last_login_at text,
+			comment text default ''
 		)`,
 		`create table if not exists groups (
 			id integer primary key autoincrement,
@@ -291,6 +293,9 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 		return err
 	}
 	if err := execIgnoring(db.DB, `alter table netdisk_shares add column permanent integer not null default 0`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
+	if err := execIgnoring(db.DB, `alter table users add column comment text default ''`, sqliteDuplicateColumn); err != nil {
 		return err
 	}
 	if _, err := db.Exec(`create unique index if not exists idx_users_feishu_open_id on users(feishu_open_id) where feishu_open_id != ''`); err != nil {
@@ -413,10 +418,11 @@ func (db *DB) widenRoleConstraint() error {
 			port_prefix integer not null default 0,
 			created_at text not null,
 			last_login_at text,
-			feishu_open_id text default ''
+			feishu_open_id text default '',
+			comment text default ''
 		)`,
-		`insert into users(id, username, password_hash, role, disabled, container_cap, port_prefix, created_at, last_login_at, feishu_open_id)
-		 select id, username, password_hash, role, disabled, container_cap, port_prefix, created_at, last_login_at, feishu_open_id from users_old`,
+		`insert into users(id, username, password_hash, role, disabled, container_cap, port_prefix, created_at, last_login_at, feishu_open_id, comment)
+		 select id, username, password_hash, role, disabled, container_cap, port_prefix, created_at, last_login_at, feishu_open_id, comment from users_old`,
 		`drop table users_old`,
 	}
 	for _, s := range steps {
@@ -425,6 +431,22 @@ func (db *DB) widenRoleConstraint() error {
 		}
 	}
 	return tx.Commit()
+}
+
+func (db *DB) nextPortPrefix(tx *sql.Tx) (int, error) {
+	var max sql.NullInt64
+	err := tx.QueryRow(`select max(port_prefix) from users`).Scan(&max)
+	if err != nil {
+		return 0, err
+	}
+	next := 101
+	if max.Valid && int(max.Int64) >= next {
+		next = int(max.Int64) + 1
+	}
+	if next > 655 {
+		return 0, errors.New("no port prefix available (all slots 101-655 are taken)")
+	}
+	return next, nil
 }
 
 func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap int) error {
@@ -440,8 +462,12 @@ func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap 
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,created_at) values(?,?,?,?,?)`,
-		username, string(hash), role, cap, time.Now().Format(time.RFC3339))
+	prefix, err := db.nextPortPrefix(tx)
+	if err != nil {
+		return err
+	}
+	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,port_prefix,created_at) values(?,?,?,?,?,?)`,
+		username, string(hash), role, cap, prefix, time.Now().Format(time.RFC3339))
 	if err != nil {
 		return err
 	}
@@ -458,8 +484,8 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 	var u User
 	var hash string
 	var disabled int
-	err := db.QueryRow(`select id,username,password_hash,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id from users where username=?`, username).
-		Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID)
+	err := db.QueryRow(`select id,username,password_hash,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where username=?`, username).
+		Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("invalid username or password")
 	}
@@ -482,8 +508,8 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 func (db *DB) UserByID(id int64) (*User, error) {
 	var u User
 	var disabled int
-	err := db.QueryRow(`select id,username,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id from users where id=?`, id).
-		Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID)
+	err := db.QueryRow(`select id,username,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where id=?`, id).
+		Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
 	if err != nil {
 		return nil, err
 	}
@@ -501,7 +527,7 @@ func (db *DB) UserByUsername(username string) (*User, error) {
 }
 
 func (db *DB) Users() ([]User, error) {
-	rows, err := db.Query(`select id,username,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id from users order by username`)
+	rows, err := db.Query(`select id,username,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,comment from users order by username`)
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +536,7 @@ func (db *DB) Users() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var disabled int
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
@@ -851,8 +877,8 @@ func (db *DB) UserByFeishu(openID string) (*User, error) {
 	}
 	var u User
 	var disabled int
-	err := db.QueryRow(`select id,username,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id from users where feishu_open_id=?`, openID).
-		Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID)
+	err := db.QueryRow(`select id,username,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where feishu_open_id=?`, openID).
+		Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
 	if err != nil {
 		return nil, err
 	}
@@ -864,11 +890,10 @@ func (db *DB) UserByFeishu(openID string) (*User, error) {
 // CreateFeishuUser registers a new user from a Feishu login. The user is placed
 // in the pending group until an admin assigns them a real group. Returns the
 // created user.
-func (db *DB) CreateFeishuUser(openID, name string) (*User, error) {
+func (db *DB) CreateFeishuUser(openID, username, comment string) (*User, error) {
 	if openID == "" {
 		return nil, errors.New("feishu open_id is required")
 	}
-	username := name
 	if strings.TrimSpace(username) == "" {
 		username = "feishu-" + openID
 	}
@@ -879,7 +904,7 @@ func (db *DB) CreateFeishuUser(openID, name string) (*User, error) {
 		if i > 0 {
 			username = fmt.Sprintf("%s-%d", base, i)
 		}
-		u, err := db.createFeishuUserTx(openID, username)
+		u, err := db.createFeishuUserTx(openID, username, comment)
 		if err == nil {
 			return u, nil
 		}
@@ -890,7 +915,7 @@ func (db *DB) CreateFeishuUser(openID, name string) (*User, error) {
 	return nil, errors.New("could not allocate a unique username")
 }
 
-func (db *DB) createFeishuUserTx(openID, username string) (*User, error) {
+func (db *DB) createFeishuUserTx(openID, username, comment string) (*User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(openID), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
@@ -907,8 +932,8 @@ func (db *DB) createFeishuUserTx(openID, username string) (*User, error) {
 	if existing != 0 {
 		return nil, errors.New("duplicate username")
 	}
-	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,created_at,feishu_open_id) values(?,?,?,?,?,?)`,
-		username, string(hash), "user", 10, time.Now().Format(time.RFC3339), openID)
+	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,created_at,feishu_open_id,comment) values(?,?,?,?,?,?,?)`,
+		username, string(hash), "user", 10, time.Now().Format(time.RFC3339), openID, comment)
 	if err != nil {
 		return nil, err
 	}

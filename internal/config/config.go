@@ -34,7 +34,7 @@ func Load() Config {
 		}
 	}
 	cfg := Config{
-		Addr:          env("MUDP_ADDR", "127.0.0.1:9000"),
+		Addr:          env("MUDP_ADDR", "0.0.0.0:9000"),
 		DBPath:        env("MUDP_DB", "mudp.db"),
 		SessionSecret: secret,
 		AdminUser:     env("MUDP_ADMIN_USER", "admin"),

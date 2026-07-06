@@ -892,6 +892,7 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 
 /* ---------- Dashboard ---------- */
 .dash-stack { display: grid; gap: 16px; }
+.dash-scope { margin: 0 0 -4px; }
 .dash-tiles {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

@@ -20,7 +20,7 @@ export async function renderNetdisk() {
   $("#view").innerHTML =
     `<div class="stack netdisk-stack">` +
       `<div class="card netdisk-card"><div class="netdisk-toolbar">` +
-        `<div class="netdisk-title"><h2>我的网盘</h2><span>${folderCount} folders, ${fileCount} files</span></div>` +
+        `<div class="netdisk-title"><h2>My Netdisk</h2><span>${folderCount} folders, ${fileCount} files</span></div>` +
         `<div class="head-tools netdisk-actions">` +
           `<button class="ghost" id="upDir">Up</button>` +
           `<button class="ghost" id="mkdirBtn">New Folder</button>` +
@@ -126,7 +126,7 @@ function sortedItems(items) {
 
 function breadcrumbs(path) {
   const parts = (path || "").split("/").filter(Boolean);
-  const crumbs = [`<button class="linklike" data-crumb="">全部文件</button>`];
+  const crumbs = [`<button class="linklike" data-crumb="">All Files</button>`];
   let acc = "";
   parts.forEach((part) => {
     acc = joinPath(acc, part);

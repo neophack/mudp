@@ -49,13 +49,15 @@ export function openCreateModal() {
         (myNetworks ? `<label class="field-label">Networks</label><div class="check-grid">${myNetworks}</div>` : "") +
         `<label class="field-label">Restart policy</label>` +
         `<select name="restartPolicy">` +
-          `<option value="unless-stopped" selected>开机自启 (unless-stopped)</option>` +
-          `<option value="always">总是重启 (always)</option>` +
-          `<option value="on-failure">失败时重启 (on-failure)</option>` +
-          `<option value="no">不自动重启 (no)</option>` +
+          `<option value="unless-stopped" selected>Start on boot (unless-stopped)</option>` +
+          `<option value="always">Always restart (always)</option>` +
+          `<option value="on-failure">Restart on failure (on-failure)</option>` +
+          `<option value="no">Do not auto-restart (no)</option>` +
         `</select>` +
         `<label class="check"><input type="checkbox" name="ssh" checked> Enable SSH port</label>` +
         `<label class="check"><input type="checkbox" name="vscode" checked> Enable VS Code Web port</label>` +
+        `<label class="check"><input type="checkbox" name="forward8080"> Forward container port 8080</label>` +
+        `<label class="check"><input type="checkbox" name="forward80"> Forward container port 80</label>` +
         `<label class="check"><input type="checkbox" name="mountNetdisk" checked> Mount netdisk at /netdisk</label>` +
         `<input name="accessPassword" type="password" minlength="6" placeholder="Connection password (for SSH / VS Code)">` +
       `</form>`,
@@ -70,6 +72,8 @@ export function openCreateModal() {
       .filter(Boolean);
     payload.ssh = fd.has("ssh");
     payload.vscode = fd.has("vscode");
+    payload.forward8080 = fd.has("forward8080");
+    payload.forward80 = fd.has("forward80");
     payload.mountNetdisk = fd.has("mountNetdisk");
     payload.networks = [...$("#newContainer").querySelectorAll('input[name="networks"]:checked')].map((i) => i.value);
     payload.restartPolicy = fd.get("restartPolicy") || "unless-stopped";
@@ -173,11 +177,8 @@ export async function streamCreate(payload) {
         state.create.active = false;
         renderCreateProgress();
         toast("Container created", true);
-        setTimeout(async () => {
-          closeModal();
-          await refreshAll();
-          renderView();
-        }, 700);
+        refreshAll().then(() => renderView());
+        setTimeout(() => closeModal(), 700);
       }
     });
   } catch (err) {

@@ -1,7 +1,7 @@
 // Users & Groups management: create users/groups, assign roles, group
 // membership (Feishu approval flow), reset passwords, disable/delete accounts.
 
-import { state, api, toast, refreshAll, renderView, isAdmin } from "../app.js";
+import { state, api, toast, refreshSection, renderView, isAdmin } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 const ROLES = [
@@ -28,7 +28,6 @@ export function renderUsers() {
             `<input name="password" type="password" placeholder="Password" required>` +
             roleSelect("role", "user") +
             `<input name="containerCap" type="number" min="1" value="10" placeholder="Container limit">` +
-            `<input name="portPrefix" type="number" min="100" max="655" placeholder="Port prefix, e.g. 100">` +
             `<div class="check-grid">${groupChecks(state.groups)}</div>` +
             `<button>Create User</button>` +
           `</form></div>` +
@@ -54,7 +53,7 @@ export function renderUsers() {
         method: "POST",
         body: JSON.stringify(Object.fromEntries(new FormData(e.target))),
       });
-      await refreshAll();
+      await refreshSection("users", "groups");
       renderView();
       toast("Group created", true);
     } catch (err) {
@@ -66,11 +65,10 @@ export function renderUsers() {
     const fd = new FormData(e.target);
     const payload = Object.fromEntries(fd);
     payload.containerCap = Number(payload.containerCap || 10);
-    payload.portPrefix = Number(payload.portPrefix || 0);
     payload.groupIds = [...e.target.querySelectorAll("input[name=groupIds]:checked")].map((i) => Number(i.value));
     try {
       await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
-      await refreshAll();
+      await refreshSection("users", "groups");
       renderView();
       toast("User created", true);
     } catch (err) {
@@ -97,8 +95,9 @@ function userRow(user) {
   const disabled = user.disabled;
   return (
     `<tr class="${disabled ? "row-muted" : ""}">` +
-      `<td><div class="primary-line">${escapeHtml(user.username)}${disabled ? ' <span class="badge badge-muted">disabled</span>' : ""}</div>` +
-        `${user.feishuOpenId ? `<div class="secondary-line">飞书用户</div>` : ""}` +
+      `<td><div class="primary-line">${escapeHtml(user.username)}${disabled ? ' <span class="badge badge-muted">disabled</span>' : ""}` +
+        `${user.comment ? ` <span class="badge badge-muted" title="${escapeHtml(user.comment)}">${escapeHtml(user.comment)}</span>` : ""}</div>` +
+        `${user.feishuOpenId ? `<div class="secondary-line">Feishu user</div>` : ""}` +
         `<div class="secondary-line" style="margin-top:2px;">limit ${user.containerCap}</div></td>` +
       `<td>${roleBadge}</td>` +
       `<td><div class="secondary-line">${escapeHtml((user.groups || []).join(", ") || "None")}</div></td>` +
@@ -141,7 +140,7 @@ async function setGroupPath(groupId, name, current) {
   if (path === null) return;
   try {
     await api("/api/groups/netdisk", { method: "POST", body: JSON.stringify({ groupId, path }) });
-    await refreshAll();
+    await refreshSection("users", "groups");
     renderView();
     toast("Netdisk path saved", true);
   } catch (err) {
@@ -154,7 +153,7 @@ function openUserGroups(userId, userName) {
   const checks = (state.groups || [])
     .map((g) => {
       const checked = (user.groups || []).includes(g.name) ? "checked" : "";
-      return `<label class="check"><input type="checkbox" name="groupIds" value="${g.id}" ${checked}> ${escapeHtml(g.name)}${g.name === "pending" ? ' <span class="hint">(待审批)</span>' : ""}</label>`;
+      return `<label class="check"><input type="checkbox" name="groupIds" value="${g.id}" ${checked}> ${escapeHtml(g.name)}${g.name === "pending" ? ' <span class="hint">(pending approval)</span>' : ""}</label>`;
     })
     .join("");
   showModal({
@@ -170,7 +169,7 @@ function openUserGroups(userId, userName) {
         method: "POST",
         body: JSON.stringify({ userId: Number(userId), groupIds }),
       });
-      await refreshAll();
+      await refreshSection("users", "groups");
       renderView();
       closeModal();
       toast("Groups updated", true);
@@ -214,7 +213,7 @@ function openUserEdit(userId) {
     };
     try {
       await api("/api/users/update", { method: "POST", body: JSON.stringify(payload) });
-      await refreshAll();
+      await refreshSection("users", "groups");
       renderView();
       closeModal();
       toast("User updated", true);
@@ -232,7 +231,7 @@ async function deleteUser(userId, userName) {
   if (!confirm(`Delete user “${userName}”? This removes their group memberships and stacks.`)) return;
   try {
     await api("/api/users/delete", { method: "POST", body: JSON.stringify({ id: userId }) });
-    await refreshAll();
+    await refreshSection("users", "groups");
     renderView();
     toast("User deleted", true);
   } catch (err) {
