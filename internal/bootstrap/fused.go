@@ -59,6 +59,7 @@ func LayerContext(cfg Config, service string) (*bytes.Buffer, error) {
 	}{
 		{Name: "Dockerfile", Body: dockerfile},
 		{Name: "mudp-bootstrap/fused-build.sh", Body: fusedBuildScript(layerCfg)},
+		{Name: "mudp-offline-packages/.keep", Body: ""},
 	}
 	if layerCfg.EnableSSH {
 		files = append(files, struct {
@@ -71,6 +72,16 @@ func LayerContext(cfg Config, service string) (*bytes.Buffer, error) {
 			Name string
 			Body string
 		}{Name: "mudp-bootstrap/vscode.sh", Body: cfg.VSCodeScript})
+	}
+	for _, pkg := range cfg.OfflinePackages {
+		name := strings.Trim(strings.ReplaceAll(pkg.Name, "\\", "/"), "/")
+		if name == "" || strings.HasPrefix(name, "..") || strings.Contains(name, "/../") {
+			return nil, fmt.Errorf("invalid offline package name %q", pkg.Name)
+		}
+		files = append(files, struct {
+			Name string
+			Body string
+		}{Name: "mudp-offline-packages/" + name, Body: string(pkg.Body)})
 	}
 	return tarballFromFiles(files)
 }
@@ -126,6 +137,7 @@ func layerDockerfile(cfg Config) (string, error) {
 	// account), preserving the image's intended execution context.
 	b.WriteString("USER root\n")
 	b.WriteString("COPY mudp-bootstrap/ /mudp-bootstrap/\n")
+	b.WriteString("COPY mudp-offline-packages/ /mudp-offline-packages/\n")
 	b.WriteString("RUN MUDP_ACCESS_PASSWORD='mudp-build-placeholder' /bin/sh /mudp-bootstrap/fused-build.sh\n")
 	b.WriteString("FROM scratch\n")
 	b.WriteString("COPY --from=build /mudp-layer-root/ /mudp-layer-root/\n")
@@ -144,6 +156,7 @@ func fusedBuildScript(cfg Config) string {
 		"set -eu",
 		"",
 		"export PATH=\"$PATH:/usr/sbin:/usr/local/bin:/usr/bin:/bin\"",
+		"export MUDP_OFFLINE_PACKAGE_DIR=/mudp-offline-packages",
 		"mkdir -p /var/run/sshd /tmp/mudp",
 		"",
 		"have_cmd() { command -v \"$1\" >/dev/null 2>&1; }",

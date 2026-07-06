@@ -63,11 +63,11 @@ export async function openDetails(id, name) {
 function settingsCard(i) {
   const policy = (i.restartPolicy || "unless-stopped").toLowerCase();
   const currentNets = new Set((i.networks || []).map((n) => n.name));
-  // Exclude system networks (bridge/host/none): create.js filters them out and
-  // the backend (validateNetworkAttachment) rejects any network lacking the
-  // mudp-managed label, so surfacing them here as checkable would only produce
-  // confusing "attach failed" errors on save.
-  const avail = (state.networks || []).filter((n) => !n.system);
+  // Exclude system networks (host/none): the backend (validateNetworkAttachment)
+  // rejects any network lacking the mudp-managed label, so surfacing them here
+  // as checkable would only produce confusing "attach failed" errors on save.
+  // "bridge" is the one exception — a safe pass-through the backend allows.
+  const avail = (state.networks || []).filter((n) => !n.system || n.name === "bridge");
   const editable = canMutate();
   const netChecks = avail.length
     ? avail.map((n) => {
@@ -76,7 +76,7 @@ function settingsCard(i) {
         const disabled = editable ? "" : "disabled";
         return `<label class="check"><input type="checkbox" name="editNetworks" value="${escapeHtml(key)}" ${checked} ${disabled}> ${escapeHtml(n.name)}${n.system ? ' <span class="hint">(system)</span>' : ""}</label>`;
       }).join("")
-    : `<p class="hint">No networks available.</p>`;
+    : `<p class="hint">No custom networks yet — create one from the Networks tab to attach this container.</p>`;
   const policySelect = editable
     ? `<select id="editRestart">` +
       `<option value="unless-stopped" ${policy === "unless-stopped" ? "selected" : ""}>Start on boot (unless-stopped)</option>` +

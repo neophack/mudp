@@ -28,12 +28,12 @@ export function openCreateModal() {
       return `<option value="${escapeHtml(img.name)}">${escapeHtml(img.name)}${hasPreset ? " ⚙" : ""}</option>`;
     })
     .join("");
-  // System networks (bridge/host/none) are shown read-only on the Networks view
-  // but cannot be attached to — validateNetworkAttachment rejects anything
-  // lacking the mudp-managed label, so never expose them as checkable options.
+  // System networks (host/none) are shown read-only on the Networks view but
+  // cannot be attached to — validateNetworkAttachment rejects anything lacking
+  // the mudp-managed label, except "bridge" which is a safe pass-through.
   const myNetworks = (state.networks || [])
-    .filter((n) => !n.system)
-    .map((n) => `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}"> ${escapeHtml(n.name)}</label>`)
+    .filter((n) => !n.system || n.name === "bridge")
+    .map((n) => `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}"> ${escapeHtml(n.name)}${n.system ? ' <span class="hint">(system)</span>' : ""}</label>`)
     .join("");
   const myVolumes = (state.volumes || []).map((v) => v.name);
   const prefix = Number(state.me?.portPrefix || 0);
@@ -62,6 +62,7 @@ export function openCreateModal() {
         `<label class="check"><input type="checkbox" name="forward8080"> Forward container port 8080</label>` +
         `<label class="check"><input type="checkbox" name="forward80"> Forward container port 80</label>` +
         `<label class="check"><input type="checkbox" name="mountNetdisk" checked> Mount netdisk at /netdisk</label>` +
+        `<label class="check"><input type="checkbox" name="mountShm" checked> Mount host /dev/shm (shared memory)</label>` +
         `<input name="accessPassword" type="password" minlength="6" placeholder="Connection password (for SSH / VS Code)">` +
       `</form>`,
     foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="createSubmit">Create and Start</button>`,
@@ -83,6 +84,7 @@ export function openCreateModal() {
     payload.forward8080 = fd.has("forward8080");
     payload.forward80 = fd.has("forward80");
     payload.mountNetdisk = fd.has("mountNetdisk");
+    payload.mountShm = fd.has("mountShm");
     payload.networks = [...$("#newContainer").querySelectorAll('input[name="networks"]:checked')].map((i) => i.value);
     payload.restartPolicy = fd.get("restartPolicy") || "unless-stopped";
     // Forward the image preset's device passthrough (NVIDIA device nodes, CDI
@@ -137,11 +139,15 @@ function applyPreset(imageName) {
   // auto-allocates a host port from the user's range.
   if (p.ports && p.ports.length) form.querySelector('[name="ports"]').value = p.ports.map((c) => ":" + c).join("\n");
   if (p.restartPolicy) form.querySelector('[name="restartPolicy"]').value = p.restartPolicy;
-  form.querySelector('[name="ssh"]').checked = p.ssh !== undefined ? p.ssh : form.querySelector('[name="ssh"]').checked;
-  form.querySelector('[name="vscode"]').checked = p.vscode !== undefined ? p.vscode : form.querySelector('[name="vscode"]').checked;
+  // SSH/VSCode always follow the preset exactly (like forward8080/forward80): if the
+  // admin didn't check them when configuring this image, they must not end up
+  // checked just because the form's own baseline default is "on".
+  form.querySelector('[name="ssh"]').checked = !!p.ssh;
+  form.querySelector('[name="vscode"]').checked = !!p.vscode;
   form.querySelector('[name="forward8080"]').checked = !!p.forward8080;
   form.querySelector('[name="forward80"]').checked = !!p.forward80;
   if (p.mountNetdisk !== undefined) form.querySelector('[name="mountNetdisk"]').checked = p.mountNetdisk;
+  if (p.mountShm !== undefined) form.querySelector('[name="mountShm"]').checked = p.mountShm;
   if (p.networks && p.networks.length) {
     form.querySelectorAll('input[name="networks"]').forEach((cb) => {
       if (p.networks.includes(cb.value)) cb.checked = true;

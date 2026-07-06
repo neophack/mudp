@@ -175,11 +175,13 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/users/groups", a.setUserGroups)
 		r.Get("/api/scripts", a.scripts)
 		r.Post("/api/scripts", a.scripts)
-		r.Post("/api/scripts/fused/layers/build/stream", a.fusedBuildStream)
-		r.Get("/api/scripts/fused/list", a.fusedList)
-		r.Post("/api/scripts/fused/delete", a.fusedDelete)
-		r.Get("/api/scripts/fused/layers/list", a.fusedLayerList)
-		r.Post("/api/scripts/fused/layers/delete", a.fusedLayerDelete)
+		r.Get("/api/scripts/offline/packages", a.offlinePackages)
+		r.Post("/api/scripts/offline/packages", a.offlinePackageUpload)
+		r.Get("/api/scripts/offline/packages/download", a.offlinePackageDownload)
+		r.Post("/api/scripts/offline/packages/delete", a.offlinePackageDelete)
+		r.Get("/api/scripts/offline/build-script", a.offlineBuildScript)
+		r.Post("/api/scripts/offline/build-script", a.offlineBuildScript)
+		r.Post("/api/scripts/offline/build/stream", a.offlinePkgBuildStream)
 		r.Get("/api/registries", a.registries)
 		r.Post("/api/registries", a.registries)
 		r.Post("/api/registries/delete", a.registryDelete)
@@ -404,6 +406,16 @@ func (a *App) scripts(w http.ResponseWriter, r *http.Request) {
 		if err := decodeJSON(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		// Allow partial saves: if only BuildScript is supplied keep existing SSH/VSCode.
+		if req.BuildScript != "" && strings.TrimSpace(req.SSHScript) == "" && strings.TrimSpace(req.VSCodeScript) == "" {
+			cfg, err := a.db.ScriptSettings()
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			req.SSHScript = cfg.SSHScript
+			req.VSCodeScript = cfg.VSCodeScript
 		}
 		if strings.TrimSpace(req.SSHScript) == "" || strings.TrimSpace(req.VSCodeScript) == "" {
 			writeErr(w, http.StatusBadRequest, "ssh and vscode scripts are required")
@@ -632,6 +644,7 @@ type createRequest struct {
 	MountsRaw      string   `json:"mounts"`
 	Networks       []string `json:"networks"`
 	MountNetdisk   *bool    `json:"mountNetdisk"`
+	MountShm       *bool    `json:"mountShm"`
 	RestartPolicy  string   `json:"restartPolicy"`
 	Devices        []string `json:"devices"`
 	CDIDevices     []string `json:"cdiDevices"`
@@ -666,22 +679,23 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	if err != nil {
 		return dockerx.CreateOptions{}, err
 	}
-	// Resolve a fused derived-image plan when SSH/VSCode is enabled, so the
-	// container boots from a pre-installed image (fast, no network) instead of
-	// re-running the install at every start. Returns nil on any miss/error,
-	// which makes CreateContainer fall back to runtime injection.
-	fusedPlan := a.resolveFusedPlan(ctx, img.DockerRef, scripts.SSHScript, scripts.VSCodeScript, req.SSH, req.VSCode, req.AccessPassword)
-	// The connection user (SSH login + code-server owner) is resolved from the
-	// base image's USER. Prefer the plan's value (already resolved); otherwise
-	// CreateContainer derives it from the inspected image, so leaving this empty
-	// is also correct.
+	offlinePackages := a.offlineBootstrapPackages(img.DisplayName, img.DockerRef, req.SSH, req.VSCode)
+	// Resolve the connection user (SSH login + code-server owner) from the base
+	// image's USER directive. Best-effort: on failure it stays empty which the
+	// bootstrap script maps to "root".
 	var connectionUser string
-	if fusedPlan != nil {
-		connectionUser = fusedPlan.ConnectionUser
+	if req.SSH || req.VSCode {
+		if info, err := a.docker.InspectImage(ctx, img.DockerRef); err == nil {
+			connectionUser = dockerx.ResolveConnectionUser(info.Config.User)
+		}
 	}
 	mountNetdisk := true
 	if req.MountNetdisk != nil {
 		mountNetdisk = *req.MountNetdisk
+	}
+	mountShm := true
+	if req.MountShm != nil {
+		mountShm = *req.MountShm
 	}
 	netdiskPath := ""
 	if mountNetdisk {
@@ -702,12 +716,12 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		Env: normalizeEnv(req.Env), GPUs: req.GPUs, SSH: req.SSH, VSCode: req.VSCode,
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
 		AccessPassword: req.AccessPassword, SSHScript: scripts.SSHScript, VSCodeScript: scripts.VSCodeScript,
-		ConnectionUser: connectionUser,
-		Ports:          splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
-		Networks: req.Networks, MountNetdisk: mountNetdisk, NetdiskPath: netdiskPath,
+		OfflinePackages: offlinePackages,
+		ConnectionUser:  connectionUser,
+		Ports:           splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
+		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
 		Devices: req.Devices, CDIDevices: req.CDIDevices,
 		RestartPolicy: req.RestartPolicy,
-		FusedPlan:     fusedPlan,
 	}, nil
 }
 

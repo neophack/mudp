@@ -22,7 +22,14 @@ type Config struct {
 	// the base image's USER). Empty means root. Exported into the entrypoint as
 	// MUDP_CONNECTION_USER so the sourced ssh.sh/vscode.sh default scripts pick
 	// it up.
-	ConnectionUser string
+	ConnectionUser  string
+	OfflinePackages []OfflinePackage
+}
+
+type OfflinePackage struct {
+	Name string
+	Body []byte
+	Mode int64
 }
 
 func Tarball(cfg Config) (*bytes.Buffer, error) {
@@ -66,6 +73,27 @@ func Tarball(cfg Config) (*bytes.Buffer, error) {
 			return nil, err
 		}
 	}
+	for _, pkg := range cfg.OfflinePackages {
+		name := strings.Trim(strings.ReplaceAll(pkg.Name, "\\", "/"), "/")
+		if name == "" || strings.HasPrefix(name, "..") || strings.Contains(name, "/../") {
+			return nil, fmt.Errorf("invalid offline package name %q", pkg.Name)
+		}
+		mode := pkg.Mode
+		if mode == 0 {
+			mode = 0644
+		}
+		hdr := &tar.Header{
+			Name: "mudp-offline-packages/" + name,
+			Mode: mode,
+			Size: int64(len(pkg.Body)),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return nil, err
+		}
+		if _, err := tw.Write(pkg.Body); err != nil {
+			return nil, err
+		}
+	}
 	if err := tw.Close(); err != nil {
 		return nil, err
 	}
@@ -82,6 +110,7 @@ func entrypointScript(cfg Config) (string, error) {
 		"",
 		"export PATH=\"$PATH:/usr/sbin:/usr/local/bin:/usr/bin:/bin\"",
 		"mkdir -p /var/run/sshd /tmp/mudp",
+		"export MUDP_OFFLINE_PACKAGE_DIR=/mudp-offline-packages",
 		"LOG_FILE=/tmp/mudp/bootstrap.log",
 		"touch \"$LOG_FILE\"",
 		"exec >>\"$LOG_FILE\" 2>&1",

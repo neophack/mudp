@@ -70,6 +70,26 @@ type Image struct {
 type ScriptSettings struct {
 	SSHScript    string `json:"sshScript"`
 	VSCodeScript string `json:"vscodeScript"`
+	BuildScript  string `json:"buildScript"`
+}
+
+// OfflinePackage is an uploaded bootstrap installer bundle. Service is "ssh",
+// "vscode", or "all"; ImageName/ImageRef optionally scope it to one catalog
+// image. The binary itself lives on disk under PackageDir; the DB stores only
+// metadata and the sanitized filename.
+type OfflinePackage struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Filename    string `json:"filename"`
+	Service     string `json:"service"`
+	ImageName   string `json:"imageName,omitempty"`
+	ImageRef    string `json:"imageRef,omitempty"`
+	OS          string `json:"os,omitempty"`
+	Arch        string `json:"arch,omitempty"`
+	Size        int64  `json:"size"`
+	SHA256      string `json:"sha256"`
+	Description string `json:"description,omitempty"`
+	CreatedAt   string `json:"createdAt"`
 }
 
 type ResourceSample struct {
@@ -272,6 +292,20 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			script_hash text not null,
 			created_at text not null
 		)`,
+		`create table if not exists offline_packages (
+			id integer primary key autoincrement,
+			name text not null,
+			filename text not null unique,
+			service text not null default 'all',
+			image_name text not null default '',
+			image_ref text not null default '',
+			os text not null default '',
+			arch text not null default '',
+			size integer not null default 0,
+			sha256 text not null default '',
+			description text not null default '',
+			created_at text not null
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -371,10 +405,22 @@ func (db *DB) upgradeDefaultScripts() error {
 	if !strings.Contains(cfg.SSHScript, "MUDP_BUILD_PHASE") && containsAny(cfg.SSHScript, legacySSHScriptMarkers) {
 		updated.SSHScript = defaultSSHScript()
 		needUpdate = true
+	} else if !strings.Contains(cfg.SSHScript, "run_offline_packages") && strings.Contains(cfg.SSHScript, "openssh-server") {
+		updated.SSHScript = defaultSSHScript()
+		needUpdate = true
+	} else if strings.Contains(cfg.SSHScript, "run_offline_packages") && !strings.Contains(cfg.SSHScript, "*.deb)") {
+		updated.SSHScript = defaultSSHScript()
+		needUpdate = true
 	} else {
 		updated.SSHScript = cfg.SSHScript
 	}
 	if !strings.Contains(cfg.VSCodeScript, "MUDP_BUILD_PHASE") && containsAny(cfg.VSCodeScript, legacyVSCodeScriptMarkers) {
+		updated.VSCodeScript = defaultVSCodeScript()
+		needUpdate = true
+	} else if !strings.Contains(cfg.VSCodeScript, "run_offline_packages") && strings.Contains(cfg.VSCodeScript, "code-server.dev/install.sh") {
+		updated.VSCodeScript = defaultVSCodeScript()
+		needUpdate = true
+	} else if strings.Contains(cfg.VSCodeScript, "run_offline_packages") && !strings.Contains(cfg.VSCodeScript, "*.deb)") {
 		updated.VSCodeScript = defaultVSCodeScript()
 		needUpdate = true
 	} else {
@@ -685,7 +731,7 @@ func (db *DB) ScriptSettings() (ScriptSettings, error) {
 		SSHScript:    defaultSSHScript(),
 		VSCodeScript: defaultVSCodeScript(),
 	}
-	rows, err := db.Query(`select key, value from settings where key in ('ssh_script','vscode_script')`)
+	rows, err := db.Query(`select key, value from settings where key in ('ssh_script','vscode_script','offline_build_script')`)
 	if err != nil {
 		return cfg, err
 	}
@@ -700,6 +746,8 @@ func (db *DB) ScriptSettings() (ScriptSettings, error) {
 			cfg.SSHScript = value
 		case "vscode_script":
 			cfg.VSCodeScript = value
+		case "offline_build_script":
+			cfg.BuildScript = value
 		}
 	}
 	return cfg, rows.Err()
@@ -718,6 +766,12 @@ func (db *DB) SaveScriptSettings(cfg ScriptSettings) error {
 	for key, value := range items {
 		if _, err := tx.Exec(`insert into settings(key, value) values(?, ?)
 			on conflict(key) do update set value=excluded.value`, key, value); err != nil {
+			return err
+		}
+	}
+	if cfg.BuildScript != "" {
+		if _, err := tx.Exec(`insert into settings(key, value) values('offline_build_script', ?)
+			on conflict(key) do update set value=excluded.value`, cfg.BuildScript); err != nil {
 			return err
 		}
 	}
@@ -768,6 +822,60 @@ fi
 export MUDP_CONNECTION_USER MUDP_HOME
 # --- mudp: end user resolve ---`
 
+const offlineInstallSnippet = `run_offline_packages() {
+  service="$1"
+  dir="${MUDP_OFFLINE_PACKAGE_DIR:-/mudp-offline-packages}"
+  [ -d "$dir" ] || return 1
+  found=0
+  ok=0
+  for pkg in "$dir"/*; do
+    [ -f "$pkg" ] || continue
+    found=1
+    case "$pkg" in
+      *.sh|*.run)
+        chmod +x "$pkg" 2>/dev/null || true
+        if "$pkg" "$service"; then ok=1; fi
+        ;;
+      *.tar|*.tar.gz|*.tgz|*.tar.xz|*.tar.bz2)
+        work="/tmp/mudp/offline-$(basename "$pkg" | tr -c 'A-Za-z0-9_.-' '-')"
+        rm -rf "$work"
+        mkdir -p "$work"
+        case "$pkg" in
+          *.tar)     tar -C "$work" -xf  "$pkg" ;;
+          *.tar.xz)  tar -C "$work" -xJf "$pkg" ;;
+          *.tar.bz2) tar -C "$work" -xjf "$pkg" ;;
+          *)         tar -C "$work" -xzf "$pkg" ;;
+        esac || continue
+        for installer in "$work/install.sh" "$work/mudp-install.sh"; do
+          [ -f "$installer" ] || continue
+          chmod +x "$installer" 2>/dev/null || true
+          if "$installer" "$service"; then ok=1; fi
+          break
+        done
+        ;;
+      *.deb)
+        if command -v dpkg >/dev/null 2>&1; then
+          dpkg -i "$pkg" 2>/dev/null && ok=1 || \
+            { command -v apt-get >/dev/null 2>&1 && apt-get install -f -y 2>/dev/null && ok=1 || true; }
+        fi
+        ;;
+      *.rpm)
+        if command -v dnf >/dev/null 2>&1; then
+          dnf install -y "$pkg" 2>/dev/null && ok=1
+        elif command -v yum >/dev/null 2>&1; then
+          yum install -y "$pkg" 2>/dev/null && ok=1
+        elif command -v rpm >/dev/null 2>&1; then
+          rpm -Uvh --replacepkgs "$pkg" 2>/dev/null && ok=1
+        fi
+        ;;
+      *.apk)
+        command -v apk >/dev/null 2>&1 && apk add --allow-untrusted "$pkg" 2>/dev/null && ok=1 || true
+        ;;
+    esac
+  done
+  [ "$found" -eq 1 ] && [ "$ok" -eq 1 ]
+}`
+
 func defaultSSHScript() string {
 	return `#!/bin/sh
 set -eu
@@ -775,6 +883,8 @@ set -eu
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 ` + userResolveSnippet + `
+
+` + offlineInstallSnippet + `
 
 install_packages() {
   if have_cmd apt-get; then
@@ -803,7 +913,7 @@ install_packages() {
   exit 1
 }
 
-have_cmd sshd || install_packages
+have_cmd sshd || run_offline_packages ssh || install_packages
 mkdir -p /var/run/sshd
 if command -v ssh-keygen >/dev/null 2>&1; then
   ssh-keygen -A >/dev/null 2>&1 || true
@@ -846,7 +956,10 @@ have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 ` + userResolveSnippet + `
 
+` + offlineInstallSnippet + `
+
 if ! have_cmd code-server; then
+  run_offline_packages vscode || {
   if ! have_cmd curl; then
     if have_cmd apt-get; then
       export DEBIAN_FRONTEND=noninteractive
@@ -869,6 +982,7 @@ if ! have_cmd code-server; then
   fi
   curl -fsSL https://code-server.dev/install.sh | sh
   rm -rf /root/.cache /tmp/* /var/tmp/*
+  }
 fi
 
 # code-server's config + data live under the connection user's home so the
@@ -1721,4 +1835,85 @@ func (db *DB) ListFusedLayers() ([]FusedLayer, error) {
 func (db *DB) DeleteFusedLayer(cacheKey string) error {
 	_, err := db.Exec(`delete from fused_layers where cache_key=?`, cacheKey)
 	return err
+}
+
+// --- Offline bootstrap packages --------------------------------------------
+
+func (db *DB) SaveOfflinePackage(p OfflinePackage) (int64, error) {
+	if p.Service == "" {
+		p.Service = "all"
+	}
+	if p.CreatedAt == "" {
+		p.CreatedAt = time.Now().Format(time.RFC3339)
+	}
+	res, err := db.Exec(`insert into offline_packages
+		(name, filename, service, image_name, image_ref, os, arch, size, sha256, description, created_at)
+		values(?,?,?,?,?,?,?,?,?,?,?)`,
+		p.Name, p.Filename, p.Service, p.ImageName, p.ImageRef, p.OS, p.Arch,
+		p.Size, p.SHA256, p.Description, p.CreatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (db *DB) OfflinePackages() ([]OfflinePackage, error) {
+	rows, err := db.Query(`select id, name, filename, service, image_name, image_ref, os, arch, size, sha256, description, created_at
+		from offline_packages order by created_at desc, id desc`)
+	return scanOfflinePackages(rows, err)
+}
+
+func (db *DB) OfflinePackage(id int64) (OfflinePackage, error) {
+	rows, err := db.Query(`select id, name, filename, service, image_name, image_ref, os, arch, size, sha256, description, created_at
+		from offline_packages where id=?`, id)
+	items, err := scanOfflinePackages(rows, err)
+	if err != nil {
+		return OfflinePackage{}, err
+	}
+	if len(items) == 0 {
+		return OfflinePackage{}, sql.ErrNoRows
+	}
+	return items[0], nil
+}
+
+func (db *DB) DeleteOfflinePackage(id int64) (OfflinePackage, error) {
+	p, err := db.OfflinePackage(id)
+	if err != nil {
+		return p, err
+	}
+	_, err = db.Exec(`delete from offline_packages where id=?`, id)
+	return p, err
+}
+
+// OfflinePackagesForImage returns packages that match the selected catalog image
+// and service. Specific image matches sort before generic packages so callers can
+// inject deterministic, image-scoped installers first.
+func (db *DB) OfflinePackagesForImage(imageName, imageRef, service string) ([]OfflinePackage, error) {
+	service = strings.TrimSpace(service)
+	rows, err := db.Query(`select id, name, filename, service, image_name, image_ref, os, arch, size, sha256, description, created_at
+		from offline_packages
+		where (service='all' or service=?)
+		  and (image_name='' or image_name=?)
+		  and (image_ref='' or image_ref=?)
+		order by
+		  case when image_ref != '' then 0 when image_name != '' then 1 else 2 end,
+		  created_at desc, id desc`, service, imageName, imageRef)
+	return scanOfflinePackages(rows, err)
+}
+
+func scanOfflinePackages(rows *sql.Rows, err error) ([]OfflinePackage, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OfflinePackage
+	for rows.Next() {
+		var p OfflinePackage
+		if err := rows.Scan(&p.ID, &p.Name, &p.Filename, &p.Service, &p.ImageName, &p.ImageRef,
+			&p.OS, &p.Arch, &p.Size, &p.SHA256, &p.Description, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }

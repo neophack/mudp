@@ -40,6 +40,18 @@ Users can view live container stats from a container's **Stats** action. Admins 
 
 The history endpoint stores a fresh sample on access and keeps recent samples for 48 hours.
 
+## Offline Bootstrap Packages
+
+Admins can open **Bootstrap** to manage SSH and VS Code bootstrap packages for offline or intranet deployments.
+
+- **Download build.sh** creates a starter shell script for producing a `.tar.gz` package.
+- Packages can also be uploaded as `.sh` or `.run` installers.
+- A package can apply to all images or be scoped to one catalog image.
+- During container creation, matching packages are copied into `/mudp-offline-packages` before bootstrap scripts run.
+- The default SSH/VS Code scripts try offline packages first and only fall back to online package managers or `code-server.dev` when no offline package succeeds.
+
+Uploaded packages are stored under `MUDP_OFFLINE_PACKAGE_DIR` (`offline-packages` by default). Use a persistent application path for production.
+
 ## Disks And Backup
 
 Admins can open **Disks** to view host disk information, run mount/unmount helper commands, and create a zipped database backup on a mounted disk path.

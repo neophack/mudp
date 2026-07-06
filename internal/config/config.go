@@ -19,6 +19,8 @@ type Config struct {
 	// WebDir, when non-empty, serves the UI from disk (dev mode) instead of the
 	// embedded filesystem. Lets you iterate on web/ without rebuilding.
 	WebDir string
+	// OfflinePackageDir stores uploaded bootstrap offline installers.
+	OfflinePackageDir string
 }
 
 func Load() Config {
@@ -34,13 +36,14 @@ func Load() Config {
 		}
 	}
 	cfg := Config{
-		Addr:          env("MUDP_ADDR", "0.0.0.0:9000"),
-		DBPath:        env("MUDP_DB", "mudp.db"),
-		SessionSecret: secret,
-		AdminUser:     env("MUDP_ADMIN_USER", "admin"),
-		AdminPassword: adminPassword,
-		DockerHost:    env("MUDP_DOCKER_HOST", ""),
-		WebDir:        env("MUDP_WEB_DIR", ""),
+		Addr:              env("MUDP_ADDR", "0.0.0.0:9000"),
+		DBPath:            env("MUDP_DB", "mudp.db"),
+		SessionSecret:     secret,
+		AdminUser:         env("MUDP_ADMIN_USER", "admin"),
+		AdminPassword:     adminPassword,
+		DockerHost:        env("MUDP_DOCKER_HOST", ""),
+		WebDir:            env("MUDP_WEB_DIR", ""),
+		OfflinePackageDir: env("MUDP_OFFLINE_PACKAGE_DIR", "offline-packages"),
 	}
 	if cfg.Production() && os.Getenv("MUDP_SESSION_SECRET") == "" {
 		log.Println("WARNING: MUDP_SESSION_SECRET is not set; sessions will be invalidated on every restart")

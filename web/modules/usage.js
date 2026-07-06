@@ -11,7 +11,7 @@ export async function renderUsage() {
   if (isAdmin() && usage) {
     state.usage = usage;
   }
-  const rows = isAdmin()
+  const rows = (isAdmin()
     ? state.usage
     : [{
         username: state.me?.username || "me",
@@ -22,7 +22,7 @@ export async function renderUsage() {
         gpuPct: avg((state.containers || []).map((c) => c.gpuPct || 0).filter(Boolean)),
         gpuMemMb: (state.containers || []).reduce((sum, c) => sum + (c.gpuMemMb || 0), 0),
         gpuMemTotalMb: (state.containers || []).reduce((sum, c) => sum + (c.gpuMemTotalMb || 0), 0),
-      }];
+      }]) || [];
   $("#view").innerHTML =
     `<div class="stack">` +
     `<div class="card">` +
@@ -50,7 +50,7 @@ export async function renderUsage() {
     `</div></div>` +
     (isAdmin() ? `<div class="card"><div class="card-head"><h2>Top Processes</h2></div>` +
       `<table class="data"><thead><tr><th>User</th><th>Container</th><th>PID</th><th>CPU</th><th>Command</th></tr></thead>` +
-      `<tbody>${processes.map(processRow).join("") || `<tr class="empty-row"><td colspan="5">No process data.</td></tr>`}</tbody></table>` +
+      `<tbody>${(processes || []).map(processRow).join("") || `<tr class="empty-row"><td colspan="5">No process data.</td></tr>`}</tbody></table>` +
     `</div>` : "") +
     `</div>`;
 }

@@ -27,6 +27,10 @@ type ImagePreset struct {
 	Forward8080  *bool `json:"forward8080,omitempty"`
 	Forward80    *bool `json:"forward80,omitempty"`
 	MountNetdisk *bool `json:"mountNetdisk,omitempty"`
+	// MountShm controls whether the host's /dev/shm is bind-mounted into the
+	// container. Pointer so nil leaves the create form's own default (checked) in
+	// place instead of forcing it off.
+	MountShm *bool `json:"mountShm,omitempty"`
 	// Networks are managed network names to attach by default.
 	Networks []string `json:"networks,omitempty"`
 	// RestartPolicy is one of unless-stopped|always|on-failure|no.
@@ -88,7 +92,7 @@ func isEmptyPreset(p *ImagePreset) bool {
 	}
 	return p.GPUs == "" && len(p.Env) == 0 && len(p.Ports) == 0 &&
 		p.SSH == nil && p.VSCode == nil && p.Forward8080 == nil && p.Forward80 == nil &&
-		p.MountNetdisk == nil && len(p.Networks) == 0 && p.RestartPolicy == "" &&
+		p.MountNetdisk == nil && p.MountShm == nil && len(p.Networks) == 0 && p.RestartPolicy == "" &&
 		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == ""
 }
 

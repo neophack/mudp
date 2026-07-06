@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"mudp/internal/bootstrap"
+
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -25,8 +27,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
-	"github.com/opencontainers/image-spec/specs-go/v1"
-	"mudp/internal/bootstrap"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 const Prefix = "mudp-"
@@ -100,19 +101,20 @@ type Container struct {
 }
 
 type CreateOptions struct {
-	Username       string
-	Name           string
-	ImageRef       string
-	ImageName      string
-	Env            []string
-	GPUs           string
-	SSH            bool
-	VSCode         bool
-	Forward8080    bool
-	Forward80      bool
-	AccessPassword string
-	SSHScript      string
-	VSCodeScript   string
+	Username        string
+	Name            string
+	ImageRef        string
+	ImageName       string
+	Env             []string
+	GPUs            string
+	SSH             bool
+	VSCode          bool
+	Forward8080     bool
+	Forward80       bool
+	AccessPassword  string
+	SSHScript       string
+	VSCodeScript    string
+	OfflinePackages []bootstrap.OfflinePackage
 	// ConnectionUser is the login account SSH and code-server target for this
 	// container. It is resolved from the base image's USER directive by the
 	// server; "root" when the image runs as root or declares no user. The
@@ -124,6 +126,10 @@ type CreateOptions struct {
 	Mounts       []string
 	NetdiskPath  string
 	MountNetdisk bool
+	// MountShm binds the host's /dev/shm into the container so workloads that need
+	// large shared memory (ML data loaders, in-memory databases, IPC) are not
+	// capped by Docker's default 64MB tmpfs.
+	MountShm bool
 	// Networks are mudp network names to attach the container to.
 	Networks []string
 	// Devices are generic --device specs (host[:container[:rwm]]) to pass through,
@@ -140,11 +146,6 @@ type CreateOptions struct {
 	// stage is one of: image, bootstrap, create, copy, start, ssh, vscode, done.
 	Progress func(stage, msg string)
 	// FusedPlan, when set, requests a fused derived image (base + SSH/VSCode
-	// pre-installed) for this create. The server computes the cache key and
-	// references; CreateContainer builds the image lazily on a cache miss or
-	// reuses it on a hit. If the build fails, CreateContainer falls back to the
-	// runtime-injection path. Nil means "use the legacy runtime-injection path".
-	FusedPlan *FusedPlan
 }
 
 // FusedPlan describes how to build or reuse a fused derived image. The cache
@@ -186,7 +187,8 @@ type FusedPlan struct {
 	VSCodeLayerCacheKey string
 	// Auth is optional base64 registry auth, forwarded to the build so a
 	// FROM <private-registry>/... works.
-	Auth string
+	Auth            string
+	OfflinePackages []bootstrap.OfflinePackage
 }
 
 // ExecConn wraps a live exec attach used by the WebSocket terminal.
@@ -399,15 +401,16 @@ func (d *Client) buildFused(ctx context.Context, plan *FusedPlan, emit func(stag
 	}
 
 	buildCtx, err := bootstrap.FusedContext(bootstrap.Config{
-		EnableSSH:      plan.EnableSSH,
-		EnableVSCode:   plan.EnableVSCode,
-		AccessPassword: plan.AccessPassword,
-		SSHScript:      plan.SSHScript,
-		VSCodeScript:   plan.VSCodeScript,
-		OrigEntrypoint: plan.OrigEntrypoint,
-		OrigCmd:        plan.OrigCmd,
-		BaseRef:        plan.BaseRef,
-		ConnectionUser: plan.ConnectionUser,
+		EnableSSH:       plan.EnableSSH,
+		EnableVSCode:    plan.EnableVSCode,
+		AccessPassword:  plan.AccessPassword,
+		SSHScript:       plan.SSHScript,
+		VSCodeScript:    plan.VSCodeScript,
+		OrigEntrypoint:  plan.OrigEntrypoint,
+		OrigCmd:         plan.OrigCmd,
+		BaseRef:         plan.BaseRef,
+		ConnectionUser:  plan.ConnectionUser,
+		OfflinePackages: plan.OfflinePackages,
 	}, plan.SSHLayerRef, plan.VSCodeLayerRef)
 	if err != nil {
 		return fmt.Errorf("prepare build context: %w", err)
@@ -458,15 +461,16 @@ func (d *Client) buildLayer(ctx context.Context, plan *FusedPlan, service string
 	}
 	emit("bootstrap", "Building "+service+" layer "+PublicImageName(layerRef)+"…")
 	buildCtx, err := bootstrap.LayerContext(bootstrap.Config{
-		EnableSSH:      plan.EnableSSH,
-		EnableVSCode:   plan.EnableVSCode,
-		AccessPassword: plan.AccessPassword,
-		SSHScript:      plan.SSHScript,
-		VSCodeScript:   plan.VSCodeScript,
-		OrigEntrypoint: plan.OrigEntrypoint,
-		OrigCmd:        plan.OrigCmd,
-		BaseRef:        plan.BaseRef,
-		ConnectionUser: plan.ConnectionUser,
+		EnableSSH:       plan.EnableSSH,
+		EnableVSCode:    plan.EnableVSCode,
+		AccessPassword:  plan.AccessPassword,
+		SSHScript:       plan.SSHScript,
+		VSCodeScript:    plan.VSCodeScript,
+		OrigEntrypoint:  plan.OrigEntrypoint,
+		OrigCmd:         plan.OrigCmd,
+		BaseRef:         plan.BaseRef,
+		ConnectionUser:  plan.ConnectionUser,
+		OfflinePackages: plan.OfflinePackages,
 	}, service)
 	if err != nil {
 		return fmt.Errorf("prepare %s layer context: %w", service, err)
@@ -807,11 +811,13 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	// Share the host /dev/shm so workloads that need large shared memory (ML
 	// data loaders, in-memory databases, IPC) are not capped by Docker's default
 	// 64MB tmpfs. This mirrors `docker run -v /dev/shm:/dev/shm`.
-	hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{
-		Type:   mount.TypeBind,
-		Source: "/dev/shm",
-		Target: "/dev/shm",
-	})
+	if opts.MountShm {
+		hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: "/dev/shm",
+			Target: "/dev/shm",
+		})
+	}
 	if opts.GPUs != "" && opts.GPUs != "none" {
 		hostCfg.Resources.DeviceRequests = []container.DeviceRequest{{
 			Driver:       "nvidia",
@@ -864,56 +870,17 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		containerCfg.User = "root"
 	}
 	if opts.SSH || opts.VSCode {
-		// Try the fused derived-image path first: build-or-reuse a pre-installed
-		// image so container start skips the slow per-boot install. Falls back to
-		// runtime injection below if the build fails or no plan was supplied.
-		if fusedRef := d.resolveFusedImage(ctx, opts.FusedPlan, emit); fusedRef != "" {
-			// The fused image already has SSH/VSCode installed and its ENTRYPOINT
-			// runs the per-boot runtime script. Supply the access password via env.
-			containerCfg.Image = fusedRef
-			containerCfg.Env = append(containerCfg.Env, "MUDP_ACCESS_PASSWORD="+opts.AccessPassword)
-			// No entrypoint override, no CopyToContainer — the fused image is self-contained.
-			emit("create", "Creating container")
-			resp, err := d.c.ContainerCreate(ctx, containerCfg, hostCfg,
-				networkingConfig(resolvedNetworks), &v1.Platform{}, name)
-			if err != nil {
-				return "", err
-			}
-			emit("start", "Starting container")
-			if err := d.c.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-				_ = d.c.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-				return "", err
-			}
-			if opts.SSH {
-				emit("ssh", "Waiting for SSH to come up")
-				if err := d.waitForReady(ctx, resp.ID, 22); err != nil {
-					emit("ssh", "SSH not ready yet — the link will appear once it is up")
-				} else {
-					emit("ssh", "SSH ready")
-				}
-			}
-			if opts.VSCode {
-				emit("vscode", "Waiting for VS Code Server to come up")
-				if err := d.waitForReady(ctx, resp.ID, 13337); err != nil {
-					emit("vscode", "VS Code not ready yet — the link will appear once it is up")
-				} else {
-					emit("vscode", "VS Code ready")
-				}
-			}
-			emit("done", "Container created")
-			return resp.ID, nil
-		}
-		// Fallback: runtime injection of the bootstrap scripts.
 		emit("bootstrap", "Generating bootstrap scripts")
 		payload, err := bootstrap.Tarball(bootstrap.Config{
-			EnableSSH:      opts.SSH,
-			EnableVSCode:   opts.VSCode,
-			AccessPassword: opts.AccessPassword,
-			SSHScript:      opts.SSHScript,
-			VSCodeScript:   opts.VSCodeScript,
-			OrigEntrypoint: imageInfo.Config.Entrypoint,
-			OrigCmd:        imageInfo.Config.Cmd,
-			ConnectionUser: connectionUser,
+			EnableSSH:       opts.SSH,
+			EnableVSCode:    opts.VSCode,
+			AccessPassword:  opts.AccessPassword,
+			SSHScript:       opts.SSHScript,
+			VSCodeScript:    opts.VSCodeScript,
+			OrigEntrypoint:  imageInfo.Config.Entrypoint,
+			OrigCmd:         imageInfo.Config.Cmd,
+			ConnectionUser:  connectionUser,
+			OfflinePackages: opts.OfflinePackages,
 		})
 		if err != nil {
 			return "", err
@@ -1910,6 +1877,12 @@ func (d *Client) validateNetworkAttachment(ctx context.Context, username, name s
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", fmt.Errorf("network name is empty")
+	}
+	// Docker's default bridge network is a safe pass-through (no host network
+	// access, unlike "host"/"none"), so it's the one system network users may
+	// attach alongside their own mudp-managed networks.
+	if name == "bridge" {
+		return "bridge", nil
 	}
 	full := NetworkFullName(username, name)
 	info, err := d.c.NetworkInspect(ctx, full, network.InspectOptions{})

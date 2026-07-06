@@ -58,6 +58,7 @@ Open <http://127.0.0.1:9000>. Default first admin: `admin / admin123`.
 | `MUDP_ADMIN_PASSWORD` | `admin123` | Bootstrap admin password. |
 | `MUDP_DOCKER_HOST` | _empty_ (uses `DOCKER_HOST`) | Override the Docker Engine endpoint. |
 | `MUDP_WEB_DIR` | _empty_ | Serve UI from disk (dev mode) instead of the embed. |
+| `MUDP_OFFLINE_PACKAGE_DIR` | `offline-packages` | Application path for uploaded SSH/VS Code offline bootstrap packages. |
 
 ## Architecture
 

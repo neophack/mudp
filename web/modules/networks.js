@@ -1,6 +1,6 @@
 // Networks: list, create, delete. mudp-managed networks are namespaced per user.
 
-import { state, api, toast, refreshSection, renderView, canMutate } from "../app.js";
+import { state, api, toast, refreshSection, renderView, canMutate, isAdmin } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 export function renderNetworks() {
@@ -9,7 +9,7 @@ export function renderNetworks() {
   $("#view").innerHTML =
     `<div class="card">` +
       `<div class="card-head"><h2>Networks</h2>` +
-        (canMutate() ? `<button class="primary" id="newNetBtn">+ New Network</button>` : "") +
+        (isAdmin() ? `<button class="primary" id="newNetBtn">+ New Network</button>` : "") +
       `</div>` +
       `<table class="data">` +
         `<thead><tr><th>Name</th><th>Driver</th><th>Subnet</th><th>Containers</th><th>Owner</th><th class="actions">Actions</th></tr></thead>` +

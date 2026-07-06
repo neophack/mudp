@@ -61,6 +61,7 @@ func (a *App) fusedBuildStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	plan.OfflinePackages = a.offlineBootstrapPackages(img.DisplayName, img.DockerRef, enableSSH, enableVSCode)
 
 	flusher, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")

@@ -98,6 +98,7 @@ export function openPresetModal(imageId) {
           presetCheck("forward8080", "Forward port 8080", p.forward8080) +
           presetCheck("forward80", "Forward port 80", p.forward80) +
           presetCheck("mountNetdisk", "Mount netdisk at /netdisk", p.mountNetdisk) +
+          presetCheck("mountShm", "Mount host /dev/shm", p.mountShm) +
         `</div>` +
         (networkChecks ? `<label class="field-label">Networks</label><div class="check-grid">${networkChecks}</div>` : "") +
         `<label class="field-label">Restart policy</label>` +
@@ -109,7 +110,7 @@ export function openPresetModal(imageId) {
           `<option value="no"${p.restartPolicy === "no" ? " selected" : ""}>no</option>` +
         `</select>` +
         `<label class="field-label">Devices (one --device per line, e.g. /dev/nvidia0)</label>` +
-        `<textarea name="devices" spellcheck="false">${escapeHtml((p.devices || []).join("\n"))}</textarea>` +
+        `<textarea name="devices" spellcheck="false">${escapeHtml((p.devices && p.devices.length ? p.devices : DEFAULT_NVIDIA_DEVICES).join("\n"))}</textarea>` +
         `<label class="field-label">CDI devices (one per line, e.g. nvidia.com/gpu=0)</label>` +
         `<textarea name="cdiDevices" spellcheck="false">${escapeHtml((p.cdiDevices || []).join("\n"))}</textarea>` +
       `</form>`,
@@ -128,6 +129,7 @@ export function openPresetModal(imageId) {
       forward8080: form.querySelector('[name=forward8080]').checked || undefined,
       forward80: form.querySelector('[name=forward80]').checked || undefined,
       mountNetdisk: form.querySelector('[name=mountNetdisk]').checked || undefined,
+      mountShm: form.querySelector('[name=mountShm]').checked || undefined,
       networks: [...form.querySelectorAll('input[name=networks]:checked')].map((i) => i.value),
       restartPolicy: (fd.get("restartPolicy") || "").trim(),
       devices: lines(fd.get("devices")),
@@ -156,6 +158,18 @@ function presetCheck(name, label, value) {
 function lines(raw) {
   return String(raw || "").split("\n").map((s) => s.trim()).filter(Boolean);
 }
+
+// DEFAULT_NVIDIA_DEVICES pre-fills the devices field for images that need direct
+// /dev access to NVIDIA GPUs (e.g. runtimes without --gpus/CDI support).
+const DEFAULT_NVIDIA_DEVICES = [
+  "/dev/nvidia0",
+  "/dev/nvidia1",
+  "/dev/nvidia2",
+  "/dev/nvidia3",
+  "/dev/nvidiactl",
+  "/dev/nvidia-uvm",
+  "/dev/nvidia-uvm-tools",
+];
 
 export function openPullModal() {
   state.pull = { active: false, logs: "", error: "", name: "" };

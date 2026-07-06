@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"mudp/internal/dockerx"
+	"mudp/internal/store"
 )
 
 // networks handles GET (list) and POST (create) for mudp-managed networks.
@@ -15,8 +16,8 @@ func (a *App) networks(w http.ResponseWriter, r *http.Request) {
 		items, err := a.docker.ListNetworks(r.Context(), u.Username, u.Role == "admin")
 		respond(w, items, err)
 	case http.MethodPost:
-		if !canMutate(u) {
-			writeErr(w, http.StatusForbidden, "read-only role cannot create networks")
+		if u.Role != store.RoleAdmin {
+			writeErr(w, http.StatusForbidden, "only an admin can create networks")
 			return
 		}
 		var req struct {

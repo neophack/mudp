@@ -98,7 +98,12 @@ export async function openTerminal(id, name) {
   const ws = new WebSocket(url);
   state.terminal.ws = ws;
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => setConnStat("ok", "Connected");
+  ws.onopen = () => {
+    setConnStat("ok", "Connected");
+    // The terminal may have been refitted between URL construction and the
+    // WebSocket opening, so push the current dimensions to the server pty.
+    sendResize();
+  };
   ws.onmessage = (ev) => {
     term.write(typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data));
   };
@@ -107,7 +112,20 @@ export async function openTerminal(id, name) {
   term.onData((data) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "stdin", data }));
   });
-  term.onResize(() => updateSize(term));
+
+  // Keep the server-side pty in sync with the rendered terminal size. xterm.js
+  // fires this after fitAddon.fit(), so resizes from window changes, fullscreen
+  // toggles, and the initial layout settle all update the container pty.
+  const sendResize = () => {
+    const currentWs = state.terminal?.ws;
+    if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+      currentWs.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    }
+  };
+  term.onResize(() => {
+    updateSize(term);
+    sendResize();
+  });
 
   // Resize handling: window resize + container size changes (fullscreen toggle).
   const onResize = () => {
