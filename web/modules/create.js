@@ -4,6 +4,11 @@ import { state, toast, refreshAll, renderView } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 
 const STAGE_ORDER = ["image", "bootstrap", "create", "copy", "start", "ssh", "vscode", "done"];
+
+// lastPayload holds the most recent create request so the Retry button in the
+// progress panel can resubmit it instead of wiping the form (which would also
+// stack a second modal backdrop — see openCreateModal's showModal call).
+let lastPayload = null;
 const STAGE_LABEL = {
   image: "Inspect image",
   bootstrap: "Generate bootstrap scripts",
@@ -18,7 +23,10 @@ const STAGE_LABEL = {
 export function openCreateModal() {
   state.create = { active: false, steps: [], logs: "", error: "" };
   const imageOptions = state.images
-    .map((img) => `<option value="${escapeHtml(img.name)}">${escapeHtml(img.name)}</option>`)
+    .map((img) => {
+      const hasPreset = img.preset && (img.preset.gpus || (img.preset.ports && img.preset.ports.length) || img.preset.description);
+      return `<option value="${escapeHtml(img.name)}">${escapeHtml(img.name)}${hasPreset ? " ⚙" : ""}</option>`;
+    })
     .join("");
   // System networks (bridge/host/none) are shown read-only on the Networks view
   // but cannot be attached to — validateNetworkAttachment rejects anything
@@ -37,12 +45,7 @@ export function openCreateModal() {
       `<form id="newContainer" class="compact">` +
         `<input name="name" placeholder="Container name, e.g. dev01" required>` +
         `<select name="image" required><option value="">Select image</option>${imageOptions}</select>` +
-        `<select name="gpus">` +
-          `<option value="none">No GPU</option>` +
-          `<option value="all">All GPUs</option>` +
-          `<option value="0">GPU 0</option>` +
-          `<option value="1">GPU 1</option>` +
-        `</select>` +
+        gpuSelectHtml() +
         `<textarea name="env" placeholder="Environment variables, one KEY=VALUE per line"></textarea>` +
         `<textarea name="ports" placeholder="Port mappings, one host:container per line\n${escapeHtml(portHint)}"></textarea>` +
         `<textarea name="mounts" placeholder="Managed volume mounts, one volume-name:target[:ro] per line${myVolumes.length ? '\nAvailable volumes: ' + escapeHtml(myVolumes.join(', ')) : ''}"></textarea>` +
@@ -63,6 +66,11 @@ export function openCreateModal() {
       `</form>`,
     foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="createSubmit">Create and Start</button>`,
   });
+  // Auto-fill the form from the selected image's admin-defined preset. Picking an
+  // image with a preset pre-populates GPUs, env, ports, networks, and the SSH/VSCode
+  // toggles so the per-image conventions (e.g. VNC_PW password, the app's port) are
+  // applied without each user rediscovering them. Users can still override anything.
+  $("#newContainer").querySelector('[name="image"]').addEventListener("change", (e) => applyPreset(e.target.value));
   $("#createSubmit").onclick = async () => {
     const fd = new FormData($("#newContainer"));
     const payload = Object.fromEntries(fd);
@@ -77,8 +85,68 @@ export function openCreateModal() {
     payload.mountNetdisk = fd.has("mountNetdisk");
     payload.networks = [...$("#newContainer").querySelectorAll('input[name="networks"]:checked')].map((i) => i.value);
     payload.restartPolicy = fd.get("restartPolicy") || "unless-stopped";
+    // Forward the image preset's device passthrough (NVIDIA device nodes, CDI
+    // devices) so GPUs stay connected and admins' device choices apply. These come
+    // only from admin-configured presets; the user form has no device field.
+    const selectedImage = state.images.find((i) => i.name === payload.image);
+    if (selectedImage && selectedImage.preset) {
+      payload.devices = selectedImage.preset.devices || [];
+      payload.cdiDevices = selectedImage.preset.cdiDevices || [];
+    }
+    // The access password is only meaningful (and only required by the backend)
+    // when SSH or VS Code is enabled. Drop it otherwise so a stray value in the
+    // field can't trip the 6-char server-side validation for a plain container.
+    if (!payload.ssh && !payload.vscode) {
+      delete payload.accessPassword;
+    } else if (typeof payload.accessPassword === "string" && payload.accessPassword.length < 6) {
+      toast("Connection password must be at least 6 characters");
+      return;
+    }
+    lastPayload = payload;
     await streamCreate(payload);
   };
+}
+
+// gpuSelectHtml renders the GPU dropdown based on the host's actual GPU count.
+// Falls back to none/all when the count is unknown (non-GPU host or not yet loaded).
+function gpuSelectHtml() {
+  const count = Number(state.gpuCount || 0);
+  let opts = `<option value="none">No GPU</option><option value="all">All GPUs</option>`;
+  for (let i = 0; i < count; i++) {
+    opts += `<option value="${i}">GPU ${i}</option>`;
+  }
+  // If we don't know the count yet, keep the legacy 0/1 fallback so users aren't
+  // blocked on a slow GPU probe; once state.gpuCount loads, a re-open refreshes it.
+  if (count === 0) {
+    opts += `<option value="0">GPU 0</option><option value="1">GPU 1</option>`;
+  }
+  return `<select name="gpus">${opts}</select>`;
+}
+
+// applyPreset fills the create form from an image's admin-defined preset. Only the
+// image-dependent fields are touched; the name and access password stay as the user
+// left them.
+function applyPreset(imageName) {
+  const img = state.images.find((i) => i.name === imageName);
+  const form = $("#newContainer");
+  if (!form || !img || !img.preset) return;
+  const p = img.preset;
+  if (p.gpus) form.querySelector('[name="gpus"]').value = p.gpus;
+  if (p.env && p.env.length) form.querySelector('[name="env"]').value = p.env.join("\n");
+  // Preset ports are container-side only; render as ":container" so the backend
+  // auto-allocates a host port from the user's range.
+  if (p.ports && p.ports.length) form.querySelector('[name="ports"]').value = p.ports.map((c) => ":" + c).join("\n");
+  if (p.restartPolicy) form.querySelector('[name="restartPolicy"]').value = p.restartPolicy;
+  form.querySelector('[name="ssh"]').checked = p.ssh !== undefined ? p.ssh : form.querySelector('[name="ssh"]').checked;
+  form.querySelector('[name="vscode"]').checked = p.vscode !== undefined ? p.vscode : form.querySelector('[name="vscode"]').checked;
+  form.querySelector('[name="forward8080"]').checked = !!p.forward8080;
+  form.querySelector('[name="forward80"]').checked = !!p.forward80;
+  if (p.mountNetdisk !== undefined) form.querySelector('[name="mountNetdisk"]').checked = p.mountNetdisk;
+  if (p.networks && p.networks.length) {
+    form.querySelectorAll('input[name="networks"]').forEach((cb) => {
+      if (p.networks.includes(cb.value)) cb.checked = true;
+    });
+  }
 }
 
 export function renderCreateProgress() {
@@ -111,7 +179,7 @@ export function renderCreateProgress() {
       `</div>`
   );
   const retry = $("#createRetry");
-  if (retry) retry.onclick = openCreateModal;
+  if (retry) retry.onclick = () => { if (lastPayload) streamCreate(lastPayload); };
   const log = document.querySelector(".modal-body .create-log");
   if (log) log.scrollTop = log.scrollHeight;
 }

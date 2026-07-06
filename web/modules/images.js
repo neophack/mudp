@@ -1,11 +1,13 @@
 // Images list, pull modal with SSE progress, and image deletion.
 
-import { state, api, toast, refreshSection, renderView, isAdmin, canMutate } from "../app.js";
+import { state, api, toast, refreshSection, renderView, isAdmin } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 
 export function renderImages() {
   const admin = isAdmin();
-  const canEdit = canMutate();
+  // Image lifecycle (pull/build/import/register/delete) is admin-only: only admins
+  // curate the image catalog. Users consume the images admins publish + configure.
+  const canEdit = admin;
   $("#view").innerHTML =
     `<div class="card">` +
       `<div class="card-head"><h2>Images</h2>` +
@@ -17,12 +19,15 @@ export function renderImages() {
         `</div>` : "") +
       `</div>` +
       `<table class="data">` +
-        `<thead><tr><th>Name</th><th>Source</th>${admin ? "<th>Visible to</th>" : ""}<th class="actions">Actions</th></tr></thead>` +
-        `<tbody>${state.images.map(imageRow).join("") || `<tr class="empty-row"><td colspan="${admin ? 4 : 3}">No images available${canEdit ? ". Click “+ Pull Image” to add one." : "."}</td></tr>`}</tbody>` +
+        `<thead><tr><th>Name</th><th>Source</th>${admin ? "<th>Visible to</th>" : ""}<th>Defaults</th><th class="actions">Actions</th></tr></thead>` +
+        `<tbody>${state.images.map((img) => imageRow(img, canEdit)).join("") || `<tr class="empty-row"><td colspan="${admin ? 5 : 4}">No images available${canEdit ? ". Click “+ Pull Image” to add one." : "."}</td></tr>`}</tbody>` +
       `</table>` +
     `</div>`;
   document.querySelectorAll("[data-image-delete]").forEach((btn) => {
     btn.onclick = () => deleteImage(btn.dataset.imageDelete, btn.dataset.imageRef);
+  });
+  document.querySelectorAll("[data-image-preset]").forEach((btn) => {
+    btn.onclick = () => openPresetModal(btn.dataset.imagePreset);
   });
   const buildBtn = $("#buildImageBtn");
   if (buildBtn) buildBtn.onclick = openBuildModal;
@@ -32,17 +37,124 @@ export function renderImages() {
   if (registerBtn) registerBtn.onclick = openRegisterModal;
 }
 
-function imageRow(image) {
+function imageRow(image, canEdit) {
   const admin = isAdmin();
-  const canEdit = canMutate();
+  const preset = image.preset || {};
+  const summary = presetSummary(preset);
   return (
     `<tr>` +
-      `<td><div class="primary-line">${escapeHtml(image.name)}</div><div class="secondary-line mono">${escapeHtml(image.dockerRef)}</div></td>` +
+      `<td><div class="primary-line">${escapeHtml(image.name)}</div><div class="secondary-line mono">${escapeHtml(image.dockerRef)}</div>${preset.description ? `<div class="secondary-line">📝 ${escapeHtml(preset.description)}</div>` : ""}</td>` +
       `<td><div class="secondary-line">${escapeHtml(image.sourceRef)}</div></td>` +
       (admin ? `<td><div class="secondary-line">${escapeHtml((image.groups || []).join(", ") || "Unassigned")}</div></td>` : "") +
-      `<td class="actions">${canEdit ? `<button class="icon danger" title="Delete" data-image-delete="${escapeHtml(image.id)}" data-image-ref="${escapeHtml(image.dockerRef)}">✕</button>` : "—"}</td>` +
+      `<td><div class="secondary-line">${summary}</div></td>` +
+      `<td class="actions">` +
+        (canEdit ? `<button class="icon" title="Configure defaults" data-image-preset="${escapeHtml(image.id)}">⚙</button><button class="icon danger" title="Delete" data-image-delete="${escapeHtml(image.id)}" data-image-ref="${escapeHtml(image.dockerRef)}">✕</button>` : "—") +
+      `</td>` +
     `</tr>`
   );
+}
+
+// presetSummary renders a compact one-line description of an image's configured
+// defaults so admins can see at a glance which images are pre-wired.
+function presetSummary(p) {
+  if (!p) return "—";
+  const bits = [];
+  if (p.gpus) bits.push("GPU:" + p.gpus);
+  if (p.ssh) bits.push("SSH");
+  if (p.vscode) bits.push("VSCode");
+  if ((p.ports || []).length) bits.push("ports:" + p.ports.join(","));
+  if ((p.devices || []).length) bits.push("dev:" + p.devices.length);
+  if ((p.cdiDevices || []).length) bits.push("cdi:" + p.cdiDevices.length);
+  return bits.length ? escapeHtml(bits.join(" · ")) : "—";
+}
+
+// openPresetModal opens the admin "image defaults" editor for an image. The preset
+// auto-fills the create-container form when a user picks this image. All fields are
+// optional; unset booleans mean "let the user decide".
+export function openPresetModal(imageId) {
+  const image = state.images.find((i) => String(i.id) === String(imageId));
+  if (!image) return;
+  const p = image.preset || {};
+  const networkChecks = state.networks
+    .filter((n) => !n.system)
+    .map((n) => `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}" ${(p.networks || []).includes(n.fullName || n.name) ? "checked" : ""}> ${escapeHtml(n.name)}</label>`)
+    .join("");
+  showModal({
+    kind: "preset",
+    title: "Defaults · " + image.name,
+    body:
+      `<form id="presetForm" class="compact">` +
+        `<p class="hint">These defaults auto-fill the create-container form when a user picks this image. Leave fields blank to let users decide.</p>` +
+        `<input name="description" placeholder="Description (what this image contains, e.g. PyTorch 2.1 + CUDA 12)" value="${escapeHtml(p.description || "")}">` +
+        `<label class="field-label">GPUs</label>` +
+        `<select name="gpus"><option value="">(user decides)</option><option value="none"${p.gpus === "none" ? " selected" : ""}>none</option><option value="all"${p.gpus === "all" ? " selected" : ""}>all</option></select>` +
+        `<label class="field-label">Environment variables (one KEY=VALUE per line, e.g. VNC_PW=secret)</label>` +
+        `<textarea name="env" spellcheck="false">${escapeHtml((p.env || []).join("\n"))}</textarea>` +
+        `<label class="field-label">Container ports to map (one per line, e.g. 8080)</label>` +
+        `<textarea name="ports" spellcheck="false">${escapeHtml((p.ports || []).join("\n"))}</textarea>` +
+        `<div class="check-grid">` +
+          presetCheck("ssh", "Enable SSH", p.ssh) +
+          presetCheck("vscode", "Enable VS Code Web", p.vscode) +
+          presetCheck("forward8080", "Forward port 8080", p.forward8080) +
+          presetCheck("forward80", "Forward port 80", p.forward80) +
+          presetCheck("mountNetdisk", "Mount netdisk at /netdisk", p.mountNetdisk) +
+        `</div>` +
+        (networkChecks ? `<label class="field-label">Networks</label><div class="check-grid">${networkChecks}</div>` : "") +
+        `<label class="field-label">Restart policy</label>` +
+        `<select name="restartPolicy">` +
+          `<option value="">(user decides)</option>` +
+          `<option value="unless-stopped"${p.restartPolicy === "unless-stopped" ? " selected" : ""}>unless-stopped</option>` +
+          `<option value="always"${p.restartPolicy === "always" ? " selected" : ""}>always</option>` +
+          `<option value="on-failure"${p.restartPolicy === "on-failure" ? " selected" : ""}>on-failure</option>` +
+          `<option value="no"${p.restartPolicy === "no" ? " selected" : ""}>no</option>` +
+        `</select>` +
+        `<label class="field-label">Devices (one --device per line, e.g. /dev/nvidia0)</label>` +
+        `<textarea name="devices" spellcheck="false">${escapeHtml((p.devices || []).join("\n"))}</textarea>` +
+        `<label class="field-label">CDI devices (one per line, e.g. nvidia.com/gpu=0)</label>` +
+        `<textarea name="cdiDevices" spellcheck="false">${escapeHtml((p.cdiDevices || []).join("\n"))}</textarea>` +
+      `</form>`,
+    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="presetSubmit">Save Defaults</button>`,
+  });
+  $("#presetSubmit").onclick = async () => {
+    const form = $("#presetForm");
+    const fd = new FormData(form);
+    const preset = {
+      description: (fd.get("description") || "").trim(),
+      gpus: (fd.get("gpus") || "").trim(),
+      env: lines(fd.get("env")),
+      ports: lines(fd.get("ports")),
+      ssh: form.querySelector('[name=ssh]').checked || undefined,
+      vscode: form.querySelector('[name=vscode]').checked || undefined,
+      forward8080: form.querySelector('[name=forward8080]').checked || undefined,
+      forward80: form.querySelector('[name=forward80]').checked || undefined,
+      mountNetdisk: form.querySelector('[name=mountNetdisk]').checked || undefined,
+      networks: [...form.querySelectorAll('input[name=networks]:checked')].map((i) => i.value),
+      restartPolicy: (fd.get("restartPolicy") || "").trim(),
+      devices: lines(fd.get("devices")),
+      cdiDevices: lines(fd.get("cdiDevices")),
+    };
+    $("#presetSubmit").disabled = true;
+    try {
+      await api("/api/images/preset", { method: "POST", body: JSON.stringify({ imageId: Number(imageId), preset }) });
+      closeModal();
+      await refreshSection("images");
+      renderView();
+      toast("Image defaults saved", true);
+    } catch (err) {
+      toast(err.message);
+      $("#presetSubmit").disabled = false;
+    }
+  };
+}
+
+// presetCheck renders a labeled checkbox reflecting a preset boolean (undefined→unchecked).
+function presetCheck(name, label, value) {
+  return `<label class="check"><input type="checkbox" name="${name}" ${value ? "checked" : ""}> ${escapeHtml(label)}</label>`;
+}
+
+// lines splits a textarea value into trimmed, non-empty lines.
+function lines(raw) {
+  return String(raw || "").split("\n").map((s) => s.trim()).filter(Boolean);
 }
 
 export function openPullModal() {

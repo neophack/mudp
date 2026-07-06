@@ -133,30 +133,40 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/netdisk/share", a.netdiskShareCreate)
 		r.Post("/api/netdisk/share/delete", a.netdiskShareDelete)
 		r.Post("/api/netdisk/share/save", a.netdiskShareSave)
+		// Hardware monitoring is visible to all activated users (admins see host-wide
+		// detail; users see the shared GPU/CPU/memory snapshot of the host they run on).
+		r.Get("/api/hardware", a.hardwareSnapshot)
+		r.Get("/api/hardware/gpus", a.hardwareGPUList)
 	})
 
-	// Operator+ : mutating Docker/image operations.
+	// Operator+ : image group visibility (assign images to groups). Pull/build/import are
+	// admin-only below; group assignment stays here so operators can still curate
+	// which user groups see a given image.
 	r.Group(func(r chi.Router) {
 		r.Use(a.authMiddleware)
 		r.Use(a.activatedMiddleware)
 		r.Use(a.minRoleMiddleware(rankOperator))
-		r.Post("/api/images/pull", a.pullImage)
-		r.Post("/api/images/pull/stream", a.pullImageStream)
-		r.Post("/api/images/register", a.imageRegister)
 		r.Post("/api/images/delete", a.deleteImage)
 		r.Post("/api/images/groups", a.setImageGroups)
-		r.Post("/api/images/build/stream", a.imageBuildStream)
-		r.Post("/api/images/import", a.imageImport)
-		r.Get("/api/images/save", a.imageSave)
-		r.Post("/api/images/prune", a.imagePrune)
-		r.Post("/api/images/tag", a.imageTag)
-		r.Post("/api/images/push", a.imagePush)
 	})
 
 	// Admin surface.
 	r.Group(func(r chi.Router) {
 		r.Use(a.authMiddleware)
 		r.Use(a.minRoleMiddleware(rankAdmin))
+
+		// Image lifecycle is admin-only: only admins pull, build, import, tag, push,
+		// prune, or configure presets. Users consume the images admins publish.
+		r.Post("/api/images/pull", a.pullImage)
+		r.Post("/api/images/pull/stream", a.pullImageStream)
+		r.Post("/api/images/register", a.imageRegister)
+		r.Post("/api/images/build/stream", a.imageBuildStream)
+		r.Post("/api/images/import", a.imageImport)
+		r.Get("/api/images/save", a.imageSave)
+		r.Post("/api/images/prune", a.imagePrune)
+		r.Post("/api/images/tag", a.imageTag)
+		r.Post("/api/images/push", a.imagePush)
+		r.Post("/api/images/preset", a.imagePreset)
 
 		r.Get("/api/users", a.users)
 		r.Post("/api/users", a.users)
@@ -623,6 +633,8 @@ type createRequest struct {
 	Networks       []string `json:"networks"`
 	MountNetdisk   *bool    `json:"mountNetdisk"`
 	RestartPolicy  string   `json:"restartPolicy"`
+	Devices        []string `json:"devices"`
+	CDIDevices     []string `json:"cdiDevices"`
 }
 
 var errForbiddenImage = errors.New("image not visible")
@@ -659,6 +671,14 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	// re-running the install at every start. Returns nil on any miss/error,
 	// which makes CreateContainer fall back to runtime injection.
 	fusedPlan := a.resolveFusedPlan(ctx, img.DockerRef, scripts.SSHScript, scripts.VSCodeScript, req.SSH, req.VSCode, req.AccessPassword)
+	// The connection user (SSH login + code-server owner) is resolved from the
+	// base image's USER. Prefer the plan's value (already resolved); otherwise
+	// CreateContainer derives it from the inspected image, so leaving this empty
+	// is also correct.
+	var connectionUser string
+	if fusedPlan != nil {
+		connectionUser = fusedPlan.ConnectionUser
+	}
 	mountNetdisk := true
 	if req.MountNetdisk != nil {
 		mountNetdisk = *req.MountNetdisk
@@ -682,8 +702,10 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		Env: normalizeEnv(req.Env), GPUs: req.GPUs, SSH: req.SSH, VSCode: req.VSCode,
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
 		AccessPassword: req.AccessPassword, SSHScript: scripts.SSHScript, VSCodeScript: scripts.VSCodeScript,
-		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
+		ConnectionUser: connectionUser,
+		Ports:          splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, NetdiskPath: netdiskPath,
+		Devices: req.Devices, CDIDevices: req.CDIDevices,
 		RestartPolicy: req.RestartPolicy,
 		FusedPlan:     fusedPlan,
 	}, nil
@@ -704,6 +726,7 @@ func (a *App) resolveFusedPlan(ctx context.Context, baseRef, sshScript, vscodeSc
 	if err != nil {
 		return nil // base image missing/uninspectable — fall back gracefully
 	}
+	connectionUser := dockerx.ResolveConnectionUser(info.Config.User)
 	scriptHash := hashScripts(sshScript, vscodeScript)
 	cacheKey := fusedCacheKey(info.ID, scriptHash, enableSSH, enableVSCode)
 	// Cache hit: row exists and the image is still local.
@@ -711,7 +734,7 @@ func (a *App) resolveFusedPlan(ctx context.Context, baseRef, sshScript, vscodeSc
 		if exists, _ := a.docker.ImageExists(ctx, fused.FusedRef); exists {
 			return makeFusedPlan(baseRef, info.ID, info.Config.Entrypoint, info.Config.Cmd,
 				scriptHash, cacheKey, fused.FusedRef,
-				enableSSH, enableVSCode, accessPassword, sshScript, vscodeScript, a.registryAuthForRef(baseRef))
+				enableSSH, enableVSCode, accessPassword, sshScript, vscodeScript, a.registryAuthForRef(baseRef), connectionUser)
 		}
 		// Stale row (image was pruned); drop it so we rebuild cleanly.
 		_ = a.db.DeleteFusedImage(cacheKey)
@@ -731,7 +754,7 @@ func (a *App) resolveFusedPlan(ctx context.Context, baseRef, sshScript, vscodeSc
 	})
 	return makeFusedPlan(baseRef, info.ID, info.Config.Entrypoint, info.Config.Cmd,
 		scriptHash, cacheKey, fusedRef,
-		enableSSH, enableVSCode, accessPassword, sshScript, vscodeScript, a.registryAuthForRef(baseRef))
+		enableSSH, enableVSCode, accessPassword, sshScript, vscodeScript, a.registryAuthForRef(baseRef), connectionUser)
 }
 
 // fusedPlanForBuild builds a plan for the manual admin "Build SSH Layer" /
@@ -749,12 +772,13 @@ func (a *App) fusedPlanForBuild(ctx context.Context, baseRef, sshScript, vscodeS
 	if err != nil {
 		return nil, fmt.Errorf("inspect base image %q: %w", baseRef, err)
 	}
+	connectionUser := dockerx.ResolveConnectionUser(info.Config.User)
 	scriptHash := hashScripts(sshScript, vscodeScript)
 	cacheKey := fusedCacheKey(info.ID, scriptHash, enableSSH, enableVSCode)
 	fusedRef := dockerx.MUDPFusedRef(baseRef, cacheKey)
 	return makeFusedPlan(baseRef, info.ID, info.Config.Entrypoint, info.Config.Cmd,
 		scriptHash, cacheKey, fusedRef,
-		enableSSH, enableVSCode, "mudp-build-placeholder", sshScript, vscodeScript, a.registryAuthForRef(baseRef)), nil
+		enableSSH, enableVSCode, "mudp-build-placeholder", sshScript, vscodeScript, a.registryAuthForRef(baseRef), connectionUser), nil
 }
 
 // recordFusedImage persists a fused_images row after a successful build so the
@@ -801,9 +825,11 @@ func (a *App) recordFusedLayer(plan *dockerx.FusedPlan, service string) {
 // makeFusedPlan assembles a *dockerx.FusedPlan from its inputs. Shared by the
 // lazy-create path and the manual-build path so the struct shape stays in one
 // place. Pass the base image's id/entrypoint/cmd extracted from InspectImage.
+// connectionUser is the resolved login account (from the base image's USER);
+// pass "" to default to root inside dockerx.FusedPlan.
 func makeFusedPlan(baseRef, baseImageID string, origEntrypoint, origCmd []string,
 	scriptHash, cacheKey, fusedRef string, enableSSH, enableVSCode bool,
-	accessPassword, sshScript, vscodeScript, auth string) *dockerx.FusedPlan {
+	accessPassword, sshScript, vscodeScript, auth, connectionUser string) *dockerx.FusedPlan {
 	sshLayerKey := sshLayerCacheKey(baseImageID, sshScript)
 	vscodeLayerKey := vscodeLayerCacheKey(baseImageID, vscodeScript)
 	return &dockerx.FusedPlan{
@@ -819,6 +845,7 @@ func makeFusedPlan(baseRef, baseImageID string, origEntrypoint, origCmd []string
 		EnableSSH:           enableSSH,
 		EnableVSCode:        enableVSCode,
 		AccessPassword:      accessPassword,
+		ConnectionUser:      connectionUser,
 		SSHScript:           sshScript,
 		VSCodeScript:        vscodeScript,
 		SSHLayerRef:         dockerx.MUDPFusedSSHLayerRef(baseRef, sshLayerKey),

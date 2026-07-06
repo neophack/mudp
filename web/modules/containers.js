@@ -63,8 +63,12 @@ function containerRow(c) {
   const sshHost = location.hostname;
   const sshCmd = c.sshPort ? `ssh -p ${c.sshPort} ${sshUser}@${sshHost}` : "";
   // Docker on Linux binds to 0.0.0.0 so the backend URL contains 127.0.0.1.
-  // Replace it with the server hostname the browser is already connected to.
-  const fixUrl = (url) => url ? url.replace(/^(https?:\/\/)(127\.0\.0\.1|0\.0\.0\.0|::1)(:\d+)/, `$1${location.hostname}$3`) : url;
+  // Replace it (and localhost/0.0.0.0/::1) with the server hostname the browser
+  // is already connected to, so links work on remote hosts.
+  const fixUrl = (url) => url ? url.replace(/^(https?:\/\/)(127\.0\.0\.1|0\.0\.0\.0|::1|localhost)(:\d+)/, `$1${location.hostname}$3`) : url;
+  // Coerce to a number defensively before toFixed: the backend usually sends
+  // numbers, but a stray string/null would otherwise throw and blank the table.
+  const num = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
   const conn = [];
   if (sshCmd) conn.push(`<span class="copy-chip"><code class="mono">${escapeHtml(sshCmd)}</code><button class="copy-btn" data-copy="${escapeHtml(sshCmd)}" title="Copy SSH command">⧉</button></span>`);
   if (c.vscodeUrl) conn.push(`<a class="vscode-link" href="${escapeHtml(fixUrl(c.vscodeUrl))}" target="_blank" rel="noopener">VS Code ↗</a>`);
@@ -81,7 +85,7 @@ function containerRow(c) {
       `<td><div class="primary-line">${escapeHtml(name)}</div><div class="secondary-line">${conn.length ? conn.join(" <span class='sep'>·</span> ") : escapeHtml(ports)}</div></td>` +
       `<td>${statusBadge}</td>` +
       `<td><div class="secondary-line">${escapeHtml(c.image || c.Image || "—")}</div></td>` +
-      `<td><div class="secondary-line">${(c.memoryMb || 0).toFixed(0)} MB mem · ${(c.diskMb || 0).toFixed(0)} MB disk</div>` +
+      `<td><div class="secondary-line">${num(c.memoryMb).toFixed(0)} MB mem · ${num(c.diskMb).toFixed(0)} MB disk</div>` +
         `<div class="secondary-line">GPU: ${escapeHtml(c.gpu || "none")}</div></td>` +
       `<td class="actions">` +
         iconBtn("logs", "📄", "Logs") +

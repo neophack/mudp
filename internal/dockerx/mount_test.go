@@ -59,3 +59,40 @@ func TestNetworkingConfigEmpty(t *testing.T) {
 		t.Errorf("nil networks should yield empty config, got %d", len(cfg.EndpointsConfig))
 	}
 }
+
+// TestParseDevice covers the --device spec parser used to pass host devices
+// (NVIDIA device nodes, USB, serial) through to containers.
+func TestParseDevice(t *testing.T) {
+	cases := []struct {
+		spec      string
+		host      string
+		container string
+		perms     string
+	}{
+		{"/dev/nvidia0", "/dev/nvidia0", "/dev/nvidia0", "rwm"},
+		{"/dev/foo:/dev/bar", "/dev/foo", "/dev/bar", "rwm"},
+		{"/dev/foo:/dev/bar:r", "/dev/foo", "/dev/bar", "r"},
+		{"/dev/nvidia0:/dev/nvidia0:rwm", "/dev/nvidia0", "/dev/nvidia0", "rwm"},
+	}
+	for _, c := range cases {
+		dm, err := parseDevice(c.spec)
+		if err != nil {
+			t.Errorf("parseDevice(%q): %v", c.spec, err)
+			continue
+		}
+		if dm.PathOnHost != c.host || dm.PathInContainer != c.container || dm.CgroupPermissions != c.perms {
+			t.Errorf("parseDevice(%q) = %+v, want host=%v container=%v perms=%v",
+				c.spec, dm, c.host, c.container, c.perms)
+		}
+	}
+}
+
+// TestParseDeviceErrors ensures malformed device specs are rejected, not silently
+// passed to the Docker API where they would surface as confusing daemon errors.
+func TestParseDeviceErrors(t *testing.T) {
+	for _, bad := range []string{"", ":a", "a:b:c:d"} {
+		if _, err := parseDevice(bad); err == nil {
+			t.Errorf("parseDevice(%q) expected error", bad)
+		}
+	}
+}

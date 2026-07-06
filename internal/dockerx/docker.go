@@ -45,6 +45,36 @@ type Client struct {
 	c *client.Client
 }
 
+// ResolveConnectionUser normalises an image's USER directive into the username
+// that SSH logins and code-server should target. It returns "root" when the
+// image runs as root (or declares no user), and a concrete account name
+// otherwise. A bare numeric UID such as "1000" or "1000:1000" maps to a fixed
+// runtime account ("mudp") that the bootstrap scripts create at boot, because a
+// UID alone has no login name and chpasswd/sshd need a name to act on.
+//
+// The value flows into the mudp.connectionUser label (shown in the UI's SSH
+// command) and into the bootstrap scripts via $MUDP_CONNECTION_USER.
+func ResolveConnectionUser(imageUser string) string {
+	return resolveConnectionUser(imageUser)
+}
+
+func resolveConnectionUser(imageUser string) string {
+	u := strings.TrimSpace(imageUser)
+	if u == "" || u == "root" || u == "0" {
+		return "root"
+	}
+	// Drop a ":group" suffix if present ("1000:1000" -> "1000").
+	if i := strings.IndexByte(u, ':'); i > 0 {
+		u = u[:i]
+	}
+	// Bare numeric UID (no login name) -> use a fixed runtime account that the
+	// bootstrap will create/own. chpasswd/sshd cannot target a UID directly.
+	if _, err := strconv.Atoi(u); err == nil {
+		return "mudp"
+	}
+	return u
+}
+
 type Container struct {
 	ID               string            `json:"id"`
 	Name             string            `json:"name"`
@@ -83,6 +113,11 @@ type CreateOptions struct {
 	AccessPassword string
 	SSHScript      string
 	VSCodeScript   string
+	// ConnectionUser is the login account SSH and code-server target for this
+	// container. It is resolved from the base image's USER directive by the
+	// server; "root" when the image runs as root or declares no user. The
+	// bootstrap scripts read it via $MUDP_CONNECTION_USER.
+	ConnectionUser string
 	Ports          []string
 	PortPrefix     int
 	// Mounts are bind/named-volume mounts: "source:target[:ro]" entries.
@@ -91,6 +126,13 @@ type CreateOptions struct {
 	MountNetdisk bool
 	// Networks are mudp network names to attach the container to.
 	Networks []string
+	// Devices are generic --device specs (host[:container[:rwm]]) to pass through,
+	// e.g. /dev/nvidia0. Used by admins to keep NVIDIA GPUs connected to GPU
+	// containers and to expose other host devices.
+	Devices []string
+	// CDIDevices are CDI device names for the Container Device Interface, e.g.
+	// nvidia.com/gpu=0. Requires a CDI-aware runtime (dockerd configured for CDI).
+	CDIDevices []string
 	// RestartPolicy is the Docker restart policy: "no", "always", "unless-stopped",
 	// or "on-failure". Defaults to "unless-stopped" when empty.
 	RestartPolicy string
@@ -129,6 +171,9 @@ type FusedPlan struct {
 	// AccessPassword is baked only as a build placeholder; the real per-container
 	// password is applied at runtime via the MUDP_ACCESS_PASSWORD env var.
 	AccessPassword string
+	// ConnectionUser is the login account the fused runtime script configures
+	// (resolved from the base image's USER). Defaults to "root".
+	ConnectionUser string
 	SSHScript      string
 	VSCodeScript   string
 	// SSHLayerRef/VSCodeLayerRef are the local tags of the incremental layer
@@ -171,6 +216,12 @@ type InspectInfo struct {
 	GPU           string            `json:"gpu"`
 	SSH           bool              `json:"ssh"`
 	VSCode        bool              `json:"vscode"`
+	// User is the runtime user the container process runs as (from
+	// inspect.Config.User), surfaced for visibility in the details modal.
+	User string `json:"user"`
+	// ConnectionUser is the account SSH logins and code-server target, resolved
+	// from the base image's USER and stamped on the mudp.connectionUser label.
+	ConnectionUser string `json:"connectionUser"`
 }
 
 type PortBinding struct {
@@ -356,6 +407,7 @@ func (d *Client) buildFused(ctx context.Context, plan *FusedPlan, emit func(stag
 		OrigEntrypoint: plan.OrigEntrypoint,
 		OrigCmd:        plan.OrigCmd,
 		BaseRef:        plan.BaseRef,
+		ConnectionUser: plan.ConnectionUser,
 	}, plan.SSHLayerRef, plan.VSCodeLayerRef)
 	if err != nil {
 		return fmt.Errorf("prepare build context: %w", err)
@@ -414,6 +466,7 @@ func (d *Client) buildLayer(ctx context.Context, plan *FusedPlan, service string
 		OrigEntrypoint: plan.OrigEntrypoint,
 		OrigCmd:        plan.OrigCmd,
 		BaseRef:        plan.BaseRef,
+		ConnectionUser: plan.ConnectionUser,
 	}, service)
 	if err != nil {
 		return fmt.Errorf("prepare %s layer context: %w", service, err)
@@ -625,8 +678,34 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			return nil
 		}
 		parts := strings.Split(spec, ":")
+		// Two supported forms:
+		//   host:container — explicit host port from the user's allocated range.
+		//   :container OR container — let the platform pick a free host port in the
+		// user's range (used by image presets that only know the in-container port).
+		if len(parts) == 2 && strings.TrimSpace(parts[0]) == "" {
+			// ":container" → auto-allocate host port.
+			hostPort, err := nextPort()
+			if err != nil {
+				return err
+			}
+			p := nat.Port(strings.TrimSpace(parts[1]) + "/tcp")
+			exposed[p] = struct{}{}
+			portMap[p] = []nat.PortBinding{{HostPort: hostPort}}
+			return nil
+		}
+		if len(parts) == 1 {
+			// bare container port → auto-allocate host port.
+			hostPort, err := nextPort()
+			if err != nil {
+				return err
+			}
+			p := nat.Port(strings.TrimSpace(parts[0]) + "/tcp")
+			exposed[p] = struct{}{}
+			portMap[p] = []nat.PortBinding{{HostPort: hostPort}}
+			return nil
+		}
 		if len(parts) != 2 {
-			return fmt.Errorf("port %q must be host:container", spec)
+			return fmt.Errorf("port %q must be host:container, :container, or container", spec)
 		}
 		hostPort, err := strconv.Atoi(strings.TrimSpace(parts[0]))
 		if err != nil {
@@ -677,6 +756,13 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		exposed["80/tcp"] = struct{}{}
 		portMap["80/tcp"] = []nat.PortBinding{{HostPort: hostPort}}
 	}
+	// Resolve the login/connection user from the base image's USER directive.
+	// The bootstrap scripts run as root (sshd must be root) but configure this
+	// account for password login and run code-server as it. Defaults to root.
+	connectionUser := resolveConnectionUser(imageInfo.Config.User)
+	if opts.ConnectionUser != "" {
+		connectionUser = opts.ConnectionUser
+	}
 	labels := map[string]string{
 		ManagedLabel:          "true",
 		UserLabel:             opts.Username,
@@ -687,7 +773,7 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		"mudp.vscode":         fmt.Sprint(opts.VSCode),
 		"mudp.forward8080":    fmt.Sprint(opts.Forward8080),
 		"mudp.forward80":      fmt.Sprint(opts.Forward80),
-		"mudp.connectionUser": "root",
+		"mudp.connectionUser": connectionUser,
 	}
 	hostCfg := &container.HostConfig{PortBindings: portMap, RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyMode(normalizeRestartPolicy(opts.RestartPolicy))}}
 	// Mounts: parse "source:target[:ro]" into bind or volume mounts. Sources
@@ -718,6 +804,14 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			Target: "/netdisk",
 		})
 	}
+	// Share the host /dev/shm so workloads that need large shared memory (ML
+	// data loaders, in-memory databases, IPC) are not capped by Docker's default
+	// 64MB tmpfs. This mirrors `docker run -v /dev/shm:/dev/shm`.
+	hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{
+		Type:   mount.TypeBind,
+		Source: "/dev/shm",
+		Target: "/dev/shm",
+	})
 	if opts.GPUs != "" && opts.GPUs != "none" {
 		hostCfg.Resources.DeviceRequests = []container.DeviceRequest{{
 			Driver:       "nvidia",
@@ -725,9 +819,32 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			Capabilities: [][]string{{"gpu"}},
 		}}
 	}
+	// Generic device passthrough (--device). Admins use this via image presets to
+	// keep NVIDIA device nodes attached to GPU containers (e.g. /dev/nvidia0,
+	// /dev/nvidiactl, /dev/nvidia-uvm) so the GPU link does not drop, and to expose
+	// other host devices (cameras, serial ports, USB).
+	for _, spec := range opts.Devices {
+		dm, err := parseDevice(spec)
+		if err != nil {
+			return "", err
+		}
+		hostCfg.Devices = append(hostCfg.Devices, dm)
+	}
+	// CDI device injection. Requires dockerd configured with the CDI device list
+	// (e.g. nvidia-container-toolkit in CDI mode). Each entry is a fully-qualified
+	// CDI device name like "nvidia.com/gpu=0".
+	if len(opts.CDIDevices) > 0 {
+		hostCfg.Resources.DeviceRequests = append(hostCfg.Resources.DeviceRequests,
+			container.DeviceRequest{Driver: "cdi", DeviceIDs: opts.CDIDevices})
+	}
 	env := append([]string{}, opts.Env...)
 	if opts.GPUs != "" && opts.GPUs != "none" {
 		env = append(env, "NVIDIA_VISIBLE_DEVICES="+opts.GPUs)
+	}
+	if opts.SSH || opts.VSCode {
+		// The bootstrap scripts read this to pick the login account and code-server
+		// data owner; defaults to root when the image runs as root.
+		env = append(env, "MUDP_CONNECTION_USER="+connectionUser)
 	}
 	containerCfg := &container.Config{
 		Image:        opts.ImageRef,
@@ -737,6 +854,14 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		ExposedPorts: exposed,
 		Labels:       labels,
 		WorkingDir:   imageInfo.Config.WorkingDir,
+	}
+	if opts.SSH || opts.VSCode {
+		// sshd must run as root to bind port 22 and authenticate logins, and the
+		// bootstrap needs root to install packages / edit /etc/ssh/sshd_config.
+		// Force root regardless of the image's USER; the resolved login account is
+		// carried via MUDP_CONNECTION_USER and the bootstrap drops privileges to it
+		// for code-server.
+		containerCfg.User = "root"
 	}
 	if opts.SSH || opts.VSCode {
 		// Try the fused derived-image path first: build-or-reuse a pre-installed
@@ -788,6 +913,7 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			VSCodeScript:   opts.VSCodeScript,
 			OrigEntrypoint: imageInfo.Config.Entrypoint,
 			OrigCmd:        imageInfo.Config.Cmd,
+			ConnectionUser: connectionUser,
 		})
 		if err != nil {
 			return "", err
@@ -895,11 +1021,31 @@ type GPUUsage struct {
 	MemoryPct     float64 `json:"gpuMemPct"`
 }
 
+// GPUCard is a per-GPU snapshot for the hardware monitoring page. It carries the
+// richer set of fields (name, temperature, power) that the dashboard/usage rollups
+// don't need. All numeric fields are best-effort and default to zero when nvidia-smi
+// couldn't report them (e.g. no power sensors on consumer cards).
+type GPUCard struct {
+	Index      int     `json:"index"`
+	Name       string  `json:"name"`
+	UtilPct    float64 `json:"utilPct"`
+	MemUsedMB  float64 `json:"memUsedMb"`
+	MemTotalMB float64 `json:"memTotalMb"`
+	MemPct     float64 `json:"memPct"`
+	TempC      float64 `json:"tempC"`
+	PowerW     float64 `json:"powerW"`
+	MemUtilPct float64 `json:"memUtilPct"`
+}
+
 type gpuMetric struct {
-	Index         string
-	Percent       float64
-	MemoryMB      float64
-	MemoryTotalMB float64
+	Index       string
+	Name        string
+	Percent     float64
+	MemoryMB    float64
+	MemoryTotal float64
+	TempC       float64
+	PowerW      float64
+	MemUtilPct  float64
 }
 
 func (d *Client) GPUUsage(ctx context.Context, spec string) (GPUUsage, error) {
@@ -921,7 +1067,7 @@ func (d *Client) GPUUsage(ctx context.Context, spec string) (GPUUsage, error) {
 	for _, m := range selected {
 		usage.Percent += m.Percent
 		usage.MemoryMB += m.MemoryMB
-		usage.MemoryTotalMB += m.MemoryTotalMB
+		usage.MemoryTotalMB += m.MemoryTotal
 	}
 	usage.Percent = round2(usage.Percent / float64(len(selected)))
 	if usage.MemoryTotalMB > 0 {
@@ -932,6 +1078,13 @@ func (d *Client) GPUUsage(ctx context.Context, spec string) (GPUUsage, error) {
 	return usage, nil
 }
 
+// parseGPUMetrics parses the CSV output of the extended nvidia-smi query. Field
+// order matches the query in gpu.go:
+//
+//	index, name, utilization.gpu, memory.used, memory.total,
+//	temperature.gpu, power.draw, utilization.memory
+//
+// Any field that nvidia-smi could not report (e.g. "[N/A]") parses to 0.
 func parseGPUMetrics(raw string) []gpuMetric {
 	var out []gpuMetric
 	for _, line := range strings.Split(raw, "\n") {
@@ -940,20 +1093,66 @@ func parseGPUMetrics(raw string) []gpuMetric {
 			continue
 		}
 		parts := strings.Split(line, ",")
-		if len(parts) < 4 {
+		if len(parts) < 5 {
 			continue
 		}
-		pct, _ := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-		mem, _ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
-		total, _ := strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
+		// index,name,util.gpu,mem.used,mem.total are guaranteed by the query; the
+		// remaining fields (temp, power, mem util) may be absent on some GPUs.
+		idx := strings.TrimSpace(parts[0])
+		name := strings.TrimSpace(parts[1])
+		pct, _ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
+		mem, _ := strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
+		total, _ := strconv.ParseFloat(strings.TrimSpace(parts[4]), 64)
+		var temp, power, memUtil float64
+		if len(parts) > 5 {
+			temp, _ = strconv.ParseFloat(strings.TrimSpace(parts[5]), 64)
+		}
+		if len(parts) > 6 {
+			power, _ = strconv.ParseFloat(strings.TrimSpace(parts[6]), 64)
+		}
+		if len(parts) > 7 {
+			memUtil, _ = strconv.ParseFloat(strings.TrimSpace(parts[7]), 64)
+		}
 		out = append(out, gpuMetric{
-			Index:         strings.TrimSpace(parts[0]),
-			Percent:       pct,
-			MemoryMB:      mem,
-			MemoryTotalMB: total,
+			Index:       idx,
+			Name:        name,
+			Percent:     pct,
+			MemoryMB:    mem,
+			MemoryTotal: total,
+			TempC:       temp,
+			PowerW:      power,
+			MemUtilPct:  memUtil,
 		})
 	}
 	return out
+}
+
+// GPUList returns a per-GPU snapshot suitable for the hardware monitoring page.
+// It returns an empty slice when nvidia-smi is unavailable (e.g. non-GPU host).
+func (d *Client) GPUList(ctx context.Context) []GPUCard {
+	if !nvidiaSmiAvailable() {
+		return nil
+	}
+	metrics := queryGPU(ctx)
+	cards := make([]GPUCard, 0, len(metrics))
+	for _, m := range metrics {
+		idx, _ := strconv.Atoi(strings.TrimSpace(m.Index))
+		card := GPUCard{
+			Index:      idx,
+			Name:       m.Name,
+			UtilPct:    round2(m.Percent),
+			MemUsedMB:  round2(m.MemoryMB),
+			MemTotalMB: round2(m.MemoryTotal),
+			TempC:      round2(m.TempC),
+			PowerW:     round2(m.PowerW),
+			MemUtilPct: round2(m.MemUtilPct),
+		}
+		if card.MemTotalMB > 0 {
+			card.MemPct = round2(card.MemUsedMB / card.MemTotalMB * 100)
+		}
+		cards = append(cards, card)
+	}
+	return cards
 }
 
 func selectGPUMetrics(metrics []gpuMetric, spec string) []gpuMetric {
@@ -1030,7 +1229,17 @@ func (d *Client) SetAccessPassword(ctx context.Context, id, password string) err
 	if err := d.managedGuard(ctx, id); err != nil {
 		return err
 	}
-	encoded := base64.StdEncoding.EncodeToString([]byte("root:" + password + "\n"))
+	// Target the connection account the container was created with (defaults to
+	// root for legacy/missing labels), not a hardcoded user.
+	inspect, err := d.c.ContainerInspect(ctx, id)
+	if err != nil {
+		return fmt.Errorf("inspect container: %w", err)
+	}
+	user := "root"
+	if u := inspect.Config.Labels["mudp.connectionUser"]; u != "" {
+		user = u
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(user + ":" + password + "\n"))
 	cmd := fmt.Sprintf("printf %%s %s | base64 -d | chpasswd", encoded)
 	execCfg := container.ExecOptions{AttachStdout: true, AttachStderr: true, Cmd: []string{"/bin/sh", "-lc", cmd}}
 	resp, err := d.c.ContainerExecCreate(ctx, id, execCfg)
@@ -1396,20 +1605,22 @@ func (d *Client) Inspect(ctx context.Context, id string) (InspectInfo, error) {
 		return InspectInfo{}, err
 	}
 	info := InspectInfo{
-		ID:            inspect.ID,
-		Name:          strings.TrimPrefix(inspect.Name, "/"),
-		Image:         inspect.Image,
-		State:         inspect.State.Status,
-		Status:        inspect.State.Status,
-		RestartPolicy: string(inspect.HostConfig.RestartPolicy.Name),
-		Entrypoint:    inspect.Config.Entrypoint,
-		Cmd:           inspect.Config.Cmd,
-		Env:           inspect.Config.Env,
-		Labels:        inspect.Config.Labels,
-		GPU:           inspect.Config.Labels["mudp.gpu"],
-		SSH:           inspect.Config.Labels["mudp.ssh"] == "true",
-		VSCode:        inspect.Config.Labels["mudp.vscode"] == "true",
-		ImageName:     inspect.Config.Labels["mudp.image"],
+		ID:             inspect.ID,
+		Name:           strings.TrimPrefix(inspect.Name, "/"),
+		Image:          inspect.Image,
+		State:          inspect.State.Status,
+		Status:         inspect.State.Status,
+		RestartPolicy:  string(inspect.HostConfig.RestartPolicy.Name),
+		Entrypoint:     inspect.Config.Entrypoint,
+		Cmd:            inspect.Config.Cmd,
+		Env:            inspect.Config.Env,
+		Labels:         inspect.Config.Labels,
+		GPU:            inspect.Config.Labels["mudp.gpu"],
+		SSH:            inspect.Config.Labels["mudp.ssh"] == "true",
+		VSCode:         inspect.Config.Labels["mudp.vscode"] == "true",
+		ImageName:      inspect.Config.Labels["mudp.image"],
+		User:           inspect.Config.User,
+		ConnectionUser: inspect.Config.Labels["mudp.connectionUser"],
 	}
 	if info.Labels == nil {
 		info.Labels = map[string]string{}
@@ -1622,6 +1833,34 @@ func parseMount(spec string) (mount.Mount, error) {
 		m.Source = source
 	}
 	return m, nil
+}
+
+// parseDevice turns a "--device" style spec into a Docker DeviceMapping. The spec is
+// host[:container[:rwm]]: the host device path, an optional in-container path
+// (defaults to the host path), and optional cgroup permissions (rwm by default).
+func parseDevice(spec string) (container.DeviceMapping, error) {
+	spec = strings.TrimSpace(spec)
+	parts := strings.Split(spec, ":")
+	if len(parts) < 1 || len(parts) > 3 {
+		return container.DeviceMapping{}, fmt.Errorf("device %q must be host[:container[:rwm]]", spec)
+	}
+	hostPath := strings.TrimSpace(parts[0])
+	if hostPath == "" {
+		return container.DeviceMapping{}, fmt.Errorf("device %q has no host path", spec)
+	}
+	containerPath := hostPath
+	if len(parts) >= 2 && strings.TrimSpace(parts[1]) != "" {
+		containerPath = strings.TrimSpace(parts[1])
+	}
+	perms := "rwm"
+	if len(parts) == 3 {
+		perms = strings.TrimSpace(parts[2])
+	}
+	return container.DeviceMapping{
+		PathOnHost:        hostPath,
+		PathInContainer:   containerPath,
+		CgroupPermissions: perms,
+	}, nil
 }
 
 // networkingConfig builds the endpoints config for the requested networks. The

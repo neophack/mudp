@@ -17,6 +17,7 @@ import { renderBootstrap } from "./modules/bootstrap.js";
 import { renderSettings } from "./modules/settings.js";
 import { renderNetdisk } from "./modules/netdisk.js";
 import { renderDisks } from "./modules/disks.js";
+import { renderHardware, stopPolling as stopHardwarePolling } from "./modules/hardware.js";
 
 // ---------------- Shared state ----------------
 
@@ -48,6 +49,9 @@ export const state = {
   pending: new Set(),
   terminal: { open: false, id: "", name: "", term: null, ws: null, fitAddon: null },
   modal: { open: false, kind: "", data: null },
+  // gpuCount is the host's GPU count, loaded at boot so the create-container
+  // modal can render the correct GPU options. Zero means "unknown or no GPU".
+  gpuCount: 0,
   tab: "dashboard",
   sidebarCollapsed: localStorage.getItem("mudp:sidebar") === "collapsed",
 };
@@ -77,10 +81,13 @@ export function canMutate() {
 export const $ = (selector) => document.querySelector(selector);
 
 export async function api(path, opts = {}) {
+  // Pull headers out of opts so the merged Content-Type below is not clobbered
+  // by a trailing ...opts spread re-applying the caller's original headers.
+  const { headers, ...rest } = opts;
   const res = await fetch(path, {
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-    ...opts,
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
+    ...rest,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -126,6 +133,8 @@ export async function load() {
       return;
     }
     await refreshAll();
+    // Best-effort GPU count probe so the create modal renders the right GPU options. Failure (non-GPU host, offline) leaves gpuCount at 0 and the modal falls back to none/all.
+    api("/api/hardware/gpus").then((r) => { state.gpuCount = r.count || 0; }).catch(() => {});
     render();
   } catch {
     renderLogin();
@@ -166,8 +175,13 @@ export async function refreshAll() {
     jobs.push(api("/api/users"), api("/api/groups"), api("/api/scripts"), api("/api/admin/audit?limit=200"));
     labels.push("users", "groups", "scripts", "audit");
   }
-  const out = await Promise.all(jobs);
-  out.forEach((v, i) => {
+  // Use allSettled so one failing endpoint (transient 5xx, timeout) does not
+  // reject the whole batch and boot the user to the login screen. Each section
+  // updates independently; a failed section keeps its previous state.
+  const results = await Promise.allSettled(jobs);
+  results.forEach((r, i) => {
+    if (r.status !== "fulfilled") return;
+    const v = r.value;
     state[labels[i]] = v || (labels[i] === "scripts" ? { sshScript: "", vscodeScript: "" } : []);
   });
   if (state.dashboard?.usage) {
@@ -197,6 +211,7 @@ const ICONS = {
   logout: svgIcon('<path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>'),
   collapse: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'),
   expand: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>'),
+  hardware: svgIcon('<path d="M9 3v18"/><path d="M15 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/>'),
 };
 
 function label(tab) {
@@ -215,6 +230,7 @@ function label(tab) {
       disks: "Disks",
       bootstrap: "Bootstrap",
       scripts: "Settings",
+      hardware: "Hardware",
     }[tab] || tab
   );
 }
@@ -235,13 +251,14 @@ function subtitle(tab) {
       disks: "Host disk overview, mount helpers, and database backups.",
       bootstrap: "Manage bootstrap scripts and fused layers for SSH and VS Code.",
       scripts: "Configure registries, Feishu SSO, and system settings.",
+      hardware: "Real-time CPU, memory, temperature, and per-GPU monitoring.",
     }[tab] || ""
   );
 }
 
 export function render() {
   const admin = isAdmin();
-  const tabs = ["dashboard", "netdisk", "containers", "usage", "images", "volumes", "networks", "stacks", ...(admin ? ["users", "audit", "disks", "bootstrap", "scripts"] : [])];
+  const tabs = ["dashboard", "netdisk", "containers", "usage", "images", "volumes", "networks", "stacks", "hardware", ...(admin ? ["users", "audit", "disks", "bootstrap", "scripts"] : [])];
 
   const collapsed = state.sidebarCollapsed;
   $("#app").innerHTML =
@@ -277,7 +294,7 @@ export function render() {
               ? `<div class="search"><input id="searchBox" placeholder="Search containers" value="${escapeHtml(state.search)}"></div>`
               : "") +
             (state.tab === "containers" && canMutate() ? `<button class="primary" id="newContainerBtn">+ New Container</button>` : "") +
-            (state.tab === "images" && canMutate() ? `<button class="primary" id="pullImageBtn">+ Pull Image</button>` : "") +
+            (state.tab === "images" && isAdmin() ? `<button class="primary" id="pullImageBtn">+ Pull Image</button>` : "") +
             `<button class="ghost" id="refresh">Refresh</button>` +
           `</div>` +
         `</header>` +
@@ -287,6 +304,9 @@ export function render() {
 
   document.querySelectorAll("[data-tab]").forEach((btn) => {
     btn.onclick = () => {
+      // Stop the hardware monitoring poll loop when navigating away so it doesn't
+      // run in the background.
+      if (state.tab === "hardware" && btn.dataset.tab !== "hardware") stopHardwarePolling();
       state.tab = btn.dataset.tab;
       render();
     };
@@ -342,6 +362,7 @@ export function renderView() {
   if (state.tab === "disks") return renderDisks();
   if (state.tab === "bootstrap") return renderBootstrap();
   if (state.tab === "scripts") return renderSettings();
+  if (state.tab === "hardware") return renderHardware();
 }
 
 export { renderLogin, renderPending };

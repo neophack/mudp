@@ -62,7 +62,14 @@ func queryGPU(ctx context.Context) []gpuMetric {
 
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, "nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits").Output()
+	// Query a richer set of fields so the hardware monitoring page can show
+	// temperature, power draw, and memory utilisation in addition to the basic
+	// GPU% + memory figures the dashboard/usage views already use. All fields are
+	// best-effort: missing/unavailable values come back as empty strings in the
+	// CSV and parse to zero.
+	out, err := exec.CommandContext(cctx, "nvidia-smi",
+		"--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,utilization.memory",
+		"--format=csv,noheader,nounits").Output()
 	if err != nil {
 		return nil
 	}

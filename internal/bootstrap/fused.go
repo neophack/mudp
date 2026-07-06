@@ -116,6 +116,15 @@ func layerDockerfile(cfg Config) (string, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "FROM %s AS build\n", cfg.BaseRef)
+	// Force the build stage to run as root: the bootstrap installs packages via
+	// apt/apk/dnf, writes /etc/ssh/sshd_config, runs ssh-keygen, and snapshots
+	// the filesystem. If the base image declares a non-root USER these operations
+	// would fail. The final stage is scratch (only /mudp-layer-root), so this USER
+	// directive never leaks into a runnable image. The original image's USER is
+	// honored at runtime: CreateContainer runs the fused image as root and the runtime
+	// entrypoint drops privileges to MUDP_CONNECTION_USER (the image's declared
+	// account), preserving the image's intended execution context.
+	b.WriteString("USER root\n")
 	b.WriteString("COPY mudp-bootstrap/ /mudp-bootstrap/\n")
 	b.WriteString("RUN MUDP_ACCESS_PASSWORD='mudp-build-placeholder' /bin/sh /mudp-bootstrap/fused-build.sh\n")
 	b.WriteString("FROM scratch\n")
@@ -135,7 +144,7 @@ func fusedBuildScript(cfg Config) string {
 		"set -eu",
 		"",
 		"export PATH=\"$PATH:/usr/sbin:/usr/local/bin:/usr/bin:/bin\"",
-		"mkdir -p /var/run/sshd /tmp/mudp /root/.config/code-server",
+		"mkdir -p /var/run/sshd /tmp/mudp",
 		"",
 		"have_cmd() { command -v \"$1\" >/dev/null 2>&1; }",
 		"",
@@ -284,11 +293,18 @@ func fusedRuntimeScript(cfg Config) string {
 		"exec >>\"$LOG_FILE\" 2>&1",
 		"echo \"=== MUDP fused runtime started $(date -u +%Y-%m-%dT%H:%M:%SZ) ===\"",
 		"",
+		UserResolveSnippet(),
+		"",
 	}
 	if cfg.EnableSSH {
 		lines = append(lines,
 			"if [ -n \"${MUDP_ACCESS_PASSWORD:-}\" ]; then",
-			"  printf '%s\\n' \"root:${MUDP_ACCESS_PASSWORD}\" | chpasswd 2>/dev/null || true",
+			"  # Set the password on the connection account (root for root images,",
+			"  # otherwise the image's declared USER); keep root usable too as admin fallback.",
+			"  printf '%s\\n' \"${MUDP_CONNECTION_USER}:${MUDP_ACCESS_PASSWORD}\" | chpasswd 2>/dev/null || true",
+			"  if [ \"$MUDP_CONNECTION_USER\" != \"root\" ]; then",
+			"    printf 'root:%s\\n' \"${MUDP_ACCESS_PASSWORD}\" | chpasswd 2>/dev/null || true",
+			"  fi",
 			"fi",
 			"command -v ssh-keygen >/dev/null 2>&1 && ssh-keygen -A >/dev/null 2>&1 || true",
 			"if [ -f /etc/ssh/sshd_config ]; then",
@@ -320,17 +336,35 @@ func fusedRuntimeScript(cfg Config) string {
 	}
 	if cfg.EnableVSCode {
 		// Re-apply the per-container password into code-server's config (the
-		// binary is already installed in the image), then (re)start it.
+		// binary is already installed in the image), then (re)start it as the
+		// connection user so its data dir is writable.
 		lines = append(lines,
 			"if [ -n \"${MUDP_ACCESS_PASSWORD:-}\" ] && command -v code-server >/dev/null 2>&1; then",
-			"  mkdir -p /root/.config/code-server",
-			"  cat > /root/.config/code-server/config.yaml <<EOF",
+			"  CS_CFG=\"$MUDP_HOME/.config/code-server\"",
+			"  CS_DATA=\"$MUDP_HOME/.local/share/code-server\"",
+			"  mkdir -p \"$CS_CFG\" \"$CS_DATA\" /workspace",
+			"  chown -R \"$MUDP_CONNECTION_USER\" \"$CS_CFG\" \"$CS_DATA\" /workspace 2>/dev/null || true",
+			"  cat > \"$CS_CFG/config.yaml\" <<EOF",
 			"bind-addr: 0.0.0.0:13337",
 			"auth: password",
 			"password: ${MUDP_ACCESS_PASSWORD}",
 			"cert: false",
+			"user-data-dir: ${CS_DATA}",
 			"EOF",
-			"  pgrep -x code-server >/dev/null 2>&1 || (mkdir -p /workspace && nohup code-server /workspace >/tmp/mudp/vscode.log 2>&1 &) || true",
+			"  chown \"$MUDP_CONNECTION_USER\" \"$CS_CFG/config.yaml\" 2>/dev/null || true",
+			"  if ! pgrep -x code-server >/dev/null 2>&1; then",
+			"    if [ \"$MUDP_CONNECTION_USER\" = \"root\" ]; then",
+			"      nohup code-server /workspace >/tmp/mudp/vscode.log 2>&1 &",
+			"    elif command -v gosu >/dev/null 2>&1; then",
+			"      nohup gosu \"$MUDP_CONNECTION_USER\" code-server /workspace >/tmp/mudp/vscode.log 2>&1 &",
+			"    elif command -v runuser >/dev/null 2>&1; then",
+			"      nohup runuser -u \"$MUDP_CONNECTION_USER\" -- code-server /workspace >/tmp/mudp/vscode.log 2>&1 &",
+			"    elif command -v su >/dev/null 2>&1; then",
+			"      nohup su -s /bin/sh \"$MUDP_CONNECTION_USER\" -c 'code-server /workspace' >/tmp/mudp/vscode.log 2>&1 &",
+			"    else",
+			"      nohup code-server /workspace >/tmp/mudp/vscode.log 2>&1 &",
+			"    fi",
+			"  fi",
 			"fi",
 			"touch /tmp/mudp/vscode.ready",
 			"",

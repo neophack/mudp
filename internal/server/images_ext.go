@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"mudp/internal/dockerx"
+	"mudp/internal/store"
 )
 
 // imagesDetailed returns the full local image inventory (admin/operator).
@@ -494,4 +495,36 @@ func (a *App) containerLogsStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// imagePreset stores an admin-defined default configuration for an image. Admins
+// use this to pre-wire per-image conventions (the VNC_PW password env var, the
+// port an app listens on, the GPUs/devices it needs). Users picking the image get
+// these defaults auto-filled in the create form but can still override them.
+func (a *App) imagePreset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		ImageID int64              `json:"imageId"`
+		Preset  *store.ImagePreset `json:"preset"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ImageID == 0 {
+		writeErr(w, http.StatusBadRequest, "imageId is required")
+		return
+	}
+	if err := store.ValidatePreset(req.Preset); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.db.SetImagePreset(req.ImageID, req.Preset); err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	respond(w, map[string]any{"ok": true}, nil)
 }

@@ -52,6 +52,12 @@ func (d *Client) ValidateFusedLayer(ctx context.Context, plan *FusedPlan, servic
 	}()
 
 	containerName := Prefix + "validate-" + service + "-" + suffix
+	// Validate against the connection account the runtime script actually
+	// configures (resolved from the base image's USER); defaults to root.
+	connUser := plan.ConnectionUser
+	if connUser == "" {
+		connUser = "root"
+	}
 	exposed := nat.PortSet{}
 	portMap := nat.PortMap{}
 	var privatePort uint16
@@ -66,9 +72,15 @@ func (d *Client) ValidateFusedLayer(ctx context.Context, plan *FusedPlan, servic
 	}
 
 	containerCfg := &container.Config{
-		Image:        validationPlan.FusedRef,
-		Env:          []string{"MUDP_ACCESS_PASSWORD=" + accessPassword},
+		Image: validationPlan.FusedRef,
+		Env: []string{
+			"MUDP_ACCESS_PASSWORD=" + accessPassword,
+			"MUDP_CONNECTION_USER=" + connUser,
+		},
 		ExposedPorts: exposed,
+		// The runtime script must run as root to start sshd; it drops to
+		// connUser for code-server and password login.
+		User: "root",
 		Labels: map[string]string{
 			ManagedLabel:      "true",
 			"mudp.validation": "true",
@@ -107,7 +119,7 @@ func (d *Client) ValidateFusedLayer(ctx context.Context, plan *FusedPlan, servic
 
 	if service == "ssh" {
 		emit("validate", "Testing SSH login…")
-		if err := validateSSHLogin(addr, "root", accessPassword); err != nil {
+		if err := validateSSHLogin(addr, connUser, accessPassword); err != nil {
 			return fmt.Errorf("ssh login failed: %w", err)
 		}
 	} else {

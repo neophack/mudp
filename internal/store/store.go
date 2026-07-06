@@ -58,12 +58,13 @@ type Group struct {
 }
 
 type Image struct {
-	ID          int64    `json:"id"`
-	DisplayName string   `json:"name"`
-	DockerRef   string   `json:"dockerRef"`
-	SourceRef   string   `json:"sourceRef"`
-	Groups      []string `json:"groups,omitempty"`
-	CreatedAt   string   `json:"createdAt"`
+	ID          int64        `json:"id"`
+	DisplayName string       `json:"name"`
+	DockerRef   string       `json:"dockerRef"`
+	SourceRef   string       `json:"sourceRef"`
+	Groups      []string     `json:"groups,omitempty"`
+	CreatedAt   string       `json:"createdAt"`
+	Preset      *ImagePreset `json:"preset,omitempty"`
 }
 
 type ScriptSettings struct {
@@ -298,6 +299,11 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 	if err := execIgnoring(db.DB, `alter table users add column comment text default ''`, sqliteDuplicateColumn); err != nil {
 		return err
 	}
+	// preset_json stores an admin-defined default configuration (ports, env, GPUs,
+	// devices, etc.) per image as a JSON blob. Empty means "no preset".
+	if err := execIgnoring(db.DB, `alter table images add column preset_json text not null default ''`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
 	if _, err := db.Exec(`create unique index if not exists idx_users_feishu_open_id on users(feishu_open_id) where feishu_open_id != ''`); err != nil {
 		return err
 	}
@@ -335,17 +341,20 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 }
 
 // legacySSHScriptMarkers / legacyVSCodeScriptMarkers identify the previous
-// default bootstrap scripts (the ones that started daemons unconditionally,
-// which broke fused-image builds). upgradeDefaultScripts replaces any stored
-// script matching these exact legacy bodies with the current default, so
-// existing deployments get the build-safe version automatically. Admin-edited
-// scripts that don't match are left untouched.
+// default bootstrap scripts so upgradeDefaultScripts can replace them with the
+// current default. The first generation started daemons unconditionally (which
+// broke fused-image builds); the second generation hardcoded the root account
+// and /root paths, which broke SSH/VSCode for non-root images. Both are detected
+// here so existing deployments pick up the user-aware defaults automatically.
+// Admin-edited scripts that don't match are left untouched.
 var legacySSHScriptMarkers = []string{
 	`/usr/sbin/sshd || sshd || true`, // pre-MUDP_BUILD_PHASE guard: sshd started at build
+	`root:${MUDP_ACCESS_PASSWORD}`,   // pre-user-aware: password set only for root
 }
 var legacyVSCodeScriptMarkers = []string{
 	`nohup code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
 `,
+	`cat > /root/.config/code-server/config.yaml <<EOF`, // pre-user-aware: hardcoded /root path
 }
 
 // upgradeDefaultScripts replaces stored scripts that still contain the legacy
@@ -598,11 +607,11 @@ func (db *DB) SaveImage(displayName, dockerRef, sourceRef string) error {
 }
 
 func (db *DB) ImagesForUser(userID int64, admin bool) ([]Image, error) {
-	q := `select distinct i.id,i.display_name,i.docker_ref,i.source_ref,i.created_at
+	q := `select distinct i.id,i.display_name,i.docker_ref,i.source_ref,i.created_at,i.preset_json
 		from images i order by i.display_name`
 	args := []any{}
 	if !admin {
-		q = `select distinct i.id,i.display_name,i.docker_ref,i.source_ref,i.created_at
+		q = `select distinct i.id,i.display_name,i.docker_ref,i.source_ref,i.created_at,i.preset_json
 			from images i
 			join group_images gi on gi.image_id=i.id
 			join user_groups ug on ug.group_id=gi.group_id
@@ -618,8 +627,12 @@ func (db *DB) ImagesForUser(userID int64, admin bool) ([]Image, error) {
 	var imgs []Image
 	for rows.Next() {
 		var img Image
-		if err := rows.Scan(&img.ID, &img.DisplayName, &img.DockerRef, &img.SourceRef, &img.CreatedAt); err != nil {
+		var presetJSON string
+		if err := rows.Scan(&img.ID, &img.DisplayName, &img.DockerRef, &img.SourceRef, &img.CreatedAt, &presetJSON); err != nil {
 			return nil, err
+		}
+		if p, err := DecodePreset(presetJSON); err == nil {
+			img.Preset = p
 		}
 		img.Groups = db.ImageGroupNames(img.ID)
 		imgs = append(imgs, img)
@@ -647,6 +660,24 @@ func (db *DB) SetImageGroups(imageID int64, groupIDs []int64) error {
 func (db *DB) DeleteImage(imageID int64) error {
 	_, err := db.Exec(`delete from images where id=?`, imageID)
 	return err
+}
+
+// SetImagePreset stores the admin-defined default configuration for an image. A nil
+// or empty preset clears the column so the image has no defaults.
+func (db *DB) SetImagePreset(imageID int64, preset *ImagePreset) error {
+	encoded, err := EncodePreset(preset)
+	if err != nil {
+		return err
+	}
+	res, err := db.Exec(`update images set preset_json=? where id=?`, encoded, imageID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("image %d not found", imageID)
+	}
+	return nil
 }
 
 func (db *DB) ScriptSettings() (ScriptSettings, error) {
@@ -701,11 +732,49 @@ func (db *DB) ensureDefaultScripts() error {
 	return db.SaveScriptSettings(cfg)
 }
 
+// userResolveSnippet is a POSIX shell preamble prepended to the default SSH and
+// VS Code scripts. The container always runs the bootstrap as root (CreateContainer
+// forces containerCfg.User=root when SSH/VSCode is enabled), so this can create the
+// login account when it does not exist (images with a bare numeric USER resolve to
+// the fixed "mudp" account, which has no passwd entry until created here). It
+// exports MUDP_CONNECTION_USER (the login account) and MUDP_HOME (its home dir),
+// both defaulting to root-safe values so root images work unchanged.
+const userResolveSnippet = `# --- mudp: resolve the connection user + home (runs as root) ---
+MUDP_CONNECTION_USER="${MUDP_CONNECTION_USER:-root}"
+if [ "$MUDP_CONNECTION_USER" = "root" ] || [ -z "$MUDP_CONNECTION_USER" ]; then
+  MUDP_CONNECTION_USER="root"
+  MUDP_HOME="/root"
+else
+  # Ensure the account exists (images with a bare UID USER resolve to "mudp",
+  # which has no passwd entry until we create it here).
+  if ! id "$MUDP_CONNECTION_USER" >/dev/null 2>&1; then
+    if command -v useradd >/dev/null 2>&1; then
+      useradd -m -s "$(command -v bash >/dev/null 2>&1 && echo /bin/bash || echo /bin/sh)" "$MUDP_CONNECTION_USER" 2>/dev/null || true
+    elif command -v adduser >/dev/null 2>&1; then
+      if adduser 2>&1 | grep -q -- '--disabled-password'; then
+        adduser --disabled-password --gecos "" "$MUDP_CONNECTION_USER" 2>/dev/null || true
+      else
+        adduser "$MUDP_CONNECTION_USER" 2>/dev/null || true
+      fi
+    fi
+  fi
+  MUDP_HOME="$(getent passwd "$MUDP_CONNECTION_USER" 2>/dev/null | cut -d: -f6)"
+  if [ -z "$MUDP_HOME" ] || [ "$MUDP_HOME" = "/" ]; then
+    MUDP_HOME="/home/$MUDP_CONNECTION_USER"
+    mkdir -p "$MUDP_HOME"
+    chown "$MUDP_CONNECTION_USER" "$MUDP_HOME" 2>/dev/null || true
+  fi
+fi
+export MUDP_CONNECTION_USER MUDP_HOME
+# --- mudp: end user resolve ---`
+
 func defaultSSHScript() string {
 	return `#!/bin/sh
 set -eu
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+` + userResolveSnippet + `
 
 install_packages() {
   if have_cmd apt-get; then
@@ -739,9 +808,16 @@ mkdir -p /var/run/sshd
 if command -v ssh-keygen >/dev/null 2>&1; then
   ssh-keygen -A >/dev/null 2>&1 || true
 fi
+# Set the password on the connection account (root for root images, otherwise
+# the image's declared USER). chpasswd needs a name, never a bare UID.
 cat <<EOF | chpasswd
-root:${MUDP_ACCESS_PASSWORD}
+${MUDP_CONNECTION_USER}:${MUDP_ACCESS_PASSWORD}
 EOF
+# When the login user is not root, also keep root usable so an admin can always
+# get in; harmless for root images (same password twice).
+if [ "$MUDP_CONNECTION_USER" != "root" ]; then
+  printf 'root:%s\n' "${MUDP_ACCESS_PASSWORD}" | chpasswd || true
+fi
 if [ -f /etc/ssh/sshd_config ]; then
   sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config || true
   sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
@@ -750,6 +826,7 @@ if [ -f /etc/ssh/sshd_config ]; then
 fi
 # Start sshd only at container runtime, never during a fused-image build (where
 # MUDP_BUILD_PHASE=1), otherwise the daemon would hang or be killed mid-build.
+# sshd must run as root; it authenticates the connection user via PAM.
 if [ -z "${MUDP_BUILD_PHASE:-}" ]; then
   if command -v service >/dev/null 2>&1; then
     service ssh start || true
@@ -766,6 +843,8 @@ func defaultVSCodeScript() string {
 set -eu
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+` + userResolveSnippet + `
 
 if ! have_cmd code-server; then
   if ! have_cmd curl; then
@@ -792,18 +871,36 @@ if ! have_cmd code-server; then
   rm -rf /root/.cache /tmp/* /var/tmp/*
 fi
 
-mkdir -p /root/.config/code-server /root/.local/share/code-server /workspace /tmp/mudp
-cat > /root/.config/code-server/config.yaml <<EOF
+# code-server's config + data live under the connection user's home so the
+# editor is writable when it runs as that (possibly non-root) user.
+CS_CFG="$MUDP_HOME/.config/code-server"
+CS_DATA="$MUDP_HOME/.local/share/code-server"
+mkdir -p "$CS_CFG" "$CS_DATA" /workspace /tmp/mudp
+chown -R "$MUDP_CONNECTION_USER" "$CS_CFG" "$CS_DATA" /workspace 2>/dev/null || true
+cat > "$CS_CFG/config.yaml" <<EOF
 bind-addr: 0.0.0.0:13337
 auth: password
 password: ${MUDP_ACCESS_PASSWORD}
 cert: false
-user-data-dir: /root/.local/share/code-server
+user-data-dir: ${CS_DATA}
 EOF
+chown "$MUDP_CONNECTION_USER" "$CS_CFG/config.yaml" 2>/dev/null || true
 # Start code-server only at container runtime, never during a fused-image build
-# (MUDP_BUILD_PHASE=1), where launching it would hang the build.
+# (MUDP_BUILD_PHASE=1), where launching it would hang the build. Run it as the
+# connection user so its files are owned correctly; gosu/runuser/su are tried in
+# turn, falling back to a direct exec (fine for root images).
 if [ -z "${MUDP_BUILD_PHASE:-}" ]; then
-  nohup code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
+  if [ "$MUDP_CONNECTION_USER" = "root" ]; then
+    nohup code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
+  elif command -v gosu >/dev/null 2>&1; then
+    nohup gosu "$MUDP_CONNECTION_USER" code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
+  elif command -v runuser >/dev/null 2>&1; then
+    nohup runuser -u "$MUDP_CONNECTION_USER" -- code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
+  elif command -v su >/dev/null 2>&1; then
+    nohup su -s /bin/sh "$MUDP_CONNECTION_USER" -c 'code-server /workspace' >/tmp/mudp/code-server.log 2>&1 &
+  else
+    nohup code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
+  fi
 fi
 `
 }

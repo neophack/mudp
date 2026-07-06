@@ -45,6 +45,13 @@ func TestLayerContextSSH(t *testing.T) {
 	if !strings.Contains(df, "FROM ubuntu:22.04 AS build") {
 		t.Errorf("Dockerfile missing base image; got:\n%s", df)
 	}
+	// The build stage must force USER root so the bootstrap (apt-get install,
+	// ssh-keygen, /etc/ssh edits) succeeds even when the base image declares a
+	// non-root USER. The final stage is scratch so this never leaks into a runnable
+	// image; the runtime entrypoint drops privileges to the connection user.
+	if !strings.Contains(df, "USER root") {
+		t.Errorf("layer Dockerfile must force USER root in the build stage; got:\n%s", df)
+	}
 	if strings.Contains(df, "ENTRYPOINT") {
 		t.Errorf("layer Dockerfile must not set ENTRYPOINT; got:\n%s", df)
 	}
@@ -189,5 +196,66 @@ func TestFusedContextMissingLayerRef(t *testing.T) {
 	}
 	if _, err := FusedContext(cfg, "", "mudp-layer-vscode-abc:latest"); err == nil {
 		t.Fatalf("expected error when SSH layer ref is missing")
+	}
+}
+
+// TestFusedRuntimeScriptIsUserAware verifies the runtime ENTRYPOINT of a fused
+// image targets the connection user (not a hardcoded root) so non-root images
+// can build SSH/VSCode and the advertised SSH login works.
+func TestFusedRuntimeScriptIsUserAware(t *testing.T) {
+	cfg := Config{
+		BaseRef:        "ubuntu:22.04",
+		AccessPassword: "pw",
+		EnableSSH:      true,
+		EnableVSCode:   true,
+		SSHScript:      "x",
+		VSCodeScript:   "y",
+		ConnectionUser: "node",
+	}
+	buf, err := FusedContext(cfg, "mudp-layer-ssh-abc:latest", "mudp-layer-vscode-abc:latest")
+	if err != nil {
+		t.Fatalf("FusedContext: %v", err)
+	}
+	files := readTarFiles(t, buf)
+	rt := files["mudp-bootstrap/fused-runtime.sh"]
+
+	// Must resolve the connection user + home at boot (not assume root).
+	for _, want := range []string{
+		"MUDP_CONNECTION_USER",
+		"MUDP_HOME",
+		"${MUDP_CONNECTION_USER}:${MUDP_ACCESS_PASSWORD}",
+		"$MUDP_HOME/.config/code-server",
+		"gosu",
+	} {
+		if !strings.Contains(rt, want) {
+			t.Errorf("fused-runtime.sh missing %q\n%s", want, rt)
+		}
+	}
+	// Must NOT hardcode the old root-only password line or /root code-server path.
+	if strings.Contains(rt, `"root:${MUDP_ACCESS_PASSWORD}" | chpasswd`) {
+		t.Errorf("fused-runtime.sh still hardcodes root-only chpasswd\n%s", rt)
+	}
+	if strings.Contains(rt, "/root/.config/code-server/config.yaml") {
+		t.Errorf("fused-runtime.sh still writes code-server config under /root\n%s", rt)
+	}
+}
+
+// TestFusedBuildScriptNoRootCodeServerDir ensures the build-time script does
+// not pre-create /root/.config/code-server (the runtime resolves the user's home).
+func TestFusedBuildScriptNoRootCodeServerDir(t *testing.T) {
+	cfg := Config{
+		BaseRef:        "ubuntu:22.04",
+		AccessPassword: "pw",
+		EnableVSCode:   true,
+		VSCodeScript:   "y",
+	}
+	buf, err := LayerContext(cfg, "vscode")
+	if err != nil {
+		t.Fatalf("LayerContext(vscode): %v", err)
+	}
+	files := readTarFiles(t, buf)
+	build := files["mudp-bootstrap/fused-build.sh"]
+	if strings.Contains(build, "/root/.config/code-server") {
+		t.Errorf("fused-build.sh should not hardcode /root/.config/code-server\n%s", build)
 	}
 }

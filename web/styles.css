@@ -23,6 +23,10 @@
   --ok-soft: rgba(20, 174, 92, 0.12);
   --warn: #e8910c;
 
+  /* Hardware monitoring history charts */
+  --chart-cpu: #3370ff;
+  --chart-mem: #4a3aa7;
+
   --radius: 10px;
   --radius-sm: 7px;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
@@ -1362,5 +1366,171 @@ textarea.stack-editor { min-height: 320px; font-size: 12.5px; line-height: 1.5; 
   }
   .picker-tree {
     display: none;
+  }
+}
+
+/* ---------------- Hardware monitoring page ---------------- */
+
+/* Stat tile, vertical layout used by the hardware monitoring tiles. The base
+   .stat-tile is a horizontal flex; the hardware variant stacks icon+label on top
+   and value/sub below. */
+.stat-tile .stat-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.stat-tile .stat-emoji {
+  font-size: 18px;
+  line-height: 1;
+}
+.stat-tile .stat-value { margin-top: 6px; }
+
+/* GPU card grid: responsive from 4 columns down to 1. */
+.gpu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+.gpu-card .card-head { padding-bottom: 8px; }
+
+.metric-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+}
+.metric-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.metric-value {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.metric-bar {
+  grid-column: 2;
+  margin-top: 2px;
+}
+
+.gpu-trends {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  display: grid;
+  gap: 6px;
+}
+.trend-row {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+.trend-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+.mini-spark {
+  width: 100%;
+  height: 28px;
+  display: block;
+}
+
+/* Section header above the GPU grid, matching card-head's type scale. */
+.dash-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 0 -6px;
+}
+.dash-section-head h2 { font-size: 14px; }
+
+/* History charts (CPU / Memory) — htop-style trend with hover crosshair. */
+.hist-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.hist-card {
+  background: var(--workspace);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+}
+.hist-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.hist-label { font-size: 13px; font-weight: 600; }
+.hist-current { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.hist-chart {
+  position: relative;
+  height: 130px;
+  cursor: crosshair;
+}
+.hist-chart svg { width: 100%; height: 100%; display: block; }
+.hist-grid { stroke: var(--line-soft); stroke-width: 1; }
+.hist-crosshair {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+  pointer-events: none;
+}
+.hist-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  border: 2px solid var(--workspace);
+  pointer-events: none;
+}
+.hist-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+/* Shared floating tooltip for history chart hover. */
+.hw-tooltip {
+  position: fixed;
+  z-index: 50;
+  background: var(--ink);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  pointer-events: none;
+  box-shadow: var(--shadow);
+}
+.hw-tooltip span { color: rgba(255, 255, 255, 0.7); font-size: 11px; }
+
+/* Temperature sensor rows get a trend sparkline alongside the reading. */
+.sensor-row {
+  display: grid;
+  grid-template-columns: 1fr 90px;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+@media (max-width: 860px) {
+  .gpu-grid {
+    grid-template-columns: 1fr;
+  }
+  .hist-row {
+    grid-template-columns: 1fr;
   }
 }
