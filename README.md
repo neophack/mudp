@@ -7,7 +7,7 @@ MUDP is a compact, self-hosted **multi-user Docker management platform** — a s
 - **Single binary** — web assets are embedded via `//go:embed`; ship one file, no runtime deps.
 - **SQLite** database, auto-created and migrated on first launch (additive, non-breaking migrations).
 - **Workspace isolation** — every resource lives under `mudp-<user>-…`; users see only their own.
-- **One-click containers** with optional SSH (port 22) and VS Code Server (port 13337) bootstrap.
+- **One-click containers** with optional host-side SSH terminal and VS Code attach, without installing services inside the container.
 - **GPU passthrough** via Docker NVIDIA device requests.
 - **Per-user quotas** (container cap), roles, and audit logging.
 - **Feishu (Lark) SSO** with admin-approval pending queue.
@@ -25,7 +25,7 @@ MUDP is a compact, self-hosted **multi-user Docker management platform** — a s
 | **Users & Groups** | 5-role RBAC (admin / operator / help-desk / read-only / user), group membership (Feishu approval flow), password reset, disable/enable, container-cap edit, delete. |
 | **Registries** | Store authenticated registry credentials (Docker Hub, GHCR, private); used automatically for pulls/builds/pushes; test-login button. |
 | **Activity log** | Filterable audit trail (actor / action / target / time) with CSV export. |
-| **Settings** | Editable SSH & VS Code bootstrap scripts, Feishu SSO config, registry management. |
+| **Settings** | Feishu SSO config and registry management. |
 
 ## Roles & permissions
 
@@ -58,7 +58,6 @@ Open <http://127.0.0.1:9000>. Default first admin: `admin / admin123`.
 | `MUDP_ADMIN_PASSWORD` | `admin123` | Bootstrap admin password. |
 | `MUDP_DOCKER_HOST` | _empty_ (uses `DOCKER_HOST`) | Override the Docker Engine endpoint. |
 | `MUDP_WEB_DIR` | _empty_ | Serve UI from disk (dev mode) instead of the embed. |
-| `MUDP_OFFLINE_PACKAGE_DIR` | `offline-packages` | Application path for uploaded SSH/VS Code offline bootstrap packages. |
 
 ## Architecture
 
@@ -114,7 +113,7 @@ Docker-touching tests auto-skip when no daemon is reachable, so CI without Docke
 - Docker Desktop or Docker Engine must be running and reachable.
 - **Stacks** require the `docker compose` CLI plugin v2 on the host (`docker compose version` should print a version). Without it, the Stacks tab surfaces a clear "not installed" error.
 - GPU scheduling uses Docker NVIDIA device requests and expects the host NVIDIA container runtime.
-- SSH and VS Code options expose ports; the selected image still needs the corresponding services installed and running inside the container.
+- SSH and VS Code options are host-side helpers; they do not expose container ports or install sshd/code-server inside the container.
 - Registry tokens are stored at-rest in the SQLite `settings` table. For a single-host deployment this is acceptable; encrypt-at-rest is a flagged follow-up.
 - Set `MUDP_SESSION_SECRET` in production — otherwise the random default rotates on each launch and invalidates login cookies.
 

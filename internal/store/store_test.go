@@ -2,7 +2,6 @@ package store
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -340,127 +339,50 @@ func TestRegistriesCRUD(t *testing.T) {
 	}
 }
 
-func TestFusedLayerCRUD(t *testing.T) {
+func TestContainerAccessCRUD(t *testing.T) {
 	db := newTestDB(t)
 
-	layer := FusedLayer{
-		CacheKey:    "ssh-key-1",
-		BaseRef:     "ubuntu:22.04",
-		BaseImageID: "sha256:abc",
-		LayerRef:    "mudp-layer-ssh-ubuntu-abc:latest",
-		Service:     "ssh",
-		ScriptHash:  "hash-ssh",
-	}
-	if err := db.SaveFusedLayer(layer); err != nil {
-		t.Fatalf("SaveFusedLayer: %v", err)
+	if err := db.SaveContainerAccess(ContainerAccess{
+		ContainerID: "abc123",
+		Username:    "root",
+		Password:    "s3cr3t",
+		SSHPort:     10122,
+		VSCodePort:  10180,
+	}); err != nil {
+		t.Fatalf("SaveContainerAccess: %v", err)
 	}
 
-	got, ok, err := db.GetFusedLayer(layer.CacheKey)
+	got, ok, err := db.ContainerAccess("abc123")
 	if err != nil {
-		t.Fatalf("GetFusedLayer: %v", err)
+		t.Fatalf("ContainerAccess: %v", err)
 	}
 	if !ok {
-		t.Fatal("GetFusedLayer returned ok=false after save")
+		t.Fatal("ContainerAccess returned ok=false after save")
 	}
-	if got.LayerRef != layer.LayerRef || got.Service != layer.Service {
-		t.Fatalf("GetFusedLayer returned unexpected layer: %+v", got)
-	}
-
-	layers, err := db.ListFusedLayers()
-	if err != nil {
-		t.Fatalf("ListFusedLayers: %v", err)
-	}
-	if len(layers) != 1 {
-		t.Fatalf("expected 1 layer, got %d", len(layers))
+	if got.Password != "s3cr3t" || got.SSHPort != 10122 || got.VSCodePort != 10180 {
+		t.Fatalf("ContainerAccess returned unexpected row: %+v", got)
 	}
 
-	// Upsert: save again with a different layer_ref should update.
-	layer.LayerRef = "mudp-layer-ssh-ubuntu-xyz:latest"
-	if err := db.SaveFusedLayer(layer); err != nil {
-		t.Fatalf("SaveFusedLayer upsert: %v", err)
-	}
-	got, ok, _ = db.GetFusedLayer(layer.CacheKey)
-	if !ok || got.LayerRef != layer.LayerRef {
-		t.Fatalf("upsert did not update layer_ref: %+v", got)
-	}
-
-	if err := db.DeleteFusedLayer(layer.CacheKey); err != nil {
-		t.Fatalf("DeleteFusedLayer: %v", err)
-	}
-	_, ok, _ = db.GetFusedLayer(layer.CacheKey)
-	if ok {
-		t.Fatal("layer still exists after delete")
-	}
-}
-
-// TestDefaultScriptsAreUserAware verifies the default SSH/VSCode bootstrap
-// scripts target $MUDP_CONNECTION_USER / $MUDP_HOME instead of a hardcoded root
-// account, so non-root images (USER node, USER 1000) can build SSH/VSCode.
-func TestDefaultScriptsAreUserAware(t *testing.T) {
-	db := newTestDB(t)
-	cfg, err := db.ScriptSettings()
-	if err != nil {
-		t.Fatalf("ScriptSettings: %v", err)
-	}
-	for _, want := range []string{
-		"MUDP_CONNECTION_USER",
-		"MUDP_HOME",
-		"${MUDP_CONNECTION_USER}:${MUDP_ACCESS_PASSWORD}",
-	} {
-		if !strings.Contains(cfg.SSHScript, want) {
-			t.Errorf("default SSH script missing %q", want)
-		}
-	}
-	for _, want := range []string{
-		"MUDP_CONNECTION_USER",
-		"MUDP_HOME",
-		"$MUDP_HOME/.config/code-server",
-		"gosu",
-	} {
-		if !strings.Contains(cfg.VSCodeScript, want) {
-			t.Errorf("default VS Code script missing %q", want)
-		}
-	}
-	// The old hardcoded root-only password line and /root code-server path must
-	// be gone from the defaults.
-	if strings.Contains(cfg.SSHScript, "root:${MUDP_ACCESS_PASSWORD}") {
-		t.Errorf("default SSH script still hardcodes root-only chpasswd")
-	}
-	if strings.Contains(cfg.VSCodeScript, "/root/.config/code-server/config.yaml") {
-		t.Errorf("default VS Code script still writes config under /root")
-	}
-}
-
-// TestUpgradeDefaultScriptsReplacesRootHardcodedScripts ensures a stored script
-// matching the legacy root-hardcoded default is upgraded to the user-aware
-// version automatically (existing deployments get the non-root fix).
-func TestUpgradeDefaultScriptsReplacesRootHardcodedScripts(t *testing.T) {
-	db := newTestDB(t)
-	// Plant the previous-generation root-hardcoded SSH script body. Note: do
-	// not write the literal "MUDP_BUILD_PHASE" anywhere (even in a comment) or
-	// the marker check will treat it as already-upgraded.
-	legacy := "#!/bin/sh\nset -eu\n" +
-		"have_cmd() { command -v \"$1\" >/dev/null 2>&1; }\n" +
-		"install_packages() { apt-get install -y openssh-server; }\n" +
-		"have_cmd sshd || install_packages\n" +
-		"cat <<EOF | chpasswd\nroot:${MUDP_ACCESS_PASSWORD}\nEOF\n"
-	if err := db.SaveScriptSettings(ScriptSettings{
-		SSHScript:    legacy,
-		VSCodeScript: defaultVSCodeScript(),
+	// Upsert: saving again with a new password replaces the row.
+	if err := db.SaveContainerAccess(ContainerAccess{
+		ContainerID: "abc123",
+		Username:    "root",
+		Password:    "newpass",
+		SSHPort:     10122,
+		VSCodePort:  10180,
 	}); err != nil {
-		t.Fatalf("SaveScriptSettings: %v", err)
+		t.Fatalf("SaveContainerAccess upsert: %v", err)
 	}
-	if err := db.upgradeDefaultScripts(); err != nil {
-		t.Fatalf("upgradeDefaultScripts: %v", err)
+	got, ok, _ = db.ContainerAccess("abc123")
+	if !ok || got.Password != "newpass" {
+		t.Fatalf("upsert did not update password: %+v", got)
 	}
-	cfg, err := db.ScriptSettings()
-	if err != nil {
-		t.Fatalf("ScriptSettings: %v", err)
+
+	if err := db.DeleteContainerAccess("abc123"); err != nil {
+		t.Fatalf("DeleteContainerAccess: %v", err)
 	}
-	if strings.Contains(cfg.SSHScript, "root:${MUDP_ACCESS_PASSWORD}") {
-		t.Errorf("legacy root-hardcoded SSH script was not upgraded")
-	}
-	if !strings.Contains(cfg.SSHScript, "MUDP_CONNECTION_USER") {
-		t.Errorf("upgraded SSH script is not user-aware")
+	_, ok, _ = db.ContainerAccess("abc123")
+	if ok {
+		t.Fatal("row still exists after delete")
 	}
 }

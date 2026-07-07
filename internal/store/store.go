@@ -67,31 +67,6 @@ type Image struct {
 	Preset      *ImagePreset `json:"preset,omitempty"`
 }
 
-type ScriptSettings struct {
-	SSHScript    string `json:"sshScript"`
-	VSCodeScript string `json:"vscodeScript"`
-	BuildScript  string `json:"buildScript"`
-}
-
-// OfflinePackage is an uploaded bootstrap installer bundle. Service is "ssh",
-// "vscode", or "all"; ImageName/ImageRef optionally scope it to one catalog
-// image. The binary itself lives on disk under PackageDir; the DB stores only
-// metadata and the sanitized filename.
-type OfflinePackage struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Filename    string `json:"filename"`
-	Service     string `json:"service"`
-	ImageName   string `json:"imageName,omitempty"`
-	ImageRef    string `json:"imageRef,omitempty"`
-	OS          string `json:"os,omitempty"`
-	Arch        string `json:"arch,omitempty"`
-	Size        int64  `json:"size"`
-	SHA256      string `json:"sha256"`
-	Description string `json:"description,omitempty"`
-	CreatedAt   string `json:"createdAt"`
-}
-
 type ResourceSample struct {
 	ID          int64   `json:"id,omitempty"`
 	UserID      int64   `json:"userId"`
@@ -117,30 +92,17 @@ type NetdiskShare struct {
 	Expired   bool     `json:"expired"`
 }
 
-// FusedImage is a cached derived image that pre-installs SSH/VSCode for a
-// specific base image + script body combination, so container start skips the
-// slow per-boot install. Keyed by CacheKey (a hash of those inputs).
-type FusedImage struct {
-	CacheKey     string `json:"cacheKey"`
-	BaseRef      string `json:"baseRef"`
-	BaseImageID  string `json:"baseImageId"`
-	FusedRef     string `json:"fusedRef"`
-	EnableSSH    bool   `json:"enableSsh"`
-	EnableVSCode bool   `json:"enableVscode"`
-	ScriptHash   string `json:"scriptHash"`
-	CreatedAt    string `json:"createdAt"`
-}
-
-// FusedLayer is a single-service incremental layer image. It captures the file
-// system delta produced by installing SSH or VSCode on top of a base image.
-// Multiple final fused images can reuse the same layer via COPY --from.
-type FusedLayer struct {
-	CacheKey    string `json:"cacheKey"`
-	BaseRef     string `json:"baseRef"`
-	BaseImageID string `json:"baseImageId"`
-	LayerRef    string `json:"layerRef"`
-	Service     string `json:"service"` // "ssh" or "vscode"
-	ScriptHash  string `json:"scriptHash"`
+// ContainerAccess holds the host-side gateway configuration for a container
+// that has SSH and/or VS Code enabled: the access password (verified by the
+// SSH gateway and handed to the code-server subprocess — never stored inside
+// the container) and the reserved gateway ports. Keyed by container ID, so it
+// is naturally dropped and regenerated whenever a container is recreated.
+type ContainerAccess struct {
+	ContainerID string `json:"containerId"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	SSHPort     int    `json:"sshPort"`
+	VSCodePort  int    `json:"vscodePort"`
 	CreatedAt   string `json:"createdAt"`
 }
 
@@ -273,37 +235,12 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			expires_at text not null default '',
 			permanent integer not null default 0
 		)`,
-		`create table if not exists fused_images (
-			cache_key text primary key,
-			base_ref text not null,
-			base_image_id text not null,
-			fused_ref text not null,
-			enable_ssh integer not null,
-			enable_vscode integer not null,
-			script_hash text not null,
-			created_at text not null
-		)`,
-		`create table if not exists fused_layers (
-			cache_key text primary key,
-			base_ref text not null,
-			base_image_id text not null,
-			layer_ref text not null,
-			service text not null,
-			script_hash text not null,
-			created_at text not null
-		)`,
-		`create table if not exists offline_packages (
-			id integer primary key autoincrement,
-			name text not null,
-			filename text not null unique,
-			service text not null default 'all',
-			image_name text not null default '',
-			image_ref text not null default '',
-			os text not null default '',
-			arch text not null default '',
-			size integer not null default 0,
-			sha256 text not null default '',
-			description text not null default '',
+		`create table if not exists container_access (
+			container_id text primary key,
+			username text not null,
+			password text not null,
+			ssh_port integer not null default 0,
+			vscode_port integer not null default 0,
 			created_at text not null
 		)`,
 	}
@@ -365,81 +302,7 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			return err
 		}
 	}
-	if err := db.EnsurePendingGroup(); err != nil {
-		return err
-	}
-	if err := db.upgradeDefaultScripts(); err != nil {
-		return err
-	}
-	return db.ensureDefaultScripts()
-}
-
-// legacySSHScriptMarkers / legacyVSCodeScriptMarkers identify the previous
-// default bootstrap scripts so upgradeDefaultScripts can replace them with the
-// current default. The first generation started daemons unconditionally (which
-// broke fused-image builds); the second generation hardcoded the root account
-// and /root paths, which broke SSH/VSCode for non-root images. Both are detected
-// here so existing deployments pick up the user-aware defaults automatically.
-// Admin-edited scripts that don't match are left untouched.
-var legacySSHScriptMarkers = []string{
-	`/usr/sbin/sshd || sshd || true`, // pre-MUDP_BUILD_PHASE guard: sshd started at build
-	`root:${MUDP_ACCESS_PASSWORD}`,   // pre-user-aware: password set only for root
-}
-var legacyVSCodeScriptMarkers = []string{
-	`nohup code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
-`,
-	`cat > /root/.config/code-server/config.yaml <<EOF`, // pre-user-aware: hardcoded /root path
-}
-
-// upgradeDefaultScripts replaces stored scripts that still contain the legacy
-// daemon-start lines (and lack the MUDP_BUILD_PHASE guard) with the current
-// defaults. It only acts on scripts that look like the old defaults; admin
-// customizations are preserved.
-func (db *DB) upgradeDefaultScripts() error {
-	cfg, err := db.ScriptSettings()
-	if err != nil {
-		return err
-	}
-	updated := ScriptSettings{}
-	needUpdate := false
-	if !strings.Contains(cfg.SSHScript, "MUDP_BUILD_PHASE") && containsAny(cfg.SSHScript, legacySSHScriptMarkers) {
-		updated.SSHScript = defaultSSHScript()
-		needUpdate = true
-	} else if !strings.Contains(cfg.SSHScript, "run_offline_packages") && strings.Contains(cfg.SSHScript, "openssh-server") {
-		updated.SSHScript = defaultSSHScript()
-		needUpdate = true
-	} else if strings.Contains(cfg.SSHScript, "run_offline_packages") && !strings.Contains(cfg.SSHScript, "*.deb)") {
-		updated.SSHScript = defaultSSHScript()
-		needUpdate = true
-	} else {
-		updated.SSHScript = cfg.SSHScript
-	}
-	if !strings.Contains(cfg.VSCodeScript, "MUDP_BUILD_PHASE") && containsAny(cfg.VSCodeScript, legacyVSCodeScriptMarkers) {
-		updated.VSCodeScript = defaultVSCodeScript()
-		needUpdate = true
-	} else if !strings.Contains(cfg.VSCodeScript, "run_offline_packages") && strings.Contains(cfg.VSCodeScript, "code-server.dev/install.sh") {
-		updated.VSCodeScript = defaultVSCodeScript()
-		needUpdate = true
-	} else if strings.Contains(cfg.VSCodeScript, "run_offline_packages") && !strings.Contains(cfg.VSCodeScript, "*.deb)") {
-		updated.VSCodeScript = defaultVSCodeScript()
-		needUpdate = true
-	} else {
-		updated.VSCodeScript = cfg.VSCodeScript
-	}
-	if !needUpdate {
-		return nil
-	}
-	return db.SaveScriptSettings(updated)
-}
-
-// containsAny reports whether s contains any of the substrings.
-func containsAny(s string, subs []string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
+	return db.EnsurePendingGroup()
 }
 
 // widenRoleConstraint relaxes an older users.role CHECK that only allowed
@@ -724,299 +587,6 @@ func (db *DB) SetImagePreset(imageID int64, preset *ImagePreset) error {
 		return fmt.Errorf("image %d not found", imageID)
 	}
 	return nil
-}
-
-func (db *DB) ScriptSettings() (ScriptSettings, error) {
-	cfg := ScriptSettings{
-		SSHScript:    defaultSSHScript(),
-		VSCodeScript: defaultVSCodeScript(),
-	}
-	rows, err := db.Query(`select key, value from settings where key in ('ssh_script','vscode_script','offline_build_script')`)
-	if err != nil {
-		return cfg, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var key, value string
-		if err := rows.Scan(&key, &value); err != nil {
-			return cfg, err
-		}
-		switch key {
-		case "ssh_script":
-			cfg.SSHScript = value
-		case "vscode_script":
-			cfg.VSCodeScript = value
-		case "offline_build_script":
-			cfg.BuildScript = value
-		}
-	}
-	return cfg, rows.Err()
-}
-
-func (db *DB) SaveScriptSettings(cfg ScriptSettings) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	items := map[string]string{
-		"ssh_script":    cfg.SSHScript,
-		"vscode_script": cfg.VSCodeScript,
-	}
-	for key, value := range items {
-		if _, err := tx.Exec(`insert into settings(key, value) values(?, ?)
-			on conflict(key) do update set value=excluded.value`, key, value); err != nil {
-			return err
-		}
-	}
-	if cfg.BuildScript != "" {
-		if _, err := tx.Exec(`insert into settings(key, value) values('offline_build_script', ?)
-			on conflict(key) do update set value=excluded.value`, cfg.BuildScript); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-func (db *DB) ensureDefaultScripts() error {
-	cfg, err := db.ScriptSettings()
-	if err != nil {
-		return err
-	}
-	return db.SaveScriptSettings(cfg)
-}
-
-// userResolveSnippet is a POSIX shell preamble prepended to the default SSH and
-// VS Code scripts. The container always runs the bootstrap as root (CreateContainer
-// forces containerCfg.User=root when SSH/VSCode is enabled), so this can create the
-// login account when it does not exist (images with a bare numeric USER resolve to
-// the fixed "mudp" account, which has no passwd entry until created here). It
-// exports MUDP_CONNECTION_USER (the login account) and MUDP_HOME (its home dir),
-// both defaulting to root-safe values so root images work unchanged.
-const userResolveSnippet = `# --- mudp: resolve the connection user + home (runs as root) ---
-MUDP_CONNECTION_USER="${MUDP_CONNECTION_USER:-root}"
-if [ "$MUDP_CONNECTION_USER" = "root" ] || [ -z "$MUDP_CONNECTION_USER" ]; then
-  MUDP_CONNECTION_USER="root"
-  MUDP_HOME="/root"
-else
-  # Ensure the account exists (images with a bare UID USER resolve to "mudp",
-  # which has no passwd entry until we create it here).
-  if ! id "$MUDP_CONNECTION_USER" >/dev/null 2>&1; then
-    if command -v useradd >/dev/null 2>&1; then
-      useradd -m -s "$(command -v bash >/dev/null 2>&1 && echo /bin/bash || echo /bin/sh)" "$MUDP_CONNECTION_USER" 2>/dev/null || true
-    elif command -v adduser >/dev/null 2>&1; then
-      if adduser 2>&1 | grep -q -- '--disabled-password'; then
-        adduser --disabled-password --gecos "" "$MUDP_CONNECTION_USER" 2>/dev/null || true
-      else
-        adduser "$MUDP_CONNECTION_USER" 2>/dev/null || true
-      fi
-    fi
-  fi
-  MUDP_HOME="$(getent passwd "$MUDP_CONNECTION_USER" 2>/dev/null | cut -d: -f6)"
-  if [ -z "$MUDP_HOME" ] || [ "$MUDP_HOME" = "/" ]; then
-    MUDP_HOME="/home/$MUDP_CONNECTION_USER"
-    mkdir -p "$MUDP_HOME"
-    chown "$MUDP_CONNECTION_USER" "$MUDP_HOME" 2>/dev/null || true
-  fi
-fi
-export MUDP_CONNECTION_USER MUDP_HOME
-# --- mudp: end user resolve ---`
-
-const offlineInstallSnippet = `run_offline_packages() {
-  service="$1"
-  dir="${MUDP_OFFLINE_PACKAGE_DIR:-/mudp-offline-packages}"
-  [ -d "$dir" ] || return 1
-  found=0
-  ok=0
-  for pkg in "$dir"/*; do
-    [ -f "$pkg" ] || continue
-    found=1
-    case "$pkg" in
-      *.sh|*.run)
-        chmod +x "$pkg" 2>/dev/null || true
-        if "$pkg" "$service"; then ok=1; fi
-        ;;
-      *.tar|*.tar.gz|*.tgz|*.tar.xz|*.tar.bz2)
-        work="/tmp/mudp/offline-$(basename "$pkg" | tr -c 'A-Za-z0-9_.-' '-')"
-        rm -rf "$work"
-        mkdir -p "$work"
-        case "$pkg" in
-          *.tar)     tar -C "$work" -xf  "$pkg" ;;
-          *.tar.xz)  tar -C "$work" -xJf "$pkg" ;;
-          *.tar.bz2) tar -C "$work" -xjf "$pkg" ;;
-          *)         tar -C "$work" -xzf "$pkg" ;;
-        esac || continue
-        for installer in "$work/install.sh" "$work/mudp-install.sh"; do
-          [ -f "$installer" ] || continue
-          chmod +x "$installer" 2>/dev/null || true
-          if "$installer" "$service"; then ok=1; fi
-          break
-        done
-        ;;
-      *.deb)
-        if command -v dpkg >/dev/null 2>&1; then
-          dpkg -i "$pkg" 2>/dev/null && ok=1 || \
-            { command -v apt-get >/dev/null 2>&1 && apt-get install -f -y 2>/dev/null && ok=1 || true; }
-        fi
-        ;;
-      *.rpm)
-        if command -v dnf >/dev/null 2>&1; then
-          dnf install -y "$pkg" 2>/dev/null && ok=1
-        elif command -v yum >/dev/null 2>&1; then
-          yum install -y "$pkg" 2>/dev/null && ok=1
-        elif command -v rpm >/dev/null 2>&1; then
-          rpm -Uvh --replacepkgs "$pkg" 2>/dev/null && ok=1
-        fi
-        ;;
-      *.apk)
-        command -v apk >/dev/null 2>&1 && apk add --allow-untrusted "$pkg" 2>/dev/null && ok=1 || true
-        ;;
-    esac
-  done
-  [ "$found" -eq 1 ] && [ "$ok" -eq 1 ]
-}`
-
-func defaultSSHScript() string {
-	return `#!/bin/sh
-set -eu
-
-have_cmd() { command -v "$1" >/dev/null 2>&1; }
-
-` + userResolveSnippet + `
-
-` + offlineInstallSnippet + `
-
-install_packages() {
-  if have_cmd apt-get; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y openssh-server
-    apt-get clean || true
-    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
-    return 0
-  fi
-  if have_cmd apk; then
-    apk add --no-cache openssh
-    return 0
-  fi
-  if have_cmd dnf; then
-    dnf install -y openssh-server openssh-clients
-    dnf clean all || true
-    return 0
-  fi
-  if have_cmd yum; then
-    yum install -y openssh-server openssh-clients
-    yum clean all || true
-    return 0
-  fi
-  echo "No supported package manager found for SSH bootstrap." >&2
-  exit 1
-}
-
-have_cmd sshd || run_offline_packages ssh || install_packages
-mkdir -p /var/run/sshd
-if command -v ssh-keygen >/dev/null 2>&1; then
-  ssh-keygen -A >/dev/null 2>&1 || true
-fi
-# Set the password on the connection account (root for root images, otherwise
-# the image's declared USER). chpasswd needs a name, never a bare UID.
-cat <<EOF | chpasswd
-${MUDP_CONNECTION_USER}:${MUDP_ACCESS_PASSWORD}
-EOF
-# When the login user is not root, also keep root usable so an admin can always
-# get in; harmless for root images (same password twice).
-if [ "$MUDP_CONNECTION_USER" != "root" ]; then
-  printf 'root:%s\n' "${MUDP_ACCESS_PASSWORD}" | chpasswd || true
-fi
-if [ -f /etc/ssh/sshd_config ]; then
-  sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config || true
-  sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
-  grep -q '^PermitRootLogin yes' /etc/ssh/sshd_config || echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
-  grep -q '^PasswordAuthentication yes' /etc/ssh/sshd_config || echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
-fi
-# Start sshd only at container runtime, never during a fused-image build (where
-# MUDP_BUILD_PHASE=1), otherwise the daemon would hang or be killed mid-build.
-# sshd must run as root; it authenticates the connection user via PAM.
-if [ -z "${MUDP_BUILD_PHASE:-}" ]; then
-  if command -v service >/dev/null 2>&1; then
-    service ssh start || true
-  fi
-  if command -v sshd >/dev/null 2>&1; then
-    /usr/sbin/sshd || sshd || true
-  fi
-fi
-`
-}
-
-func defaultVSCodeScript() string {
-	return `#!/bin/sh
-set -eu
-
-have_cmd() { command -v "$1" >/dev/null 2>&1; }
-
-` + userResolveSnippet + `
-
-` + offlineInstallSnippet + `
-
-if ! have_cmd code-server; then
-  run_offline_packages vscode || {
-  if ! have_cmd curl; then
-    if have_cmd apt-get; then
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update
-      apt-get install -y curl
-      apt-get clean || true
-      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
-    elif have_cmd apk; then
-      apk add --no-cache curl
-    elif have_cmd dnf; then
-      dnf install -y curl
-      dnf clean all || true
-    elif have_cmd yum; then
-      yum install -y curl
-      yum clean all || true
-    else
-      echo "curl is required to install code-server." >&2
-      exit 1
-    fi
-  fi
-  curl -fsSL https://code-server.dev/install.sh | sh
-  rm -rf /root/.cache /tmp/* /var/tmp/*
-  }
-fi
-
-# code-server's config + data live under the connection user's home so the
-# editor is writable when it runs as that (possibly non-root) user.
-CS_CFG="$MUDP_HOME/.config/code-server"
-CS_DATA="$MUDP_HOME/.local/share/code-server"
-mkdir -p "$CS_CFG" "$CS_DATA" /workspace /tmp/mudp
-chown -R "$MUDP_CONNECTION_USER" "$CS_CFG" "$CS_DATA" /workspace 2>/dev/null || true
-cat > "$CS_CFG/config.yaml" <<EOF
-bind-addr: 0.0.0.0:13337
-auth: password
-password: ${MUDP_ACCESS_PASSWORD}
-cert: false
-user-data-dir: ${CS_DATA}
-EOF
-chown "$MUDP_CONNECTION_USER" "$CS_CFG/config.yaml" 2>/dev/null || true
-# Start code-server only at container runtime, never during a fused-image build
-# (MUDP_BUILD_PHASE=1), where launching it would hang the build. Run it as the
-# connection user so its files are owned correctly; gosu/runuser/su are tried in
-# turn, falling back to a direct exec (fine for root images).
-if [ -z "${MUDP_BUILD_PHASE:-}" ]; then
-  if [ "$MUDP_CONNECTION_USER" = "root" ]; then
-    nohup code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
-  elif command -v gosu >/dev/null 2>&1; then
-    nohup gosu "$MUDP_CONNECTION_USER" code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
-  elif command -v runuser >/dev/null 2>&1; then
-    nohup runuser -u "$MUDP_CONNECTION_USER" -- code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
-  elif command -v su >/dev/null 2>&1; then
-    nohup su -s /bin/sh "$MUDP_CONNECTION_USER" -c 'code-server /workspace' >/tmp/mudp/code-server.log 2>&1 &
-  else
-    nohup code-server /workspace >/tmp/mudp/code-server.log 2>&1 &
-  fi
-fi
-`
 }
 
 func (db *DB) UserGroupNames(userID int64) []string {

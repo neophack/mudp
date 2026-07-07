@@ -119,7 +119,6 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/images/detailed", a.imagesDetailed)
 		r.Get("/api/containers/stats/stream", a.containerStatsStream)
 		r.Get("/api/containers/logs/stream", a.containerLogsStream)
-		r.Post("/api/containers/password", a.containerPassword)
 		r.Post("/api/containers/update", a.containerUpdate)
 		r.Get("/api/resources/history", a.resourceHistory)
 		r.Get("/api/netdisk", a.netdiskList)
@@ -173,15 +172,6 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/users/update", a.userUpdate)
 		r.Post("/api/users/delete", a.userDelete)
 		r.Post("/api/users/groups", a.setUserGroups)
-		r.Get("/api/scripts", a.scripts)
-		r.Post("/api/scripts", a.scripts)
-		r.Get("/api/scripts/offline/packages", a.offlinePackages)
-		r.Post("/api/scripts/offline/packages", a.offlinePackageUpload)
-		r.Get("/api/scripts/offline/packages/download", a.offlinePackageDownload)
-		r.Post("/api/scripts/offline/packages/delete", a.offlinePackageDelete)
-		r.Get("/api/scripts/offline/build-script", a.offlineBuildScript)
-		r.Post("/api/scripts/offline/build-script", a.offlineBuildScript)
-		r.Post("/api/scripts/offline/build/stream", a.offlinePkgBuildStream)
 		r.Get("/api/registries", a.registries)
 		r.Post("/api/registries", a.registries)
 		r.Post("/api/registries/delete", a.registryDelete)
@@ -396,36 +386,6 @@ func (a *App) images(w http.ResponseWriter, r *http.Request) {
 	respond(w, imgs, err)
 }
 
-func (a *App) scripts(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		cfg, err := a.db.ScriptSettings()
-		respond(w, cfg, err)
-	case http.MethodPost:
-		var req store.ScriptSettings
-		if err := decodeJSON(r, &req); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		// Allow partial saves: if only BuildScript is supplied keep existing SSH/VSCode.
-		if req.BuildScript != "" && strings.TrimSpace(req.SSHScript) == "" && strings.TrimSpace(req.VSCodeScript) == "" {
-			cfg, err := a.db.ScriptSettings()
-			if err != nil {
-				writeErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			req.SSHScript = cfg.SSHScript
-			req.VSCodeScript = cfg.VSCodeScript
-		}
-		if strings.TrimSpace(req.SSHScript) == "" || strings.TrimSpace(req.VSCodeScript) == "" {
-			writeErr(w, http.StatusBadRequest, "ssh and vscode scripts are required")
-			return
-		}
-		respond(w, map[string]bool{"ok": true}, a.db.SaveScriptSettings(req))
-	default:
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
-}
 
 type pullRequest struct {
 	SourceRef   string
@@ -661,9 +621,6 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	if req.Name == "" || req.Image == "" {
 		return dockerx.CreateOptions{}, errors.New("name and image are required")
 	}
-	if (req.SSH || req.VSCode) && len(req.AccessPassword) < 6 {
-		return dockerx.CreateOptions{}, errors.New("access password must be at least 6 characters when SSH or VS Code is enabled")
-	}
 	existing, err := a.docker.ListContainers(ctx, u.Username, false)
 	if err != nil {
 		return dockerx.CreateOptions{}, err
@@ -675,14 +632,9 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	if err != nil {
 		return dockerx.CreateOptions{}, errForbiddenImage
 	}
-	scripts, err := a.db.ScriptSettings()
-	if err != nil {
-		return dockerx.CreateOptions{}, err
-	}
-	offlinePackages := a.offlineBootstrapPackages(img.DisplayName, img.DockerRef, req.SSH, req.VSCode)
-	// Resolve the connection user (SSH login + code-server owner) from the base
-	// image's USER directive. Best-effort: on failure it stays empty which the
-	// bootstrap script maps to "root".
+	// Resolve the connection user from the base image's USER directive. It is
+	// surfaced for host-side access helpers only; no SSH/VS Code service is
+	// installed inside the container.
 	var connectionUser string
 	if req.SSH || req.VSCode {
 		if info, err := a.docker.InspectImage(ctx, img.DockerRef); err == nil {
@@ -715,215 +667,13 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		Username: u.Username, Name: req.Name, ImageRef: img.DockerRef, ImageName: img.DisplayName,
 		Env: normalizeEnv(req.Env), GPUs: req.GPUs, SSH: req.SSH, VSCode: req.VSCode,
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
-		AccessPassword: req.AccessPassword, SSHScript: scripts.SSHScript, VSCodeScript: scripts.VSCodeScript,
-		OfflinePackages: offlinePackages,
-		ConnectionUser:  connectionUser,
-		Ports:           splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
+		AccessPassword: req.AccessPassword,
+		ConnectionUser: connectionUser,
+		Ports:          splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
 		Devices: req.Devices, CDIDevices: req.CDIDevices,
 		RestartPolicy: req.RestartPolicy,
 	}, nil
-}
-
-// resolveFusedPlan computes the fused-image cache key for a (base image + script
-// bodies + flags) combination and returns a build/reuse plan. On a cache hit
-// (the fused image row exists AND the image is still present locally) it fills
-// FusedRef so CreateContainer reuses it. On a miss it returns a plan carrying
-// everything CreateContainer needs to build lazily. Returns nil if SSH/VSCode
-// are both off, the base image can't be inspected, or any error occurs — in all
-// those cases CreateContainer falls back to the runtime-injection path.
-func (a *App) resolveFusedPlan(ctx context.Context, baseRef, sshScript, vscodeScript string, enableSSH, enableVSCode bool, accessPassword string) *dockerx.FusedPlan {
-	if !enableSSH && !enableVSCode {
-		return nil
-	}
-	info, err := a.docker.InspectImage(ctx, baseRef)
-	if err != nil {
-		return nil // base image missing/uninspectable — fall back gracefully
-	}
-	connectionUser := dockerx.ResolveConnectionUser(info.Config.User)
-	scriptHash := hashScripts(sshScript, vscodeScript)
-	cacheKey := fusedCacheKey(info.ID, scriptHash, enableSSH, enableVSCode)
-	// Cache hit: row exists and the image is still local.
-	if fused, ok, _ := a.db.GetFusedImage(cacheKey); ok {
-		if exists, _ := a.docker.ImageExists(ctx, fused.FusedRef); exists {
-			return makeFusedPlan(baseRef, info.ID, info.Config.Entrypoint, info.Config.Cmd,
-				scriptHash, cacheKey, fused.FusedRef,
-				enableSSH, enableVSCode, accessPassword, sshScript, vscodeScript, a.registryAuthForRef(baseRef), connectionUser)
-		}
-		// Stale row (image was pruned); drop it so we rebuild cleanly.
-		_ = a.db.DeleteFusedImage(cacheKey)
-	}
-	fusedRef := dockerx.MUDPFusedRef(baseRef, cacheKey)
-	// Pre-record the row so concurrent creates can see the in-flight build; the
-	// real tag is created by CreateContainer. If the build fails we leave the
-	// row (harmless — next miss rebuilds), matching the "fall back" semantics.
-	_ = a.db.SaveFusedImage(store.FusedImage{
-		CacheKey:     cacheKey,
-		BaseRef:      baseRef,
-		BaseImageID:  info.ID,
-		FusedRef:     fusedRef,
-		EnableSSH:    enableSSH,
-		EnableVSCode: enableVSCode,
-		ScriptHash:   scriptHash,
-	})
-	return makeFusedPlan(baseRef, info.ID, info.Config.Entrypoint, info.Config.Cmd,
-		scriptHash, cacheKey, fusedRef,
-		enableSSH, enableVSCode, accessPassword, sshScript, vscodeScript, a.registryAuthForRef(baseRef), connectionUser)
-}
-
-// fusedPlanForBuild builds a plan for the manual admin "Build SSH Layer" /
-// "Build VS Code Layer" action in Settings. It only supports a single service
-// at a time because Settings pre-builds incremental layers, not final fused
-// images. The final image is assembled later when a container is created.
-func (a *App) fusedPlanForBuild(ctx context.Context, baseRef, sshScript, vscodeScript string, enableSSH, enableVSCode bool) (*dockerx.FusedPlan, error) {
-	if enableSSH && enableVSCode {
-		return nil, errors.New("only one layer service may be built at a time")
-	}
-	if !enableSSH && !enableVSCode {
-		return nil, errors.New("either SSH or VSCode must be selected")
-	}
-	info, err := a.docker.InspectImage(ctx, baseRef)
-	if err != nil {
-		return nil, fmt.Errorf("inspect base image %q: %w", baseRef, err)
-	}
-	connectionUser := dockerx.ResolveConnectionUser(info.Config.User)
-	scriptHash := hashScripts(sshScript, vscodeScript)
-	cacheKey := fusedCacheKey(info.ID, scriptHash, enableSSH, enableVSCode)
-	fusedRef := dockerx.MUDPFusedRef(baseRef, cacheKey)
-	return makeFusedPlan(baseRef, info.ID, info.Config.Entrypoint, info.Config.Cmd,
-		scriptHash, cacheKey, fusedRef,
-		enableSSH, enableVSCode, "mudp-build-placeholder", sshScript, vscodeScript, a.registryAuthForRef(baseRef), connectionUser), nil
-}
-
-// recordFusedImage persists a fused_images row after a successful build so the
-// status card reflects it. Safe to call repeatedly (upsert).
-func (a *App) recordFusedImage(plan *dockerx.FusedPlan) {
-	_ = a.db.SaveFusedImage(store.FusedImage{
-		CacheKey:     plan.CacheKey,
-		BaseRef:      plan.BaseRef,
-		BaseImageID:  plan.BaseImageID,
-		FusedRef:     plan.FusedRef,
-		EnableSSH:    plan.EnableSSH,
-		EnableVSCode: plan.EnableVSCode,
-		ScriptHash:   plan.ScriptHash,
-	})
-}
-
-// recordFusedLayer persists a fused_layers row after a successful layer build
-// so the Settings status card reflects it. Safe to call repeatedly (upsert).
-func (a *App) recordFusedLayer(plan *dockerx.FusedPlan, service string) {
-	var f store.FusedLayer
-	switch service {
-	case "ssh":
-		f = store.FusedLayer{
-			CacheKey:    plan.SSHLayerCacheKey,
-			BaseRef:     plan.BaseRef,
-			BaseImageID: plan.BaseImageID,
-			LayerRef:    plan.SSHLayerRef,
-			Service:     "ssh",
-			ScriptHash:  hashScripts(plan.SSHScript, ""),
-		}
-	case "vscode":
-		f = store.FusedLayer{
-			CacheKey:    plan.VSCodeLayerCacheKey,
-			BaseRef:     plan.BaseRef,
-			BaseImageID: plan.BaseImageID,
-			LayerRef:    plan.VSCodeLayerRef,
-			Service:     "vscode",
-			ScriptHash:  hashScripts("", plan.VSCodeScript),
-		}
-	}
-	_ = a.db.SaveFusedLayer(f)
-}
-
-// makeFusedPlan assembles a *dockerx.FusedPlan from its inputs. Shared by the
-// lazy-create path and the manual-build path so the struct shape stays in one
-// place. Pass the base image's id/entrypoint/cmd extracted from InspectImage.
-// connectionUser is the resolved login account (from the base image's USER);
-// pass "" to default to root inside dockerx.FusedPlan.
-func makeFusedPlan(baseRef, baseImageID string, origEntrypoint, origCmd []string,
-	scriptHash, cacheKey, fusedRef string, enableSSH, enableVSCode bool,
-	accessPassword, sshScript, vscodeScript, auth, connectionUser string) *dockerx.FusedPlan {
-	sshLayerKey := sshLayerCacheKey(baseImageID, sshScript)
-	vscodeLayerKey := vscodeLayerCacheKey(baseImageID, vscodeScript)
-	return &dockerx.FusedPlan{
-		CacheKey:            cacheKey,
-		FusedRef:            fusedRef,
-		BaseRef:             baseRef,
-		BaseImageID:         baseImageID,
-		OrigEntrypoint:      origEntrypoint,
-		OrigCmd:             origCmd,
-		ScriptHash:          scriptHash,
-		SSHScriptHash:       hashScripts(sshScript, ""),
-		VSCodeScriptHash:    hashScripts("", vscodeScript),
-		EnableSSH:           enableSSH,
-		EnableVSCode:        enableVSCode,
-		AccessPassword:      accessPassword,
-		ConnectionUser:      connectionUser,
-		SSHScript:           sshScript,
-		VSCodeScript:        vscodeScript,
-		SSHLayerRef:         dockerx.MUDPFusedSSHLayerRef(baseRef, sshLayerKey),
-		VSCodeLayerRef:      dockerx.MUDPFusedVSCodeLayerRef(baseRef, vscodeLayerKey),
-		SSHLayerCacheKey:    sshLayerKey,
-		VSCodeLayerCacheKey: vscodeLayerKey,
-		Auth:                auth,
-	}
-}
-
-// hashScripts returns a hex SHA256 of the SSH+VSCode script bodies so admin
-// edits change the cache key and trigger a fused-image rebuild.
-func hashScripts(sshScript, vscodeScript string) string {
-	h := sha256.New()
-	h.Write([]byte(sshScript))
-	h.Write([]byte{0})
-	h.Write([]byte(vscodeScript))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// fusedCacheKey is the primary cache key for a fused image: a hex SHA256 of the
-// base image ID, the script hash, and the enable flags. Two creates with the
-// same key reuse the same fused image. The version prefix is bumped when the
-// final-image build recipe changes so stale images are not reused.
-func fusedCacheKey(baseImageID, scriptHash string, ssh, vscode bool) string {
-	h := sha256.New()
-	h.Write([]byte("v2"))
-	h.Write([]byte{0})
-	h.Write([]byte(baseImageID))
-	h.Write([]byte{0})
-	h.Write([]byte(scriptHash))
-	h.Write([]byte{0})
-	if ssh {
-		h.Write([]byte("ssh"))
-	}
-	h.Write([]byte{0})
-	if vscode {
-		h.Write([]byte("vscode"))
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// sshLayerCacheKey identifies the SSH incremental layer independently of the
-// VSCode script. It changes only when the base image or the SSH script changes.
-func sshLayerCacheKey(baseImageID, sshScript string) string {
-	h := sha256.New()
-	h.Write([]byte(baseImageID))
-	h.Write([]byte{0})
-	h.Write([]byte("ssh-layer"))
-	h.Write([]byte{0})
-	h.Write([]byte(sshScript))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// vscodeLayerCacheKey identifies the VSCode incremental layer independently of
-// the SSH script. It changes only when the base image or the VSCode script changes.
-func vscodeLayerCacheKey(baseImageID, vscodeScript string) string {
-	h := sha256.New()
-	h.Write([]byte(baseImageID))
-	h.Write([]byte{0})
-	h.Write([]byte("vscode-layer"))
-	h.Write([]byte{0})
-	h.Write([]byte(vscodeScript))
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 // createStream runs container creation while streaming progress events over
@@ -1332,28 +1082,6 @@ func (a *App) containerTerminal(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) usage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildUsage(r, a))
-}
-
-func (a *App) containerPassword(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	var req struct {
-		ID       string `json:"id"`
-		Password string `json:"password"`
-	}
-	if err := decodeJSON(r, &req); err != nil || req.ID == "" || len(req.Password) < 6 {
-		writeErr(w, http.StatusBadRequest, "id and a password of at least 6 characters are required")
-		return
-	}
-	if !a.containerOwnedBy(r.Context(), u, req.ID) {
-		writeErr(w, http.StatusForbidden, "container is not yours")
-		return
-	}
-	if err := a.docker.SetAccessPassword(r.Context(), req.ID, req.Password); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	a.record(r, "container.password", req.ID)
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // containerUpdate edits a managed container's restart policy and/or attached

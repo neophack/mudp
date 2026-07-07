@@ -504,7 +504,23 @@ table.data td.actions button { margin-left: 3px; }
 }
 .copy-btn:hover { background: var(--accent-soft); color: var(--accent); }
 .copy-btn.copied { color: var(--ok); }
-.vscode-link { font-weight: 600; }
+.vscode-link,
+.chip-link {
+  font-weight: 600;
+}
+
+.chip-link {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.chip-link:hover {
+  text-decoration: underline;
+}
 .secondary-line .sep { color: var(--muted); margin: 0 4px; }
 
 /* Compact checkbox label variant for toolbars. */

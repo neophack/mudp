@@ -13,7 +13,6 @@ import { renderStacks } from "./modules/stacks.js";
 import { renderUsers } from "./modules/users.js";
 import { renderUsage } from "./modules/usage.js";
 import { renderAudit } from "./modules/audit.js";
-import { renderBootstrap } from "./modules/bootstrap.js";
 import { renderSettings } from "./modules/settings.js";
 import { renderNetdisk } from "./modules/netdisk.js";
 import { renderDisks } from "./modules/disks.js";
@@ -36,11 +35,6 @@ export const state = {
   audit: [],
   netdisk: { path: "", items: [], quota: null },
   disks: [],
-  scripts: { sshScript: "", vscodeScript: "" },
-  offlinePackages: [],
-  offlinePackagesLoaded: false,
-  buildScript: "",
-  buildScriptLoaded: false,
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
   search: "",
   logViewer: { open: false, title: "", content: "", id: "", tail: 300 },
@@ -151,7 +145,6 @@ const SECTION_URLS = {
   stacks: "/api/stacks",
   users: "/api/users",
   groups: "/api/groups",
-  scripts: "/api/scripts",
   audit: "/api/admin/audit?limit=200",
 };
 
@@ -161,7 +154,7 @@ export async function refreshSection(...keys) {
   const out = await Promise.all(keys.map((k) => api(SECTION_URLS[k]).catch(() => null)));
   keys.forEach((k, i) => {
     if (out[i] !== null) {
-      state[k] = out[i] || (k === "scripts" ? { sshScript: "", vscodeScript: "" } : []);
+      state[k] = out[i] || [];
     }
   });
   if (keys.includes("dashboard") && state.dashboard?.usage) {
@@ -173,8 +166,8 @@ export async function refreshAll() {
   const jobs = [api("/api/images"), api("/api/containers"), api("/api/dashboard"), api("/api/volumes"), api("/api/networks"), api("/api/stacks")];
   const labels = ["images", "containers", "dashboard", "volumes", "networks", "stacks"];
   if (isAdmin()) {
-    jobs.push(api("/api/users"), api("/api/groups"), api("/api/scripts"), api("/api/admin/audit?limit=200"));
-    labels.push("users", "groups", "scripts", "audit");
+    jobs.push(api("/api/users"), api("/api/groups"), api("/api/admin/audit?limit=200"));
+    labels.push("users", "groups", "audit");
   }
   // Use allSettled so one failing endpoint (transient 5xx, timeout) does not
   // reject the whole batch and boot the user to the login screen. Each section
@@ -183,7 +176,7 @@ export async function refreshAll() {
   results.forEach((r, i) => {
     if (r.status !== "fulfilled") return;
     const v = r.value;
-    state[labels[i]] = v || (labels[i] === "scripts" ? { sshScript: "", vscodeScript: "" } : []);
+    state[labels[i]] = v || [];
   });
   if (state.dashboard?.usage) {
     state.usage = state.dashboard.usage;
@@ -207,7 +200,6 @@ const ICONS = {
   usage: svgIcon('<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>'),
   audit: svgIcon('<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>'),
   disks: svgIcon('<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>'),
-  bootstrap: svgIcon('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>'),
   scripts: svgIcon('<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>'),
   logout: svgIcon('<path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>'),
   collapse: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'),
@@ -229,7 +221,6 @@ function label(tab) {
       usage: "Usage",
       audit: "Activity Log",
       disks: "Disks",
-      bootstrap: "Bootstrap",
       scripts: "Settings",
       hardware: "Hardware",
     }[tab] || tab
@@ -241,7 +232,7 @@ function subtitle(tab) {
     {
       dashboard: "Environment overview, resource counts, and your workspace at a glance.",
       netdisk: "Manage personal files, batch uploads, resumed uploads, and downloads.",
-      containers: "Create and manage containers with optional SSH and VS Code access.",
+      containers: "Create and manage containers with optional host-side SSH terminal and VS Code attach.",
       images: "Publish and share mudp-managed images with user groups.",
       volumes: "Persistent volumes scoped to your workspace.",
       networks: "Custom networks for service-to-service connectivity.",
@@ -250,7 +241,6 @@ function subtitle(tab) {
       usage: "Per-user and per-container CPU, memory, disk, GPU, and process usage.",
       audit: "Recent management actions across the platform.",
       disks: "Host disk overview, mount helpers, and database backups.",
-      bootstrap: "Manage bootstrap scripts and offline packages for SSH and VS Code.",
       scripts: "Configure registries, Feishu SSO, and system settings.",
       hardware: "Real-time CPU, memory, temperature, and per-GPU monitoring.",
     }[tab] || ""
@@ -259,7 +249,7 @@ function subtitle(tab) {
 
 export function render() {
   const admin = isAdmin();
-  const tabs = ["dashboard", "netdisk", "containers", "usage", "images", "volumes", "networks", "stacks", "hardware", ...(admin ? ["users", "audit", "disks", "bootstrap", "scripts"] : [])];
+  const tabs = ["dashboard", "netdisk", "containers", "usage", "images", "volumes", "networks", "stacks", "hardware", ...(admin ? ["users", "audit", "disks", "scripts"] : [])];
 
   const collapsed = state.sidebarCollapsed;
   $("#app").innerHTML =
@@ -361,7 +351,6 @@ export function renderView() {
   if (state.tab === "usage") return renderUsage();
   if (state.tab === "audit") return renderAudit();
   if (state.tab === "disks") return renderDisks();
-  if (state.tab === "bootstrap") return renderBootstrap();
   if (state.tab === "scripts") return renderSettings();
   if (state.tab === "hardware") return renderHardware();
 }

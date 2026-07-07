@@ -1,4 +1,4 @@
-// Settings: Feishu SSO + registries + bootstrap scripts.
+// Settings: Feishu SSO + registries.
 
 import { state, api, toast, renderView, escapeHtml } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
@@ -19,16 +19,6 @@ export function renderSettings() {
           `<thead><tr><th>Name</th><th>URL</th><th>Username</th><th class="actions">Actions</th></tr></thead>` +
           `<tbody>${(state.registries || []).map(registryRow).join("") || `<tr class="empty-row"><td colspan="4">No registries configured.</td></tr>`}</tbody>` +
         `</table>` +
-      `</div>` +
-      `<div class="card"><div class="card-head"><h2>Bootstrap Scripts</h2></div>` +
-        `<div class="card-body"><form id="scriptSettings" class="compact">` +
-          `<p class="hint">These scripts run inside the container on first start to install SSH and VS Code Server. They receive <code>$MUDP_ACCESS_PASSWORD</code>, <code>$MUDP_CONNECTION_USER</code>, and <code>$MUDP_OFFLINE_PACKAGE_DIR</code>. Matching offline packages are pre-injected into <code>$MUDP_OFFLINE_PACKAGE_DIR</code> before the script runs — upload packages on the Bootstrap page.</p>` +
-          `<h3>SSH Bootstrap</h3>` +
-          `<textarea name="sshScript" class="mono stack-editor" rows="14" spellcheck="false">${escapeHtml(state.scripts.sshScript || "")}</textarea>` +
-          `<h3>VS Code Bootstrap</h3>` +
-          `<textarea name="vscodeScript" class="mono stack-editor" rows="14" spellcheck="false">${escapeHtml(state.scripts.vscodeScript || "")}</textarea>` +
-          `<button>Save Scripts</button>` +
-        `</form></div>` +
       `</div>` +
       `<div class="card"><div class="card-head"><h2>Feishu SSO</h2></div>` +
         `<div class="card-body"><form id="feishuForm" class="compact">` +
@@ -63,22 +53,6 @@ export function renderSettings() {
     }
   };
 
-  $("#scriptSettings").onsubmit = async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    try {
-      await api("/api/scripts", {
-        method: "POST",
-        body: JSON.stringify({ sshScript: fd.get("sshScript"), vscodeScript: fd.get("vscodeScript") }),
-      });
-      state.scripts.sshScript = fd.get("sshScript");
-      state.scripts.vscodeScript = fd.get("vscodeScript");
-      toast("Bootstrap scripts saved", true);
-    } catch (err) {
-      toast(err.message);
-    }
-  };
-
   const newReg = $("#newRegistryBtn");
   if (newReg) newReg.onclick = () => openRegistryEditor(null);
   document.querySelectorAll("[data-reg-edit]").forEach((btn) => {
@@ -101,7 +75,7 @@ function registryRow(r) {
       `<td class="actions">` +
         `<button class="ghost" data-reg-test="${r.id}">Test</button>` +
         `<button class="ghost" data-reg-edit="${r.id}">Edit</button>` +
-        `<button class="icon danger" data-reg-delete="${r.id}" data-reg-name="${escapeHtml(r.name)}">✕</button>` +
+        `<button class="icon danger" data-reg-delete="${r.id}" data-reg-name="${escapeHtml(r.name)}">Delete</button>` +
       `</td>` +
     `</tr>`
   );

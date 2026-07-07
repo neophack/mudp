@@ -59,9 +59,6 @@ function containerRow(c) {
     ? `<span class="badge badge-ok"><span class="dot"></span>${escapeHtml(c.status || "Up")}</span>`
     : `<span class="badge badge-muted"><span class="dot"></span>${escapeHtml(c.status || c.state || "Stopped")}</span>`;
   const ports = (c.ports || []).join(", ") || "—";
-  const sshUser = c.sshUser || "root";
-  const sshHost = location.hostname;
-  const sshCmd = c.sshPort ? `ssh -p ${c.sshPort} ${sshUser}@${sshHost}` : "";
   // Docker on Linux binds to 0.0.0.0 so the backend URL contains 127.0.0.1.
   // Replace it (and localhost/0.0.0.0/::1) with the server hostname the browser
   // is already connected to, so links work on remote hosts.
@@ -70,8 +67,8 @@ function containerRow(c) {
   // numbers, but a stray string/null would otherwise throw and blank the table.
   const num = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
   const conn = [];
-  if (sshCmd) conn.push(`<span class="copy-chip"><code class="mono">${escapeHtml(sshCmd)}</code><button class="copy-btn" data-copy="${escapeHtml(sshCmd)}" title="Copy SSH command">⧉</button></span>`);
-  if (c.vscodeUrl) conn.push(`<a class="vscode-link" href="${escapeHtml(fixUrl(c.vscodeUrl))}" target="_blank" rel="noopener">VS Code ↗</a>`);
+  if (c.labels?.["mudp.ssh"] === "true" && running) conn.push(`<button class="chip-link" data-id="${escapeHtml(c.id)}" data-name="${escapeHtml(name)}" data-act="terminal">SSH Shell</button>`);
+  if (c.vscodeUrl) conn.push(`<a class="vscode-link" href="${escapeHtml(c.vscodeUrl)}">VS Code ↗</a>`);
   if (c.http8080Url) conn.push(`<a class="vscode-link" href="${escapeHtml(fixUrl(c.http8080Url))}" target="_blank" rel="noopener">8080 ↗</a>`);
   if (c.http80Url) conn.push(`<a class="vscode-link" href="${escapeHtml(fixUrl(c.http80Url))}" target="_blank" rel="noopener">80 ↗</a>`);
   const iconBtn = (act, glyph, title, cls = "icon", enabled = true) => {

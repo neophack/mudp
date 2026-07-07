@@ -93,8 +93,8 @@ export function openPresetModal(imageId) {
         `<label class="field-label">Container ports to map (one per line, e.g. 8080)</label>` +
         `<textarea name="ports" spellcheck="false">${escapeHtml((p.ports || []).join("\n"))}</textarea>` +
         `<div class="check-grid">` +
-          presetCheck("ssh", "Enable SSH", p.ssh) +
-          presetCheck("vscode", "Enable VS Code Web", p.vscode) +
+          presetCheck("ssh", "Enable host-side SSH terminal", p.ssh) +
+          presetCheck("vscode", "Enable host-side VS Code attach", p.vscode) +
           presetCheck("forward8080", "Forward port 8080", p.forward8080) +
           presetCheck("forward80", "Forward port 80", p.forward80) +
           presetCheck("mountNetdisk", "Mount netdisk at /netdisk", p.mountNetdisk) +

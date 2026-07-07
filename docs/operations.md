@@ -6,8 +6,8 @@ Each user can be assigned a numeric port prefix. Prefix `100` means the user can
 
 - Host ports below `10000` are reserved and rejected for user mappings.
 - Explicit mappings in the create form must be `host:container`.
-- SSH and VS Code are enabled by default when creating a container and automatically take the first free ports in the user's assigned range.
-- Users without a prefix cannot publish SSH, VS Code, or custom host ports until an admin assigns one.
+- SSH and VS Code are host-side helpers. They do not consume ports from the user's assigned range.
+- Users without a prefix cannot publish custom host ports until an admin assigns one.
 
 Admins set the prefix from **Users & Groups -> Edit -> Port prefix**.
 
@@ -40,17 +40,9 @@ Users can view live container stats from a container's **Stats** action. Admins 
 
 The history endpoint stores a fresh sample on access and keeps recent samples for 48 hours.
 
-## Offline Bootstrap Packages
+## Host-side Access
 
-Admins can open **Bootstrap** to manage SSH and VS Code bootstrap packages for offline or intranet deployments.
-
-- **Download build.sh** creates a starter shell script for producing a `.tar.gz` package.
-- Packages can also be uploaded as `.sh` or `.run` installers.
-- A package can apply to all images or be scoped to one catalog image.
-- During container creation, matching packages are copied into `/mudp-offline-packages` before bootstrap scripts run.
-- The default SSH/VS Code scripts try offline packages first and only fall back to online package managers or `code-server.dev` when no offline package succeeds.
-
-Uploaded packages are stored under `MUDP_OFFLINE_PACKAGE_DIR` (`offline-packages` by default). Use a persistent application path for production.
+SSH and VS Code options label the container and expose UI helpers from the MUDP host side. They do not inject scripts, install packages, publish port 22/13337, or change the container entrypoint.
 
 ## Disks And Backup
 

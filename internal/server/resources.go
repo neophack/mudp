@@ -114,13 +114,13 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 	// and does not start with stale records from a previous process.
 	a.collectResourceSnapshot(ctx)
 	a.pruneOldData(ctx)
-	// Reconcile Docker image store with database rows so fused layers/images
-	// built before the last shutdown are still visible in Settings. Then prune
-	// any pre-existing dangling images left over from older builds.
-	a.syncFusedCache(ctx)
 	if n, reclaimed, err := a.docker.PruneImages(ctx); err == nil && n > 0 {
 		log.Printf("pruned %d dangling images (%d bytes reclaimed)", n, reclaimed)
 	}
+	// Restart the SSH/VS Code host-side gateways for containers that already
+	// have them enabled, since those listeners/subprocesses live only in this
+	// process's memory and do not survive a restart on their own.
+	a.reconcileGateways(ctx)
 
 	stop := make(chan struct{})
 	go func() {

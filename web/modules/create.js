@@ -3,7 +3,7 @@
 import { state, toast, refreshAll, renderView } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 
-const STAGE_ORDER = ["image", "bootstrap", "create", "copy", "start", "ssh", "vscode", "done"];
+const STAGE_ORDER = ["image", "create", "start", "ssh", "vscode", "done"];
 
 // lastPayload holds the most recent create request so the Retry button in the
 // progress panel can resubmit it instead of wiping the form (which would also
@@ -11,12 +11,11 @@ const STAGE_ORDER = ["image", "bootstrap", "create", "copy", "start", "ssh", "vs
 let lastPayload = null;
 const STAGE_LABEL = {
   image: "Inspect image",
-  bootstrap: "Generate bootstrap scripts",
+  bootstrap: "Prepare access",
   create: "Create container",
-  copy: "Inject bootstrap files",
   start: "Start container",
-  ssh: "Bring up SSH",
-  vscode: "Bring up VS Code Server",
+  ssh: "Enable SSH terminal",
+  vscode: "Enable VS Code attach",
   done: "Complete",
 };
 
@@ -57,13 +56,12 @@ export function openCreateModal() {
           `<option value="on-failure">Restart on failure (on-failure)</option>` +
           `<option value="no">Do not auto-restart (no)</option>` +
         `</select>` +
-        `<label class="check"><input type="checkbox" name="ssh" checked> Enable SSH port</label>` +
-        `<label class="check"><input type="checkbox" name="vscode" checked> Enable VS Code Web port</label>` +
+        `<label class="check"><input type="checkbox" name="ssh" checked> Enable host-side SSH terminal</label>` +
+        `<label class="check"><input type="checkbox" name="vscode" checked> Enable host-side VS Code attach</label>` +
         `<label class="check"><input type="checkbox" name="forward8080"> Forward container port 8080</label>` +
         `<label class="check"><input type="checkbox" name="forward80"> Forward container port 80</label>` +
         `<label class="check"><input type="checkbox" name="mountNetdisk" checked> Mount netdisk at /netdisk</label>` +
         `<label class="check"><input type="checkbox" name="mountShm" checked> Mount host /dev/shm (shared memory)</label>` +
-        `<input name="accessPassword" type="password" minlength="6" placeholder="Connection password (for SSH / VS Code)">` +
       `</form>`,
     foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="createSubmit">Create and Start</button>`,
   });
@@ -95,15 +93,6 @@ export function openCreateModal() {
       payload.devices = selectedImage.preset.devices || [];
       payload.cdiDevices = selectedImage.preset.cdiDevices || [];
     }
-    // The access password is only meaningful (and only required by the backend)
-    // when SSH or VS Code is enabled. Drop it otherwise so a stray value in the
-    // field can't trip the 6-char server-side validation for a plain container.
-    if (!payload.ssh && !payload.vscode) {
-      delete payload.accessPassword;
-    } else if (typeof payload.accessPassword === "string" && payload.accessPassword.length < 6) {
-      toast("Connection password must be at least 6 characters");
-      return;
-    }
     lastPayload = payload;
     await streamCreate(payload);
   };
@@ -126,8 +115,7 @@ function gpuSelectHtml() {
 }
 
 // applyPreset fills the create form from an image's admin-defined preset. Only the
-// image-dependent fields are touched; the name and access password stay as the user
-// left them.
+// image-dependent fields are touched; the name stays as the user left it.
 function applyPreset(imageName) {
   const img = state.images.find((i) => i.name === imageName);
   const form = $("#newContainer");

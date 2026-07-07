@@ -288,55 +288,6 @@ func (d *Client) PruneImages(ctx context.Context) (int, int64, error) {
 	return len(report.ImagesDeleted), int64(report.SpaceReclaimed), nil
 }
 
-// ManagedImageInfo describes a locally-tagged mudp image discovered by
-// ScanManagedImages. It carries the labels needed to reconstruct cache rows.
-type ManagedImageInfo struct {
-	Ref         string
-	BaseRef     string
-	BaseImageID string
-	CacheKey    string
-	ScriptHash  string
-	Service     string
-	Labels      map[string]string
-}
-
-// ScanManagedImages lists all local images tagged with the mudp prefix and
-// returns their metadata (base image, cache key, script hash, service). This is
-// used on startup to rebuild fused-image/layer cache rows from the Docker image
-// store so the Settings page stays in sync across restarts.
-func (d *Client) ScanManagedImages(ctx context.Context) ([]ManagedImageInfo, error) {
-	imgs, err := d.c.ImageList(ctx, image.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	var out []ManagedImageInfo
-	for _, img := range imgs {
-		for _, tag := range img.RepoTags {
-			if !strings.HasPrefix(tag, Prefix) || strings.Contains(tag, "<none>") {
-				continue
-			}
-			info, _, err := d.c.ImageInspectWithRaw(ctx, tag)
-			if err != nil {
-				continue
-			}
-			labels := info.Config.Labels
-			if labels == nil {
-				labels = map[string]string{}
-			}
-			out = append(out, ManagedImageInfo{
-				Ref:         tag,
-				BaseRef:     labels["mudp.base"],
-				BaseImageID: labels["mudp.baseImageID"],
-				CacheKey:    labels["mudp.cacheKey"],
-				ScriptHash:  labels["mudp.scriptHash"],
-				Service:     labels["mudp.service"],
-				Labels:      labels,
-			})
-		}
-	}
-	return out, nil
-}
-
 // ImportImage imports an image from a tar reader (docker load).
 func (d *Client) ImportImage(ctx context.Context, r io.Reader, progress func(line string)) error {
 	resp, err := d.c.ImageLoad(ctx, r)

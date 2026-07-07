@@ -27,9 +27,8 @@ export async function openDetails(id, name) {
         detailRow("Image", escapeHtml(i.imageName || i.image)) +
         detailRow("Created", escapeHtml(i.createdAt ? new Date(i.createdAt * 1000).toLocaleString() : "-")) +
         detailRow("GPU", escapeHtml(i.gpu || "none")) +
-        detailRow("SSH / VS Code", `${i.ssh ? "✓" : "✗"} / ${i.vscode ? "✓" : "✗"}`) +
-        detailRow("SSH user", escapeHtml(i.connectionUser || (i.ssh ? "root" : "-"))) +
-        detailRow("Run as", escapeHtml(i.user || (i.connectionUser && i.connectionUser !== "root" ? "root (bootstrap)" : "root"))) +
+        detailRow("SSH / VS Code", `${i.ssh ? "host-side" : "off"} / ${i.vscode ? "host-side" : "off"}`) +
+        detailRow("Run as", escapeHtml(i.user || "image default")) +
         detailRow("IP", escapeHtml(i.ipAddress || "-")) +
         detailRow("Entrypoint", `<span class="mono">${escapeHtml((i.entrypoint || []).join(" ") || "-")}</span>`) +
         detailRow("Command", `<span class="mono">${escapeHtml((i.cmd || []).join(" ") || "-")}</span>`) +
@@ -52,7 +51,7 @@ export async function openDetails(id, name) {
   showModalNoShell(
     "detail-modal",
     "wide",
-    `<div class="modal-head"><h2>Details: ${escapeHtml(name)}</h2><div class="modal-tools"><button class="ghost" id="changeAccessPassword">Password</button><button class="ghost" data-close>Close</button></div></div>` +
+    `<div class="modal-head"><h2>Details: ${escapeHtml(name)}</h2><div class="modal-tools"><button class="ghost" data-close>Close</button></div></div>` +
       `<div class="modal-body">${inner}</div>`
   );
   bindDetailActions(id, inspected);
@@ -100,25 +99,6 @@ function settingsCard(i) {
 }
 
 function bindDetailActions(id, inspected) {
-  const pwd = document.querySelector("#changeAccessPassword");
-  if (pwd) {
-    pwd.onclick = async () => {
-      const password = prompt("New SSH / VS Code password (at least 6 characters)");
-      if (!password) return;
-      // Mirror the backend rule (server.go: access password >= 6 chars) so the
-      // user gets immediate feedback rather than a 400 from the API.
-      if (password.length < 6) {
-        toast("Password must be at least 6 characters");
-        return;
-      }
-      try {
-        await api("/api/containers/password", { method: "POST", body: JSON.stringify({ id, password }) });
-        toast("Password updated", true);
-      } catch (err) {
-        toast(err.message);
-      }
-    };
-  }
   const save = document.querySelector("#saveSettings");
   if (save) {
     save.onclick = async () => {
