@@ -1,8 +1,9 @@
 // Container details (inspect) modal: image/network/ports/mounts/env snapshot,
-// with editable restart policy and attached networks.
+// with editable restart policy and attached networks. Also exposes duplicate,
+// commit-to-image (admin), and the raw Docker JSON inspect.
 
-import { api, toast, state, canMutate } from "../app.js";
-import { showModalNoShell } from "./ui.js";
+import { api, toast, state, canMutate, isAdmin, refreshSection, renderView } from "../app.js";
+import { showModalNoShell, closeModal } from "./ui.js";
 
 export async function openDetails(id, name) {
   showModalNoShell(
@@ -43,7 +44,9 @@ export async function openDetails(id, name) {
         ) +
         detailRow("Environment", `<span class="mono detail-env">${escapeHtml((i.env || []).join("\n") || "-")}</span>`) +
       `</dl>` +
-      settingsCard(i);
+      actionsCard(i) +
+      settingsCard(i) +
+      rawJsonCard();
   } catch (err) {
     inner = `<div class="error-box">✗ ${escapeHtml(err.message)}</div>`;
   }
@@ -54,6 +57,36 @@ export async function openDetails(id, name) {
       `<div class="modal-body">${inner}</div>`
   );
   bindDetailActions(id, inspected);
+}
+
+// actionsCard renders the duplicate / commit-to-image actions. Duplicate is
+// available to any mutating role; commit is admin-only (matching image lifecycle).
+function actionsCard(i) {
+  if (!canMutate()) return "";
+  return (
+    `<section class="card detail-settings">` +
+      `<div class="card-head"><h2>Actions</h2></div>` +
+      `<div class="card-body">` +
+        `<div class="check-grid">` +
+          `<button class="ghost" id="dupBtn" title="Clone this container's config into a new (stopped) container">⧉ Duplicate</button>` +
+          (isAdmin() ? `<button class="ghost" id="commitBtn" title="Capture this container's filesystem into a new image">📦 Commit to image</button>` : "") +
+        `</div>` +
+      `</div>` +
+    `</section>`
+  );
+}
+
+// rawJsonCard is a collapsed <details> that lazily loads Docker's full inspect
+// JSON when expanded, so the detail modal stays fast for the common case.
+function rawJsonCard() {
+  return (
+    `<section class="card detail-settings">` +
+      `<details id="rawJsonDetails">` +
+        `<summary>Raw JSON inspect</summary>` +
+        `<div id="rawJsonBody"><p class="hint">Expanding loads the full inspect document.</p></div>` +
+      `</details>` +
+    `</section>`
+  );
 }
 
 // settingsCard renders the editable restart policy + networks block. Read-only
@@ -120,6 +153,72 @@ function bindDetailActions(id, inspected) {
         btn.textContent = old;
       }
     };
+  }
+  // Duplicate: prompt for a new name, then clone the container (stopped).
+  const dup = document.querySelector("#dupBtn");
+  if (dup) {
+    dup.onclick = async () => {
+      const base = inspected?.name ? String(inspected.name).replace(/-?copy.*$/i, "") : "container";
+      const newName = prompt("Name for the duplicated container:", base + "-copy");
+      if (!newName || !newName.trim()) return;
+      dup.disabled = true;
+      const old = dup.textContent;
+      dup.textContent = "Duplicating…";
+      try {
+        await api("/api/containers/duplicate", {
+          method: "POST",
+          body: JSON.stringify({ id, name: newName.trim() }),
+        });
+        await refreshSection("containers");
+        toast("Container duplicated", true);
+        closeModal();
+        renderView();
+      } catch (err) {
+        toast(err.message);
+      } finally {
+        dup.disabled = false;
+        dup.textContent = old;
+      }
+    };
+  }
+  // Commit to image (admin only). Prompts for image name + optional tag.
+  const commit = document.querySelector("#commitBtn");
+  if (commit) {
+    commit.onclick = async () => {
+      const name = prompt("Image name to commit to:", inspected?.imageName || "my-image");
+      if (!name || !name.trim()) return;
+      const tag = prompt("Tag (default: latest):", "latest");
+      try {
+        const res = await api("/api/containers/commit", {
+          method: "POST",
+          body: JSON.stringify({ id, name: name.trim(), tag: (tag || "").trim(), comment: "" }),
+        });
+        toast(`Committed as ${res.name}`, true);
+        await refreshSection("images");
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+  // Raw JSON: lazy-load the full inspect document on first expand.
+  const raw = document.querySelector("#rawJsonDetails");
+  if (raw) {
+    let loaded = false;
+    raw.addEventListener("toggle", async () => {
+      if (!raw.open || loaded) return;
+      loaded = true;
+      const body = document.querySelector("#rawJsonBody");
+      if (body) body.innerHTML = `<p class="hint">Loading…</p>`;
+      try {
+        const res = await fetch("/api/containers/inspect/raw?id=" + encodeURIComponent(id), { credentials: "same-origin" });
+        const text = await res.text();
+        let pretty = text;
+        try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch {}
+        if (body) body.innerHTML = `<pre class="log-output raw-json">${escapeHtml(pretty)}</pre>`;
+      } catch (err) {
+        if (body) body.innerHTML = `<div class="error-box">✗ ${escapeHtml(err.message)}</div>`;
+      }
+    });
   }
 }
 

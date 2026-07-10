@@ -17,6 +17,9 @@ type Network struct {
 	Driver     string            `json:"driver"`
 	Scope      string            `json:"scope"`
 	Subnet     string            `json:"subnet"`
+	Gateway    string            `json:"gateway,omitempty"`
+	IPRange    string            `json:"ipRange,omitempty"`
+	IPv6       bool              `json:"ipv6,omitempty"`
 	Containers int               `json:"containers"`
 	Labels     map[string]string `json:"labels"`
 	Owner      string            `json:"owner,omitempty"`
@@ -26,13 +29,35 @@ type Network struct {
 	System bool `json:"system,omitempty"`
 }
 
+// NetworkContainer is a container endpoint attached to a network, for the
+// network detail view.
+type NetworkContainer struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	IPv4    string `json:"ipv4"`
+	IPv6    string `json:"ipv6"`
+	MacAddr string `json:"macAddress"`
+}
+
+// NetworkDetail is the network record enriched with its attached containers,
+// used by the network detail modal.
+type NetworkDetail struct {
+	Network
+	Containers []NetworkContainer `json:"containers"`
+}
+
 // CreateNetworkOptions describes a network to create.
 type CreateNetworkOptions struct {
 	Username string
 	Name     string
 	Driver   string
 	Subnet   string
-	Labels   map[string]string
+	// Advanced IPAM fields (all optional; empty → Docker auto-assigns).
+	Gateway      string
+	IPRange      string
+	AuxAddresses map[string]string
+	IPv6         bool
+	Labels       map[string]string
 }
 
 // NetworkFullName builds the mudp-namespaced network name.
@@ -63,8 +88,21 @@ func (d *Client) ListNetworks(ctx context.Context, username string, admin bool) 
 			Owner:      owner,
 			Containers: len(n.Containers),
 		}
-		if len(n.IPAM.Config) > 0 {
-			net.Subnet = n.IPAM.Config[0].Subnet
+		// Surface the first IPv4 IPAM config (subnet/gateway/range). IPv6-aware
+		// networks carry a second config entry; flag IPv6 when one is present.
+		for _, cfg := range n.IPAM.Config {
+			if cfg.Subnet != "" && !strings.Contains(cfg.Subnet, ":") {
+				net.Subnet = cfg.Subnet
+				net.Gateway = cfg.Gateway
+				net.IPRange = cfg.IPRange
+				break
+			}
+		}
+		for _, cfg := range n.IPAM.Config {
+			if strings.Contains(cfg.Subnet, ":") {
+				net.IPv6 = true
+				break
+			}
 		}
 		if isManaged {
 			if owner == "" {
@@ -126,18 +164,144 @@ func (d *Client) CreateNetwork(ctx context.Context, opts CreateNetworkOptions) (
 		labels[k] = v
 	}
 	ipam := &network.IPAM{}
+	// Build the IPv4 IPAM config (subnet + optional gateway/range/aux). When a
+	// subnet is supplied the advanced fields are honored; without a subnet the
+	// whole config is omitted so Docker auto-assigns (preserving prior behavior).
+	var configs []network.IPAMConfig
 	if opts.Subnet != "" {
-		ipam.Config = []network.IPAMConfig{{Subnet: opts.Subnet}}
+		cfg := network.IPAMConfig{Subnet: opts.Subnet, Gateway: opts.Gateway, IPRange: opts.IPRange}
+		if len(opts.AuxAddresses) > 0 {
+			cfg.AuxAddress = opts.AuxAddresses
+		}
+		configs = append(configs, cfg)
 	}
-	resp, err := d.c.NetworkCreate(ctx, full, network.CreateOptions{
-		Driver: driver,
-		IPAM:   ipam,
-		Labels: labels,
-	})
+	// IPv6: when requested, enable IPv6 on the network (Docker auto-assigns a
+	// v6 subnet from the daemon's default IPv6 pool). We don't add an empty
+	// IPAM config entry because ValidateIPAM rejects zero-subnet configs.
+	if len(configs) > 0 {
+		ipam.Config = configs
+	}
+	createOpts := network.CreateOptions{
+		Driver:     driver,
+		IPAM:       ipam,
+		Labels:     labels,
+		Attachable: true,
+	}
+	if opts.IPv6 {
+		enableIPv6 := true
+		createOpts.EnableIPv6 = &enableIPv6
+	}
+	resp, err := d.c.NetworkCreate(ctx, full, createOpts)
 	if err != nil {
 		return "", err
 	}
 	return resp.ID, nil
+}
+
+// InspectNetwork returns a network's summary plus its attached containers.
+// Ownership is enforced: non-admin callers may only inspect their own
+// mudp-managed networks; system networks are readable by all.
+func (d *Client) InspectNetwork(ctx context.Context, full, username string, admin bool) (NetworkDetail, error) {
+	info, err := d.c.NetworkInspect(ctx, full, network.InspectOptions{})
+	if err != nil {
+		return NetworkDetail{}, err
+	}
+	nd := NetworkDetail{Network: Network{
+		Name:       info.Name,
+		FullName:   info.Name,
+		ID:         info.ID,
+		Driver:     info.Driver,
+		Scope:      info.Scope,
+		Labels:     info.Labels,
+		Owner:      info.Labels[UserLabel],
+		Containers: len(info.Containers),
+	}}
+	isManaged := info.Labels[ManagedLabel] == "true"
+	if isManaged {
+		if info.Labels[UserLabel] == "" {
+			return NetworkDetail{}, fmt.Errorf("network %q is not managed by mudp", full)
+		}
+		if !admin && info.Labels[UserLabel] != username {
+			return NetworkDetail{}, fmt.Errorf("network %q is not yours", full)
+		}
+		nd.Name = netLabelToDisplay(info.Name)
+		if c, ok := info.Labels["mudp.createdAt"]; ok {
+			nd.CreatedAt = c
+		}
+	} else if isSystemNetwork(info.Name, info.Driver) {
+		nd.System = true
+	} else {
+		// Non-managed, non-system network: refuse (don't leak arbitrary host nets).
+		return NetworkDetail{}, fmt.Errorf("network %q is not managed by mudp", full)
+	}
+	for _, cfg := range info.IPAM.Config {
+		if cfg.Subnet != "" && !strings.Contains(cfg.Subnet, ":") {
+			nd.Subnet = cfg.Subnet
+			nd.Gateway = cfg.Gateway
+			nd.IPRange = cfg.IPRange
+			break
+		}
+	}
+	for _, cfg := range info.IPAM.Config {
+		if strings.Contains(cfg.Subnet, ":") {
+			nd.IPv6 = true
+			break
+		}
+	}
+	// Expand the Containers map (id → endpoint JSON) into a sorted slice.
+	for cid, ep := range info.Containers {
+		nd.Containers = append(nd.Containers, NetworkContainer{
+			ID:      cid,
+			Name:    strings.TrimPrefix(ep.Name, "/"),
+			IPv4:    ep.IPv4Address,
+			IPv6:    ep.IPv6Address,
+			MacAddr: ep.MacAddress,
+		})
+	}
+	sortNetworkContainers(nd.Containers)
+	return nd, nil
+}
+
+// NetworkConnectContainer attaches a container to a mudp-managed network with
+// an ownership guard on both the network and the container.
+func (d *Client) NetworkConnectContainer(ctx context.Context, full, containerID, username string, admin bool) error {
+	if err := d.guardManagedNetwork(ctx, full, username, admin); err != nil {
+		return err
+	}
+	return d.c.NetworkConnect(ctx, full, containerID, nil)
+}
+
+// NetworkDisconnectContainer detaches a container from a mudp-managed network.
+func (d *Client) NetworkDisconnectContainer(ctx context.Context, full, containerID, username string, admin bool, force bool) error {
+	if err := d.guardManagedNetwork(ctx, full, username, admin); err != nil {
+		return err
+	}
+	return d.c.NetworkDisconnect(ctx, full, containerID, force)
+}
+
+// guardManagedNetwork verifies a network is mudp-managed and owned by username
+// (unless admin), so connect/disconnect can't touch another user's network.
+func (d *Client) guardManagedNetwork(ctx context.Context, full, username string, admin bool) error {
+	info, err := d.c.NetworkInspect(ctx, full, network.InspectOptions{})
+	if err != nil {
+		return err
+	}
+	if info.Labels[ManagedLabel] != "true" {
+		return fmt.Errorf("network %q is not managed by mudp", full)
+	}
+	if !admin && info.Labels[UserLabel] != username {
+		return fmt.Errorf("network %q is not yours", full)
+	}
+	return nil
+}
+
+// sortNetworkContainers sorts attached containers by name for stable display.
+func sortNetworkContainers(cs []NetworkContainer) {
+	for i := 1; i < len(cs); i++ {
+		for j := i; j > 0 && cs[j-1].Name > cs[j].Name; j-- {
+			cs[j-1], cs[j] = cs[j], cs[j-1]
+		}
+	}
 }
 
 // RemoveNetwork removes a mudp-managed network with an ownership guard.

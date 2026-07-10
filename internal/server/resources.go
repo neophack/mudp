@@ -29,6 +29,55 @@ func (a *App) refreshRuntimeCache(ctx context.Context) {
 	a.cacheMu.Unlock()
 }
 
+// triggerRuntimeCacheRefresh runs a cache refresh in the background so that
+// mutating endpoints (create, start, stop, etc.) do not return stale data on
+// the next list request. It uses a detached context so the refresh survives
+// the HTTP request lifecycle.
+func (a *App) triggerRuntimeCacheRefresh() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		a.refreshRuntimeCache(ctx)
+	}()
+}
+
+// evictCachedContainers removes the given container IDs from the in-memory
+// cache immediately after a successful mutating operation. This prevents the
+// list endpoint from returning stale data while the asynchronous full refresh
+// is still in progress. The IDs may be short prefixes; any cached container
+// whose full ID starts with one of the supplied prefixes is removed.
+func (a *App) evictCachedContainers(ids ...string) {
+	if len(ids) == 0 {
+		return
+	}
+	prefixes := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			prefixes = append(prefixes, id)
+		}
+	}
+	if len(prefixes) == 0 {
+		return
+	}
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+	filtered := make([]dockerx.Container, 0, len(a.cachedContainers))
+	for _, c := range a.cachedContainers {
+		keep := true
+		for _, p := range prefixes {
+			if c.ID == p || strings.HasPrefix(c.ID, p) {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			filtered = append(filtered, c)
+		}
+	}
+	a.cachedContainers = filtered
+}
+
 func (a *App) runtimeSystem() dockerx.SystemInfo {
 	a.cacheMu.RLock()
 	defer a.cacheMu.RUnlock()

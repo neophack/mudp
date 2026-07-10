@@ -362,3 +362,34 @@ func (d *Client) PushImage(ctx context.Context, ref, auth string, progress func(
 	}
 	return nil
 }
+
+// CommitContainer captures a container's filesystem into a new image and tags
+// it under the mudp- namespace. It is the backend for "commit container to
+// image". The container must be mudp-managed (managedGuard). repo is the
+// display name (without the mudp- prefix); tag defaults to "latest". The
+// returned ref is the full mudp- image reference.
+func (d *Client) CommitContainer(ctx context.Context, id, repo, tag, comment string) (string, error) {
+	if err := d.managedGuard(ctx, id); err != nil {
+		return "", err
+	}
+	repo = strings.TrimSpace(repo)
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		tag = "latest"
+	}
+	// Commit into the mudp- namespace directly so the result is manageable by
+	// RemoveManagedImage and visible to ListManagedImages.
+	fullRepo := Prefix + strings.TrimPrefix(Slug(repo), Prefix)
+	ref := fullRepo + ":" + tag
+	commitResp, err := d.c.ContainerCommit(ctx, id, container.CommitOptions{
+		Reference: ref,
+		Comment:   comment,
+	})
+	if err != nil {
+		return "", err
+	}
+	// Ensure the committed image carries the tag (ContainerCommit sets it on
+	// success, but tag defensively in case the daemon left it untagged).
+	_ = d.c.ImageTag(ctx, commitResp.ID, ref)
+	return ref, nil
+}

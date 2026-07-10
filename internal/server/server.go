@@ -97,7 +97,9 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/containers", a.containers)
 		r.Post("/api/containers/create/stream", a.createStream)
 		r.Post("/api/containers/action", a.containerAction)
+		r.Post("/api/containers/batch", a.containerBatch)
 		r.Get("/api/containers/inspect", a.inspectContainer)
+		r.Get("/api/containers/inspect/raw", a.inspectContainerRaw)
 		r.Get("/api/containers/terminal", a.containerTerminal)
 		r.Get("/api/containers/files/list", a.containerFilesList)
 		r.Get("/api/containers/files/download", a.containerFilesDownload)
@@ -109,9 +111,18 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/volumes", a.volumes)
 		r.Post("/api/volumes/delete", a.volumeDelete)
 		r.Post("/api/volumes/prune", a.volumePrune)
+		r.Get("/api/volumes/files", a.volumeFilesList)
+		r.Get("/api/volumes/files/download", a.volumeFilesDownload)
+		r.Post("/api/volumes/files/mkdir", a.volumeFilesMkdir)
+		r.Post("/api/volumes/files/delete", a.volumeFilesDelete)
+		r.Post("/api/volumes/files/rename", a.volumeFilesRename)
+		r.Post("/api/volumes/files/upload", a.volumeFilesUpload)
 		r.Get("/api/networks", a.networks)
 		r.Post("/api/networks", a.networks)
 		r.Post("/api/networks/delete", a.networkDelete)
+		r.Get("/api/networks/inspect", a.networkInspect)
+		r.Post("/api/networks/connect", a.networkConnect)
+		r.Post("/api/networks/disconnect", a.networkDisconnect)
 		r.Get("/api/stacks", a.stacks)
 		r.Post("/api/stacks", a.stacks)
 		r.Get("/api/stacks/get", a.stackGet)
@@ -122,6 +133,7 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/containers/stats/stream", a.containerStatsStream)
 		r.Get("/api/containers/logs/stream", a.containerLogsStream)
 		r.Post("/api/containers/update", a.containerUpdate)
+		r.Post("/api/containers/duplicate", a.containerDuplicate)
 		r.Get("/api/resources/history", a.resourceHistory)
 		r.Get("/api/netdisk", a.netdiskList)
 		r.Post("/api/netdisk/mkdir", a.netdiskMkdir)
@@ -168,6 +180,7 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/images/tag", a.imageTag)
 		r.Post("/api/images/push", a.imagePush)
 		r.Post("/api/images/preset", a.imagePreset)
+		r.Post("/api/containers/commit", a.containerCommit)
 
 		r.Get("/api/users", a.users)
 		r.Post("/api/users", a.users)
@@ -585,6 +598,9 @@ func (a *App) containers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id, err := a.docker.CreateContainer(r.Context(), opts)
+		if err == nil {
+			a.triggerRuntimeCacheRefresh()
+		}
 		respond(w, map[string]string{"id": id}, err)
 	default:
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -606,6 +622,20 @@ type createRequest struct {
 	RestartPolicy string   `json:"restartPolicy"`
 	Devices       []string `json:"devices"`
 	CDIDevices    []string `json:"cdiDevices"`
+	// Advanced create fields (all optional). Command/Entrypoint are space-split
+	// from a single string by the frontend; the backend tolerates either form.
+	Command       string            `json:"command"`
+	Entrypoint    string            `json:"entrypoint"`
+	WorkingDir    string            `json:"workingDir"`
+	Hostname      string            `json:"hostname"`
+	RunUser       string            `json:"runUser"`
+	NanoCPUs      int64             `json:"nanoCpus"`
+	MemoryMB      int64             `json:"memoryMb"`
+	PidsLimit     int64             `json:"pidsLimit"`
+	Sysctls       map[string]string `json:"sysctls"`
+	CapAdd        []string          `json:"capAdd"`
+	CapDrop       []string          `json:"capDrop"`
+	Labels        map[string]string `json:"labels"`
 }
 
 var errForbiddenImage = errors.New("image not visible")
@@ -660,6 +690,13 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		Networks:  req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
 		Devices:   req.Devices, CDIDevices: req.CDIDevices,
 		RestartPolicy: req.RestartPolicy,
+		// Advanced fields. Command/Entrypoint accept a shell-style string (split
+		// into argv) for ergonomics in the wizard; empty means "use image default".
+		Command:    shellSplit(req.Command),
+		Entrypoint: shellSplit(req.Entrypoint),
+		WorkingDir: req.WorkingDir, Hostname: req.Hostname, RunUser: req.RunUser,
+		NanoCPUs: req.NanoCPUs, MemoryMB: req.MemoryMB, PidsLimit: req.PidsLimit,
+		Sysctls: req.Sysctls, CapAdd: req.CapAdd, CapDrop: req.CapDrop, Labels: req.Labels,
 	}, nil
 }
 
@@ -731,6 +768,8 @@ func (a *App) createStream(w http.ResponseWriter, r *http.Request) {
 		send("error", map[string]string{"message": err.Error()})
 		return
 	}
+	progress("refresh", "Refreshing container list…")
+	a.refreshRuntimeCache(ctx)
 	send("done", map[string]string{"id": id})
 }
 
@@ -788,6 +827,10 @@ func (a *App) containerAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if req.Action == "remove" {
+		a.evictCachedContainers(req.ID)
+	}
+	a.triggerRuntimeCacheRefresh()
 	a.record(r, "container."+req.Action, req.ID)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -808,6 +851,211 @@ func (a *App) containerOwnedBy(ctx context.Context, u *store.User, id string) bo
 		}
 	}
 	return false
+}
+
+// ownedContainerIDs returns the set of container IDs the user owns, with one
+// Docker list call. Used by batch operations to authorize many IDs at once
+// instead of calling containerOwnedBy (which lists per ID) in a loop. Admins
+// receive nil, meaning "all IDs are owned"; callers must then nil-check.
+func (a *App) ownedContainerIDs(ctx context.Context, u *store.User) (map[string]bool, error) {
+	if u.Role == "admin" {
+		return nil, nil
+	}
+	items, err := a.docker.ListContainers(ctx, u.Username, false)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(items))
+	for _, c := range items {
+		set[c.ID] = true
+	}
+	return set, nil
+}
+
+// idOwnedBy reports whether id (or a prefix of one) is in the owned set. When
+// owned is nil (admin), everything is owned.
+func idOwnedBy(owned map[string]bool, id string) bool {
+	if owned == nil {
+		return true
+	}
+	if owned[id] {
+		return true
+	}
+	// Prefix matches (the list endpoint returns full IDs; callers may send short).
+	for full := range owned {
+		if strings.HasPrefix(full, id) {
+			return true
+		}
+	}
+	return false
+}
+
+// containerBatch applies a single mutating action to many containers. The
+// caller must pass a mutating role. Authorization is one list call per request
+// (not per ID): we resolve the owned-ID set once and only act on members.
+func (a *App) containerBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify containers")
+		return
+	}
+	var req struct {
+		IDs    []string `json:"ids"`
+		Action string   `json:"action"`
+	}
+	if err := decodeJSON(r, &req); err != nil || len(req.IDs) == 0 || req.Action == "" {
+		writeErr(w, http.StatusBadRequest, "ids and action are required")
+		return
+	}
+	owned, err := a.ownedContainerIDs(r.Context(), u)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	type batchFailure struct {
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}
+	var ok, failed []string
+	var failures []batchFailure
+	for _, id := range req.IDs {
+		if !idOwnedBy(owned, id) {
+			failures = append(failures, batchFailure{ID: id, Error: "container is not yours"})
+			failed = append(failed, id)
+			continue
+		}
+		if err := a.docker.Action(r.Context(), id, req.Action); err != nil {
+			failures = append(failures, batchFailure{ID: id, Error: err.Error()})
+			failed = append(failed, id)
+			continue
+		}
+		ok = append(ok, id)
+	}
+	if req.Action == "remove" && len(ok) > 0 {
+		a.evictCachedContainers(ok...)
+	}
+	a.triggerRuntimeCacheRefresh()
+	if len(ok) > 0 {
+		a.record(r, "container.batch."+req.Action, fmt.Sprintf("%d container(s)", len(ok)))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": ok, "failed": failed, "failures": failures})
+}
+
+// inspectContainerRaw returns Docker's full JSON inspect document for a
+// container. Read-only (no mutation gate) but still ownership-guarded.
+func (a *App) inspectContainerRaw(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	if !a.containerOwnedBy(r.Context(), u, id) {
+		writeErr(w, http.StatusForbidden, "container is not yours")
+		return
+	}
+	raw, err := a.docker.InspectRaw(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+// containerDuplicate clones an existing container's configuration into a new
+// (stopped) container under the same owner. The original is left untouched.
+func (a *App) containerDuplicate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot create containers")
+		return
+	}
+	var req struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.ID == "" || strings.TrimSpace(req.Name) == "" {
+		writeErr(w, http.StatusBadRequest, "id and name are required")
+		return
+	}
+	if !a.containerOwnedBy(r.Context(), u, req.ID) {
+		writeErr(w, http.StatusForbidden, "container is not yours")
+		return
+	}
+	id, err := a.docker.DuplicateContainer(r.Context(), req.ID, strings.TrimSpace(req.Name), u.Username, u.PortPrefix)
+	if err == nil {
+		a.record(r, "container.duplicate", req.Name)
+	}
+	respond(w, map[string]string{"id": id}, err)
+}
+
+// containerCommit captures a container's filesystem into a new image and
+// registers it in the mudp catalog. Admin-only, matching the rest of the image
+// lifecycle (pull/build/import are admin-only).
+func (a *App) containerCommit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	// Committing creates a new managed image (a shared, host-wide resource), so
+	// it is admin-only — matching the docstring and the frontend's isAdmin() gate.
+	// Without this check any mutating role could commit any mudp-managed
+	// container (CommitContainer only enforces managedGuard, not ownership).
+	u := currentUser(r)
+	if u == nil || roleRank(u.Role) < rankAdmin {
+		writeErr(w, http.StatusForbidden, "admin role required to commit containers")
+		return
+	}
+	var req struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Tag     string `json:"tag"`
+		Comment string `json:"comment"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.ID == "" || strings.TrimSpace(req.Name) == "" {
+		writeErr(w, http.StatusBadRequest, "id and name are required")
+		return
+	}
+	// Ownership: admins own everything, but still enforce the managed/owned guard
+	// so a stray ID can't commit a non-mudp container.
+	if !a.containerOwnedBy(r.Context(), u, req.ID) {
+		writeErr(w, http.StatusForbidden, "container is not yours")
+		return
+	}
+	name := dockerx.PublicImageName(req.Name)
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "invalid image name")
+		return
+	}
+	tag := strings.TrimSpace(req.Tag)
+	if tag == "" {
+		tag = "latest"
+	}
+	ref, err := a.docker.CommitContainer(r.Context(), req.ID, name, tag, req.Comment)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.db.SaveImage(name, ref, "committed from "+req.ID); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.record(r, "container.commit", name)
+	writeJSON(w, http.StatusOK, map[string]string{"dockerRef": ref, "name": name})
 }
 
 // feishu returns an OAuth client built from the stored admin config, or nil when
@@ -1151,6 +1399,45 @@ func splitLines(s string) []string {
 		if strings.TrimSpace(line) != "" {
 			out = append(out, strings.TrimSpace(line))
 		}
+	}
+	return out
+}
+
+// shellSplit splits a command string into argv tokens, honoring single and
+// double quotes and backslash escapes. It is intentionally a small subset of
+// POSIX shell rules — enough for the create wizard's command/entrypoint fields.
+// Returns nil for empty input so the image default is preserved.
+func shellSplit(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []string
+	var cur strings.Builder
+	inSingle, inDouble := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' && i+1 < len(s):
+			// Escape next char (inside double quotes, only honored before
+			// $ ` " \ — but for our purposes pass it through literally).
+			cur.WriteByte(s[i+1])
+			i++
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case (c == ' ' || c == '\t' || c == '\n') && !inSingle && !inDouble:
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
 	}
 	return out
 }

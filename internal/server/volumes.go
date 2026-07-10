@@ -1,8 +1,13 @@
 package server
 
 import (
+	"errors"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"mudp/internal/dockerx"
 )
@@ -103,4 +108,304 @@ func (a *App) volumePrune(w http.ResponseWriter, r *http.Request) {
 	}
 	a.record(r, "volume.prune", u.Username)
 	writeJSON(w, http.StatusOK, map[string]any{"removed": count, "bytesFreed": bytes})
+}
+
+// resolveVolumeMount resolves a volume name to its host mountpoint and enforces
+// ownership. The returned mountpoint is the "root" for the volume file browser;
+// all relative paths are cleaned against it via cleanUserPath (the netdisk path
+// sanitizer) to prevent traversal outside the volume.
+func (a *App) resolveVolumeMount(r *http.Request, raw string) (string, string, error) {
+	u := currentUser(r)
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return "", "", errors.New("name is required")
+	}
+	if !strings.HasPrefix(name, dockerx.Prefix) {
+		// Backward compat: the UI sends display names; resolve to the caller's
+		// full volume name. Admins browsing another user's volume must send the
+		// full Docker name.
+		name = dockerx.VolumeFullName(u.Username, name)
+	}
+	vol, err := a.docker.VolumeInspect(r.Context(), name)
+	if err != nil {
+		return "", "", err
+	}
+	if vol.Labels[dockerx.ManagedLabel] != "true" {
+		return "", "", errors.New("volume is not managed by mudp")
+	}
+	if u.Role != "admin" && vol.Labels[dockerx.UserLabel] != u.Username {
+		return "", "", errors.New("volume is not yours")
+	}
+	if vol.Mountpoint == "" {
+		return "", "", errors.New("volume has no mountpoint")
+	}
+	return vol.Mountpoint, name, nil
+}
+
+// volumeFilesList lists the contents of a directory inside a volume. The path
+// is cleaned against the volume mountpoint to prevent host traversal.
+func (a *App) volumeFilesList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mount, _, err := a.resolveVolumeMount(r, r.URL.Query().Get("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir, rel, err := cleanUserPath(mount, r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	items := make([]fileItem, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		// Lstat so symlinks aren't followed; skip them entirely (matches netdisk).
+		li, err := os.Lstat(filepath.Join(dir, entry.Name()))
+		if err != nil || li.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		p := filepath.ToSlash(filepath.Join(rel, entry.Name()))
+		if rel == "." {
+			p = entry.Name()
+		}
+		items = append(items, fileItem{
+			Name:    entry.Name(),
+			Path:    p,
+			Dir:     entry.IsDir(),
+			Size:    info.Size(),
+			Mode:    info.Mode().String(),
+			ModTime: info.ModTime().Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": filepath.ToSlash(rel), "items": items})
+}
+
+// volumeFilesDownload serves a single file or a zipped directory from a volume.
+func (a *App) volumeFilesDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mount, _, err := a.resolveVolumeMount(r, r.URL.Query().Get("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	full, _, err := cleanUserPath(mount, r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if !info.IsDir() {
+		serveFileDownload(w, r, full, info.Name())
+		return
+	}
+	serveZipDownload(w, full, info.Name()+".zip")
+}
+
+// volumeFilesMkdir creates a directory inside a volume. Mutating.
+func (a *App) volumeFilesMkdir(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify volumes")
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	if err := decodeJSON(r, &req); err != nil || strings.TrimSpace(req.Name) == "" {
+		writeErr(w, http.StatusBadRequest, "name and path are required")
+		return
+	}
+	mount, _, err := a.resolveVolumeMount(r, req.Name)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	full, _, err := cleanUserPath(mount, req.Path)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respond(w, map[string]bool{"ok": true}, os.MkdirAll(full, 0750))
+}
+
+// volumeFilesDelete removes files/dirs inside a volume. Mutating.
+func (a *App) volumeFilesDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify volumes")
+		return
+	}
+	var req struct {
+		Name  string   `json:"name"`
+		Paths []string `json:"paths"`
+	}
+	if err := decodeJSON(r, &req); err != nil || len(req.Paths) == 0 {
+		writeErr(w, http.StatusBadRequest, "name and paths are required")
+		return
+	}
+	mount, _, err := a.resolveVolumeMount(r, req.Name)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	for _, p := range req.Paths {
+		full, _, err := cleanUserPath(mount, p)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := os.RemoveAll(full); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	a.record(r, "volume.files.delete", req.Name)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// volumeFilesRename renames a file/dir inside a volume. Mutating.
+func (a *App) volumeFilesRename(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify volumes")
+		return
+	}
+	var req struct {
+		Name    string `json:"name"`
+		Path    string `json:"path"`
+		NewName string `json:"newName"`
+	}
+	if err := decodeJSON(r, &req); err != nil || strings.TrimSpace(req.Path) == "" || strings.TrimSpace(req.NewName) == "" {
+		writeErr(w, http.StatusBadRequest, "name, path and newName are required")
+		return
+	}
+	mount, _, err := a.resolveVolumeMount(r, req.Name)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	full, _, err := cleanUserPath(mount, req.Path)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// New name must be a bare filename (no path separators) to stay in the same dir.
+	newBase := filepath.Base(strings.TrimSpace(req.NewName))
+	dst, _, err := cleanUserPath(mount, filepath.Join(filepath.Dir(req.Path), newBase))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := os.Rename(full, dst); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.record(r, "volume.files.rename", req.Name)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// volumeFilesUpload handles multipart uploads into a volume directory, with the
+// same interrupted-upload resume behavior as netdisk. Mutating.
+func (a *App) volumeFilesUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify volumes")
+		return
+	}
+	if err := r.ParseMultipartForm(2 << 30); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer r.MultipartForm.RemoveAll()
+	mount, _, err := a.resolveVolumeMount(r, r.FormValue("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir, _, err := cleanUserPath(mount, r.FormValue("path"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	files := r.MultipartForm.File["files"]
+	for _, fh := range files {
+		src, err := fh.Open()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		dstPath, _, err := cleanUserPath(dir, filepath.Base(fh.Filename))
+		if err != nil {
+			_ = src.Close()
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		offset := int64(0)
+		if existing, err := os.Stat(dstPath); err == nil && existing.Size() < fh.Size {
+			offset = existing.Size()
+		}
+		flags := os.O_CREATE | os.O_WRONLY
+		if seeker, ok := src.(io.Seeker); ok && offset > 0 {
+			_, _ = seeker.Seek(offset, io.SeekStart)
+		} else {
+			offset = 0
+			flags |= os.O_TRUNC
+		}
+		dst, err := os.OpenFile(dstPath, flags, 0640)
+		if err != nil {
+			_ = src.Close()
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_, _ = dst.Seek(offset, io.SeekStart)
+		_ = dst.Truncate(offset)
+		_, err = io.Copy(dst, src)
+		_ = dst.Close()
+		_ = src.Close()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	a.record(r, "volume.files.upload", r.FormValue("name"))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(files)})
 }

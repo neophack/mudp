@@ -37,6 +37,10 @@ export const state = {
   disks: [],
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
   search: "",
+  // containerFilter narrows the containers list by state (all/running/stopped/paused).
+  containerFilter: "all",
+  // containerSelection holds the selected container IDs for batch operations.
+  containerSelection: new Set(),
   logViewer: { open: false, title: "", content: "", id: "", tail: 300 },
   create: { active: false, steps: [], logs: "", error: "" },
   pull: { active: false, logs: "", error: "", name: "" },
@@ -295,8 +299,8 @@ export function render() {
 
   document.querySelectorAll("[data-tab]").forEach((btn) => {
     btn.onclick = () => {
-      // Stop the hardware monitoring poll loop when navigating away so it doesn't
-      // run in the background.
+      // Stop the hardware monitoring poll loop when navigating away so it
+      // doesn't run in the background.
       if (state.tab === "hardware" && btn.dataset.tab !== "hardware") stopHardwarePolling();
       state.tab = btn.dataset.tab;
       render();

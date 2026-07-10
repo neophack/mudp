@@ -93,6 +93,20 @@ type CreateOptions struct {
 	// RestartPolicy is the Docker restart policy: "no", "always", "unless-stopped",
 	// or "on-failure". Defaults to "unless-stopped" when empty.
 	RestartPolicy string
+	// Advanced create fields (all optional; zero values inherit the image defaults
+	// as before, preserving backward compatibility).
+	Command    []string          // overrides image CMD
+	Entrypoint []string          // overrides image ENTRYPOINT
+	WorkingDir string            // overrides image WORKDIR (empty = image default)
+	Hostname   string            // container hostname
+	RunUser    string            // --user spec, e.g. "root" or "1000:1000"
+	NanoCPUs   int64             // CPU quota in nanoseconds (0 = unlimited)
+	MemoryMB   int64             // memory limit in MiB (0 = unlimited)
+	PidsLimit  int64             // max process count (0 = unlimited; <0 = no limit)
+	Sysctls    map[string]string // --sysctl key=value pairs
+	CapAdd     []string          // --cap-add capabilities
+	CapDrop    []string          // --cap-drop capabilities
+	Labels     map[string]string // user-supplied labels (merged on top of mudp.* labels)
 	// Progress is an optional callback fired at each creation stage.
 	// stage is one of: image, create, start, done.
 	Progress func(stage, msg string)
@@ -448,7 +462,41 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		"mudp.forward8080": fmt.Sprint(opts.Forward8080),
 		"mudp.forward80":   fmt.Sprint(opts.Forward80),
 	}
-	hostCfg := &container.HostConfig{PortBindings: portMap, RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyMode(normalizeRestartPolicy(opts.RestartPolicy))}}
+	// Merge user-supplied labels on top of the managed labels, but never let a
+	// caller overwrite the mudp.* keys (ownership/management must stay intact).
+	for k, v := range opts.Labels {
+		k = strings.TrimSpace(k)
+		if k == "" || strings.HasPrefix(k, "mudp.") || strings.HasPrefix(k, "com.docker.") {
+			continue
+		}
+		labels[k] = v
+	}
+	hostCfg := &container.HostConfig{
+		PortBindings:   portMap,
+		RestartPolicy:  container.RestartPolicy{Name: container.RestartPolicyMode(normalizeRestartPolicy(opts.RestartPolicy))},
+		CapAdd:         opts.CapAdd,
+		CapDrop:        opts.CapDrop,
+		Sysctls:        opts.Sysctls,
+	}
+	// Resource limits. NanoCPUs/Memory are only set when positive so a zero
+	// value keeps the image/host default (no cgroup limit).
+	if opts.NanoCPUs > 0 {
+		hostCfg.Resources.NanoCPUs = opts.NanoCPUs
+	}
+	if opts.MemoryMB > 0 {
+		hostCfg.Resources.Memory = opts.MemoryMB * 1024 * 1024
+	}
+	// PidsLimit semantics: 0 = unlimited here (we treat 0 as "unset"), and a
+	// negative input is clamped to the SDK's "no limit" sentinel (-1). Docker
+	// uses int64 with a pointer in newer versions; the struct field accepts 0
+	// for default and -1 for unlimited.
+	if opts.PidsLimit != 0 {
+		limit := opts.PidsLimit
+		if limit < 0 {
+			limit = 0
+		}
+		hostCfg.Resources.PidsLimit = &limit
+	}
 	for _, m := range opts.Mounts {
 		mount, err := parseMount(m)
 		if err != nil {
@@ -498,6 +546,23 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		ExposedPorts: exposed,
 		Labels:       labels,
 		WorkingDir:   imageInfo.Config.WorkingDir,
+	}
+	// Advanced overrides: only apply when the caller supplied a value, so the
+	// image defaults are preserved when the fields are empty (backward compat).
+	if len(opts.Command) > 0 {
+		containerCfg.Cmd = opts.Command
+	}
+	if len(opts.Entrypoint) > 0 {
+		containerCfg.Entrypoint = opts.Entrypoint
+	}
+	if strings.TrimSpace(opts.WorkingDir) != "" {
+		containerCfg.WorkingDir = opts.WorkingDir
+	}
+	if strings.TrimSpace(opts.Hostname) != "" {
+		containerCfg.Hostname = opts.Hostname
+	}
+	if strings.TrimSpace(opts.RunUser) != "" {
+		containerCfg.User = opts.RunUser
 	}
 	emit("create", "Creating container")
 	resp, err := d.c.ContainerCreate(ctx, containerCfg, hostCfg, networkingConfig(resolvedNetworks), &v1.Platform{}, name)
@@ -880,6 +945,13 @@ func (d *Client) Action(ctx context.Context, id, action string) error {
 		return d.Restart(ctx, id)
 	case "remove":
 		return d.c.ContainerRemove(ctx, id, container.RemoveOptions{Force: true, RemoveVolumes: true})
+	case "pause":
+		return d.c.ContainerPause(ctx, id)
+	case "unpause":
+		return d.c.ContainerUnpause(ctx, id)
+	case "kill":
+		// SIGKILL forces immediate termination, unlike "stop" (SIGTERM + grace).
+		return d.c.ContainerKill(ctx, id, "SIGKILL")
 	default:
 		return fmt.Errorf("unknown action %q", action)
 	}
@@ -1013,7 +1085,96 @@ func (d *Client) Inspect(ctx context.Context, id string) (InspectInfo, error) {
 	return info, nil
 }
 
-// ExecAttach opens an interactive exec session attached to a pty, returning the
+// InspectRaw returns Docker's full inspect document as raw JSON. It is the
+// backend for the "native JSON inspect" view. Ownership is enforced by the
+// caller (server containerOwnedBy); this only re-checks the managed guard so
+// raw inspect never escapes non-mudp containers.
+func (d *Client) InspectRaw(ctx context.Context, id string) (json.RawMessage, error) {
+	if err := d.managedGuard(ctx, id); err != nil {
+		return nil, err
+	}
+	_, raw, err := d.c.ContainerInspectWithRaw(ctx, id, true)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// DuplicateContainer creates a new container that mirrors an existing one's
+// configuration (image, env, ports, mounts, networks, GPU, restart policy),
+// without starting it. The original container is left untouched. The new
+// container inherits the same owner (username) so the ownership prefix is
+// preserved. portPrefix is required to re-publish host ports; pass the owner's
+// assigned prefix.
+func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username string, portPrefix int) (string, error) {
+	if err := d.managedGuard(ctx, id); err != nil {
+		return "", err
+	}
+	info, err := d.Inspect(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	// Translate the ports back into the create spec. Public ports are host-side
+	// numbers that won't be reused verbatim — express them as ":container" so
+	// CreateContainer auto-allocates a fresh host port from the owner's range.
+	var ports []string
+	for _, p := range info.Ports {
+		if p.PrivatePort > 0 {
+			ports = append(ports, fmt.Sprintf(":%d", p.PrivatePort))
+		}
+	}
+	// Translate named-volume mounts (bind mounts and netdisk are excluded to
+	// avoid double-mounting the host netdisk path or host bind sources, which
+	// the create flow manages separately).
+	var mounts []string
+	for _, m := range info.Mounts {
+		if m.Type == "volume" && strings.HasPrefix(m.Source, Prefix) {
+			// Strip the mudp-<user>-vol- prefix to recover the display name.
+			display := dequalifyVolumeName(m.Source, username)
+			if display != "" {
+				mounts = append(mounts, display+":"+m.Target)
+			}
+		}
+	}
+	// Translate networks back to display names where possible (strip the
+	// mudp-<user>-net- prefix). "bridge" is passed through as-is.
+	var networks []string
+	for _, n := range info.Networks {
+		if n.Name == "" {
+			continue
+		}
+		if n.Name == "bridge" {
+			networks = append(networks, "bridge")
+			continue
+		}
+		display := dequalifyNetworkName(n.Name, username)
+		if display != "" {
+			networks = append(networks, display)
+		}
+	}
+	opts := CreateOptions{
+		Username:      username,
+		Name:          newName,
+		ImageRef:      info.Image,
+		ImageName:     info.ImageName,
+		Env:           info.Env,
+		GPUs:          info.GPU,
+		Ports:         ports,
+		PortPrefix:    portPrefix,
+		Mounts:        mounts,
+		Networks:      networks,
+		RestartPolicy: info.RestartPolicy,
+	}
+	// Duplicate does not auto-start; CreateContainer always starts, so create
+	// the container then stop it immediately to match Portainer's behavior.
+	createdID, err := d.CreateContainer(ctx, opts)
+	if err != nil {
+		return "", err
+	}
+	timeout := 5
+	_ = d.c.ContainerStop(ctx, createdID, container.StopOptions{Timeout: &timeout})
+	return createdID, nil
+}
 // hijacked connection used by the WebSocket terminal pump. It prefers bash
 // (for full readline-style Tab completion and history) and falls back to sh.
 func (d *Client) ExecAttach(ctx context.Context, id string, rows, cols uint) (ExecConn, error) {
@@ -1395,4 +1556,19 @@ func (d *Client) StackContainers(ctx context.Context, projectName string) ([]Con
 		})
 	}
 	return out, nil
+}
+
+// dequalifyVolumeName strips the mudp-<user>-vol- prefix from a full Docker
+// volume name, returning the display name. Returns "" if the name doesn't
+// belong to the user's volume namespace.
+func dequalifyVolumeName(full, username string) string {
+	prefix := Prefix + Slug(username) + "-vol-"
+	return strings.TrimPrefix(full, prefix)
+}
+
+// dequalifyNetworkName strips the mudp-<user>-net- prefix from a full Docker
+// network name, returning the display name. Returns "" on no match.
+func dequalifyNetworkName(full, username string) string {
+	prefix := Prefix + Slug(username) + "-net-"
+	return strings.TrimPrefix(full, prefix)
 }

@@ -44,6 +44,33 @@ export function bindClose(wrapper) {
   });
 }
 
+// Per-modal teardown callbacks. Modal feature modules that own long-lived
+// resources (SSE streams, intervals) register a cleanup fn so closeModal stops
+// them — mirroring the terminal handling below. This prevents stream leaks when
+// a modal is dismissed via Esc or backdrop click (which bypass per-button wiring).
+const modalTeardown = new Map();
+let modalSeq = 0;
+
+// onModalClose registers a teardown callback for the modal currently being set
+// up and returns a token. The token is stashed on the modal wrapper so the
+// matching teardown runs only when that specific modal closes.
+export function onModalClose(wrapper, fn) {
+  const token = ++modalSeq;
+  modalTeardown.set(token, fn);
+  if (wrapper) wrapper.dataset.teardown = String(token);
+  return token;
+}
+
+function runTeardown(wrapper) {
+  const token = wrapper && wrapper.dataset.teardown;
+  if (!token) return;
+  const fn = modalTeardown.get(Number(token));
+  if (fn) {
+    try { fn(); } catch { /* best-effort cleanup */ }
+  }
+  modalTeardown.delete(Number(token));
+}
+
 // Close every open modal. Tears down an in-flight terminal if present.
 export function closeModal() {
   if (document.querySelector(".modal-backdrop.terminal-modal")) {
@@ -51,6 +78,7 @@ export function closeModal() {
   }
   document.querySelectorAll(".modal-backdrop").forEach((el) => {
     if (el.classList.contains("logs-modal")) state.logViewer.open = false;
+    runTeardown(el);
     el.remove();
   });
   state.modal = { open: false, kind: "", data: null };

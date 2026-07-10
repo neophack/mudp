@@ -2,6 +2,7 @@
 
 import { state, api, toast, refreshSection, renderView, canMutate, isAdmin } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
+import { openNetworkDetail } from "./network_details.js";
 
 export function renderNetworks() {
   const rows = (state.networks || []).map(networkRow).join("") ||
@@ -18,6 +19,9 @@ export function renderNetworks() {
     `</div>`;
   const nb = $("#newNetBtn");
   if (nb) nb.onclick = openCreateNetwork;
+  document.querySelectorAll("[data-net-inspect]").forEach((btn) => {
+    btn.onclick = () => openNetworkDetail(btn.dataset.netFullname, btn.dataset.netName);
+  });
   document.querySelectorAll("[data-net-delete]").forEach((btn) => {
     btn.onclick = () => deleteNetwork(btn.dataset.netFullname, btn.dataset.netName);
   });
@@ -35,7 +39,10 @@ function networkRow(n) {
       `<td><div class="secondary-line mono">${escapeHtml(n.subnet || "—")}</div></td>` +
       `<td>${n.containers || 0}</td>` +
       `<td><div class="secondary-line">${escapeHtml(n.owner || "system")}</div></td>` +
-      `<td class="actions">${canMutate() && !sys ? `<button class="icon danger" title="Delete" data-net-name="${escapeHtml(n.name)}" data-net-fullname="${escapeHtml(n.fullName || n.name)}">✕</button>` : "—"}</td>` +
+      `<td class="actions">` +
+        `<button class="icon" title="Details" data-net-name="${escapeHtml(n.name)}" data-net-fullname="${escapeHtml(n.fullName || n.name)}">ℹ</button>` +
+        (canMutate() && !sys ? `<button class="icon danger" title="Delete" data-net-name="${escapeHtml(n.name)}" data-net-fullname="${escapeHtml(n.fullName || n.name)}">✕</button>` : "") +
+      `</td>` +
     `</tr>`
   );
 }
@@ -49,15 +56,24 @@ function openCreateNetwork() {
         `<input name="name" placeholder="Network name, e.g. frontend" required>` +
         `<select name="driver"><option value="bridge">bridge</option><option value="overlay">overlay</option><option value="macvlan">macvlan</option></select>` +
         `<input name="subnet" placeholder="Subnet (optional), e.g. 172.20.0.0/16">` +
+        `<details class="advanced-block"><summary>Advanced IPAM (optional)</summary>` +
+          `<input name="gateway" placeholder="Gateway, e.g. 172.20.0.1">` +
+          `<input name="ipRange" placeholder="IP range, e.g. 172.20.0.0/24">` +
+          `<label class="check"><input type="checkbox" name="ipv6"> Enable IPv6</label>` +
+        `</details>` +
       `</form>`,
     foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="netSubmit">Create</button>`,
   });
   $("#netSubmit").onclick = async () => {
-    const fd = new FormData($("#netForm"));
+    const form = $("#netForm");
+    const fd = new FormData(form);
     const payload = {
       name: fd.get("name"),
       driver: fd.get("driver") || "bridge",
       subnet: fd.get("subnet") || "",
+      gateway: fd.get("gateway") || "",
+      ipRange: fd.get("ipRange") || "",
+      ipv6: form.querySelector('[name="ipv6"]').checked,
     };
     try {
       await api("/api/networks", { method: "POST", body: JSON.stringify(payload) });

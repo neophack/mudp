@@ -1,7 +1,11 @@
 // Container list (table view) and container actions (start/stop/restart/remove),
 // plus routing of logs/terminal/details into their dedicated modules.
+//
+// Beyond the classic single-row actions, this view also implements:
+//   - state filtering (all / running / stopped / paused)
+//   - multi-select with a batch action toolbar (start/stop/restart/remove/unpause)
 
-import { state, api, toast, refreshAll, renderView, escapeHtml } from "../app.js";
+import { state, api, toast, refreshAll, renderView, escapeHtml, canMutate } from "../app.js";
 import { openLogs } from "./logs.js";
 import { openTerminal } from "./terminal.js";
 import { openDetails } from "./details.js";
@@ -10,21 +14,32 @@ import { openFiles } from "./files.js";
 
 export function renderContainers() {
   const q = state.search.trim().toLowerCase();
+  // Apply the state filter first, then the free-text search.
+  const byState = applyStateFilter(state.containers || []);
   const list = q
-    ? state.containers.filter(
+    ? byState.filter(
         (c) =>
           (c.name || c.fullName || "").toLowerCase().includes(q) ||
           (c.image || "").toLowerCase().includes(q)
       )
-    : state.containers;
+    : byState;
 
   const rows =
-    list.map(containerRow).join("") ||
-    `<tr class="empty-row"><td colspan="5">No containers. Click “+ New Container” to create one.</td></tr>`;
+    list.map((c) => containerRow(c)).join("") ||
+    `<tr class="empty-row"><td colspan="6">No containers match. Adjust the filter or click “+ New Container”.</td></tr>`;
+
+  const sel = state.containerSelection;
+  const anySelected = sel.size > 0;
+  const allChecked = list.length > 0 && list.every((c) => sel.has(c.id));
 
   $("#view").innerHTML =
+    filterBar() +
+    (anySelected ? batchToolbar(sel.size) : "") +
     `<div class="card"><table class="data">` +
-    `<thead><tr><th>Container</th><th>Status</th><th>Image</th><th>Resources</th><th class="actions">Actions</th></tr></thead>` +
+    `<thead><tr>` +
+      (canMutate() ? `<th class="chk-col"><input type="checkbox" id="selectAll" ${allChecked ? "checked" : ""}></th>` : "") +
+      `<th>Container</th><th>Status</th><th>Image</th><th>Resources</th><th class="actions">Actions</th>` +
+    `</tr></thead>` +
     `<tbody>${rows}</tbody></table></div>`;
 
   bindLogViewerHook();
@@ -45,6 +60,117 @@ export function renderContainers() {
       }
     };
   });
+  // State filter pills.
+  document.querySelectorAll("[data-filter]").forEach((btn) => {
+    btn.onclick = () => { state.containerFilter = btn.dataset.filter; renderView(); };
+  });
+  // Batch toolbar actions.
+  document.querySelectorAll("[data-batch]").forEach((btn) => {
+    btn.onclick = () => runBatch(btn.dataset.batch);
+  });
+  // Row checkboxes.
+  document.querySelectorAll("[data-cid]").forEach((box) => {
+    box.onchange = () => { toggleSelect(box.dataset.cid, box.checked); renderView(); };
+  });
+  const selectAll = $("#selectAll");
+  if (selectAll) {
+    selectAll.onchange = () => {
+      // Select/deselect only the currently filtered (visible) containers.
+      const on = selectAll.checked;
+      list.forEach((c) => toggleSelect(c.id, on));
+      renderView();
+    };
+  }
+}
+
+// applyStateFilter narrows the container list by the active state filter. The
+// "stopped" bucket covers exited/dead/created states (matching the backend).
+function applyStateFilter(containers) {
+  const f = state.containerFilter || "all";
+  if (f === "all") return containers;
+  return containers.filter((c) => {
+    const s = (c.state || "").toLowerCase();
+    if (f === "running") return s === "running";
+    if (f === "paused") return s === "paused";
+    if (f === "stopped") return s !== "running" && s !== "paused";
+    return true;
+  });
+}
+
+// filterBar renders the all/running/stopped/paused pill row. Counts are computed
+// from the full (unfiltered) list so they stay stable as the filter changes.
+function filterBar() {
+  const all = state.containers || [];
+  const count = (pred) => all.filter(pred).length;
+  const tabs = [
+    { key: "all", label: "All", n: all.length },
+    { key: "running", label: "Running", n: count((c) => c.state === "running") },
+    { key: "stopped", label: "Stopped", n: count((c) => c.state !== "running" && c.state !== "paused") },
+    { key: "paused", label: "Paused", n: count((c) => c.state === "paused") },
+  ];
+  return (
+    `<div class="filter-bar">` +
+      tabs
+        .map(
+          (t) =>
+            `<button class="pill ${state.containerFilter === t.key ? "active" : ""}" data-filter="${t.key}">${escapeHtml(t.label)} <span class="pill-count">${t.n}</span></button>`
+        )
+        .join("") +
+    `</div>`
+  );
+}
+
+// batchToolbar appears above the table when one or more containers are selected.
+// Mutating batch actions are hidden for read-only roles.
+function batchToolbar(n) {
+  if (!canMutate()) return `<div class="batch-bar"><span>${n} selected</span></div>`;
+  return (
+    `<div class="batch-bar">` +
+      `<span class="batch-count">${n} selected</span>` +
+      `<div class="batch-actions">` +
+        `<button class="ghost" data-batch="start">▶ Start</button>` +
+        `<button class="ghost" data-batch="stop">■ Stop</button>` +
+        `<button class="ghost" data-batch="restart">⟳ Restart</button>` +
+        `<button class="ghost" data-batch="unpause">⏵ Unpause</button>` +
+        `<button class="ghost danger" data-batch="remove">✕ Remove</button>` +
+      `</div>` +
+    `</div>`
+  );
+}
+
+function toggleSelect(id, on) {
+  if (on) state.containerSelection.add(id);
+  else state.containerSelection.delete(id);
+}
+
+// runBatch sends the selected IDs through the batch endpoint. "remove" confirms
+// first. The selection is cleared after a successful batch.
+function matchesAnyId(fullId, prefixes) {
+  return prefixes.some((p) => fullId === p || (fullId && fullId.startsWith(p)));
+}
+
+async function runBatch(action) {
+  const ids = [...state.containerSelection];
+  if (ids.length === 0) return;
+  if (action === "remove" && !confirm(`Remove ${ids.length} container(s)? This cannot be undone.`)) return;
+  try {
+    const res = await api("/api/containers/batch", {
+      method: "POST",
+      body: JSON.stringify({ ids, action }),
+    });
+    if (action === "remove") {
+      state.containers = (state.containers || []).filter((c) => !matchesAnyId(c.id, ids));
+    }
+    await refreshAll();
+    state.containerSelection.clear();
+    renderView();
+    const okN = (res.ok || []).length;
+    const failN = (res.failed || []).length;
+    if (failN === 0) toast(`${okN} container(s) ${action} OK`, true);
+    else toast(`${okN} OK, ${failN} failed`);
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 // Placeholder so renderLogViewer (from logs.js) can be wired without a circular
@@ -53,10 +179,13 @@ function bindLogViewerHook() {}
 
 function containerRow(c) {
   const running = c.state === "running";
+  const paused = c.state === "paused";
   const name = c.name || c.fullName;
   const pending = (act) => state.pending.has(c.id + ":" + act);
   const statusBadge = running
     ? `<span class="badge badge-ok"><span class="dot"></span>${escapeHtml(c.status || "Up")}</span>`
+    : paused
+    ? `<span class="badge badge-warn"><span class="dot"></span>${escapeHtml(c.status || "Paused")}</span>`
     : `<span class="badge badge-muted"><span class="dot"></span>${escapeHtml(c.status || c.state || "Stopped")}</span>`;
   const ports = (c.ports || []).join(", ") || "—";
   // Docker on Linux binds to 0.0.0.0 so the backend URL contains 127.0.0.1.
@@ -66,7 +195,6 @@ function containerRow(c) {
   // Coerce to a number defensively before toFixed: the backend usually sends
   // numbers, but a stray string/null would otherwise throw and blank the table.
   const num = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
-  const host = location.hostname;
   const conn = [];
   if (c.http8080Url) conn.push(`<a class="port-link" href="${escapeHtml(fixUrl(c.http8080Url))}" target="_blank" rel="noopener">8080 ↗</a>`);
   if (c.http80Url) conn.push(`<a class="port-link" href="${escapeHtml(fixUrl(c.http80Url))}" target="_blank" rel="noopener">80 ↗</a>`);
@@ -76,8 +204,10 @@ function containerRow(c) {
     const loading = isLoading ? " is-loading" : "";
     return `<button class="${cls}${loading}" title="${title}" data-id="${escapeHtml(c.id)}" data-name="${escapeHtml(name)}" data-act="${act}" ${dis}>${glyph}</button>`;
   };
+  const checked = state.containerSelection.has(c.id) ? "checked" : "";
   return (
     `<tr>` +
+      (canMutate() ? `<td class="chk-col"><input type="checkbox" data-cid="${escapeHtml(c.id)}" ${checked}></td>` : "") +
       `<td><div class="primary-line">${escapeHtml(name)}</div><div class="secondary-line">${conn.length ? conn.join(" <span class='sep'>·</span> ") : escapeHtml(ports)}</div></td>` +
       `<td>${statusBadge}</td>` +
       `<td><div class="secondary-line">${escapeHtml(c.image || c.Image || "—")}</div></td>` +
@@ -86,8 +216,10 @@ function containerRow(c) {
       `<td class="actions">` +
         iconBtn("logs", "📄", "Logs") +
         iconBtn("start", "▶", "Start", "icon ok", !running) +
-        iconBtn("stop", "■", "Stop", "icon warn", running) +
-        iconBtn("restart", "⟳", "Restart", "icon", running) +
+        iconBtn("stop", "■", "Stop", "icon warn", running || paused) +
+        iconBtn("restart", "⟳", "Restart", "icon", running || paused) +
+        (running ? iconBtn("pause", "⏸", "Pause") : "") +
+        (paused ? iconBtn("unpause", "⏵", "Unpause", "icon ok") : "") +
         iconBtn("files", "📁", "Files") +
         (running ? iconBtn("terminal", "🖥", "Console") : "") +
         (running ? iconBtn("stats", "📊", "Stats") : "") +
@@ -110,6 +242,9 @@ export async function actionContainer(id, name, action) {
   renderView();
   try {
     await api("/api/containers/action", { method: "POST", body: JSON.stringify({ id, action }) });
+    if (action === "remove") {
+      state.containers = (state.containers || []).filter((c) => c.id !== id && !(c.id && c.id.startsWith(id)));
+    }
     await refreshAll();
     renderView();
     toast("Done", true);

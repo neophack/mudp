@@ -3,7 +3,7 @@
 import { state, toast, refreshAll, renderView } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 
-const STAGE_ORDER = ["image", "create", "start", "done"];
+const STAGE_ORDER = ["image", "create", "start", "refresh", "done"];
 
 // lastPayload holds the most recent create request so the Retry button in the
 // progress panel can resubmit it instead of wiping the form (which would also
@@ -13,6 +13,7 @@ const STAGE_LABEL = {
   image: "Inspect image",
   create: "Create container",
   start: "Start container",
+  refresh: "Refresh list",
   done: "Complete",
 };
 
@@ -58,6 +59,24 @@ export function openCreateModal() {
         `<label class="check"><input type="checkbox" name="forward80"> Forward container port 80</label>` +
         `<label class="check"><input type="checkbox" name="mountNetdisk" checked> Mount netdisk at /netdisk</label>` +
         `<label class="check"><input type="checkbox" name="mountShm" checked> Mount host /dev/shm (shared memory)</label>` +
+        // Collapsible advanced block. Empty fields inherit the image defaults
+        // (the backend treats them as "unset"), so leaving this collapsed keeps
+        // the simple wizard behavior for most users.
+        `<details class="advanced-block"><summary>Advanced (optional overrides)</summary>` +
+          `<input name="command" placeholder="Command (overrides image CMD), e.g. python app.py">` +
+          `<input name="entrypoint" placeholder="Entrypoint (overrides image ENTRYPOINT)">` +
+          `<input name="workingDir" placeholder="Working directory (overrides WORKDIR)">` +
+          `<input name="hostname" placeholder="Container hostname">` +
+          `<input name="runUser" placeholder="Run as user (e.g. root, 1000:1000)">` +
+          `<div class="advanced-row">` +
+            `<input name="cpuLimit" type="number" min="0" step="0.5" placeholder="CPU cores (0=unlimited)">` +
+            `<input name="memoryMb" type="number" min="0" placeholder="Memory limit (MB, 0=unlimited)">` +
+            `<input name="pidsLimit" type="number" min="0" placeholder="Max PIDs (0=unlimited)">` +
+          `</div>` +
+          `<input name="capAdd" placeholder="cap-add (comma-separated, e.g. SYS_PTRACE)">` +
+          `<input name="capDrop" placeholder="cap-drop (comma-separated)">` +
+          `<textarea name="labels" placeholder="Custom labels, one key=value per line"></textarea>` +
+        `</details>` +
       `</form>`,
     foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="createSubmit">Create and Start</button>`,
   });
@@ -80,6 +99,20 @@ export function openCreateModal() {
     payload.mountShm = fd.has("mountShm");
     payload.networks = [...$("#newContainer").querySelectorAll('input[name="networks"]:checked')].map((i) => i.value);
     payload.restartPolicy = fd.get("restartPolicy") || "unless-stopped";
+    // Advanced overrides (all optional; backend ignores empties/zeros).
+    payload.command = (fd.get("command") || "").trim();
+    payload.entrypoint = (fd.get("entrypoint") || "").trim();
+    payload.workingDir = (fd.get("workingDir") || "").trim();
+    payload.hostname = (fd.get("hostname") || "").trim();
+    payload.runUser = (fd.get("runUser") || "").trim();
+    // CPU cores → nanocpus (1 core = 1e9). 0/empty means unlimited.
+    const cpuCores = parseFloat(fd.get("cpuLimit"));
+    payload.nanoCpus = isFinite(cpuCores) && cpuCores > 0 ? Math.round(cpuCores * 1e9) : 0;
+    payload.memoryMb = parseInt(fd.get("memoryMb"), 10) || 0;
+    payload.pidsLimit = parseInt(fd.get("pidsLimit"), 10) || 0;
+    payload.capAdd = csvList(fd.get("capAdd"));
+    payload.capDrop = csvList(fd.get("capDrop"));
+    payload.labels = kvLines(fd.get("labels"));
     // Forward the image preset's device passthrough (NVIDIA device nodes, CDI
     // devices) so GPUs stay connected and admins' device choices apply. These come
     // only from admin-configured presets; the user form has no device field.
@@ -243,6 +276,24 @@ export async function streamCreate(payload) {
 
 function $(selector) {
   return document.querySelector(selector);
+}
+
+// csvList splits a comma/whitespace-separated string into trimmed tokens.
+function csvList(raw) {
+  return String(raw || "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+}
+
+// kvLines parses "key=value" lines into an object, skipping invalid lines.
+function kvLines(raw) {
+  const out = {};
+  for (const line of String(raw || "").split("\n")) {
+    const idx = line.indexOf("=");
+    if (idx <= 0) continue;
+    const k = line.slice(0, idx).trim();
+    const v = line.slice(idx + 1).trim();
+    if (k) out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function escapeHtml(v) {

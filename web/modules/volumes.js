@@ -3,6 +3,7 @@
 
 import { state, api, toast, refreshSection, renderView, canMutate } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
+import { openVolumeFiles } from "./volume_files.js";
 
 export function renderVolumes() {
   const rows = (state.volumes || []).map(volumeRow).join("") ||
@@ -24,8 +25,13 @@ export function renderVolumes() {
   if (nb) nb.onclick = openCreateVolume;
   const pb = $("#pruneVolumes");
   if (pb) pb.onclick = pruneVolumes;
-  document.querySelectorAll("[data-vol-fullname]").forEach((btn) => {
+  // Delete buttons carry data-vol-fullname but NOT data-vol-files, so scope the
+  // selector to avoid matching the browse button (which carries both attributes).
+  document.querySelectorAll("[data-vol-fullname]:not([data-vol-files])").forEach((btn) => {
     btn.onclick = () => deleteVolume(btn.dataset.volFullname, btn.dataset.volName);
+  });
+  document.querySelectorAll("[data-vol-files]").forEach((btn) => {
+    btn.onclick = () => openVolumeFiles(btn.dataset.volFullname, btn.dataset.volName);
   });
 }
 
@@ -37,7 +43,10 @@ function volumeRow(v) {
       `<td>${fmtMB(v.sizeMb)}</td>` +
       `<td>${v.inUse ? `<span class="badge badge-ok">in use</span>` : `<span class="badge badge-muted">free</span>`}</td>` +
       `<td><div class="secondary-line">${escapeHtml(v.owner || "—")}</div></td>` +
-      `<td class="actions">${canMutate() ? `<button class="icon danger" title="Delete" data-vol-name="${escapeHtml(v.name)}" data-vol-fullname="${escapeHtml(v.fullName || v.name)}">✕</button>` : "—"}</td>` +
+      `<td class="actions">` +
+        `<button class="icon" title="Browse files" data-vol-name="${escapeHtml(v.name)}" data-vol-fullname="${escapeHtml(v.fullName || v.name)}" data-vol-files="1">📁</button>` +
+        (canMutate() ? `<button class="icon danger" title="Delete" data-vol-name="${escapeHtml(v.name)}" data-vol-fullname="${escapeHtml(v.fullName || v.name)}">✕</button>` : "") +
+      `</td>` +
     `</tr>`
   );
 }

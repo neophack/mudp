@@ -17,10 +17,10 @@ MUDP is a compact, self-hosted **multi-user Docker management platform** — a s
 | Area | Capabilities |
 |------|-------------|
 | **Dashboard** | Environment info (Docker version, OS, CPU/RAM, storage driver), container/image/volume/network counts, containers-by-state donut, per-user usage rollup, recent activity feed. |
-| **Containers** | List, create (wizard with env/ports/mounts/networks/GPU), start/stop/restart/remove, logs (live tail + grep + wrap + download), web terminal (xterm.js over WebSocket), live stats (CPU/mem/net/block sparklines), inspect. |
+| **Containers** | List (state filter: all/running/stopped/paused + multi-select batch start/stop/restart/remove), create (wizard with env/ports/mounts/networks/GPU + advanced overrides: command, entrypoint, workdir, hostname, user, CPU/memory/PID limits, cap-add/drop, labels), start/stop/restart/remove, pause/unpause, logs (live tail + grep + wrap + download), web terminal (xterm.js over WebSocket), live stats (CPU/mem/net/block sparklines), inspect (curated + raw JSON), duplicate, commit-to-image. |
 | **Images** | Pull (SSE progress), build from Dockerfile (SSE), import/export tar, retag, push to registry, prune dangling, group-based visibility. |
-| **Volumes** | List, create (local/NFS drivers), delete, prune unused — all per-user namespaced. |
-| **Networks** | List, create (bridge/overlay/macvlan with subnet), delete — attachable in the container wizard. |
+| **Volumes** | List, create (local/NFS drivers), delete, prune unused — all per-user namespaced; **in-volume file browser** (browse/upload with resume/download-zip/rename/delete/mkdir). |
+| **Networks** | List, create (bridge/overlay/macvlan with subnet + advanced IPAM: gateway/IP range/IPv6), delete, **detail view with attach/detach containers** — attachable in the container wizard. |
 | **Stacks** | Deploy `docker-compose.yml` via the host's `docker compose` CLI plugin with live SSE progress; web editor, env-var substitution (`${VAR}`), up/down, delete; quota-guarded. |
 | **Users & Groups** | 5-role RBAC (admin / operator / help-desk / read-only / user), group membership (Feishu approval flow), password reset, disable/enable, container-cap edit, delete. |
 | **Registries** | Store authenticated registry credentials (Docker Hub, GHCR, private); used automatically for pulls/builds/pushes; test-login button. |
@@ -118,4 +118,4 @@ Docker-touching tests auto-skip when no daemon is reachable, so CI without Docke
 
 ## Roadmap (out of scope for this release)
 
-Multi-environment endpoints (Docker/Swarm/K8s), LDAP/OAuth beyond Feishu, volume file browser, app-template catalog, image vulnerability scanning, two-factor auth, and theming. These can be layered on without rearchitecting the current single-host model.
+Multi-environment endpoints (Docker/Swarm/K8s), LDAP/OAuth beyond Feishu, app-template catalog, image vulnerability scanning, two-factor auth, and theming. These can be layered on without rearchitecting the current single-host model.
