@@ -605,13 +605,14 @@ func portFree(port int) bool {
 }
 
 type TopProcess struct {
-	ContainerID string  `json:"containerId"`
-	Container   string  `json:"container"`
-	User        string  `json:"user"`
-	PID         string  `json:"pid"`
-	CPUPercent  float64 `json:"cpuPct"`
-	MemoryMB    float64 `json:"memMb"`
-	Command     string  `json:"command"`
+	ContainerID   string  `json:"containerId"`
+	Container     string  `json:"container"`
+	User          string  `json:"user"`
+	PID           string  `json:"pid"`
+	CPUPercent    float64 `json:"cpuPct"`
+	MemoryMB      float64 `json:"memMb"`
+	MemoryPercent float64 `json:"memPct"`
+	Command       string  `json:"command"`
 }
 
 type GPUUsage struct {
@@ -803,15 +804,18 @@ func (d *Client) TopProcesses(ctx context.Context, containers []Container) []Top
 			}
 			cpu, _ := strconv.ParseFloat(strings.TrimSuffix(get("%CPU", "CPU"), "%"), 64)
 			memPct, _ := strconv.ParseFloat(strings.TrimSuffix(get("%MEM", "MEM"), "%"), 64)
+			// RSS is reported in kilobytes by `docker top <id> aux`.
+			rssKb, _ := strconv.ParseFloat(get("RSS"), 64)
 			cmd := get("COMMAND", "CMD")
 			out = append(out, TopProcess{
-				ContainerID: c.ID,
-				Container:   c.Name,
-				User:        c.Labels[UserLabel],
-				PID:         get("PID"),
-				CPUPercent:  cpu,
-				MemoryMB:    memPct,
-				Command:     cmd,
+				ContainerID:   c.ID,
+				Container:     c.Name,
+				User:          c.Labels[UserLabel],
+				PID:           get("PID"),
+				CPUPercent:    cpu,
+				MemoryMB:      round2(rssKb / 1024),
+				MemoryPercent: memPct,
+				Command:       cmd,
 			})
 		}
 	}
@@ -1323,6 +1327,19 @@ func (d *Client) ManagedOwner(ctx context.Context, id string) string {
 		return ""
 	}
 	return inspect.Config.Labels["mudp.user"]
+}
+
+// ContainerName returns the mudp.name label (the display name) for a mudp-managed
+// container, or "" if the container is absent or not managed.
+func (d *Client) ContainerName(ctx context.Context, id string) string {
+	inspect, err := d.c.ContainerInspect(ctx, id)
+	if err != nil {
+		return ""
+	}
+	if inspect.Config.Labels["mudp.managed"] != "true" {
+		return ""
+	}
+	return inspect.Config.Labels["mudp.name"]
 }
 
 // ContainerLabel returns a single label value from a mudp-managed container,

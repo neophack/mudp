@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -198,7 +200,7 @@ func TestAuditAndList(t *testing.T) {
 
 func TestUpdateUser(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("carol", "pw1", RoleUser, nil, 5); err != nil {
+	if err := db.CreateUser("carol", "pw1", RoleUser, nil, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	u, err := db.Authenticate("carol", "pw1")
@@ -207,7 +209,7 @@ func TestUpdateUser(t *testing.T) {
 	}
 
 	// Change password.
-	if err := db.UpdateUser(u.ID, "pw2", "", 0, nil); err != nil {
+	if err := db.UpdateUser(u.ID, "pw2", "", 0, nil, nil); err != nil {
 		t.Fatalf("update password: %v", err)
 	}
 	if _, err := db.Authenticate("carol", "pw1"); err == nil {
@@ -218,7 +220,7 @@ func TestUpdateUser(t *testing.T) {
 	}
 
 	// Change role + cap.
-	if err := db.UpdateUser(u.ID, "", RoleOperator, 20, nil); err != nil {
+	if err := db.UpdateUser(u.ID, "", RoleOperator, 20, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := db.UserByID(u.ID)
@@ -228,14 +230,14 @@ func TestUpdateUser(t *testing.T) {
 
 	// Disable then re-enable.
 	dis := true
-	if err := db.UpdateUser(u.ID, "", "", 0, &dis); err != nil {
+	if err := db.UpdateUser(u.ID, "", "", 0, nil, &dis); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Authenticate("carol", "pw2"); err == nil {
 		t.Fatal("disabled user authenticated")
 	}
 	en := false
-	if err := db.UpdateUser(u.ID, "", "", 0, &en); err != nil {
+	if err := db.UpdateUser(u.ID, "", "", 0, nil, &en); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Authenticate("carol", "pw2"); err != nil {
@@ -247,7 +249,7 @@ func TestCreateStackColumnCount(t *testing.T) {
 	// Regression guard: the stacks insert must bind one value per column.
 	// (A previous version had 6 placeholders for 7 columns.)
 	db := newTestDB(t)
-	if err := db.CreateUser("stackowner", "pw", RoleUser, nil, 5); err != nil {
+	if err := db.CreateUser("stackowner", "pw", RoleUser, nil, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	u, _ := db.Authenticate("stackowner", "pw")
@@ -278,7 +280,7 @@ func TestCreateStackColumnCount(t *testing.T) {
 	}
 
 	// Admin sees all stacks; create as another user and verify isolation.
-	if err := db.CreateUser("other", "pw", RoleUser, nil, 5); err != nil {
+	if err := db.CreateUser("other", "pw", RoleUser, nil, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	o, _ := db.Authenticate("other", "pw")
@@ -335,6 +337,117 @@ func TestRegistriesCRUD(t *testing.T) {
 	items, _ = db.Registries()
 	if len(items) != 1 {
 		t.Errorf("expected 1 after replace, got %d", len(items))
+	}
+}
+
+// TestMCPTokenCRUD covers the full token lifecycle: create, look up by hash,
+// list, delete, and ownership isolation between users.
+func TestMCPTokenCRUD(t *testing.T) {
+	db := newTestDB(t)
+	// admin (id=1) exists from Migrate; create a second user to test isolation.
+	if err := db.CreateUser("alice", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := db.Authenticate("alice", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a token for alice on a (mock) container.
+	cleartext := "tok-abc123"
+	hash := "abc123hash"
+	id, err := db.CreateMCPToken(alice.ID, "container-id-1", "dev", "claude-code", cleartext, hash, "")
+	if err != nil || id == 0 {
+		t.Fatalf("CreateMCPToken: %v (id=%d)", err, id)
+	}
+
+	// Look it up by hash.
+	got, err := db.MCPTokenByHash(hash)
+	if err != nil {
+		t.Fatalf("MCPTokenByHash: %v", err)
+	}
+	if got.ID != id || got.ContainerID != "container-id-1" || got.Label != "claude-code" {
+		t.Fatalf("token mismatch: %+v", got)
+	}
+	if got.Expired() {
+		t.Fatal("non-expiring token reports expired")
+	}
+	if got.Token != cleartext {
+		t.Errorf("token cleartext not persisted: got %q, want %q", got.Token, cleartext)
+	}
+
+	// Alice sees her token; the list includes owner.
+	mine, err := db.MCPTokensForUser(alice.ID, false)
+	if err != nil || len(mine) != 1 {
+		t.Fatalf("MCPTokensForUser alice: %v (len=%d)", err, len(mine))
+	}
+	if mine[0].Owner != "alice" {
+		t.Errorf("owner not joined: %q", mine[0].Owner)
+	}
+
+	// Admin sees all tokens (1 so far).
+	all, err := db.MCPTokensForUser(alice.ID, true)
+	if err != nil || len(all) != 1 {
+		t.Fatalf("admin list: %v (len=%d)", err, len(all))
+	}
+
+	// Filter by container.
+	byContainer, err := db.MCPTokensForContainer(alice.ID, false, "container-id-1")
+	if err != nil || len(byContainer) != 1 {
+		t.Fatalf("byContainer: %v (len=%d)", err, len(byContainer))
+	}
+	other, err := db.MCPTokensForContainer(alice.ID, false, "does-not-exist")
+	if err != nil || len(other) != 0 {
+		t.Fatalf("unknown container should have 0 tokens: %v (len=%d)", err, len(other))
+	}
+
+	// Touch last_used_at (best-effort, should not error).
+	if err := db.MCPTokenTouch(id); err != nil {
+		t.Fatalf("MCPTokenTouch: %v", err)
+	}
+
+	// A second user (the admin, id=1) cannot delete alice's token.
+	if err := db.DeleteMCPToken(1, false, id); err == nil {
+		t.Fatal("non-owner should not delete alice's token")
+	}
+	// But alice can.
+	if err := db.DeleteMCPToken(alice.ID, false, id); err != nil {
+		t.Fatalf("DeleteMCPToken: %v", err)
+	}
+	// Gone.
+	if _, err := db.MCPTokenByHash(hash); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("token should be gone, got err=%v", err)
+	}
+}
+
+// TestMCPTokenExpiry verifies Expired() and the expiry-stamp path.
+func TestMCPTokenExpiry(t *testing.T) {
+	db := newTestDB(t)
+	// A token that already expired.
+	past := "2000-01-01T00:00:00Z"
+	id, err := db.CreateMCPToken(1, "c1", "dev", "bot", "expired-tok", "expired-hash", past)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.MCPTokenByHash("expired-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != id || !got.Expired() {
+		t.Fatalf("token should be expired: %+v", got)
+	}
+
+	// A token that expires in the future.
+	future := "2099-01-01T00:00:00Z"
+	if _, err := db.CreateMCPToken(1, "c2", "dev2", "bot2", "future-tok", "future-hash", future); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := db.MCPTokenByHash("future-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.Expired() {
+		t.Fatal("future token reports expired")
 	}
 }
 
@@ -413,5 +526,44 @@ func TestSchemaVersionTracksMigrations(t *testing.T) {
 	}
 	if version != schemaVersion {
 		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
+	}
+}
+
+
+// TestCreateUserQuota ensures the netdisk quota is persisted and returned.
+func TestCreateUserQuota(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateUser("quotauser", "pw", RoleUser, nil, 5, 2*1024*1024*1024); err != nil {
+		t.Fatal(err)
+	}
+	u, err := db.Authenticate("quotauser", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.NetdiskQuotaBytes != 2*1024*1024*1024 {
+		t.Fatalf("NetdiskQuotaBytes = %d, want %d", u.NetdiskQuotaBytes, 2*1024*1024*1024)
+	}
+}
+
+// TestNetdiskSharePassword ensures password-protected shares store and expose
+// the has-password flag without leaking the hash.
+func TestNetdiskSharePassword(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateUser("shareowner", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := db.Authenticate("shareowner", "pw")
+	if err := db.CreateNetdiskShare(u.ID, "tok1", "files", []string{"a.txt"}, "", true, "hashed-password"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := db.NetdiskShare("tok1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasPassword {
+		t.Error("HasPassword = false for password-protected share")
+	}
+	if s.PasswordHash != "hashed-password" {
+		t.Errorf("PasswordHash = %q, want %q", s.PasswordHash, "hashed-password")
 	}
 }

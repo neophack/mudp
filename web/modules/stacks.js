@@ -125,7 +125,7 @@ async function deployStack(id) {
     const res = await fetch("/api/stacks/up/stream", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
       body: JSON.stringify({ id }),
     });
     if (!res.ok) {
@@ -147,7 +147,7 @@ async function downStack(id) {
     const res = await fetch("/api/stacks/down/stream", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
       body: JSON.stringify({ id }),
     });
     if (!res.ok) {

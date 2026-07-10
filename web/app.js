@@ -17,6 +17,7 @@ import { renderSettings } from "./modules/settings.js";
 import { renderNetdisk } from "./modules/netdisk.js";
 import { renderDisks } from "./modules/disks.js";
 import { renderHardware, stopPolling as stopHardwarePolling } from "./modules/hardware.js";
+import { renderMCP } from "./modules/mcp.js";
 import { escapeHtml, fmtBytes, fmtMB, roleRank, isAdminUser, canMutateUser } from "./lib/common.js";
 
 // Re-export shared utilities so existing modules can keep importing them from app.js.
@@ -39,6 +40,7 @@ export const state = {
   usage: [],
   audit: [],
   netdisk: { path: "", items: [], quota: null },
+  mcpTokens: [],
   disks: [],
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
   search: "",
@@ -123,6 +125,9 @@ export async function load() {
       renderLogin();
       return;
     }
+    // Use the server-provided token as a fallback in case the cookie is not
+    // readable (e.g. older browsers or unusual cookie policies).
+    state.csrfToken = me.csrfToken || state.csrfToken || "";
     state.me = me;
     state.feishu = (await api("/api/feishu/config").catch(() => ({ enabled: false }))).enabled;
     if (me.pending) {
@@ -132,6 +137,8 @@ export async function load() {
     await refreshAll();
     // Best-effort GPU count probe so the create modal renders the right GPU options. Failure (non-GPU host, offline) leaves gpuCount at 0 and the modal falls back to none/all.
     api("/api/hardware/gpus").then((r) => { state.gpuCount = r.count || 0; }).catch(() => {});
+    // MCP tokens are fetched on demand when the user opens the MCP tab
+    // (renderMCP), so there's no boot-time background load racing the render.
     render();
   } catch {
     renderLogin();
@@ -207,6 +214,7 @@ const ICONS = {
   collapse: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'),
   expand: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>'),
   hardware: svgIcon('<path d="M9 3v18"/><path d="M15 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/>'),
+  mcp: svgIcon('<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'),
 };
 
 function label(tab) {
@@ -225,6 +233,7 @@ function label(tab) {
       disks: "Disks",
       scripts: "Settings",
       hardware: "Hardware",
+      mcp: "MCP",
     }[tab] || tab
   );
 }
@@ -245,13 +254,14 @@ function subtitle(tab) {
       disks: "Host disk overview, mount helpers, and database backups.",
       scripts: "Configure registries, Feishu SSO, and system settings.",
       hardware: "Real-time CPU, memory, temperature, and per-GPU monitoring.",
+      mcp: "Generate per-container tokens so AI tools (Claude Code, Codex, Kimi) can connect and work.",
     }[tab] || ""
   );
 }
 
 export function render() {
   const admin = isAdmin();
-  const tabs = ["dashboard", "netdisk", "containers", "usage", "images", "volumes", "networks", "stacks", "hardware", ...(admin ? ["users", "audit", "disks", "scripts"] : [])];
+  const tabs = ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", ...(admin ? ["users", "audit", "disks", "scripts"] : [])];
 
   const collapsed = state.sidebarCollapsed;
   $("#app").innerHTML =
@@ -345,6 +355,7 @@ export function renderView() {
   if (state.tab === "dashboard") return renderDashboard();
   if (state.tab === "netdisk") return renderNetdisk();
   if (state.tab === "containers") return renderContainers();
+  if (state.tab === "mcp") return renderMCP();
   if (state.tab === "images") return renderImages();
   if (state.tab === "volumes") return renderVolumes();
   if (state.tab === "networks") return renderNetworks();

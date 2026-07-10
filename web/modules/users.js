@@ -1,7 +1,7 @@
 // Users & Groups management: create users/groups, assign roles, group
 // membership (Feishu approval flow), reset passwords, disable/delete accounts.
 
-import { state, api, toast, refreshSection, renderView } from "../app.js";
+import { state, api, toast, escapeHtml, refreshSection, renderView } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 const ROLES = [
@@ -28,6 +28,7 @@ export function renderUsers() {
             `<input name="password" type="password" placeholder="Password" required>` +
             roleSelect("role", "user") +
             `<input name="containerCap" type="number" min="1" value="10" placeholder="Container limit">` +
+            `<input name="netdiskQuotaGB" type="number" min="0" step="0.1" value="0" placeholder="Netdisk quota (GB, 0 = unlimited)">` +
             `<div class="check-grid">${groupChecks(state.groups)}</div>` +
             `<button>Create User</button>` +
           `</form></div>` +
@@ -65,6 +66,7 @@ export function renderUsers() {
     const fd = new FormData(e.target);
     const payload = Object.fromEntries(fd);
     payload.containerCap = Number(payload.containerCap || 10);
+    payload.netdiskQuotaBytes = Math.round(Number(payload.netdiskQuotaGB || 0) * 1024 * 1024 * 1024);
     payload.groupIds = [...e.target.querySelectorAll("input[name=groupIds]:checked")].map((i) => Number(i.value));
     try {
       await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
@@ -98,7 +100,7 @@ function userRow(user) {
       `<td><div class="primary-line">${escapeHtml(user.username)}${disabled ? ' <span class="badge badge-muted">disabled</span>' : ""}` +
         `${user.comment ? ` <span class="badge badge-muted" title="${escapeHtml(user.comment)}">${escapeHtml(user.comment)}</span>` : ""}</div>` +
         `${user.feishuOpenId ? `<div class="secondary-line">Feishu user</div>` : ""}` +
-        `<div class="secondary-line" style="margin-top:2px;">limit ${user.containerCap}</div></td>` +
+        `<div class="secondary-line" style="margin-top:2px;">limit ${user.containerCap} · netdisk ${formatQuota(user.netdiskQuotaBytes)}</div></td>` +
       `<td>${roleBadge}</td>` +
       `<td><div class="secondary-line">${escapeHtml((user.groups || []).join(", ") || "None")}</div></td>` +
       `<td><div class="secondary-line">${user.portPrefix ? `${user.portPrefix * 100}-${user.portPrefix * 100 + 99}` : "Not assigned"}</div></td>` +
@@ -193,6 +195,8 @@ function openUserEdit(userId) {
         roleSelect("role", currentRole) +
         `<label class="field-label">Container limit</label>` +
         `<input name="containerCap" type="number" min="1" value="${user.containerCap}">` +
+        `<label class="field-label">Netdisk quota (GB, 0 = unlimited)</label>` +
+        `<input name="netdiskQuotaGB" type="number" min="0" step="0.1" value="${(user.netdiskQuotaBytes / 1024 / 1024 / 1024).toFixed(2)}">` +
         `<label class="field-label">Port prefix</label>` +
         `<input name="portPrefix" type="number" min="100" max="655" value="${user.portPrefix || ""}" placeholder="100 => 10000-10099">` +
         `<label class="field-label">New password <span class="hint">(leave blank to keep)</span></label>` +
@@ -207,6 +211,7 @@ function openUserEdit(userId) {
       id: Number(userId),
       role: fd.get("role"),
       containerCap: Number(fd.get("containerCap") || 10),
+      netdiskQuotaBytes: Math.round(Number(fd.get("netdiskQuotaGB") || 0) * 1024 * 1024 * 1024),
       portPrefix: Number(fd.get("portPrefix") || 0),
       password: fd.get("password") || "",
       disabled: !fd.has("enabled"),
@@ -243,12 +248,13 @@ function $(selector) {
   return document.querySelector(selector);
 }
 
-function escapeHtml(v) {
-  return String(v ?? "").replace(/[&<>"']/g, (m) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  }[m]));
+function formatQuota(bytes) {
+  if (!bytes) return "unlimited";
+  const gb = bytes / 1024 / 1024 / 1024;
+  if (gb >= 1) return `${gb.toFixed(1)} GB`;
+  const mb = bytes / 1024 / 1024;
+  if (mb >= 1) return `${mb.toFixed(1)} MB`;
+  return `${bytes} B`;
 }
+
+

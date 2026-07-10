@@ -104,9 +104,12 @@ func (a *App) runtimeContainers(username string, admin bool) []dockerx.Container
 // persists it. It is safe to call concurrently; overlapping runs are skipped
 // when the previous sample is recent enough.
 func (a *App) collectResourceSnapshot(ctx context.Context) []store.ResourceSample {
+	a.snapshotMu.Lock()
 	if time.Since(a.lastSnapshot) < 30*time.Second {
+		a.snapshotMu.Unlock()
 		return nil
 	}
+	a.snapshotMu.Unlock()
 	users, err := a.db.Users()
 	if err != nil {
 		return nil
@@ -138,7 +141,9 @@ func (a *App) collectResourceSnapshot(ctx context.Context) []store.ResourceSampl
 		samples = append(samples, s)
 	}
 	if err := a.db.SaveResourceSamples(samples); err == nil {
+		a.snapshotMu.Lock()
 		a.lastSnapshot = time.Now()
+		a.snapshotMu.Unlock()
 	}
 	return samples
 }

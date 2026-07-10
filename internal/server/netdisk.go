@@ -10,11 +10,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/crypto/bcrypt"
 
 	"mudp/internal/store"
 	"mudp/web"
@@ -115,7 +115,12 @@ func (a *App) netdiskList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) netdiskMkdir(w http.ResponseWriter, r *http.Request) {
-	root, err := a.userNetdiskRoot(currentUser(r))
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
+	root, err := a.userNetdiskRoot(u)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -136,7 +141,12 @@ func (a *App) netdiskMkdir(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) netdiskDelete(w http.ResponseWriter, r *http.Request) {
-	root, err := a.userNetdiskRoot(currentUser(r))
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
+	root, err := a.userNetdiskRoot(u)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -163,7 +173,12 @@ func (a *App) netdiskDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) netdiskRename(w http.ResponseWriter, r *http.Request) {
-	root, err := a.userNetdiskRoot(currentUser(r))
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
+	root, err := a.userNetdiskRoot(u)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -193,8 +208,114 @@ func (a *App) netdiskRename(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]bool{"ok": true}, os.Rename(from, to))
 }
 
+func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
+	root, err := a.userNetdiskRoot(u)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var req struct {
+		Items  []struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		} `json:"items"`
+		Move   bool   `json:"move"`
+		Policy string `json:"policy"`
+	}
+	if err := decodeJSON(r, &req); err != nil || len(req.Items) == 0 {
+		writeErr(w, http.StatusBadRequest, "items are required")
+		return
+	}
+	policy := strings.ToLower(strings.TrimSpace(req.Policy))
+	if policy == "" {
+		policy = "rename"
+	}
+	if policy != "overwrite" && policy != "skip" && policy != "rename" {
+		writeErr(w, http.StatusBadRequest, "policy must be overwrite, skip or rename")
+		return
+	}
+
+	var results []map[string]string
+	count := 0
+	for _, item := range req.Items {
+		res := map[string]string{"from": item.From, "to": item.To}
+		from, _, err := cleanUserPath(root, item.From)
+		if err != nil {
+			res["status"] = "error"
+			res["error"] = err.Error()
+			results = append(results, res)
+			continue
+		}
+		to, _, err := cleanUserPath(root, item.To)
+		if err != nil {
+			res["status"] = "error"
+			res["error"] = err.Error()
+			results = append(results, res)
+			continue
+		}
+		if err := netdiskCopyOne(from, to, req.Move, policy); err != nil {
+			res["status"] = "error"
+			res["error"] = err.Error()
+		} else {
+			if req.Move {
+				res["status"] = "moved"
+			} else {
+				res["status"] = "copied"
+			}
+			count++
+		}
+		results = append(results, res)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})
+}
+
+func netdiskCopyOne(from, to string, move bool, policy string) error {
+	fromInfo, err := os.Stat(from)
+	if err != nil {
+		return err
+	}
+	// If the destination is an existing directory, place the source inside it
+	// preserving its base name. This matches how the UI sends the current folder
+	// path as the copy/move destination.
+	if toInfo, err := os.Stat(to); err == nil && toInfo.IsDir() {
+		to = filepath.Join(to, filepath.Base(from))
+	}
+	if _, err := os.Stat(to); err == nil {
+		switch policy {
+		case "skip":
+			return nil
+		case "rename":
+			to = nextFreeName(filepath.Dir(to), filepath.Base(to))
+		case "overwrite":
+			if fromInfo.IsDir() {
+				return fmt.Errorf("cannot overwrite a directory")
+			}
+			if err := os.Remove(to); err != nil {
+				return err
+			}
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0750); err != nil {
+		return err
+	}
+	if move {
+		return os.Rename(from, to)
+	}
+	return copyPathWithPolicy(from, to, policy)
+}
+
 func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
-	root, err := a.userNetdiskRoot(currentUser(r))
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
+	root, err := a.userNetdiskRoot(u)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -214,14 +335,58 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	files := r.MultipartForm.File["files"]
+	if len(files) == 0 {
+		writeErr(w, http.StatusBadRequest, "no files uploaded")
+		return
+	}
+
+	// Pre-compute how much additional space is required, accounting for
+	// partially-uploaded files that may be resumed.
+	used := dirSize(root)
+	var additional int64
+	projected := used
+	for _, fh := range files {
+		dstPath, _, err := cleanUserPath(dir, fh.Filename)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var existing int64
+		if info, err := os.Stat(dstPath); err == nil {
+			existing = info.Size()
+		}
+		add := fh.Size - existing
+		if add < 0 {
+			add = 0
+		}
+		additional += add
+		projected += add
+	}
+	if u.NetdiskQuotaBytes > 0 && projected > u.NetdiskQuotaBytes {
+		writeErr(w, http.StatusInsufficientStorage, "upload would exceed netdisk quota")
+		return
+	}
+	if additional > 0 {
+		free, err := diskFree(dir)
+		if err == nil && free >= 0 && additional > free {
+			writeErr(w, http.StatusInsufficientStorage, "not enough free disk space")
+			return
+		}
+	}
+
 	for _, fh := range files {
 		src, err := fh.Open()
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		dstPath, _, err := cleanUserPath(dir, filepath.Base(fh.Filename))
+		dstPath, _, err := cleanUserPath(dir, fh.Filename)
 		if err != nil {
+			_ = src.Close()
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0750); err != nil {
 			_ = src.Close()
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -284,15 +449,24 @@ func (a *App) netdiskDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) netdiskQuota(w http.ResponseWriter, r *http.Request) {
-	root, err := a.userNetdiskRoot(currentUser(r))
+	u := currentUser(r)
+	root, err := a.userNetdiskRoot(u)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	used := dirSize(root)
 	q := map[string]any{"usedBytes": used}
-	if runtime.GOOS == "windows" {
-		q["note"] = "free space is available in admin disk view on Windows"
+	if u.NetdiskQuotaBytes > 0 {
+		q["totalBytes"] = u.NetdiskQuotaBytes
+		free := u.NetdiskQuotaBytes - used
+		if free < 0 {
+			free = 0
+		}
+		q["freeBytes"] = free
+	}
+	if free, err := diskFree(root); err == nil && free >= 0 {
+		q["diskFreeBytes"] = free
 	}
 	writeJSON(w, http.StatusOK, q)
 }
@@ -313,15 +487,22 @@ func dirSize(root string) int64 {
 
 func (a *App) netdiskShareCreate(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
 	root, err := a.userNetdiskRoot(u)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	var req struct {
-		Paths     []string `json:"paths"`
-		Name      string   `json:"name"`
-		Permanent bool     `json:"permanent"`
+		Paths      []string `json:"paths"`
+		Name       string   `json:"name"`
+		Permanent  bool     `json:"permanent"`
+		ExpiresAt  string   `json:"expiresAt"`
+		ExpiresDays int     `json:"expiresDays"`
+		Password   string   `json:"password"`
 	}
 	if err := decodeJSON(r, &req); err != nil || len(req.Paths) == 0 {
 		writeErr(w, http.StatusBadRequest, "paths are required")
@@ -351,9 +532,29 @@ func (a *App) netdiskShareCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	expiresAt := ""
 	if !req.Permanent {
-		expiresAt = time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339)
+		if req.ExpiresAt != "" {
+			if t, err := time.Parse(time.RFC3339, req.ExpiresAt); err == nil && t.After(time.Now()) {
+				expiresAt = t.Format(time.RFC3339)
+			}
+		}
+		if expiresAt == "" {
+			days := req.ExpiresDays
+			if days <= 0 {
+				days = 7
+			}
+			expiresAt = time.Now().Add(time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
+		}
 	}
-	if err := a.db.CreateNetdiskShare(u.ID, token, name, clean, expiresAt, req.Permanent); err != nil {
+	passwordHash := ""
+	if strings.TrimSpace(req.Password) != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		passwordHash = string(hash)
+	}
+	if err := a.db.CreateNetdiskShare(u.ID, token, name, clean, expiresAt, req.Permanent, passwordHash); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -366,6 +567,10 @@ func (a *App) netdiskShares(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) netdiskShareDelete(w http.ResponseWriter, r *http.Request) {
+	if !canMutate(currentUser(r)) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
 	var req struct {
 		Token  string   `json:"token"`
 		Tokens []string `json:"tokens"`
@@ -392,6 +597,10 @@ func (a *App) netdiskSharePublic(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusGone
 		}
 		writeErr(w, status, err.Error())
+		return
+	}
+	if err := checkSharePassword(r, share); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error(), "needsPassword": true})
 		return
 	}
 	reqPath := r.URL.Query().Get("path")
@@ -495,6 +704,10 @@ func (a *App) netdiskShareDownload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, status, err.Error())
 		return
 	}
+	if err := checkSharePassword(r, share); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error(), "needsPassword": true})
+		return
+	}
 	reqPath := r.URL.Query().Get("path")
 	if reqPath == "" && len(share.Paths) == 1 {
 		reqPath = share.Paths[0]
@@ -522,6 +735,10 @@ func (a *App) netdiskShareDownload(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) netdiskShareSave(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
 	dstRoot, err := a.userNetdiskRoot(u)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -557,7 +774,7 @@ func (a *App) netdiskShareSave(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "policy must be overwrite, skip or rename")
 		return
 	}
-	dstDir, dstRel, err := cleanUserPath(dstRoot, req.To)
+	dstDir, _, err := cleanUserPath(dstRoot, req.To)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -580,13 +797,13 @@ func (a *App) netdiskShareSave(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		size := pathSize(src)
-		targetName := filepath.Base(src)
-		targetBase := filepath.Join(dstDir, targetName)
+		// Preserve the original hierarchy by saving under <dst>/<shareName>/<rel>.
+		targetBase := filepath.Join(dstDir, share.Name, rel)
 		if policy == "rename" {
-			targetBase = nextFreeNameWithPlanned(dstDir, targetName, plannedTargets)
+			targetBase = nextFreeNameWithPlanned(filepath.Dir(targetBase), filepath.Base(targetBase), plannedTargets)
 		}
 		plannedTargets[targetBase] = true
-		toCopy = append(toCopy, copyTask{src: src, rel: rel, target: targetBase, name: targetName, size: size})
+		toCopy = append(toCopy, copyTask{src: src, rel: rel, target: targetBase, name: filepath.Base(rel), size: size})
 		required += size
 	}
 
@@ -602,7 +819,8 @@ func (a *App) netdiskShareSave(w http.ResponseWriter, r *http.Request) {
 	count := 0
 	results := make([]map[string]string, 0, len(toCopy))
 	for _, t := range toCopy {
-		res := map[string]string{"path": filepath.ToSlash(t.rel), "target": filepath.ToSlash(filepath.Join(dstRel, filepath.Base(t.target)))}
+		relTarget, _ := filepath.Rel(dstDir, t.target)
+		res := map[string]string{"path": filepath.ToSlash(t.rel), "target": filepath.ToSlash(relTarget)}
 		dstPath := t.target
 		if policy == "skip" {
 			if _, err := os.Stat(dstPath); err == nil {
@@ -640,6 +858,25 @@ func (a *App) resolveShare(token string) (store.NetdiskShare, string, error) {
 }
 
 var errShareExpired = fmt.Errorf("external link expired")
+
+// checkSharePassword verifies the password for password-protected shares.
+// It returns nil when no password is required or the supplied password matches.
+func checkSharePassword(r *http.Request, share store.NetdiskShare) error {
+	if !share.HasPassword {
+		return nil
+	}
+	password := r.URL.Query().Get("password")
+	if password == "" {
+		password = r.Header.Get("X-Share-Password")
+	}
+	if password == "" {
+		return fmt.Errorf("password required")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(share.PasswordHash), []byte(password)); err != nil {
+		return fmt.Errorf("incorrect password")
+	}
+	return nil
+}
 
 func (a *App) netdiskSharesAdmin(w http.ResponseWriter, r *http.Request) {
 	items, err := a.db.AllNetdiskShares()

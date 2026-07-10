@@ -80,6 +80,21 @@
     </div>
   </div>
 
+  <!-- Password prompt modal -->
+  <div class="modal-backdrop" id="passwordBackdrop" hidden>
+    <div class="modal">
+      <div class="modal-head"><h2>Password Required</h2></div>
+      <div class="modal-body">
+        <p>This share is password protected.</p>
+        <input type="password" id="sharePasswordInput" class="input" placeholder="Enter password" style="width:100%;margin-top:12px">
+        <p class="hint" id="passwordError" style="color:#d93025;margin-top:8px"></p>
+      </div>
+      <div class="modal-foot">
+        <button class="primary" id="submitPassword">Unlock</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Login prompt modal -->
   <div class="modal-backdrop" id="loginBackdrop" hidden>
     <div class="modal">

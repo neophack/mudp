@@ -1098,8 +1098,23 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
   min-width: 0;
 }
 .netdisk-crumbs > span { color: var(--muted); }
-.netdisk-used { font-size: 12px; color: var(--ink-soft); white-space: nowrap; }
+.netdisk-used { font-size: 12px; color: var(--ink-soft); white-space: nowrap; display: flex; align-items: center; gap: 8px; }
 .netdisk-used strong { color: var(--ink); font-weight: 700; }
+.netdisk-card.drag-over { outline: 2px dashed var(--accent); outline-offset: -2px; background: #f0f5ff; }
+.quota-bar {
+  display: inline-block;
+  width: 80px;
+  height: 6px;
+  background: #e6e8f0;
+  border-radius: 3px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.quota-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
 
 /* Compact, flat table — tighter than the default data table. */
 .netdisk-table { table-layout: fixed; }
@@ -1113,7 +1128,10 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
 .netdisk-table col.col-size { width: 96px; }
 .netdisk-table col.col-time { width: 150px; }
 .netdisk-table th.actions,
-.netdisk-table td.actions { width: 300px; }
+.netdisk-table td.actions { width: 360px; }
+.netdisk-table th.chk-col,
+.netdisk-table td.chk-col { width: 32px; text-align: center; }
+.netdisk-table td.chk-col input { cursor: pointer; }
 .netdisk-table tr:hover td { background: #f8f9fd; }
 
 .netdisk-file { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -1590,5 +1608,297 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
   }
   .hist-row {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ---------------------------------------------------------------- MCP tab --- */
+
+.mcp-page {
+  display: grid;
+  gap: 14px;
+}
+
+.mcp-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+  gap: 18px;
+  align-items: center;
+  padding: 18px 20px;
+  background: #fff;
+}
+.mcp-eyebrow {
+  display: inline-flex;
+  margin-bottom: 7px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.mcp-hero h2 {
+  margin-bottom: 7px;
+  font-size: 18px;
+}
+.mcp-hero p {
+  max-width: 760px;
+  color: var(--ink-soft);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.mcp-flow {
+  display: grid;
+  grid-template-columns: 1fr 28px;
+  gap: 8px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafbff;
+}
+.mcp-flow span {
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.mcp-flow strong {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+}
+.mcp-card-note {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.mcp-main-grid .card-head {
+  min-width: 0;
+}
+.mcp-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
+  gap: 14px;
+  align-items: start;
+}
+.mcp-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+  padding: 12px;
+}
+.mcp-tool {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  background: #fafbfc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.mcp-tool-name {
+  min-width: 0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.mcp-tool-desc {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.mcp-tool-group {
+  display: contents;
+}
+.mcp-tool-group-title {
+  grid-column: 1 / -1;
+  margin: 6px 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+.mcp-tool-group-title:first-child {
+  margin-top: 0;
+}
+.mcp-transport-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.mcp-transport-row h4 {
+  margin: 0;
+}
+.mcp-transport-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.mcp-transport-btn {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.mcp-transport-btn:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.mcp-transport-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+.mcp-create-form {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+.mcp-create-form label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.mcp-create-form select,
+.mcp-create-form input {
+  min-width: 0;
+}
+.mcp-create-form button {
+  width: 100%;
+  min-height: 36px;
+}
+.mcp-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+.mcp-table-wrap table.data {
+  min-width: 760px;
+}
+.mcp-table-wrap .primary-line,
+.mcp-table-wrap .secondary-line,
+.mcp-table-wrap td {
+  overflow-wrap: anywhere;
+}
+.mcp-table-wrap button.icon {
+  min-width: 38px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Config modal: code blocks with an adjacent copy button. */
+.mcp-config-section {
+  margin-bottom: 16px;
+}
+.mcp-config-section h4 {
+  font-size: 13px;
+  margin: 0 0 6px;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.mcp-copy-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.mcp-code {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.mcp-code-inline {
+  padding: 8px 12px;
+  font-size: 12px;
+  display: block;
+}
+.mcp-copy-btn {
+  flex-shrink: 0;
+  height: fit-content;
+  min-height: 32px;
+}
+
+/* Editable config textarea in the config modal. */
+.mcp-config-editor {
+  width: 100%;
+  min-height: 160px;
+  resize: vertical;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre;
+  overflow-x: auto;
+  margin: 0 0 8px;
+}
+.mcp-config-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.mcp-config-actions {
+  display: flex;
+  gap: 8px;
+}
+.mcp-config-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 6px;
+}
+
+@media (max-width: 1080px) {
+  .mcp-hero,
+  .mcp-main-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .mcp-hero {
+    padding: 14px;
+  }
+  .mcp-tool-grid {
+    grid-template-columns: 1fr;
+  }
+  .mcp-copy-row {
+    flex-direction: column;
+  }
+  .mcp-copy-btn {
+    width: 100%;
   }
 }

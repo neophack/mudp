@@ -17,17 +17,18 @@ type DB struct {
 }
 
 type User struct {
-	ID           int64    `json:"id"`
-	Username     string   `json:"username"`
-	Role         string   `json:"role"`
-	Groups       []string `json:"groups,omitempty"`
-	PortPrefix   int      `json:"portPrefix"`
-	CreatedAt    string   `json:"createdAt"`
-	LastLoginAt  *string  `json:"lastLoginAt,omitempty"`
-	Disabled     bool     `json:"disabled"`
-	ContainerCap int      `json:"containerCap"`
-	FeishuOpenID string   `json:"feishuOpenId,omitempty"`
-	Comment      string   `json:"comment,omitempty"`
+	ID                int64    `json:"id"`
+	Username          string   `json:"username"`
+	Role              string   `json:"role"`
+	Groups            []string `json:"groups,omitempty"`
+	PortPrefix        int      `json:"portPrefix"`
+	CreatedAt         string   `json:"createdAt"`
+	LastLoginAt       *string  `json:"lastLoginAt,omitempty"`
+	Disabled          bool     `json:"disabled"`
+	ContainerCap      int      `json:"containerCap"`
+	NetdiskQuotaBytes int64    `json:"netdiskQuotaBytes"`
+	FeishuOpenID      string   `json:"feishuOpenId,omitempty"`
+	Comment           string   `json:"comment,omitempty"`
 }
 
 // ValidRole reports whether r is one of the supported RBAC roles.
@@ -81,15 +82,17 @@ type ResourceSample struct {
 }
 
 type NetdiskShare struct {
-	Token     string   `json:"token"`
-	OwnerID   int64    `json:"ownerId"`
-	Owner     string   `json:"owner,omitempty"`
-	Name      string   `json:"name"`
-	Paths     []string `json:"paths"`
-	CreatedAt string   `json:"createdAt"`
-	ExpiresAt string   `json:"expiresAt,omitempty"`
-	Permanent bool     `json:"permanent"`
-	Expired   bool     `json:"expired"`
+	Token        string   `json:"token"`
+	OwnerID      int64    `json:"ownerId"`
+	Owner        string   `json:"owner,omitempty"`
+	Name         string   `json:"name"`
+	Paths        []string `json:"paths"`
+	CreatedAt    string   `json:"createdAt"`
+	ExpiresAt    string   `json:"expiresAt,omitempty"`
+	Permanent    bool     `json:"permanent"`
+	Expired      bool     `json:"expired"`
+	PasswordHash string   `json:"-"`
+	HasPassword  bool     `json:"hasPassword"`
 }
 
 func Open(path string) (*DB, error) {
@@ -140,7 +143,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 11
+const schemaVersion = 15
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -168,6 +171,10 @@ var migrations = []migration{
 	{9, "create indexes", migrateCreateIndexes},
 	{10, "widen users.role constraint", migrateWidenRoleConstraint},
 	{11, "create schema_version table", migrateCreateSchemaVersion},
+	{12, "add users.netdisk_quota_bytes", migrateAddNetdiskQuotaBytes},
+	{13, "add netdisk_shares.password_hash", migrateAddSharePasswordHash},
+	{14, "create mcp_tokens", migrateCreateMCPTokens},
+	{15, "add mcp_tokens.token_plaintext", migrateAddMCPTokenPlaintext},
 }
 
 func migrateCreateInitialTables(db executor) error {
@@ -179,6 +186,7 @@ func migrateCreateInitialTables(db executor) error {
 			role text not null,
 			disabled integer not null default 0,
 			container_cap integer not null default 10,
+			netdisk_quota_bytes integer not null default 0,
 			port_prefix integer not null default 0,
 			created_at text not null,
 			last_login_at text,
@@ -249,7 +257,8 @@ func migrateCreateInitialTables(db executor) error {
 			paths_json text not null,
 			created_at text not null,
 			expires_at text not null default '',
-			permanent integer not null default 0
+			permanent integer not null default 0,
+			password_hash text not null default ''
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -284,8 +293,52 @@ func migrateAddUserComment(db executor) error {
 	return execIgnoring(db, `alter table users add column comment text default ''`, sqliteDuplicateColumn)
 }
 
+func migrateAddNetdiskQuotaBytes(db executor) error {
+	return execIgnoring(db, `alter table users add column netdisk_quota_bytes integer not null default 0`, sqliteDuplicateColumn)
+}
+
+func migrateAddSharePasswordHash(db executor) error {
+	return execIgnoring(db, `alter table netdisk_shares add column password_hash text not null default ''`, sqliteDuplicateColumn)
+}
+
 func migrateAddImagePreset(db executor) error {
 	return execIgnoring(db, `alter table images add column preset_json text not null default ''`, sqliteDuplicateColumn)
+}
+
+// migrateCreateMCPTokens creates the table backing per-container MCP access
+// tokens. The cleartext token is stored (token_plaintext) so an admin or owner
+// can view the connection config again later; token_hash remains for fast
+// lookup on incoming requests.
+func migrateCreateMCPTokens(db executor) error {
+	stmts := []string{
+		`create table if not exists mcp_tokens (
+			id integer primary key autoincrement,
+			token_hash text not null unique,
+			token_plaintext text not null default '',
+			container_id text not null,
+			container_name text not null,
+			owner_id integer not null references users(id) on delete cascade,
+			label text not null default '',
+			created_at text not null,
+			last_used_at text not null default '',
+			expires_at text not null default ''
+		)`,
+		`create index if not exists idx_mcp_tokens_container on mcp_tokens(container_id)`,
+		`create index if not exists idx_mcp_tokens_owner on mcp_tokens(owner_id)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateAddMCPTokenPlaintext adds the cleartext column to databases created
+// before it existed. Existing rows get '' (the token shown only at creation was
+// never persisted); new tokens store the cleartext.
+func migrateAddMCPTokenPlaintext(db executor) error {
+	return execIgnoring(db, `alter table mcp_tokens add column token_plaintext text not null default ''`, sqliteDuplicateColumn)
 }
 
 func migrateCreateIndexes(db executor) error {
@@ -428,7 +481,7 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 		return err
 	}
 	if n == 0 {
-		if err := db.CreateUser(adminUser, adminPassword, "admin", nil, 50); err != nil {
+		if err := db.CreateUser(adminUser, adminPassword, "admin", nil, 50, 0); err != nil {
 			return err
 		}
 	}
@@ -459,9 +512,12 @@ func (db *DB) nextPortPrefix(tx *sql.Tx) (int, error) {
 	return next, nil
 }
 
-func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap int) error {
+func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap int, quotaBytes int64) error {
 	if cap <= 0 {
 		cap = 10
+	}
+	if quotaBytes < 0 {
+		quotaBytes = 0
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -476,8 +532,8 @@ func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap 
 	if err != nil {
 		return err
 	}
-	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,port_prefix,created_at) values(?,?,?,?,?,?)`,
-		username, string(hash), role, cap, prefix, time.Now().Format(time.RFC3339))
+	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,netdisk_quota_bytes,port_prefix,created_at) values(?,?,?,?,?,?,?)`,
+		username, string(hash), role, cap, quotaBytes, prefix, time.Now().Format(time.RFC3339))
 	if err != nil {
 		return err
 	}
@@ -494,8 +550,8 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 	var u User
 	var hash string
 	var disabled int
-	err := db.QueryRow(`select id,username,password_hash,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where username=?`, username).
-		Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
+	err := db.QueryRow(`select id,username,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where username=?`, username).
+		Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("invalid username or password")
 	}
@@ -518,8 +574,8 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 func (db *DB) UserByID(id int64) (*User, error) {
 	var u User
 	var disabled int
-	err := db.QueryRow(`select id,username,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where id=?`, id).
-		Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
+	err := db.QueryRow(`select id,username,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where id=?`, id).
+		Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
 	if err != nil {
 		return nil, err
 	}
@@ -537,7 +593,7 @@ func (db *DB) UserByUsername(username string) (*User, error) {
 }
 
 func (db *DB) Users() ([]User, error) {
-	rows, err := db.Query(`select id,username,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,comment from users order by username`)
+	rows, err := db.Query(`select id,username,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users order by username`)
 	if err != nil {
 		return nil, err
 	}
@@ -546,7 +602,7 @@ func (db *DB) Users() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var disabled int
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
@@ -1015,7 +1071,7 @@ func (db *DB) AuditList(f AuditFilter) ([]AuditEntry, error) {
 
 // UpdateUser mutates selected user fields. Zero-valued strings/ints are ignored
 // (password/role left untouched); pass a non-empty value to change it.
-func (db *DB) UpdateUser(id int64, password, role string, containerCap int, disabled *bool) error {
+func (db *DB) UpdateUser(id int64, password, role string, containerCap int, netdiskQuotaBytes *int64, disabled *bool) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -1037,6 +1093,11 @@ func (db *DB) UpdateUser(id int64, password, role string, containerCap int, disa
 	}
 	if containerCap > 0 {
 		if _, err := tx.Exec(`update users set container_cap=? where id=?`, containerCap, id); err != nil {
+			return err
+		}
+	}
+	if netdiskQuotaBytes != nil {
+		if _, err := tx.Exec(`update users set netdisk_quota_bytes=? where id=?`, *netdiskQuotaBytes, id); err != nil {
 			return err
 		}
 	}
@@ -1114,7 +1175,7 @@ func (db *DB) ResourceSamples(userID int64, admin bool, since time.Time) ([]Reso
 	return out, rows.Err()
 }
 
-func (db *DB) CreateNetdiskShare(ownerID int64, token, name string, paths []string, expiresAt string, permanent bool) error {
+func (db *DB) CreateNetdiskShare(ownerID int64, token, name string, paths []string, expiresAt string, permanent bool, passwordHash string) error {
 	raw, err := json.Marshal(paths)
 	if err != nil {
 		return err
@@ -1123,8 +1184,8 @@ func (db *DB) CreateNetdiskShare(ownerID int64, token, name string, paths []stri
 	if permanent {
 		permanentInt = 1
 	}
-	_, err = db.Exec(`insert into netdisk_shares(token, owner_id, name, paths_json, created_at, expires_at, permanent) values(?,?,?,?,?,?,?)`,
-		token, ownerID, strings.TrimSpace(name), string(raw), time.Now().Format(time.RFC3339), expiresAt, permanentInt)
+	_, err = db.Exec(`insert into netdisk_shares(token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash) values(?,?,?,?,?,?,?,?)`,
+		token, ownerID, strings.TrimSpace(name), string(raw), time.Now().Format(time.RFC3339), expiresAt, permanentInt, passwordHash)
 	return err
 }
 
@@ -1132,13 +1193,14 @@ func (db *DB) NetdiskShare(token string) (NetdiskShare, error) {
 	var s NetdiskShare
 	var raw string
 	var permanent int
-	err := db.QueryRow(`select token, owner_id, name, paths_json, created_at, expires_at, permanent from netdisk_shares where token=?`, token).
-		Scan(&s.Token, &s.OwnerID, &s.Name, &raw, &s.CreatedAt, &s.ExpiresAt, &permanent)
+	err := db.QueryRow(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash from netdisk_shares where token=?`, token).
+		Scan(&s.Token, &s.OwnerID, &s.Name, &raw, &s.CreatedAt, &s.ExpiresAt, &permanent, &s.PasswordHash)
 	if err != nil {
 		return s, err
 	}
 	_ = json.Unmarshal([]byte(raw), &s.Paths)
 	s.Permanent = permanent != 0
+	s.HasPassword = s.PasswordHash != ""
 	s.Expired = netdiskShareExpired(s)
 	if owner, err := db.usernameByID(s.OwnerID); err == nil {
 		s.Owner = owner
@@ -1147,12 +1209,12 @@ func (db *DB) NetdiskShare(token string) (NetdiskShare, error) {
 }
 
 func (db *DB) NetdiskShares(ownerID int64) ([]NetdiskShare, error) {
-	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent from netdisk_shares where owner_id=? order by created_at desc`, ownerID)
+	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash from netdisk_shares where owner_id=? order by created_at desc`, ownerID)
 	return scanNetdiskShares(rows, err)
 }
 
 func (db *DB) AllNetdiskShares() ([]NetdiskShare, error) {
-	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent from netdisk_shares order by created_at desc`)
+	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash from netdisk_shares order by created_at desc`)
 	items, err := scanNetdiskShares(rows, err)
 	if err != nil {
 		return nil, err
@@ -1175,11 +1237,12 @@ func scanNetdiskShares(rows *sql.Rows, err error) ([]NetdiskShare, error) {
 		var s NetdiskShare
 		var raw string
 		var permanent int
-		if err := rows.Scan(&s.Token, &s.OwnerID, &s.Name, &raw, &s.CreatedAt, &s.ExpiresAt, &permanent); err != nil {
+		if err := rows.Scan(&s.Token, &s.OwnerID, &s.Name, &raw, &s.CreatedAt, &s.ExpiresAt, &permanent, &s.PasswordHash); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(raw), &s.Paths)
 		s.Permanent = permanent != 0
+		s.HasPassword = s.PasswordHash != ""
 		s.Expired = netdiskShareExpired(s)
 		out = append(out, s)
 	}

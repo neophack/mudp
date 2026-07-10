@@ -219,7 +219,7 @@ export async function streamPull(payload) {
     const res = await fetch("/api/images/pull/stream", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
@@ -320,7 +320,7 @@ async function streamBuild(payload) {
     const res = await fetch("/api/images/build/stream", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
@@ -402,7 +402,7 @@ async function streamImport(file) {
       method: "POST",
       credentials: "same-origin",
       body: file,
-      headers: { Accept: "text/event-stream" },
+      headers: { Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));

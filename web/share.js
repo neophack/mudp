@@ -9,6 +9,7 @@ const state = {
   me: null,
   pickerPath: "",
   pickerItems: [],
+  password: "",
 };
 
 const $ = (s) => document.querySelector(s);
@@ -88,7 +89,7 @@ async function loadShare(path = "") {
   state.path = path;
   $("#shareBody").innerHTML = `<div class="share-loading">Loading file list…</div>`;
   try {
-    const data = await api(`/api/netdisk/share/public?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(path)}`);
+    const data = await shareApi(`/api/netdisk/share/public?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(path)}`);
     state.share = data.share;
     state.items = data.items || [];
     renderShareMeta();
@@ -98,6 +99,48 @@ async function loadShare(path = "") {
     $("#shareBody").innerHTML = `<div class="share-error">${escapeHtml(e.message)}</div>`;
     $("#shareName").textContent = "Load failed";
   }
+}
+
+async function shareApi(path, opts = {}) {
+  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+  if (state.password) {
+    headers["X-Share-Password"] = state.password;
+  }
+  const res = await fetch(path, {
+    credentials: "same-origin",
+    headers,
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 401 && data.needsPassword) {
+      openPasswordPrompt();
+    }
+    const err = new Error(data.error || res.statusText);
+    err.status = res.status;
+    err.needsPassword = data.needsPassword;
+    throw err;
+  }
+  return data;
+}
+
+function openPasswordPrompt() {
+  $("#passwordBackdrop").hidden = false;
+  $("#sharePasswordInput").focus();
+}
+
+function closePasswordPrompt() {
+  $("#passwordBackdrop").hidden = true;
+  $("#passwordError").textContent = "";
+}
+
+async function submitPassword() {
+  const input = $("#sharePasswordInput");
+  const password = input.value.trim();
+  if (!password) return;
+  state.password = password;
+  closePasswordPrompt();
+  await loadShare(state.path);
 }
 
 function renderShareMeta() {
@@ -164,7 +207,7 @@ function renderItems() {
       <td>${nameCell}</td>
       <td class="share-size">${f.dir ? "-" : fmtBytes(f.size)}</td>
       <td class="share-time">${escapeHtml(new Date(f.modTime).toLocaleString())}</td>
-      <td class="actions"><a class="ghost-link" href="/api/netdisk/share/download?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(f.path)}&ts=${Date.now()}">Download</a></td>
+      <td class="actions"><a class="ghost-link" href="${downloadURL(f.path)}">Download</a></td>
     </tr>`;
   }).join("");
   $("#shareBody").innerHTML = `<table class="data share-table"><thead><tr><th class="chk-col"><input type="checkbox" class="chk" id="selectAllBox"></th><th>Name</th><th>Size</th><th>Modified</th><th class="actions">Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
@@ -359,18 +402,23 @@ function bindEvents() {
   $("#downloadAllBtn").onclick = () => {
     if (!state.items.length) return;
     if (state.items.length === 1) {
-      location.href = `/api/netdisk/share/download?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(state.items[0].path)}&ts=${Date.now()}`;
+      location.href = downloadURL(state.items[0].path);
       return;
     }
     // Multiple top-level items: download each in turn.
     state.items.forEach((f, i) => {
       setTimeout(() => {
         const a = document.createElement("a");
-        a.href = `/api/netdisk/share/download?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(f.path)}&ts=${Date.now()}`;
+        a.href = downloadURL(f.path);
         a.download = "";
         a.click();
       }, i * 300);
     });
+  };
+
+  $("#submitPassword").onclick = submitPassword;
+  $("#sharePasswordInput").onkeydown = (e) => {
+    if (e.key === "Enter") submitPassword();
   };
 
   $("#loginBtn").onclick = openLogin;
@@ -403,10 +451,16 @@ function bindEvents() {
   });
 }
 
+function downloadURL(path) {
+  const pw = state.password ? `&password=${encodeURIComponent(state.password)}` : "";
+  return `/api/netdisk/share/download?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(path)}${pw}&ts=${Date.now()}`;
+}
+
 function closeTopModal() {
   // Picker takes precedence over the login prompt when both are shown.
   if (!$("#pickerBackdrop").hidden) closePicker();
   else if (!$("#loginBackdrop").hidden) closeLogin();
+  else if (!$("#passwordBackdrop").hidden) closePasswordPrompt();
 }
 
 init();

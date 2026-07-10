@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"mudp/internal/auth"
 	"mudp/internal/config"
 	"mudp/internal/dockerx"
+	"mudp/internal/mcp"
 	"mudp/internal/middleware"
 	"mudp/internal/store"
 	"mudp/web"
@@ -37,7 +39,9 @@ type App struct {
 	db               *store.DB
 	docker           *dockerx.Client
 	auth             auth.Signer
+	mcpHub           *mcp.SSEHub
 	lastSnapshot     time.Time
+	snapshotMu       sync.Mutex
 	cacheMu          sync.RWMutex
 	refreshMu        sync.Mutex
 	cachedSystem     dockerx.SystemInfo
@@ -61,6 +65,7 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 	}
 	return &App{
 		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret, cfg.Production()),
+		mcpHub: mcp.NewSSEHub(),
 	}, nil
 }
 
@@ -125,6 +130,13 @@ func (a *App) Routes() http.Handler {
 	r.Get("/pan/{token}", a.netdiskSharePage)
 	r.Handle("/api/dashboard", a.requireRole(rankUser, a.dashboard))
 
+	// MCP Streamable HTTP endpoint (bearer-token authenticated, independent of
+	// the browser session — registered outside the CSRF group on purpose).
+	r.Post("/mcp/{token}", a.mcpStreamableHTTP)
+	// MCP SSE transport: GET opens the event stream, POST sends JSON-RPC.
+	r.Get("/mcp/{token}/sse", a.mcpSSE)
+	r.Post("/mcp/{token}/messages", a.mcpMessages)
+
 	// Activated-user business endpoints (any non-pending role).
 	r.Group(func(r chi.Router) {
 		r.Use(apiRateLimiter.Middleware)
@@ -178,6 +190,7 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/netdisk/mkdir", a.netdiskMkdir)
 		r.Post("/api/netdisk/delete", a.netdiskDelete)
 		r.Post("/api/netdisk/rename", a.netdiskRename)
+		r.Post("/api/netdisk/copy", a.netdiskCopy)
 		r.Post("/api/netdisk/upload", a.netdiskUpload)
 		r.Get("/api/netdisk/download", a.netdiskDownload)
 		r.Get("/api/netdisk/quota", a.netdiskQuota)
@@ -189,6 +202,12 @@ func (a *App) Routes() http.Handler {
 		// detail; users see the shared GPU/CPU/memory snapshot of the host they run on).
 		r.Get("/api/hardware", a.hardwareSnapshot)
 		r.Get("/api/hardware/gpus", a.hardwareGPUList)
+		// MCP token management: list/create/delete per-container access tokens
+		// for AI tools (Claude Code, Codex, Kimi). The mutating endpoints
+		// additionally check canMutate() inside the handler.
+		r.Get("/api/mcp/tokens", a.mcpTokenList)
+		r.Post("/api/mcp/tokens", a.mcpTokenCreate)
+		r.Delete("/api/mcp/tokens/{id}", a.mcpTokenDelete)
 	})
 
 	// Operator+ : image group visibility (assign images to groups). Pull/build/import are
@@ -254,18 +273,33 @@ func (a *App) Routes() http.Handler {
 }
 
 // staticHandler serves the web console from the embedded FS by default, or from
-// cfg.WebDir when set (so frontend edits don't need a rebuild).
+// cfg.WebDir when set (so frontend edits don't need a rebuild). Unknown paths
+// fall back to index.html so deep links to SPA routes (e.g. /containers) work.
 func (a *App) staticHandler() http.Handler {
+	var fsys fs.FS
 	if a.cfg.WebDir != "" {
-		return http.StripPrefix("/", http.FileServer(http.Dir(a.cfg.WebDir)))
+		fsys = os.DirFS(a.cfg.WebDir)
+	} else {
+		content, err := fs.Sub(web.Files, ".")
+		if err != nil {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeErr(w, http.StatusInternalServerError, "static assets unavailable")
+			})
+		}
+		fsys = content
 	}
-	content, err := fs.Sub(web.Files, ".")
-	if err != nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			writeErr(w, http.StatusInternalServerError, "static assets unavailable")
-		})
-	}
-	return http.FileServer(http.FS(content))
+	fileServer := http.FileServer(http.FS(fsys))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			path = "index.html"
+		}
+		if _, err := fs.Stat(fsys, path); err != nil {
+			// Let the SPA router handle the client-side route.
+			r.URL.Path = "/"
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 // authMiddleware loads the session user into the request context, or rejects.
@@ -355,9 +389,10 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 	// Surface pending state so the UI can show the waiting-for-approval screen.
 	type meUser struct {
 		*store.User
-		Pending bool `json:"pending"`
+		Pending    bool   `json:"pending"`
+		CSRFToken string `json:"csrfToken,omitempty"`
 	}
-	writeJSON(w, http.StatusOK, meUser{User: u, Pending: isPending(u)})
+	writeJSON(w, http.StatusOK, meUser{User: u, Pending: isPending(u), CSRFToken: middleware.CSRFTokenFromRequest(r)})
 }
 
 // isPending reports whether a user is still awaiting admin approval: a non-admin
@@ -383,11 +418,12 @@ func (a *App) users(w http.ResponseWriter, r *http.Request) {
 		respond(w, users, err)
 	case http.MethodPost:
 		var req struct {
-			Username     string  `json:"username"`
-			Password     string  `json:"password"`
-			Role         string  `json:"role"`
-			GroupIDs     []int64 `json:"groupIds"`
-			ContainerCap int     `json:"containerCap"`
+			Username          string  `json:"username"`
+			Password          string  `json:"password"`
+			Role              string  `json:"role"`
+			GroupIDs          []int64 `json:"groupIds"`
+			ContainerCap      int     `json:"containerCap"`
+			NetdiskQuotaBytes int64   `json:"netdiskQuotaBytes"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
@@ -404,7 +440,7 @@ func (a *App) users(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "username and password are required")
 			return
 		}
-		if err := a.db.CreateUser(req.Username, req.Password, req.Role, req.GroupIDs, req.ContainerCap); err != nil {
+		if err := a.db.CreateUser(req.Username, req.Password, req.Role, req.GroupIDs, req.ContainerCap, req.NetdiskQuotaBytes); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -926,6 +962,10 @@ func (a *App) ownedContainerIDs(ctx context.Context, u *store.User) (map[string]
 // idOwnedBy reports whether id (or a prefix of one) is in the owned set. When
 // owned is nil (admin), everything is owned.
 func idOwnedBy(owned map[string]bool, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
 	if owned == nil {
 		return true
 	}
@@ -974,6 +1014,12 @@ func (a *App) containerBatch(w http.ResponseWriter, r *http.Request) {
 	var ok, failed []string
 	var failures []batchFailure
 	for _, id := range req.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			failures = append(failures, batchFailure{ID: id, Error: "id is required"})
+			failed = append(failed, id)
+			continue
+		}
 		if !idOwnedBy(owned, id) {
 			failures = append(failures, batchFailure{ID: id, Error: "container is not yours"})
 			failed = append(failed, id)

@@ -13,6 +13,16 @@ import (
 const csrfCookieName = "mudp_csrf"
 const csrfHeaderName = "X-CSRF-Token"
 
+// CSRFTokenFromRequest returns the current CSRF token from the request cookie,
+// or an empty string if none is present.
+func CSRFTokenFromRequest(r *http.Request) string {
+	cookie, err := r.Cookie(csrfCookieName)
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
 // CSRFProtect requires a matching CSRF token cookie/header for state-changing
 // requests. Safe methods (GET/HEAD/OPTIONS/TRACE) are exempt.
 func CSRFProtect(next http.Handler) http.Handler {
@@ -48,7 +58,7 @@ func CSRFToken(w http.ResponseWriter, secure bool) (string, error) {
 		Name:     csrfCookieName,
 		Value:    token,
 		Path:     "/",
-		HttpOnly: true,
+		HttpOnly: false,
 		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	}

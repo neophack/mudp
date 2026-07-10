@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 
 	"mudp/internal/dockerx"
@@ -43,7 +44,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	// Admins see platform-wide counts; everyone else sees only their own
 	// resource footprint so the dashboard reflects what they actually own.
-	sys := a.dashboardSystem(u.Username, u.Role == "admin")
+	sys := a.dashboardSystem(r.Context(), u.Username, u.Role == "admin")
 
 	items := a.runtimeContainers(u.Username, u.Role == "admin")
 	mine := mineRollup{Cap: u.ContainerCap}
@@ -73,25 +74,13 @@ func buildUsage(r *http.Request, a *App) []usageRow {
 	return buildUsageFromContainers(r, a, items)
 }
 
-func (a *App) dashboardSystem(username string, admin bool) dockerx.SystemInfo {
-	sys := a.runtimeSystem()
+func (a *App) dashboardSystem(ctx context.Context, username string, admin bool) dockerx.SystemInfo {
 	if admin {
-		return sys
+		return a.runtimeSystem()
 	}
-	items := a.runtimeContainers(username, false)
-	cs := dockerx.ContainerStats{Total: len(items)}
-	for _, c := range items {
-		switch c.State {
-		case "running":
-			cs.Running++
-		case "paused":
-			cs.Paused++
-		case "exited", "dead", "created":
-			cs.Stopped++
-		}
-	}
-	sys.Containers = cs
-	return sys
+	// Use the Docker-aware per-user scoping helper so non-admins do not see
+	// platform-wide image/volume/network counts.
+	return a.docker.SystemInfoForUser(ctx, username)
 }
 
 func buildUsageFromContainers(r *http.Request, a *App, items []dockerx.Container) []usageRow {

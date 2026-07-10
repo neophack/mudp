@@ -75,7 +75,7 @@ export function openCreateModal() {
           `</div>` +
           `<input name="capAdd" placeholder="cap-add (comma-separated, e.g. SYS_PTRACE)">` +
           `<input name="capDrop" placeholder="cap-drop (comma-separated)">` +
-          `<textarea name="labels" placeholder="Custom labels, one key=value per line"></textarea>` +
+          `<textarea name="labels" placeholder="Custom labels, one key=value per line&#10;e.g. mcp.capability=go,nodejs&#10;e.g. mcp.runtime=java17"></textarea>` +
         `</details>` +
       `</form>`,
     foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="createSubmit">Create and Start</button>`,
@@ -219,10 +219,12 @@ export async function streamCreate(payload) {
   state.create = { active: true, steps: [], logs: "", error: "" };
   renderCreateProgress();
   try {
+    const headers = { "Content-Type": "application/json", Accept: "text/event-stream" };
+    if (state.csrfToken) headers["X-CSRF-Token"] = state.csrfToken;
     const res = await fetch("/api/containers/create/stream", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers,
       body: JSON.stringify(payload),
     });
     if (!res.ok) {

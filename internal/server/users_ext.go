@@ -28,12 +28,13 @@ func (a *App) userUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		ID           int64  `json:"id"`
-		Password     string `json:"password"`
-		Role         string `json:"role"`
-		ContainerCap int    `json:"containerCap"`
-		PortPrefix   int    `json:"portPrefix"`
-		Disabled     *bool  `json:"disabled"`
+		ID                int64  `json:"id"`
+		Password          string `json:"password"`
+		Role              string `json:"role"`
+		ContainerCap      int    `json:"containerCap"`
+		NetdiskQuotaBytes *int64 `json:"netdiskQuotaBytes"`
+		PortPrefix        int    `json:"portPrefix"`
+		Disabled          *bool  `json:"disabled"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -64,7 +65,7 @@ func (a *App) userUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "port prefix must be between 0 and 655")
 		return
 	}
-	if err := a.db.UpdateUser(req.ID, req.Password, req.Role, req.ContainerCap, req.Disabled); err != nil {
+	if err := a.db.UpdateUser(req.ID, req.Password, req.Role, req.ContainerCap, req.NetdiskQuotaBytes, req.Disabled); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

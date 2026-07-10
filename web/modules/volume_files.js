@@ -4,7 +4,7 @@
 // Mirrors the table styling of files.js (the dual-pane container/netdisk
 // explorer) but operates only on the volume filesystem.
 
-import { api, toast, canMutate } from "../app.js";
+import { api, toast, canMutate, state } from "../app.js";
 import { showModalNoShell } from "./ui.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -223,7 +223,8 @@ async function doUpload(fileList) {
       fd.append("name", session.fullName);
       fd.append("path", session.path || "");
       fd.append("files", file, file.name);
-      const res = await fetch("/api/volumes/files/upload", { method: "POST", credentials: "same-origin", body: fd });
+      const headers = state.csrfToken ? { "X-CSRF-Token": state.csrfToken } : undefined;
+      const res = await fetch("/api/volumes/files/upload", { method: "POST", credentials: "same-origin", headers, body: fd });
       if (res.ok) ok++;
       else {
         const data = await res.json().catch(() => ({}));
