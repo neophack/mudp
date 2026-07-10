@@ -1,0 +1,27 @@
+{
+  "name": "mudp-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.js",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test": "npm run lint && npm run test:unit && npm run test:integration && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.6.0",
+    "@playwright/test": "^1.45.0",
+    "@testing-library/dom": "^10.3.0",
+    "@testing-library/user-event": "^14.5.0",
+    "eslint": "^9.6.0",
+    "globals": "^15.8.0",
+    "jsdom": "^24.1.0",
+    "playwright": "^1.45.0",
+    "vitest": "^2.0.0"
+  }
+}

@@ -7,7 +7,7 @@
 // resetting their graphs on restart) so CPU/memory get an htop-style trend
 // chart and GPUs/sensors get nvtop/lm-sensors-style trend sparklines.
 
-import { state, api, escapeHtml } from "../app.js";
+import { api, escapeHtml } from "../app.js";
 
 const POLL_MS = 5000;
 // 120 samples @ 5s = 10 minutes of history, similar to htop's default window.

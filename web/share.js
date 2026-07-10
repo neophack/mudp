@@ -45,10 +45,6 @@ function getToken() {
   return meta?.content || window.__SHARE_TOKEN__ || location.pathname.split("/").pop();
 }
 
-function getPath() {
-  return state.path || "";
-}
-
 function joinPath(a, b) {
   return [a, b].filter((x) => x != null && x !== "").join("/");
 }

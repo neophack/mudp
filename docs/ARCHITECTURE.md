@@ -46,7 +46,7 @@ mudp/
 - `feishu.go`：飞书 OAuth 登录回调，新用户落库为 `pending`，待管理员分配角色。
 
 ### internal/config
-全部来自环境变量（`MUDP_ADDR`、`MUDP_DB`、`MUDP_ADMIN_USER`、`MUDP_ADMIN_PASSWORD`、`MUDP_DOCKER_HOST`、`MUDP_WEB_DIR`）。**会话密钥默认每次启动随机生成**——若未设 `MUDP_SESSION_SECRET`，每次重启所有会话失效（见问题 #12）。
+全部来自环境变量（`MUDP_ADDR`、`MUDP_DB`、`MUDP_ADMIN_USER`、`MUDP_ADMIN_PASSWORD`、`MUDP_DOCKER_HOST`、`MUDP_WEB_DIR`）。**会话密钥默认每次启动随机生成**——若未设 `MUDP_SESSION_SECRET`，每次重启所有会话失效；日志会输出 WARNING 提示（见问题 #12）。
 
 ### internal/store
 SQLite + modernc.org/sqlite（纯 Go 驱动，无 CGO）。连接池 8 开 4 闲。10 张表：`users / groups / user_groups / images / group_images / audit_logs / stacks / settings(kv) / resource_samples / netdisk_shares`。外键级联开启。
@@ -141,7 +141,7 @@ HTTP 层，chi 路由。见 §4。
 6. **`escapeHtml` 复制 16 份**（见 §5），维护与一致性风险。
 7. **`server.go`(1321)/`docker.go`(1154) 过大**，`_ext.go` 约定无意义（见 §3、§4）。
 8. **N+1 查询**：`Users()`(`store.go:368`)、`ImagesForUser()`(`449`)、`StacksForUser()`(`1195`)、`AllNetdiskShares()`(`1057`) 列表为每行发一条 group/owner 名查询；仪表盘 `buildUsage()` 对每用户循环 `ListContainers`，冷缓存时还会各起一次 `nvidia-smi`。
-9. **默认管理员口令 `admin123`**（`config.go:29`）；会话密钥默认每次启动随机（`config.go:27`），未设 `MUDP_SESSION_SECRET` 时每次重启登出全部用户，且无告警日志。
+9. **管理员口令未设置时随机生成**（`config.go`）；会话密钥默认每次启动随机（`config.go`），未设 `MUDP_SESSION_SECRET` 时每次重启登出全部用户，但会输出 WARNING 日志。
 10. **令牌明文存储**（`store.go:1218` 注释自承认）：registry token、飞书 app secret 以明文存于 `settings` 表。
 11. **磁盘 mount/unmount 把用户路径拼进 PowerShell/`mount`**（`disks.go:78,84,104,106`）：PowerShell 用 `%q` 不是稳健的 shell 转义；仅管理员可用降低了风险，但仍是命令注入面。
 

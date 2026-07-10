@@ -17,11 +17,16 @@ import { renderSettings } from "./modules/settings.js";
 import { renderNetdisk } from "./modules/netdisk.js";
 import { renderDisks } from "./modules/disks.js";
 import { renderHardware, stopPolling as stopHardwarePolling } from "./modules/hardware.js";
+import { escapeHtml, fmtBytes, fmtMB, roleRank, isAdminUser, canMutateUser } from "./lib/common.js";
+
+// Re-export shared utilities so existing modules can keep importing them from app.js.
+export { escapeHtml, fmtBytes, fmtMB, roleRank };
 
 // ---------------- Shared state ----------------
 
 export const state = {
   me: null,
+  csrfToken: "",
   feishu: false,
   dashboard: null,
   images: [],
@@ -55,24 +60,13 @@ export const state = {
   sidebarCollapsed: localStorage.getItem("mudp:sidebar") === "collapsed",
 };
 
-// Role helpers mirror the backend ranks. Higher rank = more powerful.
-export const ROLE_RANK = {
-  readonly: 10,
-  helpdesk: 20,
-  user: 30,
-  operator: 40,
-  admin: 50,
-};
-export function roleRank(r) {
-  return ROLE_RANK[r] || 0;
-}
+// Backward-compatible helpers that operate on global state. New code should use
+// the pure versions from ./lib/common.js when possible.
 export function isAdmin() {
-  return roleRank(state.me?.role) >= ROLE_RANK.admin;
+  return isAdminUser(state.me);
 }
-// canMutate mirrors the backend: only admin/operator/user may write.
 export function canMutate() {
-  const r = roleRank(state.me?.role);
-  return r === ROLE_RANK.admin || r === ROLE_RANK.operator || r === ROLE_RANK.user;
+  return canMutateUser(state.me);
 }
 
 // ---------------- Core helpers ----------------
@@ -83,9 +77,14 @@ export async function api(path, opts = {}) {
   // Pull headers out of opts so the merged Content-Type below is not clobbered
   // by a trailing ...opts spread re-applying the caller's original headers.
   const { headers, ...rest } = opts;
+  const method = (opts.method || "GET").toUpperCase();
+  const mergedHeaders = { "Content-Type": "application/json", ...(headers || {}) };
+  if (state.csrfToken && method !== "GET" && method !== "HEAD") {
+    mergedHeaders["X-CSRF-Token"] = state.csrfToken;
+  }
   const res = await fetch(path, {
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...(headers || {}) },
+    headers: mergedHeaders,
     ...rest,
   });
   const data = await res.json().catch(() => ({}));
@@ -105,23 +104,22 @@ export function toast(msg, ok = false) {
   setTimeout(() => el.remove(), 3400);
 }
 
-export function escapeHtml(v) {
-  return String(v ?? "").replace(/[&<>"']/g, (m) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  }[m]));
-}
+
 
 // ---------------- Boot sequence ----------------
 
+export function readCSRFCookie() {
+  const m = document.cookie.match(/(?:^|; )mudp_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
 export async function load() {
   try {
+    state.csrfToken = readCSRFCookie();
     const me = await api("/api/me");
     if (!me || me.authenticated === false) {
       state.me = null;
+      state.csrfToken = "";
       renderLogin();
       return;
     }

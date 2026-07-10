@@ -118,7 +118,7 @@ func Open(path string) (*DB, error) {
 // execIgnoring runs stmt and returns nil when the error message contains any
 // of the ignored fragments. It is used for idempotent schema migrations where
 // the target object may already exist.
-func execIgnoring(db *sql.DB, stmt string, ignore ...string) error {
+func execIgnoring(db executor, stmt string, ignore ...string) error {
 	_, err := db.Exec(stmt)
 	if err == nil {
 		return nil
@@ -138,12 +138,40 @@ const (
 	sqliteDuplicateIndex  = "index .* already exists"
 )
 
-func (db *DB) Migrate(adminUser, adminPassword string) error {
+// schemaVersion is bumped whenever a new migration is added. New databases are
+// created directly at this version; existing databases are migrated forward.
+const schemaVersion = 11
+
+// executor is implemented by both *sql.DB and *sql.Tx.
+type executor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// migration is a single schema change.
+type migration struct {
+	version int
+	name    string
+	apply   func(executor) error
+}
+
+var migrations = []migration{
+	{1, "create initial tables", migrateCreateInitialTables},
+	{2, "add users.feishu_open_id", migrateAddFeishuOpenID},
+	{3, "add users.port_prefix", migrateAddPortPrefix},
+	{4, "add groups.netdisk_path", migrateAddGroupNetdiskPath},
+	{5, "add netdisk_shares.expires_at", migrateAddShareExpiresAt},
+	{6, "add netdisk_shares.permanent", migrateAddSharePermanent},
+	{7, "add users.comment", migrateAddUserComment},
+	{8, "add images.preset_json", migrateAddImagePreset},
+	{9, "create indexes", migrateCreateIndexes},
+	{10, "widen users.role constraint", migrateWidenRoleConstraint},
+	{11, "create schema_version table", migrateCreateSchemaVersion},
+}
+
+func migrateCreateInitialTables(db executor) error {
 	stmts := []string{
-		// users table is created without a CHECK on role: the application layer
-		// (store.ValidRole) validates role values. This avoids painful table
-		// rebuilds when the supported role set grows. Existing DBs keep their
-		// (possibly narrower) CHECK; widenRoleConstraint below relaxes it.
 		`create table if not exists users (
 			id integer primary key autoincrement,
 			username text not null unique,
@@ -154,6 +182,7 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			port_prefix integer not null default 0,
 			created_at text not null,
 			last_login_at text,
+			feishu_open_id text default '',
 			comment text default ''
 		)`,
 		`create table if not exists groups (
@@ -171,7 +200,8 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			display_name text not null unique,
 			docker_ref text not null unique,
 			source_ref text not null,
-			created_at text not null
+			created_at text not null,
+			preset_json text not null default ''
 		)`,
 		`create table if not exists group_images (
 			group_id integer not null references groups(id) on delete cascade,
@@ -227,50 +257,172 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			return err
 		}
 	}
-	// Add feishu_open_id column if missing (idempotent across older DBs).
-	// ALTER TABLE ADD COLUMN is safe to ignore when the column already exists;
-	// other errors are surfaced so the schema cannot end up inconsistent.
-	if err := execIgnoring(db.DB, `alter table users add column feishu_open_id text default ''`, sqliteDuplicateColumn); err != nil {
+	return nil
+}
+
+func migrateAddFeishuOpenID(db executor) error {
+	return execIgnoring(db, `alter table users add column feishu_open_id text default ''`, sqliteDuplicateColumn)
+}
+
+func migrateAddPortPrefix(db executor) error {
+	return execIgnoring(db, `alter table users add column port_prefix integer not null default 0`, sqliteDuplicateColumn)
+}
+
+func migrateAddGroupNetdiskPath(db executor) error {
+	return execIgnoring(db, `alter table groups add column netdisk_path text not null default ''`, sqliteDuplicateColumn)
+}
+
+func migrateAddShareExpiresAt(db executor) error {
+	return execIgnoring(db, `alter table netdisk_shares add column expires_at text not null default ''`, sqliteDuplicateColumn)
+}
+
+func migrateAddSharePermanent(db executor) error {
+	return execIgnoring(db, `alter table netdisk_shares add column permanent integer not null default 0`, sqliteDuplicateColumn)
+}
+
+func migrateAddUserComment(db executor) error {
+	return execIgnoring(db, `alter table users add column comment text default ''`, sqliteDuplicateColumn)
+}
+
+func migrateAddImagePreset(db executor) error {
+	return execIgnoring(db, `alter table images add column preset_json text not null default ''`, sqliteDuplicateColumn)
+}
+
+func migrateCreateIndexes(db executor) error {
+	stmts := []string{
+		`create unique index if not exists idx_users_feishu_open_id on users(feishu_open_id) where feishu_open_id != ''`,
+		`create index if not exists idx_audit_created on audit_logs(created_at desc)`,
+		`create index if not exists idx_resource_samples_created on resource_samples(created_at desc)`,
+		`create index if not exists idx_resource_samples_user_created on resource_samples(user_id, created_at desc)`,
+		`create index if not exists idx_netdisk_shares_owner on netdisk_shares(owner_id, created_at desc)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateWidenRoleConstraint relaxes an older users.role CHECK that only allowed
+// ('admin','user'). It is a no-op when the constraint is already permissive or
+// absent. The rebuild preserves every column and row, including auto-increment
+// continuity, by deriving the column list from the current table schema.
+func migrateWidenRoleConstraint(db executor) error {
+	var tableSQL string
+	err := db.QueryRow(`select sql from sqlite_master where type='table' and name='users'`).Scan(&tableSQL)
+	if err != nil {
 		return err
 	}
-	if err := execIgnoring(db.DB, `alter table users add column port_prefix integer not null default 0`, sqliteDuplicateColumn); err != nil {
+	// Only rebuild when the old restrictive CHECK is still present.
+	if !strings.Contains(tableSQL, "check(role in ('admin','user'))") {
+		return nil
+	}
+	// Build the new table definition from the current schema columns so that no
+	// column can be accidentally dropped or re-created with a different default.
+	rows, err := db.Query(`PRAGMA table_info(users)`)
+	if err != nil {
 		return err
 	}
-	if err := execIgnoring(db.DB, `alter table groups add column netdisk_path text not null default ''`, sqliteDuplicateColumn); err != nil {
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var name, typ string
+		var cid, notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		col := name + " " + typ
+		if notnull != 0 {
+			col += " not null"
+		}
+		if dflt.Valid {
+			col += " default " + dflt.String
+		}
+		if pk != 0 {
+			col += " primary key autoincrement"
+		}
+		cols = append(cols, col)
+	}
+	if err := rows.Err(); err != nil {
 		return err
 	}
-	if err := execIgnoring(db.DB, `alter table netdisk_shares add column expires_at text not null default ''`, sqliteDuplicateColumn); err != nil {
-		return err
+	if len(cols) == 0 {
+		return fmt.Errorf("unable to read users table schema")
 	}
-	if err := execIgnoring(db.DB, `alter table netdisk_shares add column permanent integer not null default 0`, sqliteDuplicateColumn); err != nil {
-		return err
+	createStmt := "create table users_new (" + strings.Join(cols, ", ") + ")"
+	steps := []string{
+		`alter table users rename to users_old`,
+		createStmt,
+		`insert into users_new select * from users_old`,
+		`drop table users_old`,
+		`alter table users_new rename to users`,
 	}
-	if err := execIgnoring(db.DB, `alter table users add column comment text default ''`, sqliteDuplicateColumn); err != nil {
-		return err
+	for _, s := range steps {
+		if _, err := db.Exec(s); err != nil {
+			return err
+		}
 	}
-	// preset_json stores an admin-defined default configuration (ports, env, GPUs,
-	// devices, etc.) per image as a JSON blob. Empty means "no preset".
-	if err := execIgnoring(db.DB, `alter table images add column preset_json text not null default ''`, sqliteDuplicateColumn); err != nil {
-		return err
+	return nil
+}
+
+func migrateCreateSchemaVersion(db executor) error {
+	_, err := db.Exec(`create table if not exists schema_version (
+		version integer primary key,
+		migrated_at text not null
+	)`)
+	return err
+}
+
+// currentSchemaVersion returns the highest recorded migration version, or 0.
+func (db *DB) currentSchemaVersion() (int, error) {
+	var n int
+	// The table may not exist on very old DBs before this migration system was
+	// introduced; treat that as version 0 and let all migrations run.
+	err := db.QueryRow(`select version from schema_version order by version desc limit 1`).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
 	}
-	if _, err := db.Exec(`create unique index if not exists idx_users_feishu_open_id on users(feishu_open_id) where feishu_open_id != ''`); err != nil {
-		return err
+	return n, err
+}
+
+// Migrate applies all pending schema migrations and ensures the admin account
+// and pending group exist.
+func (db *DB) Migrate(adminUser, adminPassword string) error {
+	// Bootstrap: ensure the version tracking table exists before we query it.
+	if _, err := db.Exec(`create table if not exists schema_version (
+		version integer primary key,
+		migrated_at text not null
+	)`); err != nil {
+		return fmt.Errorf("create schema_version table: %w", err)
 	}
-	if _, err := db.Exec(`create index if not exists idx_audit_created on audit_logs(created_at desc)`); err != nil {
-		return err
+
+	current, err := db.currentSchemaVersion()
+	if err != nil {
+		return fmt.Errorf("read schema version: %w", err)
 	}
-	if _, err := db.Exec(`create index if not exists idx_resource_samples_created on resource_samples(created_at desc)`); err != nil {
-		return err
+	for _, m := range migrations {
+		if m.version <= current {
+			continue
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration %d: %w", m.version, err)
+		}
+		if err := m.apply(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration %d %q: %w", m.version, m.name, err)
+		}
+		if err := db.recordSchemaVersionTx(tx, m.version); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record schema version %d: %w", m.version, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %d: %w", m.version, err)
+		}
 	}
-	if _, err := db.Exec(`create index if not exists idx_resource_samples_user_created on resource_samples(user_id, created_at desc)`); err != nil {
-		return err
-	}
-	if _, err := db.Exec(`create index if not exists idx_netdisk_shares_owner on netdisk_shares(owner_id, created_at desc)`); err != nil {
-		return err
-	}
-	if err := db.widenRoleConstraint(); err != nil {
-		return err
-	}
+
 	var n int
 	if err := db.QueryRow(`select count(*) from users where role='admin'`).Scan(&n); err != nil {
 		return err
@@ -283,50 +435,12 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 	return db.EnsurePendingGroup()
 }
 
-// widenRoleConstraint relaxes an older users.role CHECK that only allowed
-// ('admin','user'). It is a no-op when the constraint is already permissive or
-// absent. The rebuild is wrapped in a transaction and preserves every column
-// and row, including auto-increment continuity.
-func (db *DB) widenRoleConstraint() error {
-	var sql string
-	err := db.QueryRow(`select sql from sqlite_master where type='table' and name='users'`).Scan(&sql)
-	if err != nil {
-		return err
-	}
-	// Only rebuild when the old restrictive CHECK is still present.
-	if !strings.Contains(sql, "check(role in ('admin','user'))") {
-		return nil
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	steps := []string{
-		`alter table users rename to users_old`,
-		`create table users (
-			id integer primary key autoincrement,
-			username text not null unique,
-			password_hash text not null,
-			role text not null,
-			disabled integer not null default 0,
-			container_cap integer not null default 10,
-			port_prefix integer not null default 0,
-			created_at text not null,
-			last_login_at text,
-			feishu_open_id text default '',
-			comment text default ''
-		)`,
-		`insert into users(id, username, password_hash, role, disabled, container_cap, port_prefix, created_at, last_login_at, feishu_open_id, comment)
-		 select id, username, password_hash, role, disabled, container_cap, port_prefix, created_at, last_login_at, feishu_open_id, comment from users_old`,
-		`drop table users_old`,
-	}
-	for _, s := range steps {
-		if _, err := tx.Exec(s); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+// recordSchemaVersionTx records a migration version inside a transaction.
+func (db *DB) recordSchemaVersionTx(tx *sql.Tx, version int) error {
+	_, err := tx.Exec(`insert into schema_version(version, migrated_at) values(?, ?)
+		on conflict(version) do update set migrated_at=excluded.migrated_at`,
+		version, time.Now().Format(time.RFC3339))
+	return err
 }
 
 func (db *DB) nextPortPrefix(tx *sql.Tx) (int, error) {

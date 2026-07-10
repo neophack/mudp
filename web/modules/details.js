@@ -61,7 +61,7 @@ export async function openDetails(id, name) {
 
 // actionsCard renders the duplicate / commit-to-image actions. Duplicate is
 // available to any mutating role; commit is admin-only (matching image lifecycle).
-function actionsCard(i) {
+function actionsCard(_i) {
   if (!canMutate()) return "";
   return (
     `<section class="card detail-settings">` +

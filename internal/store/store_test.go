@@ -339,3 +339,79 @@ func TestRegistriesCRUD(t *testing.T) {
 }
 
 
+
+// TestMigrationPreservesPortPrefix simulates an older DB with the restrictive
+// role CHECK and a non-zero port_prefix, then runs Migrate and asserts the
+// prefix survives the table rebuild.
+func TestMigrationPreservesPortPrefix(t *testing.T) {
+	db := newTestDB(t)
+	// Set a distinctive port prefix on the admin user created by Migrate.
+	users, err := db.Users()
+	if err != nil || len(users) != 1 {
+		t.Fatalf("expected one admin user, got %+v err=%v", users, err)
+	}
+	admin := users[0]
+	if err := db.UpdateUserPortPrefix(admin.ID, 150); err != nil {
+		t.Fatalf("UpdateUserPortPrefix: %v", err)
+	}
+
+	// Force the old restrictive CHECK by recreating the table as it once was.
+	steps := []string{
+		`alter table users rename to users_old`,
+		`create table users (
+			id integer primary key autoincrement,
+			username text not null unique,
+			password_hash text not null,
+			role text not null check(role in ('admin','user')),
+			disabled integer not null default 0,
+			container_cap integer not null default 10,
+			port_prefix integer not null default 0,
+			created_at text not null,
+			last_login_at text,
+			feishu_open_id text default '',
+			comment text default ''
+		)`,
+		`insert into users(id, username, password_hash, role, disabled, container_cap, port_prefix, created_at, last_login_at, feishu_open_id, comment)
+		 select id, username, password_hash, role, disabled, container_cap, port_prefix, created_at, last_login_at, feishu_open_id, comment from users_old`,
+		`drop table users_old`,
+	}
+	for _, s := range steps {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("recreate old schema: %v", err)
+		}
+	}
+
+	// Pretend the widen-role migration has not run so Migrate re-applies it.
+	if _, err := db.Exec(`delete from schema_version where version >= 10`); err != nil {
+		t.Fatalf("reset schema version: %v", err)
+	}
+	// Running migrate again must preserve the port_prefix.
+	if err := db.Migrate("admin", "secret"); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	u, err := db.UserByID(admin.ID)
+	if err != nil {
+		t.Fatalf("UserByID after migrate: %v", err)
+	}
+	if u.PortPrefix != 150 {
+		t.Fatalf("port_prefix = %d, want 150", u.PortPrefix)
+	}
+	// And the widened constraint must allow operators again.
+	if _, err := db.Exec(`insert into users(username,password_hash,role,created_at) values(?,?,?,datetime('now'))`, "op", "x", RoleOperator); err != nil {
+		t.Fatalf("insert operator after migration: %v", err)
+	}
+}
+
+// TestSchemaVersionTracksMigrations confirms the schema_version table records
+// every applied migration.
+func TestSchemaVersionTracksMigrations(t *testing.T) {
+	db := newTestDB(t)
+	var version int
+	err := db.QueryRow(`select version from schema_version order by version desc limit 1`).Scan(&version)
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
+	}
+}

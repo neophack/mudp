@@ -1,7 +1,7 @@
 // Live container stats panel: CPU%, memory, network I/O, block I/O, sampled
 // over SSE. CSS-only sparklines — no chart dependency.
 
-import { api, toast } from "../app.js";
+import { escapeHtml } from "../app.js";
 import { showModalNoShell, closeModal } from "./ui.js";
 
 export async function openStats(id, name) {
@@ -74,7 +74,7 @@ export async function openStats(id, name) {
   reconnect();
 }
 
-function statCard(label, value, sub, accent) {
+function statCard(label, value, sub, _accent) {
   return (
     `<div class="stat-card">` +
       `<div class="stat-card-head"><span>${escapeHtml(label)}</span></div>` +
@@ -85,7 +85,7 @@ function statCard(label, value, sub, accent) {
 }
 
 // spark builds a tiny inline SVG sparkline of the last N samples.
-function spark(series, unit) {
+function spark(series, _unit) {
   if (!series || series.length < 2) return `<span class="hint">—</span>`;
   const w = 80, h = 24;
   const max = Math.max(...series, 1);
@@ -105,14 +105,4 @@ function bar(pct) {
 function push(arr, v) {
   arr.push(Number(v) || 0);
   if (arr.length > 30) arr.shift();
-}
-
-function escapeHtml(v) {
-  return String(v ?? "").replace(/[&<>"']/g, (m) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  }[m]));
 }

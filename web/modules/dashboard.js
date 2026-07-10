@@ -106,7 +106,7 @@ function containersChart(c) {
   const pct = (n) => (total > 0 ? (n / total) * 100 : 0);
   let acc = 0;
   const slices = [];
-  for (const [label, n, color] of [
+  for (const [_label, n, color] of [
     ["Running", running, "var(--ok)"],
     ["Paused", paused, "var(--warn)"],
     ["Stopped", stopped, "var(--muted)"],

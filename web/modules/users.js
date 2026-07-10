@@ -1,7 +1,7 @@
 // Users & Groups management: create users/groups, assign roles, group
 // membership (Feishu approval flow), reset passwords, disable/delete accounts.
 
-import { state, api, toast, refreshSection, renderView, isAdmin } from "../app.js";
+import { state, api, toast, refreshSection, renderView } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 const ROLES = [

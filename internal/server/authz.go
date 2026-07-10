@@ -1,9 +1,7 @@
 package server
 
 import (
-	"fmt"
 	"net/http"
-	"runtime/debug"
 
 	"mudp/internal/store"
 )
@@ -54,12 +52,6 @@ func (a *App) requireRole(minRank int, next http.HandlerFunc) http.Handler {
 	return chain
 }
 
-// admin wraps a handler with the admin-only gate. Convenience for ad-hoc admin
-// endpoints; equivalent to requireRole(rankAdmin, ...).
-func (a *App) admin(next http.HandlerFunc) http.Handler {
-	return a.requireRole(rankAdmin, next)
-}
-
 // canMutate reports whether the current user may perform write operations on
 // managed Docker resources. Readonly and helpdesk are read-only tiers; any
 // unrecognised role is treated as read-only too (fail-closed).
@@ -72,18 +64,4 @@ func canMutate(u *store.User) bool {
 		return true
 	}
 	return false
-}
-
-// recoverPanic turns a panicking handler into a 500 so the server keeps serving
-// and the error is logged instead of crashing the goroutine.
-func recoverPanic(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				fmt.Printf("panic: %v\n%s\n", rec, debug.Stack())
-				writeErr(w, http.StatusInternalServerError, "internal server error")
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
 }

@@ -71,7 +71,7 @@ export async function openTerminal(id, name) {
 
   try {
     await loadXterm();
-  } catch (err) {
+  } catch {
     setConnStat("error", "Failed to load terminal library");
     return;
   }

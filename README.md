@@ -45,7 +45,7 @@ Ownership is enforced server-side on every Docker operation — UI hiding is cos
 go run ./cmd/mudp
 ```
 
-Open <http://127.0.0.1:9000>. Default first admin: `admin / admin123`.
+Open <http://127.0.0.1:9000>. Default first admin user is `admin`; the password is auto-generated and printed in the server logs unless `MUDP_ADMIN_PASSWORD` is set.
 
 ### Environment variables
 
@@ -53,9 +53,9 @@ Open <http://127.0.0.1:9000>. Default first admin: `admin / admin123`.
 |-----|---------|---------|
 | `MUDP_ADDR` | `127.0.0.1:9000` | Listen address. |
 | `MUDP_DB` | `mudp.db` | SQLite database path. |
-| `MUDP_SESSION_SECRET` | random per launch | Cookie signing secret. **Set in production.** |
+| `MUDP_SESSION_SECRET` | random per launch | Cookie signing secret. Auto-generated when not set. |
 | `MUDP_ADMIN_USER` | `admin` | Bootstrap admin username. |
-| `MUDP_ADMIN_PASSWORD` | `admin123` | Bootstrap admin password. |
+| `MUDP_ADMIN_PASSWORD` | random per launch | Bootstrap admin password. Auto-generated and logged when not set. |
 | `MUDP_DOCKER_HOST` | _empty_ (uses `DOCKER_HOST`) | Override the Docker Engine endpoint. |
 | `MUDP_WEB_DIR` | _empty_ | Serve UI from disk (dev mode) instead of the embed. |
 
@@ -77,6 +77,9 @@ Open <http://127.0.0.1:9000>. Default first admin: `admin / admin123`.
 │          containers, images, volumes,  │   │  (xterm.js) │
 │          networks, compose, stats      │   └─────────────┘
 │ server   chi router + HTTP handlers    │
+│ httpx    uniform errors/responses      │
+│ middleware request ID, logging, rate   │
+│          limiting, CSRF protection     │
 
 └────────────────────────────────────────┘
 ```
@@ -102,11 +105,27 @@ $env:GOOS="darwin"; $env:GOARCH="arm64"; go build -o dist/mudp-darwin-arm64 ./cm
 
 ## Test
 
+Backend (Go):
+
 ```powershell
 go test ./...
+go vet ./...
 ```
 
-Docker-touching tests auto-skip when no daemon is reachable, so CI without Docker still passes.
+Frontend (Node.js):
+
+```powershell
+cd web
+npm install
+npm run lint      # ESLint: catches JS syntax/undefined/import errors
+npm run test:unit
+npm run test:integration
+npm run test:e2e  # requires the Go binary at dist/mudp.exe (or dist/mudp)
+```
+
+End-to-end tests start the real MUDP binary, log in via Chromium, and navigate the major tabs. They fail automatically on any page JS error or HTTP 5xx response.
+
+Docker-touching Go tests auto-skip when no daemon is reachable, so CI without Docker still passes.
 
 ## Notes & requirements
 
@@ -114,7 +133,8 @@ Docker-touching tests auto-skip when no daemon is reachable, so CI without Docke
 - **Stacks** require the `docker compose` CLI plugin v2 on the host (`docker compose version` should print a version). Without it, the Stacks tab surfaces a clear "not installed" error.
 - GPU scheduling uses Docker NVIDIA device requests and expects the host NVIDIA container runtime.
 - Registry tokens are stored at-rest in the SQLite `settings` table. For a single-host deployment this is acceptable; encrypt-at-rest is a flagged follow-up.
-- Set `MUDP_SESSION_SECRET` in production — otherwise the random default rotates on each launch and invalidates login cookies.
+- **Production safety**: `MUDP_ADMIN_PASSWORD` and `MUDP_SESSION_SECRET` are auto-generated if omitted, but setting them explicitly keeps credentials and login cookies stable across restarts. CSRF tokens are required for all mutating API calls.
+- Set `MUDP_SESSION_SECRET` in production to keep login cookies valid across restarts — otherwise the random default rotates on each launch.
 
 ## Roadmap (out of scope for this release)
 

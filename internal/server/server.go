@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 	"mudp/internal/auth"
 	"mudp/internal/config"
 	"mudp/internal/dockerx"
+	"mudp/internal/middleware"
 	"mudp/internal/store"
 	"mudp/web"
 )
@@ -58,7 +60,7 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 		return nil, err
 	}
 	return &App{
-		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret),
+		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret, cfg.Production()),
 	}, nil
 }
 
@@ -70,14 +72,49 @@ func (a *App) Close() error {
 	return a.docker.Close()
 }
 
+func (a *App) healthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
+}
+
+func (a *App) readyz(w http.ResponseWriter, r *http.Request) {
+	if err := a.docker.DockerPing(r.Context()); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "docker unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (a *App) metrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	fmt.Fprintf(w, "# HELP mudp_go_goroutines Number of running goroutines.\n")
+	fmt.Fprintf(w, "# TYPE mudp_go_goroutines gauge\n")
+	fmt.Fprintf(w, "mudp_go_goroutines %d\n", runtime.NumGoroutine())
+	fmt.Fprintf(w, "# HELP mudp_go_memory_bytes_alloc_total Total allocated bytes.\n")
+	fmt.Fprintf(w, "# TYPE mudp_go_memory_bytes_alloc_total counter\n")
+	fmt.Fprintf(w, "mudp_go_memory_bytes_alloc_total %d\n", ms.TotalAlloc)
+	fmt.Fprintf(w, "# HELP mudp_go_memory_bytes_heap_inuse In-use heap bytes.\n")
+	fmt.Fprintf(w, "# TYPE mudp_go_memory_bytes_heap_inuse gauge\n")
+	fmt.Fprintf(w, "mudp_go_memory_bytes_heap_inuse %d\n", ms.HeapInuse)
+}
+
 func (a *App) Routes() http.Handler {
 	r := chi.NewRouter()
-	r.Use(recoverPanic)
-	r.Use(logRequest)
+	r.Use(middleware.RecoverPanic)
+	r.Use(middleware.RequestLogger)
+
+	apiRateLimiter := middleware.DefaultAPIRateLimiter()
+	loginRateLimiter := middleware.StrictRateLimiter()
+
+	// Observability endpoints (no auth required).
+	r.Get("/healthz", a.healthz)
+	r.Get("/readyz", a.readyz)
+	r.Get("/metrics", a.metrics)
 
 	// Public auth surface (no session required).
-	r.Get("/api/login", a.login) // POST also handled below
-	r.Post("/api/login", a.login)
+	r.With(loginRateLimiter.Middleware).Get("/api/login", a.login) // POST also handled below
+	r.With(loginRateLimiter.Middleware).Post("/api/login", a.login)
 	r.Post("/api/logout", a.logout)
 	r.Get("/api/me", a.me)
 	r.Get("/api/feishu/config", a.feishuConfigPublic)
@@ -90,8 +127,10 @@ func (a *App) Routes() http.Handler {
 
 	// Activated-user business endpoints (any non-pending role).
 	r.Group(func(r chi.Router) {
+		r.Use(apiRateLimiter.Middleware)
 		r.Use(a.authMiddleware)
 		r.Use(a.activatedMiddleware)
+		r.Use(middleware.CSRFProtect)
 
 		r.Get("/api/containers", a.containers)
 		r.Post("/api/containers", a.containers)
@@ -156,17 +195,21 @@ func (a *App) Routes() http.Handler {
 	// admin-only below; group assignment stays here so operators can still curate
 	// which user groups see a given image.
 	r.Group(func(r chi.Router) {
+		r.Use(apiRateLimiter.Middleware)
 		r.Use(a.authMiddleware)
 		r.Use(a.activatedMiddleware)
 		r.Use(a.minRoleMiddleware(rankOperator))
+		r.Use(middleware.CSRFProtect)
 		r.Post("/api/images/delete", a.deleteImage)
 		r.Post("/api/images/groups", a.setImageGroups)
 	})
 
 	// Admin surface.
 	r.Group(func(r chi.Router) {
+		r.Use(apiRateLimiter.Middleware)
 		r.Use(a.authMiddleware)
 		r.Use(a.minRoleMiddleware(rankAdmin))
+		r.Use(middleware.CSRFProtect)
 
 		// Image lifecycle is admin-only: only admins pull, build, import, tag, push,
 		// prune, or configure presets. Users consume the images admins publish.
@@ -285,11 +328,16 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auth.Set(w, u.ID)
-	writeJSON(w, http.StatusOK, u)
+	csrfToken, err := middleware.CSRFToken(w, a.cfg.Production())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": u, "csrfToken": csrfToken})
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
-	auth.Clear(w)
+	a.auth.Clear(w)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -829,8 +877,11 @@ func (a *App) containerAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Action == "remove" {
 		a.evictCachedContainers(req.ID)
+		a.triggerRuntimeCacheRefresh()
+	} else {
+		// Synchronously refresh so the next list request reflects the new state.
+		a.refreshRuntimeCache(r.Context())
 	}
-	a.triggerRuntimeCacheRefresh()
 	a.record(r, "container."+req.Action, req.ID)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -937,8 +988,11 @@ func (a *App) containerBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Action == "remove" && len(ok) > 0 {
 		a.evictCachedContainers(ok...)
+		a.triggerRuntimeCacheRefresh()
+	} else if len(ok) > 0 {
+		// Synchronously refresh so the next list request reflects the new state.
+		a.refreshRuntimeCache(r.Context())
 	}
-	a.triggerRuntimeCacheRefresh()
 	if len(ok) > 0 {
 		a.record(r, "container.batch."+req.Action, fmt.Sprintf("%d container(s)", len(ok)))
 	}
@@ -1164,6 +1218,10 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Format(time.RFC3339)
 	_, _ = a.db.Exec(`update users set last_login_at=? where id=?`, now, u.ID)
 	a.auth.Set(w, u.ID)
+	if _, err := middleware.CSRFToken(w, a.cfg.Production()); err != nil {
+		writeErr(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 

@@ -13,12 +13,15 @@ import (
 
 const CookieName = "mudp_session"
 
+// Signer issues and verifies HMAC-signed session cookies.
 type Signer struct {
 	secret []byte
+	secure bool
 }
 
-func New(secret string) Signer {
-	return Signer{secret: []byte(secret)}
+// New creates a signer. If secure is true, session cookies set the Secure flag.
+func New(secret string, secure bool) Signer {
+	return Signer{secret: []byte(secret), secure: secure}
 }
 
 func (s Signer) Set(w http.ResponseWriter, userID int64) {
@@ -31,12 +34,21 @@ func (s Signer) Set(w http.ResponseWriter, userID int64) {
 		Path:     "/",
 		Expires:  time.Unix(exp, 0),
 		HttpOnly: true,
+		Secure:   s.secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func Clear(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+func (s Signer) Clear(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.secure,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 func (s Signer) UserID(r *http.Request) (int64, bool) {

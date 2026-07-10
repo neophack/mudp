@@ -27,7 +27,7 @@ export async function renderLogin() {
           `<input name="username" placeholder="Username" autocomplete="username" required>` +
           `<input name="password" type="password" placeholder="Password" autocomplete="current-password" required>` +
           `<button class="primary">Sign In</button>` +
-          `<p class="hint">Default: admin / admin123 (override with env vars before first launch).</p>` +
+          `<p class="hint">Default user: admin. Password is auto-generated and logged unless MUDP_ADMIN_PASSWORD is set.</p>` +
           (feishuOn
             ? `<div class="login-divider">or</div><button type="button" class="login-feishu" id="feishuLogin">Sign in with Feishu</button>`
             : ``) +
@@ -39,8 +39,9 @@ export async function renderLogin() {
     e.preventDefault();
     const fd = new FormData(e.target);
     try {
-      await api("/api/login", { method: "POST", body: JSON.stringify(Object.fromEntries(fd)) });
-      state.me = await api("/api/me");
+      const login = await api("/api/login", { method: "POST", body: JSON.stringify(Object.fromEntries(fd)) });
+      state.me = login.user || login;
+      state.csrfToken = login.csrfToken || "";
       if (state.me.pending) {
         renderPending();
         return;
