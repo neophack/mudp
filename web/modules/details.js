@@ -27,7 +27,6 @@ export async function openDetails(id, name) {
         detailRow("Image", escapeHtml(i.imageName || i.image)) +
         detailRow("Created", escapeHtml(i.createdAt ? new Date(i.createdAt * 1000).toLocaleString() : "-")) +
         detailRow("GPU", escapeHtml(i.gpu || "none")) +
-        detailRow("SSH / VS Code", `${i.ssh ? "host-side" : "off"} / ${i.vscode ? "host-side" : "off"}`) +
         detailRow("Run as", escapeHtml(i.user || "image default")) +
         detailRow("IP", escapeHtml(i.ipAddress || "-")) +
         detailRow("Entrypoint", `<span class="mono">${escapeHtml((i.entrypoint || []).join(" ") || "-")}</span>`) +

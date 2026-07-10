@@ -178,15 +178,13 @@ const TERM_THEME = {
   brightWhite: "#c0caf5",
 };
 
-// fetchContainerMeta fills the header with image/GPU/SSH details. Best-effort.
+// fetchContainerMeta fills the header with image/GPU details. Best-effort.
 async function fetchContainerMeta(id) {
   try {
     const i = await fetch("/api/containers/inspect?id=" + encodeURIComponent(id), { credentials: "same-origin" }).then((r) => r.json());
     const parts = [];
     if (i.imageName || i.image) parts.push(`📦 ${i.imageName || i.image}`);
     if (i.gpu && i.gpu !== "none") parts.push(`🎴 GPU ${i.gpu}`);
-    if (i.ssh) parts.push(`🔐 SSH on`);
-    if (i.vscode) parts.push(`🌐 VS Code on`);
     parts.push(`state: ${i.state}`);
     const meta = document.getElementById("termMeta");
     if (meta) meta.textContent = parts.join("  ·  ");

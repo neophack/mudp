@@ -470,7 +470,7 @@ table.data td .secondary-line { color: var(--ink-soft); font-size: 12px; }
 table.data td.actions { text-align: right; white-space: nowrap; }
 table.data td.actions button { margin-left: 3px; }
 
-/* ---------- Copy chip (SSH command, etc.) ---------- */
+/* ---------- Copy chip ---------- */
 .copy-chip {
   display: inline-flex;
   align-items: center;

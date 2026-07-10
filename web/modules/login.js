@@ -13,9 +13,9 @@ export async function renderLogin() {
       `<div class="login-hero">` +
         `<div class="brand-lg">Multi User Docker Platform</div>` +
         `<div class="brand-subtitle">MUDP</div>` +
-        `<p>A compact, self-hosted container console. Manage Docker workloads, GPU access, SSH and web-based VS Code — all from one clean panel.</p>` +
+        `<p>A compact, self-hosted container console. Manage Docker workloads, GPU access and web terminal — all from one clean panel.</p>` +
         `<ul>` +
-          `<li>One-click containers with SSH &amp; VS Code</li>` +
+          `<li>One-click containers with web terminal</li>` +
           `<li>Live creation progress and web terminal</li>` +
           `<li>GPU passthrough and per-user quotas</li>` +
           `<li>Feishu single sign-on with admin approval</li>` +

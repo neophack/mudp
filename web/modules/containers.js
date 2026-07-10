@@ -35,7 +35,7 @@ export function renderContainers() {
     btn.onclick = async () => {
       try {
         await navigator.clipboard.writeText(btn.dataset.copy);
-        toast("SSH command copied", true);
+        toast("Copied", true);
         const old = btn.textContent;
         btn.textContent = "✓";
         btn.classList.add("copied");
@@ -66,11 +66,10 @@ function containerRow(c) {
   // Coerce to a number defensively before toFixed: the backend usually sends
   // numbers, but a stray string/null would otherwise throw and blank the table.
   const num = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
+  const host = location.hostname;
   const conn = [];
-  if (c.labels?.["mudp.ssh"] === "true" && running) conn.push(`<button class="chip-link" data-id="${escapeHtml(c.id)}" data-name="${escapeHtml(name)}" data-act="terminal">SSH Shell</button>`);
-  if (c.vscodeUrl) conn.push(`<a class="vscode-link" href="${escapeHtml(c.vscodeUrl)}">VS Code ↗</a>`);
-  if (c.http8080Url) conn.push(`<a class="vscode-link" href="${escapeHtml(fixUrl(c.http8080Url))}" target="_blank" rel="noopener">8080 ↗</a>`);
-  if (c.http80Url) conn.push(`<a class="vscode-link" href="${escapeHtml(fixUrl(c.http80Url))}" target="_blank" rel="noopener">80 ↗</a>`);
+  if (c.http8080Url) conn.push(`<a class="port-link" href="${escapeHtml(fixUrl(c.http8080Url))}" target="_blank" rel="noopener">8080 ↗</a>`);
+  if (c.http80Url) conn.push(`<a class="port-link" href="${escapeHtml(fixUrl(c.http80Url))}" target="_blank" rel="noopener">80 ↗</a>`);
   const iconBtn = (act, glyph, title, cls = "icon", enabled = true) => {
     const isLoading = pending(act);
     const dis = !enabled || isLoading ? "disabled" : "";

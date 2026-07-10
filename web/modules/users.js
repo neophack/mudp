@@ -5,7 +5,7 @@ import { state, api, toast, refreshSection, renderView, isAdmin } from "../app.j
 import { showModal, closeModal } from "./ui.js";
 
 const ROLES = [
-  { value: "user", label: "User", hint: "Workspace containers, SSH/VS Code, GPU, quotas" },
+  { value: "user", label: "User", hint: "Workspace containers, GPU, quotas" },
   { value: "operator", label: "Operator", hint: "Full container/image/volume CRUD" },
   { value: "helpdesk", label: "Help Desk", hint: "View all + logs/exec, no mutations" },
   { value: "readonly", label: "Read-Only", hint: "View only" },

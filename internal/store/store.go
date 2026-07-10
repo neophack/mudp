@@ -92,20 +92,6 @@ type NetdiskShare struct {
 	Expired   bool     `json:"expired"`
 }
 
-// ContainerAccess holds the host-side gateway configuration for a container
-// that has SSH and/or VS Code enabled: the access password (verified by the
-// SSH gateway and handed to the code-server subprocess — never stored inside
-// the container) and the reserved gateway ports. Keyed by container ID, so it
-// is naturally dropped and regenerated whenever a container is recreated.
-type ContainerAccess struct {
-	ContainerID string `json:"containerId"`
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-	SSHPort     int    `json:"sshPort"`
-	VSCodePort  int    `json:"vscodePort"`
-	CreatedAt   string `json:"createdAt"`
-}
-
 func Open(path string) (*DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -234,14 +220,6 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			created_at text not null,
 			expires_at text not null default '',
 			permanent integer not null default 0
-		)`,
-		`create table if not exists container_access (
-			container_id text primary key,
-			username text not null,
-			password text not null,
-			ssh_port integer not null default 0,
-			vscode_port integer not null default 0,
-			created_at text not null
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -1270,220 +1248,28 @@ func (db *DB) setSetting(key, value string) error {
 	return err
 }
 
-// --- Fused image cache ------------------------------------------------------
+// Setting returns a single named value from the generic settings table, or ""
+// if the key is absent.
+func (db *DB) Setting(key string) (string, error) {
+	return db.getSetting(key)
+}
 
-// GetFusedImage returns the cached derived image for a cache key, or ok=false
-// when there is no row yet.
-func (db *DB) GetFusedImage(cacheKey string) (FusedImage, bool, error) {
-	var f FusedImage
-	var ssh, vscode int
-	err := db.QueryRow(`select cache_key, base_ref, base_image_id, fused_ref,
-		enable_ssh, enable_vscode, script_hash, created_at
-		from fused_images where cache_key=?`, cacheKey).
-		Scan(&f.CacheKey, &f.BaseRef, &f.BaseImageID, &f.FusedRef,
-			&ssh, &vscode, &f.ScriptHash, &f.CreatedAt)
+// SaveSetting upserts a single named value in the generic settings table.
+func (db *DB) SaveSetting(key, value string) error {
+	return db.setSetting(key, value)
+}
+
+// getSetting returns a single settings value, or "" if the key is absent.
+func (db *DB) getSetting(key string) (string, error) {
+	var value string
+	err := db.QueryRow(`select value from settings where key=?`, key).Scan(&value)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return FusedImage{}, false, nil
+			return "", nil
 		}
-		return FusedImage{}, false, err
+		return "", err
 	}
-	f.EnableSSH = ssh == 1
-	f.EnableVSCode = vscode == 1
-	return f, true, nil
+	return value, nil
 }
 
-// SaveFusedImage inserts or replaces a fused-image cache entry.
-func (db *DB) SaveFusedImage(f FusedImage) error {
-	ssh, vscode := 0, 0
-	if f.EnableSSH {
-		ssh = 1
-	}
-	if f.EnableVSCode {
-		vscode = 1
-	}
-	_, err := db.Exec(`insert into fused_images
-		(cache_key, base_ref, base_image_id, fused_ref, enable_ssh, enable_vscode, script_hash, created_at)
-		values(?,?,?,?,?,?,?,?)
-		on conflict(cache_key) do update set
-			base_ref=excluded.base_ref, base_image_id=excluded.base_image_id,
-			fused_ref=excluded.fused_ref, enable_ssh=excluded.enable_ssh,
-			enable_vscode=excluded.enable_vscode, script_hash=excluded.script_hash,
-			created_at=excluded.created_at`,
-		f.CacheKey, f.BaseRef, f.BaseImageID, f.FusedRef, ssh, vscode, f.ScriptHash,
-		time.Now().Format(time.RFC3339))
-	return err
-}
 
-// ListFusedImages returns all cached fused images, newest first.
-func (db *DB) ListFusedImages() ([]FusedImage, error) {
-	rows, err := db.Query(`select cache_key, base_ref, base_image_id, fused_ref,
-		enable_ssh, enable_vscode, script_hash, created_at
-		from fused_images order by created_at desc`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []FusedImage
-	for rows.Next() {
-		var f FusedImage
-		var ssh, vscode int
-		if err := rows.Scan(&f.CacheKey, &f.BaseRef, &f.BaseImageID, &f.FusedRef,
-			&ssh, &vscode, &f.ScriptHash, &f.CreatedAt); err != nil {
-			return nil, err
-		}
-		f.EnableSSH = ssh == 1
-		f.EnableVSCode = vscode == 1
-		out = append(out, f)
-	}
-	return out, rows.Err()
-}
-
-// DeleteFusedImage drops a cache entry (e.g. when the underlying image was
-// pruned out from under us).
-func (db *DB) DeleteFusedImage(cacheKey string) error {
-	_, err := db.Exec(`delete from fused_images where cache_key=?`, cacheKey)
-	return err
-}
-
-// --- Fused layer cache ------------------------------------------------------
-
-// GetFusedLayer returns the cached layer for a cache key, or ok=false when
-// there is no row yet.
-func (db *DB) GetFusedLayer(cacheKey string) (FusedLayer, bool, error) {
-	var f FusedLayer
-	err := db.QueryRow(`select cache_key, base_ref, base_image_id, layer_ref,
-		service, script_hash, created_at
-		from fused_layers where cache_key=?`, cacheKey).
-		Scan(&f.CacheKey, &f.BaseRef, &f.BaseImageID, &f.LayerRef,
-			&f.Service, &f.ScriptHash, &f.CreatedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return FusedLayer{}, false, nil
-		}
-		return FusedLayer{}, false, err
-	}
-	return f, true, nil
-}
-
-// SaveFusedLayer inserts or replaces a fused-layer cache entry.
-func (db *DB) SaveFusedLayer(f FusedLayer) error {
-	_, err := db.Exec(`insert into fused_layers
-		(cache_key, base_ref, base_image_id, layer_ref, service, script_hash, created_at)
-		values(?,?,?,?,?,?,?)
-		on conflict(cache_key) do update set
-			base_ref=excluded.base_ref, base_image_id=excluded.base_image_id,
-			layer_ref=excluded.layer_ref, service=excluded.service,
-			script_hash=excluded.script_hash, created_at=excluded.created_at`,
-		f.CacheKey, f.BaseRef, f.BaseImageID, f.LayerRef, f.Service, f.ScriptHash,
-		time.Now().Format(time.RFC3339))
-	return err
-}
-
-// ListFusedLayers returns all cached fused layers, newest first.
-func (db *DB) ListFusedLayers() ([]FusedLayer, error) {
-	rows, err := db.Query(`select cache_key, base_ref, base_image_id, layer_ref,
-		service, script_hash, created_at
-		from fused_layers order by created_at desc`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []FusedLayer
-	for rows.Next() {
-		var f FusedLayer
-		if err := rows.Scan(&f.CacheKey, &f.BaseRef, &f.BaseImageID, &f.LayerRef,
-			&f.Service, &f.ScriptHash, &f.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
-}
-
-// DeleteFusedLayer drops a layer cache entry.
-func (db *DB) DeleteFusedLayer(cacheKey string) error {
-	_, err := db.Exec(`delete from fused_layers where cache_key=?`, cacheKey)
-	return err
-}
-
-// --- Offline bootstrap packages --------------------------------------------
-
-func (db *DB) SaveOfflinePackage(p OfflinePackage) (int64, error) {
-	if p.Service == "" {
-		p.Service = "all"
-	}
-	if p.CreatedAt == "" {
-		p.CreatedAt = time.Now().Format(time.RFC3339)
-	}
-	res, err := db.Exec(`insert into offline_packages
-		(name, filename, service, image_name, image_ref, os, arch, size, sha256, description, created_at)
-		values(?,?,?,?,?,?,?,?,?,?,?)`,
-		p.Name, p.Filename, p.Service, p.ImageName, p.ImageRef, p.OS, p.Arch,
-		p.Size, p.SHA256, p.Description, p.CreatedAt)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
-}
-
-func (db *DB) OfflinePackages() ([]OfflinePackage, error) {
-	rows, err := db.Query(`select id, name, filename, service, image_name, image_ref, os, arch, size, sha256, description, created_at
-		from offline_packages order by created_at desc, id desc`)
-	return scanOfflinePackages(rows, err)
-}
-
-func (db *DB) OfflinePackage(id int64) (OfflinePackage, error) {
-	rows, err := db.Query(`select id, name, filename, service, image_name, image_ref, os, arch, size, sha256, description, created_at
-		from offline_packages where id=?`, id)
-	items, err := scanOfflinePackages(rows, err)
-	if err != nil {
-		return OfflinePackage{}, err
-	}
-	if len(items) == 0 {
-		return OfflinePackage{}, sql.ErrNoRows
-	}
-	return items[0], nil
-}
-
-func (db *DB) DeleteOfflinePackage(id int64) (OfflinePackage, error) {
-	p, err := db.OfflinePackage(id)
-	if err != nil {
-		return p, err
-	}
-	_, err = db.Exec(`delete from offline_packages where id=?`, id)
-	return p, err
-}
-
-// OfflinePackagesForImage returns packages that match the selected catalog image
-// and service. Specific image matches sort before generic packages so callers can
-// inject deterministic, image-scoped installers first.
-func (db *DB) OfflinePackagesForImage(imageName, imageRef, service string) ([]OfflinePackage, error) {
-	service = strings.TrimSpace(service)
-	rows, err := db.Query(`select id, name, filename, service, image_name, image_ref, os, arch, size, sha256, description, created_at
-		from offline_packages
-		where (service='all' or service=?)
-		  and (image_name='' or image_name=?)
-		  and (image_ref='' or image_ref=?)
-		order by
-		  case when image_ref != '' then 0 when image_name != '' then 1 else 2 end,
-		  created_at desc, id desc`, service, imageName, imageRef)
-	return scanOfflinePackages(rows, err)
-}
-
-func scanOfflinePackages(rows *sql.Rows, err error) ([]OfflinePackage, error) {
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []OfflinePackage
-	for rows.Next() {
-		var p OfflinePackage
-		if err := rows.Scan(&p.ID, &p.Name, &p.Filename, &p.Service, &p.ImageName, &p.ImageRef,
-			&p.OS, &p.Arch, &p.Size, &p.SHA256, &p.Description, &p.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}

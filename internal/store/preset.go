@@ -22,8 +22,6 @@ type ImagePreset struct {
 	// host-port range, e.g. ["8080", "8443"]. The host side is auto-assigned.
 	Ports []string `json:"ports,omitempty"`
 	// Booleans use pointers so the preset can express "leave to user" (nil).
-	SSH          *bool `json:"ssh,omitempty"`
-	VSCode       *bool `json:"vscode,omitempty"`
 	Forward8080  *bool `json:"forward8080,omitempty"`
 	Forward80    *bool `json:"forward80,omitempty"`
 	MountNetdisk *bool `json:"mountNetdisk,omitempty"`
@@ -91,7 +89,7 @@ func isEmptyPreset(p *ImagePreset) bool {
 		return true
 	}
 	return p.GPUs == "" && len(p.Env) == 0 && len(p.Ports) == 0 &&
-		p.SSH == nil && p.VSCode == nil && p.Forward8080 == nil && p.Forward80 == nil &&
+		p.Forward8080 == nil && p.Forward80 == nil &&
 		p.MountNetdisk == nil && p.MountShm == nil && len(p.Networks) == 0 && p.RestartPolicy == "" &&
 		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == ""
 }

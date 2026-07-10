@@ -7,7 +7,7 @@ MUDP is a compact, self-hosted **multi-user Docker management platform** — a s
 - **Single binary** — web assets are embedded via `//go:embed`; ship one file, no runtime deps.
 - **SQLite** database, auto-created and migrated on first launch (additive, non-breaking migrations).
 - **Workspace isolation** — every resource lives under `mudp-<user>-…`; users see only their own.
-- **One-click containers** with optional host-side SSH terminal and VS Code attach, without installing services inside the container.
+- **One-click containers** with optional per-container SSH and web VS Code, each served by mudp itself on a LAN-reachable port — no sshd or code-server ever installed inside the container.
 - **GPU passthrough** via Docker NVIDIA device requests.
 - **Per-user quotas** (container cap), roles, and audit logging.
 - **Feishu (Lark) SSO** with admin-approval pending queue.
@@ -77,7 +77,7 @@ Open <http://127.0.0.1:9000>. Default first admin: `admin / admin123`.
 │          containers, images, volumes,  │   │  (xterm.js) │
 │          networks, compose, stats      │   └─────────────┘
 │ server   chi router + HTTP handlers    │
-│ bootstrap SSH/VS Code tar injection    │
+
 └────────────────────────────────────────┘
 ```
 
@@ -113,7 +113,6 @@ Docker-touching tests auto-skip when no daemon is reachable, so CI without Docke
 - Docker Desktop or Docker Engine must be running and reachable.
 - **Stacks** require the `docker compose` CLI plugin v2 on the host (`docker compose version` should print a version). Without it, the Stacks tab surfaces a clear "not installed" error.
 - GPU scheduling uses Docker NVIDIA device requests and expects the host NVIDIA container runtime.
-- SSH and VS Code options are host-side helpers; they do not expose container ports or install sshd/code-server inside the container.
 - Registry tokens are stored at-rest in the SQLite `settings` table. For a single-host deployment this is acceptable; encrypt-at-rest is a flagged follow-up.
 - Set `MUDP_SESSION_SECRET` in production — otherwise the random default rotates on each launch and invalidates login cookies.
 

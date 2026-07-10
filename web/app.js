@@ -232,7 +232,7 @@ function subtitle(tab) {
     {
       dashboard: "Environment overview, resource counts, and your workspace at a glance.",
       netdisk: "Manage personal files, batch uploads, resumed uploads, and downloads.",
-      containers: "Create and manage containers with optional host-side SSH terminal and VS Code attach.",
+      containers: "Create and manage containers with a built-in web terminal.",
       images: "Publish and share mudp-managed images with user groups.",
       volumes: "Persistent volumes scoped to your workspace.",
       networks: "Custom networks for service-to-service connectivity.",

@@ -107,9 +107,9 @@ func TestHostname(t *testing.T) {
 	}
 }
 
-// TestIsDerivedImage covers the dashboard image filter: internal SSH/VSCode
-// layers and fused runtime images must be excluded by both their labels and
-// their legacy tag prefixes, while real user-facing base images are kept.
+// TestIsDerivedImage covers the dashboard image filter: internal fused runtime
+// images must be excluded by both their labels and their legacy tag prefixes,
+// while real user-facing base images are kept.
 func TestIsDerivedImage(t *testing.T) {
 	cases := []struct {
 		name string
@@ -133,17 +133,7 @@ func TestIsDerivedImage(t *testing.T) {
 		},
 		{
 			name: "fused validate tag",
-			im:   image.Summary{RepoTags: []string{"mudp-fused-validate-ssh-abc1:latest"}},
-			want: true,
-		},
-		{
-			name: "ssh layer tag",
-			im:   image.Summary{RepoTags: []string{"mudp-layer-ssh-mudp-ubuntu-latest-25b61121:latest"}},
-			want: true,
-		},
-		{
-			name: "vscode layer tag",
-			im:   image.Summary{RepoTags: []string{"mudp-layer-vscode-mudp-ubuntu-latest-25b61121:latest"}},
+			im:   image.Summary{RepoTags: []string{"mudp-fused-validate-abc1:latest"}},
 			want: true,
 		},
 		{

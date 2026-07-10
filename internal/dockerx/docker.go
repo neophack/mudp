@@ -41,36 +41,6 @@ type Client struct {
 	c *client.Client
 }
 
-// ResolveConnectionUser normalises an image's USER directive into the username
-// that SSH logins and code-server should target. It returns "root" when the
-// image runs as root (or declares no user), and a concrete account name
-// otherwise. A bare numeric UID such as "1000" or "1000:1000" maps to a fixed
-// runtime account ("mudp") that the bootstrap scripts create at boot, because a
-// UID alone has no login name and chpasswd/sshd need a name to act on.
-//
-// The value flows into the mudp.connectionUser label (shown in the UI's SSH
-// command) and into the bootstrap scripts via $MUDP_CONNECTION_USER.
-func ResolveConnectionUser(imageUser string) string {
-	return resolveConnectionUser(imageUser)
-}
-
-func resolveConnectionUser(imageUser string) string {
-	u := strings.TrimSpace(imageUser)
-	if u == "" || u == "root" || u == "0" {
-		return "root"
-	}
-	// Drop a ":group" suffix if present ("1000:1000" -> "1000").
-	if i := strings.IndexByte(u, ':'); i > 0 {
-		u = u[:i]
-	}
-	// Bare numeric UID (no login name) -> use a fixed runtime account that the
-	// bootstrap will create/own. chpasswd/sshd cannot target a UID directly.
-	if _, err := strconv.Atoi(u); err == nil {
-		return "mudp"
-	}
-	return u
-}
-
 type Container struct {
 	ID               string            `json:"id"`
 	Name             string            `json:"name"`
@@ -87,35 +57,22 @@ type Container struct {
 	GPUMemoryMB      float64           `json:"gpuMemMb"`
 	GPUMemoryTotalMB float64           `json:"gpuMemTotalMb"`
 	GPUMemoryPct     float64           `json:"gpuMemPct"`
-	SSHPort          int               `json:"sshPort,omitempty"`
-	SSHUser          string            `json:"sshUser,omitempty"`
-	VSCodePort       int               `json:"vscodePort,omitempty"`
 	HTTP8080URL      string            `json:"http8080Url,omitempty"`
 	HTTP80URL        string            `json:"http80Url,omitempty"`
 	CreatedAt        int64             `json:"createdAt"`
 }
 
 type CreateOptions struct {
-	Username       string
-	Name           string
-	ImageRef       string
-	ImageName      string
-	Env            []string
-	GPUs           string
-	SSH            bool
-	VSCode         bool
-	Forward8080    bool
-	Forward80      bool
-	// AccessPassword gates the host-side SSH/VS Code gateways for this
-	// container. Required when SSH or VSCode is set; never sent to, or stored
-	// inside, the container itself.
-	AccessPassword string
-	// ConnectionUser is the login account surfaced to the user for the SSH
-	// gateway (cosmetic — the exec bridge runs as the container's default
-	// user regardless). Resolved from the base image's USER directive.
-	ConnectionUser string
-	Ports          []string
-	PortPrefix     int
+	Username    string
+	Name        string
+	ImageRef    string
+	ImageName   string
+	Env         []string
+	GPUs        string
+	Forward8080 bool
+	Forward80   bool
+	Ports       []string
+	PortPrefix  int
 	// Mounts are bind/named-volume mounts: "source:target[:ro]" entries.
 	Mounts       []string
 	NetdiskPath  string
@@ -137,7 +94,7 @@ type CreateOptions struct {
 	// or "on-failure". Defaults to "unless-stopped" when empty.
 	RestartPolicy string
 	// Progress is an optional callback fired at each creation stage.
-	// stage is one of: image, create, start, ssh, vscode, done.
+	// stage is one of: image, create, start, done.
 	Progress func(stage, msg string)
 }
 
@@ -145,6 +102,13 @@ type CreateOptions struct {
 type ExecConn struct {
 	Hijacked types.HijackedResponse
 	ExecID   string
+}
+
+// ExecResult is the completed output of a non-interactive docker exec.
+type ExecResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
 }
 
 // InspectInfo is the Portainer-style container detail surfaced to the UI.
@@ -165,18 +129,10 @@ type InspectInfo struct {
 	Mounts        []MountInfo       `json:"mounts"`
 	Networks      []NetworkInfo     `json:"networks"`
 	IPAddress     string            `json:"ipAddress"`
-	GPU           string            `json:"gpu"`
-	SSH           bool              `json:"ssh"`
-	VSCode        bool              `json:"vscode"`
-	SSHPort       int               `json:"sshPort,omitempty"`
-	VSCodePort    int               `json:"vscodePort,omitempty"`
+	GPU  string `json:"gpu"`
 	// User is the runtime user the container process runs as (from
 	// inspect.Config.User), surfaced for visibility in the details modal.
 	User string `json:"user"`
-	// ConnectionUser is the account surfaced to the user for the SSH gateway,
-	// resolved from the base image's USER and stamped on the
-	// mudp.connectionUser label.
-	ConnectionUser string `json:"connectionUser"`
 }
 
 type PortBinding struct {
@@ -212,6 +168,13 @@ func (d *Client) Close() error {
 		return nil
 	}
 	return d.c.Close()
+}
+
+// Raw returns the underlying Docker SDK client. It is an escape hatch for
+// callers that need operations not yet wrapped here. Callers must not close it
+// — the dockerx.Client owns its lifetime.
+func (d *Client) Raw() *client.Client {
+	return d.c
 }
 
 func NewWithHost(host string) (*Client, error) {
@@ -356,9 +319,6 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	emit := func(stage, msg string) {
 		progress(stage, msg)
 	}
-	if (opts.SSH || opts.VSCode) && strings.TrimSpace(opts.AccessPassword) == "" {
-		return "", fmt.Errorf("an access password is required to enable SSH or VS Code")
-	}
 	name := FullContainerName(opts.Username, opts.Name)
 	emit("image", "Inspecting image "+opts.ImageRef)
 	imageInfo, _, err := d.c.ImageInspectWithRaw(ctx, opts.ImageRef)
@@ -381,6 +341,9 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		}
 		if usedPorts[hostPort] || allocated[hostPort] {
 			return fmt.Errorf("host port %d is already allocated", hostPort)
+		}
+		if !portFree(hostPort) {
+			return fmt.Errorf("host port %d is occupied by another process", hostPort)
 		}
 		allocated[hostPort] = true
 		return nil
@@ -434,6 +397,20 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			return fmt.Errorf("invalid host port %q", parts[0])
 		}
 		if err := addHostPort(hostPort); err != nil {
+			// If the requested host port is occupied by a system program (not a
+			// port already managed by this application), automatically allocate
+			// another free port in the user's assigned range instead of failing.
+			if !usedPorts[hostPort] && !portFree(hostPort) {
+				emit("ports", fmt.Sprintf("Host port %d is occupied by another process; allocating a different port", hostPort))
+				hostPortStr, err := nextPort()
+				if err != nil {
+					return err
+				}
+				p := nat.Port(parts[1] + "/tcp")
+				exposed[p] = struct{}{}
+				portMap[p] = []nat.PortBinding{{HostPort: hostPortStr}}
+				return nil
+			}
 			return err
 		}
 		p := nat.Port(parts[1] + "/tcp")
@@ -462,40 +439,14 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		exposed["80/tcp"] = struct{}{}
 		portMap["80/tcp"] = []nat.PortBinding{{HostPort: hostPort}}
 	}
-	// SSH/VS Code are host-side gateways, not container-published ports: no
-	// entry goes into exposed/portMap. We only reserve a host port number here
-	// so the caller (internal/server) can bind its own listener/subprocess to
-	// it once the container exists.
-	var sshPort, vscodePort string
-	if opts.SSH {
-		sshPort, err = nextPort()
-		if err != nil {
-			return "", err
-		}
-	}
-	if opts.VSCode {
-		vscodePort, err = nextPort()
-		if err != nil {
-			return "", err
-		}
-	}
-	connectionUser := resolveConnectionUser(imageInfo.Config.User)
-	if opts.ConnectionUser != "" {
-		connectionUser = opts.ConnectionUser
-	}
 	labels := map[string]string{
-		ManagedLabel:          "true",
-		UserLabel:             opts.Username,
-		NameLabel:             opts.Name,
-		"mudp.image":          opts.ImageName,
-		"mudp.gpu":            opts.GPUs,
-		"mudp.ssh":            fmt.Sprint(opts.SSH),
-		"mudp.vscode":         fmt.Sprint(opts.VSCode),
-		"mudp.sshPort":        sshPort,
-		"mudp.vscodePort":     vscodePort,
-		"mudp.forward8080":    fmt.Sprint(opts.Forward8080),
-		"mudp.forward80":      fmt.Sprint(opts.Forward80),
-		"mudp.connectionUser": connectionUser,
+		ManagedLabel:       "true",
+		UserLabel:          opts.Username,
+		NameLabel:          opts.Name,
+		"mudp.image":       opts.ImageName,
+		"mudp.gpu":         opts.GPUs,
+		"mudp.forward8080": fmt.Sprint(opts.Forward8080),
+		"mudp.forward80":   fmt.Sprint(opts.Forward80),
 	}
 	hostCfg := &container.HostConfig{PortBindings: portMap, RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyMode(normalizeRestartPolicy(opts.RestartPolicy))}}
 	for _, m := range opts.Mounts {
@@ -558,12 +509,6 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		_ = d.c.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return "", err
 	}
-	if opts.SSH {
-		emit("ssh", "SSH gateway will listen on port "+sshPort)
-	}
-	if opts.VSCode {
-		emit("vscode", "VS Code gateway will listen on port "+vscodePort)
-	}
 	emit("done", "Container created")
 	return resp.ID, nil
 }
@@ -580,17 +525,6 @@ func (d *Client) managedHostPorts(ctx context.Context) (map[int]bool, error) {
 			if p.PublicPort > 0 {
 				out[int(p.PublicPort)] = true
 			}
-		}
-		// SSH/VS Code gateway ports are never Docker-published (they're plain
-		// host listeners/subprocesses started by internal/server), so they
-		// don't show up in c.Ports above. Reserve them from their labels too,
-		// for as long as the container exists, so a new create can't collide
-		// with a stopped container's already-assigned gateway port.
-		if p, err := strconv.Atoi(c.Labels["mudp.sshPort"]); err == nil && p > 0 {
-			out[p] = true
-		}
-		if p, err := strconv.Atoi(c.Labels["mudp.vscodePort"]); err == nil && p > 0 {
-			out[p] = true
 		}
 	}
 	return out, nil
@@ -823,26 +757,6 @@ func (d *Client) TopProcesses(ctx context.Context, containers []Container) []Top
 	return out
 }
 
-// MergedDir returns the host filesystem path backing a container's live
-// (upper+lower merged) view. It only works with the overlay2 storage driver,
-// which is what makes host-side code-server attachment possible without
-// installing anything inside the container: code-server just opens this
-// directory like any other folder on the host.
-func (d *Client) MergedDir(ctx context.Context, id string) (string, error) {
-	inspect, err := d.c.ContainerInspect(ctx, id)
-	if err != nil {
-		return "", err
-	}
-	if inspect.GraphDriver.Name != "overlay2" {
-		return "", fmt.Errorf("VS Code host attachment requires the overlay2 storage driver (this host uses %q)", inspect.GraphDriver.Name)
-	}
-	dir := inspect.GraphDriver.Data["MergedDir"]
-	if dir == "" {
-		return "", fmt.Errorf("container merged directory is not available")
-	}
-	return dir, nil
-}
-
 func (d *Client) ListContainers(ctx context.Context, username string, admin bool) ([]Container, error) {
 	return d.listContainers(ctx, username, admin, false)
 }
@@ -890,7 +804,6 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 		out = append(out, Container{
 			ID: c.ID, Name: display, FullName: full, Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
-			SSHUser: sshUser(c.Labels), SSHPort: labelPort(c.Labels, "mudp.sshPort"), VSCodePort: labelPort(c.Labels, "mudp.vscodePort"),
 			HTTP8080URL: httpURL(c.Ports, 8080), HTTP80URL: httpURL(c.Ports, 80),
 		})
 	}
@@ -904,38 +817,13 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 				out[i].GPUMemoryTotalMB = gpu.MemoryTotalMB
 				out[i].GPUMemoryPct = gpu.MemoryPct
 			}
-		} else {
-			out[i].SSHPort = 0
-			out[i].SSHUser = ""
-			out[i].VSCodePort = 0
-			continue
 		}
 	}
 	return out, nil
 }
 
-// labelPort parses a port-number label (e.g. "mudp.sshPort"), returning 0 when
-// absent or invalid.
-func labelPort(labels map[string]string, key string) int {
-	p, err := strconv.Atoi(labels[key])
-	if err != nil {
-		return 0
-	}
-	return p
-}
-
-func sshUser(labels map[string]string) string {
-	if labels["mudp.ssh"] == "true" {
-		if user := labels["mudp.connectionUser"]; user != "" {
-			return user
-		}
-		return "root"
-	}
-	return ""
-}
-
 // httpURL returns the host-side http:// URL for the given container private
-// port (e.g. 8080 or 80) when it is published, mirroring vscodeURL's logic.
+// port (e.g. 8080 or 80) when it is published.
 func httpURL(ports []container.Port, privatePort uint16) string {
 	for _, p := range ports {
 		if p.PrivatePort == privatePort && p.PublicPort > 0 {
@@ -1082,24 +970,19 @@ func (d *Client) Inspect(ctx context.Context, id string) (InspectInfo, error) {
 		return InspectInfo{}, err
 	}
 	info := InspectInfo{
-		ID:             inspect.ID,
-		Name:           strings.TrimPrefix(inspect.Name, "/"),
-		Image:          inspect.Image,
-		State:          inspect.State.Status,
-		Status:         inspect.State.Status,
-		RestartPolicy:  string(inspect.HostConfig.RestartPolicy.Name),
-		Entrypoint:     inspect.Config.Entrypoint,
-		Cmd:            inspect.Config.Cmd,
-		Env:            inspect.Config.Env,
-		Labels:         inspect.Config.Labels,
-		GPU:            inspect.Config.Labels["mudp.gpu"],
-		SSH:            inspect.Config.Labels["mudp.ssh"] == "true",
-		VSCode:         inspect.Config.Labels["mudp.vscode"] == "true",
-		SSHPort:        labelPort(inspect.Config.Labels, "mudp.sshPort"),
-		VSCodePort:     labelPort(inspect.Config.Labels, "mudp.vscodePort"),
-		ImageName:      inspect.Config.Labels["mudp.image"],
-		User:           inspect.Config.User,
-		ConnectionUser: inspect.Config.Labels["mudp.connectionUser"],
+		ID:            inspect.ID,
+		Name:          strings.TrimPrefix(inspect.Name, "/"),
+		Image:         inspect.Image,
+		State:         inspect.State.Status,
+		Status:        inspect.State.Status,
+		RestartPolicy: string(inspect.HostConfig.RestartPolicy.Name),
+		Entrypoint:    inspect.Config.Entrypoint,
+		Cmd:           inspect.Config.Cmd,
+		Env:           inspect.Config.Env,
+		Labels:        inspect.Config.Labels,
+		GPU:           inspect.Config.Labels["mudp.gpu"],
+		ImageName:     inspect.Config.Labels["mudp.image"],
+		User:          inspect.Config.User,
 	}
 	if info.Labels == nil {
 		info.Labels = map[string]string{}
@@ -1174,6 +1057,61 @@ func (d *Client) ExecAttach(ctx context.Context, id string, rows, cols uint) (Ex
 		return ExecConn{}, err
 	}
 	return ExecConn{Hijacked: attachResp, ExecID: createResp.ID}, nil
+}
+
+// Exec runs a non-interactive command in a managed, running container and waits
+// for it to finish.
+func (d *Client) Exec(ctx context.Context, id string, cmd []string, user string, env []string) (ExecResult, error) {
+	if err := d.managedGuard(ctx, id); err != nil {
+		return ExecResult{}, err
+	}
+	if len(cmd) == 0 {
+		return ExecResult{}, fmt.Errorf("exec command is required")
+	}
+	info, err := d.c.ContainerInspect(ctx, id)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	if info.State == nil || !info.State.Running {
+		return ExecResult{}, fmt.Errorf("container not running")
+	}
+	execCfg := container.ExecOptions{
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          cmd,
+		User:         user,
+		Env:          env,
+	}
+	resp, err := d.c.ContainerExecCreate(ctx, id, execCfg)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	attach, err := d.c.ContainerExecAttach(ctx, resp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return ExecResult{}, err
+	}
+	defer attach.Close()
+
+	var stdout, stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, attach.Reader); err != nil {
+		return ExecResult{}, err
+	}
+	inspect, err := d.c.ContainerExecInspect(ctx, resp.ID)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	res := ExecResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: inspect.ExitCode}
+	if inspect.ExitCode != 0 {
+		msg := strings.TrimSpace(res.Stderr)
+		if msg == "" {
+			msg = strings.TrimSpace(res.Stdout)
+		}
+		if msg == "" {
+			msg = "exec failed"
+		}
+		return res, fmt.Errorf("%s (exit %d)", msg, inspect.ExitCode)
+	}
+	return res, nil
 }
 
 // pickShell returns the most capable interactive shell available in the

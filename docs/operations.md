@@ -6,7 +6,7 @@ Each user can be assigned a numeric port prefix. Prefix `100` means the user can
 
 - Host ports below `10000` are reserved and rejected for user mappings.
 - Explicit mappings in the create form must be `host:container`.
-- SSH and VS Code are host-side helpers. They do not consume ports from the user's assigned range.
+- SSH and VS Code each reserve one host port from the same assigned range when enabled (see Host-side Access below).
 - Users without a prefix cannot publish custom host ports until an admin assigns one.
 
 Admins set the prefix from **Users & Groups -> Edit -> Port prefix**.
@@ -39,10 +39,6 @@ Users can view live container stats from a container's **Stats** action. Admins 
 - Top container processes sorted by CPU.
 
 The history endpoint stores a fresh sample on access and keeps recent samples for 48 hours.
-
-## Host-side Access
-
-SSH and VS Code options label the container and expose UI helpers from the MUDP host side. They do not inject scripts, install packages, publish port 22/13337, or change the container entrypoint.
 
 ## Disks And Backup
 

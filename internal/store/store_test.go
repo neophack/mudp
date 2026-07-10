@@ -85,7 +85,6 @@ func TestImagePresetRoundTrip(t *testing.T) {
 		GPUs:    "all",
 		Env:     []string{"VNC_PW=secret"},
 		Ports:   []string{"8080"},
-		SSH:     boolPtr(true),
 		Devices: []string{"/dev/nvidia0"},
 	}
 	if err := db.SetImagePreset(imageID, preset); err != nil {
@@ -97,7 +96,7 @@ func TestImagePresetRoundTrip(t *testing.T) {
 	}
 	got := imgs[0].Preset
 	if got.GPUs != "all" || len(got.Env) != 1 || got.Env[0] != "VNC_PW=secret" ||
-		len(got.Ports) != 1 || got.Ports[0] != "8080" || got.SSH == nil || !*got.SSH ||
+		len(got.Ports) != 1 || got.Ports[0] != "8080" ||
 		len(got.Devices) != 1 || got.Devices[0] != "/dev/nvidia0" {
 		t.Fatalf("preset mismatch: %+v", got)
 	}
@@ -339,50 +338,4 @@ func TestRegistriesCRUD(t *testing.T) {
 	}
 }
 
-func TestContainerAccessCRUD(t *testing.T) {
-	db := newTestDB(t)
 
-	if err := db.SaveContainerAccess(ContainerAccess{
-		ContainerID: "abc123",
-		Username:    "root",
-		Password:    "s3cr3t",
-		SSHPort:     10122,
-		VSCodePort:  10180,
-	}); err != nil {
-		t.Fatalf("SaveContainerAccess: %v", err)
-	}
-
-	got, ok, err := db.ContainerAccess("abc123")
-	if err != nil {
-		t.Fatalf("ContainerAccess: %v", err)
-	}
-	if !ok {
-		t.Fatal("ContainerAccess returned ok=false after save")
-	}
-	if got.Password != "s3cr3t" || got.SSHPort != 10122 || got.VSCodePort != 10180 {
-		t.Fatalf("ContainerAccess returned unexpected row: %+v", got)
-	}
-
-	// Upsert: saving again with a new password replaces the row.
-	if err := db.SaveContainerAccess(ContainerAccess{
-		ContainerID: "abc123",
-		Username:    "root",
-		Password:    "newpass",
-		SSHPort:     10122,
-		VSCodePort:  10180,
-	}); err != nil {
-		t.Fatalf("SaveContainerAccess upsert: %v", err)
-	}
-	got, ok, _ = db.ContainerAccess("abc123")
-	if !ok || got.Password != "newpass" {
-		t.Fatalf("upsert did not update password: %+v", got)
-	}
-
-	if err := db.DeleteContainerAccess("abc123"); err != nil {
-		t.Fatalf("DeleteContainerAccess: %v", err)
-	}
-	_, ok, _ = db.ContainerAccess("abc123")
-	if ok {
-		t.Fatal("row still exists after delete")
-	}
-}

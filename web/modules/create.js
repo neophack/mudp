@@ -3,7 +3,7 @@
 import { state, toast, refreshAll, renderView } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 
-const STAGE_ORDER = ["image", "create", "start", "ssh", "vscode", "done"];
+const STAGE_ORDER = ["image", "create", "start", "done"];
 
 // lastPayload holds the most recent create request so the Retry button in the
 // progress panel can resubmit it instead of wiping the form (which would also
@@ -11,11 +11,8 @@ const STAGE_ORDER = ["image", "create", "start", "ssh", "vscode", "done"];
 let lastPayload = null;
 const STAGE_LABEL = {
   image: "Inspect image",
-  bootstrap: "Prepare access",
   create: "Create container",
   start: "Start container",
-  ssh: "Enable SSH terminal",
-  vscode: "Enable VS Code attach",
   done: "Complete",
 };
 
@@ -56,8 +53,7 @@ export function openCreateModal() {
           `<option value="on-failure">Restart on failure (on-failure)</option>` +
           `<option value="no">Do not auto-restart (no)</option>` +
         `</select>` +
-        `<label class="check"><input type="checkbox" name="ssh" checked> Enable host-side SSH terminal</label>` +
-        `<label class="check"><input type="checkbox" name="vscode" checked> Enable host-side VS Code attach</label>` +
+
         `<label class="check"><input type="checkbox" name="forward8080"> Forward container port 8080</label>` +
         `<label class="check"><input type="checkbox" name="forward80"> Forward container port 80</label>` +
         `<label class="check"><input type="checkbox" name="mountNetdisk" checked> Mount netdisk at /netdisk</label>` +
@@ -77,8 +73,7 @@ export function openCreateModal() {
       .split(/\n+/)
       .map((s) => s.trim())
       .filter(Boolean);
-    payload.ssh = fd.has("ssh");
-    payload.vscode = fd.has("vscode");
+
     payload.forward8080 = fd.has("forward8080");
     payload.forward80 = fd.has("forward80");
     payload.mountNetdisk = fd.has("mountNetdisk");
@@ -127,11 +122,6 @@ function applyPreset(imageName) {
   // auto-allocates a host port from the user's range.
   if (p.ports && p.ports.length) form.querySelector('[name="ports"]').value = p.ports.map((c) => ":" + c).join("\n");
   if (p.restartPolicy) form.querySelector('[name="restartPolicy"]').value = p.restartPolicy;
-  // SSH/VSCode always follow the preset exactly (like forward8080/forward80): if the
-  // admin didn't check them when configuring this image, they must not end up
-  // checked just because the form's own baseline default is "on".
-  form.querySelector('[name="ssh"]').checked = !!p.ssh;
-  form.querySelector('[name="vscode"]').checked = !!p.vscode;
   form.querySelector('[name="forward8080"]').checked = !!p.forward8080;
   form.querySelector('[name="forward80"]').checked = !!p.forward80;
   if (p.mountNetdisk !== undefined) form.querySelector('[name="mountNetdisk"]').checked = p.mountNetdisk;

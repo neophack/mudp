@@ -1,7 +1,7 @@
 # MUDP 架构与模块分析
 
 > **MUDP** = **M**ulti **U**ser **D**ocker **P**latform —— 一个单二进制的多用户 Docker 管理面板。
-> 支持多用户隔离、RBAC 角色、容器生命周期、SSH/VSCode 接入、网盘、栈编排、GPU/资源监控。
+> 支持多用户隔离、RBAC 角色、容器生命周期、网盘、栈编排、GPU/资源监控。
 > 后端纯 Go（无 CGO），前端原生 ES Module SPA，SQLite 存储，跨 Linux/Windows/macOS 编译运行。
 
 本文是对项目各模块的诚实技术分析，包含代码组织评估与已发现的问题清单，供维护与重构参考。
@@ -17,7 +17,6 @@ mudp/
 │   ├── auth/                               会话与第三方登录
 │   │   ├── auth.go              (72 行)    HMAC 签名的会话 cookie
 │   │   └── feishu.go            (148 行)   飞书/Lark OIDC OAuth 客户端
-│   ├── bootstrap/bootstrap.go   (167 行)   生成 SSH/VSCode 引导脚本 tarball 注入容器
 │   ├── config/config.go         (53 行)    环境变量配置；会话密钥随机生成
 │   ├── dockerx/                           Docker SDK 封装层（见 §3）
 │   ├── server/                            HTTP 路由与业务处理器（见 §4）
@@ -49,9 +48,6 @@ mudp/
 ### internal/config
 全部来自环境变量（`MUDP_ADDR`、`MUDP_DB`、`MUDP_ADMIN_USER`、`MUDP_ADMIN_PASSWORD`、`MUDP_DOCKER_HOST`、`MUDP_WEB_DIR`）。**会话密钥默认每次启动随机生成**——若未设 `MUDP_SESSION_SECRET`，每次重启所有会话失效（见问题 #12）。
 
-### internal/bootstrap
-生成一个含 `entrypoint.sh`、`ssh.sh`、`vscode.sh` 的 tarball，在创建容器时 `CopyToContainer`。entrypoint 负责装包、跑 SSH/VSCode 脚本、最后 `exec` 原始 entrypoint/cmd。
-
 ### internal/store
 SQLite + modernc.org/sqlite（纯 Go 驱动，无 CGO）。连接池 8 开 4 闲。10 张表：`users / groups / user_groups / images / group_images / audit_logs / stacks / settings(kv) / resource_samples / netdisk_shares`。外键级联开启。
 
@@ -67,7 +63,7 @@ HTTP 层，chi 路由。见 §4。
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `docker.go` | 1154 | 容器生命周期（Create/List/Action/Restart/Inspect）、镜像 pull/tag/remove/list、exec attach、日志（一次性+流）、SetAccessPassword、GPU 入口、TopProcesses、挂载/网络解析 |
+| `docker.go` | 1154 | 容器生命周期（Create/List/Action/Restart/Inspect）、镜像 pull/tag/remove/list、exec attach、日志（一次性+流）、GPU 入口、TopProcesses、挂载/网络解析 |
 | `stats.go` | 173 | 一次性 + 流式容器统计（CPU/mem/net/blkio/pids）+ GPU 富化 |
 | `gpu.go` | 75 | nvidia-smi 可用性缓存 + GPU 快照缓存（3s TTL） |
 | `image_ext.go` | 220 | 镜像详情、build、prune、import、save、tag、push |

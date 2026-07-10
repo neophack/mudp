@@ -60,8 +60,7 @@ function presetSummary(p) {
   if (!p) return "—";
   const bits = [];
   if (p.gpus) bits.push("GPU:" + p.gpus);
-  if (p.ssh) bits.push("SSH");
-  if (p.vscode) bits.push("VSCode");
+
   if ((p.ports || []).length) bits.push("ports:" + p.ports.join(","));
   if ((p.devices || []).length) bits.push("dev:" + p.devices.length);
   if ((p.cdiDevices || []).length) bits.push("cdi:" + p.cdiDevices.length);
@@ -93,8 +92,6 @@ export function openPresetModal(imageId) {
         `<label class="field-label">Container ports to map (one per line, e.g. 8080)</label>` +
         `<textarea name="ports" spellcheck="false">${escapeHtml((p.ports || []).join("\n"))}</textarea>` +
         `<div class="check-grid">` +
-          presetCheck("ssh", "Enable host-side SSH terminal", p.ssh) +
-          presetCheck("vscode", "Enable host-side VS Code attach", p.vscode) +
           presetCheck("forward8080", "Forward port 8080", p.forward8080) +
           presetCheck("forward80", "Forward port 80", p.forward80) +
           presetCheck("mountNetdisk", "Mount netdisk at /netdisk", p.mountNetdisk) +
@@ -124,8 +121,6 @@ export function openPresetModal(imageId) {
       gpus: (fd.get("gpus") || "").trim(),
       env: lines(fd.get("env")),
       ports: lines(fd.get("ports")),
-      ssh: form.querySelector('[name=ssh]').checked || undefined,
-      vscode: form.querySelector('[name=vscode]').checked || undefined,
       forward8080: form.querySelector('[name=forward8080]').checked || undefined,
       forward80: form.querySelector('[name=forward80]').checked || undefined,
       mountNetdisk: form.querySelector('[name=mountNetdisk]').checked || undefined,

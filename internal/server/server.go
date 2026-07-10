@@ -57,7 +57,9 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret)}, nil
+	return &App{
+		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret),
+	}, nil
 }
 
 // Close releases resources held by the app, such as the Docker client.
@@ -386,7 +388,6 @@ func (a *App) images(w http.ResponseWriter, r *http.Request) {
 	respond(w, imgs, err)
 }
 
-
 type pullRequest struct {
 	SourceRef   string
 	DisplayName string
@@ -591,23 +592,20 @@ func (a *App) containers(w http.ResponseWriter, r *http.Request) {
 }
 
 type createRequest struct {
-	Name           string   `json:"name"`
-	Image          string   `json:"image"`
-	Env            []string `json:"env"`
-	GPUs           string   `json:"gpus"`
-	SSH            bool     `json:"ssh"`
-	VSCode         bool     `json:"vscode"`
-	Forward8080    bool     `json:"forward8080"`
-	Forward80      bool     `json:"forward80"`
-	AccessPassword string   `json:"accessPassword"`
-	PortsRaw       string   `json:"ports"`
-	MountsRaw      string   `json:"mounts"`
-	Networks       []string `json:"networks"`
-	MountNetdisk   *bool    `json:"mountNetdisk"`
-	MountShm       *bool    `json:"mountShm"`
-	RestartPolicy  string   `json:"restartPolicy"`
-	Devices        []string `json:"devices"`
-	CDIDevices     []string `json:"cdiDevices"`
+	Name          string   `json:"name"`
+	Image         string   `json:"image"`
+	Env           []string `json:"env"`
+	GPUs          string   `json:"gpus"`
+	Forward8080   bool     `json:"forward8080"`
+	Forward80     bool     `json:"forward80"`
+	PortsRaw      string   `json:"ports"`
+	MountsRaw     string   `json:"mounts"`
+	Networks      []string `json:"networks"`
+	MountNetdisk  *bool    `json:"mountNetdisk"`
+	MountShm      *bool    `json:"mountShm"`
+	RestartPolicy string   `json:"restartPolicy"`
+	Devices       []string `json:"devices"`
+	CDIDevices    []string `json:"cdiDevices"`
 }
 
 var errForbiddenImage = errors.New("image not visible")
@@ -631,15 +629,6 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	img, err := a.db.ImageByDisplayNameForUser(req.Image, u.ID, u.Role == "admin")
 	if err != nil {
 		return dockerx.CreateOptions{}, errForbiddenImage
-	}
-	// Resolve the connection user from the base image's USER directive. It is
-	// surfaced for host-side access helpers only; no SSH/VS Code service is
-	// installed inside the container.
-	var connectionUser string
-	if req.SSH || req.VSCode {
-		if info, err := a.docker.InspectImage(ctx, img.DockerRef); err == nil {
-			connectionUser = dockerx.ResolveConnectionUser(info.Config.User)
-		}
 	}
 	mountNetdisk := true
 	if req.MountNetdisk != nil {
@@ -665,13 +654,11 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	}
 	return dockerx.CreateOptions{
 		Username: u.Username, Name: req.Name, ImageRef: img.DockerRef, ImageName: img.DisplayName,
-		Env: normalizeEnv(req.Env), GPUs: req.GPUs, SSH: req.SSH, VSCode: req.VSCode,
+		Env: normalizeEnv(req.Env), GPUs: req.GPUs,
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
-		AccessPassword: req.AccessPassword,
-		ConnectionUser: connectionUser,
-		Ports:          splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
-		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
-		Devices: req.Devices, CDIDevices: req.CDIDevices,
+		Ports:     splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
+		Networks:  req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
+		Devices:   req.Devices, CDIDevices: req.CDIDevices,
 		RestartPolicy: req.RestartPolicy,
 	}, nil
 }

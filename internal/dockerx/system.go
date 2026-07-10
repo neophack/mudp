@@ -124,8 +124,8 @@ func (d *Client) gatherSystemInfo(ctx context.Context, username string) SystemIn
 	//   Platform-wide: only mudp-published images (tagged with the mudp prefix).
 	//   Scoped: only the distinct images this user's containers reference,
 	//           since images carry no per-user owner label.
-	//   Either way, internal derived images (incremental SSH/VSCode layers and
-	//   final fused runtime images) are skipped so the dashboard only counts
+	//   Either way, internal derived images (final fused runtime images) are
+	//   skipped so the dashboard only counts
 	//   real user-facing base images.
 	if imgs, err := d.c.ImageList(ctx, image.ListOptions{}); err == nil {
 		var size int64
@@ -233,23 +233,18 @@ func (d *Client) userImageSet(ctx context.Context, username string) map[string]b
 	return set
 }
 
-// derivedImageTagPrefixes are the repo-tag prefixes of internal fused/layer
-// images the dashboard should NOT count. They are build artifacts layered on
-// top of real user-facing base images (mudp-fused-..., mudp-layer-ssh-...,
-// mudp-layer-vscode-..., mudp-fused-validate-...). Kept here so the legacy
-// (pre-label) images are still excluded by tag.
+// derivedImageTagPrefixes are the repo-tag prefixes of internal fused images
+// the dashboard should NOT count. They are build artifacts layered on top of
+// real user-facing base images (mudp-fused-..., mudp-fused-validate-...).
 var derivedImageTagPrefixes = []string{
 	Prefix + "fused-",
 	Prefix + "fused-validate-",
-	Prefix + "layer-ssh-",
-	Prefix + "layer-vscode-",
 }
 
-// isDerivedImage reports whether an image is an internal build artifact (an
-// incremental SSH/VSCode layer or a final fused runtime image) that the
-// dashboard should exclude from its image count. It checks the mudp.fused /
-// mudp.fused.layer labels first (the modern path) and falls back to the
-// derived tag prefixes for legacy images built before labels existed.
+// isDerivedImage reports whether an image is an internal fused build artifact
+// that the dashboard should exclude from its image count. It checks the
+// mudp.fused / mudp.fused.layer labels first (the modern path) and falls back
+// to the derived tag prefixes for legacy images built before labels existed.
 func isDerivedImage(im image.Summary) bool {
 	if im.Labels["mudp.fused"] == "true" || im.Labels["mudp.fused.layer"] == "true" {
 		return true

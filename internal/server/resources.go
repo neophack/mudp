@@ -117,10 +117,6 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 	if n, reclaimed, err := a.docker.PruneImages(ctx); err == nil && n > 0 {
 		log.Printf("pruned %d dangling images (%d bytes reclaimed)", n, reclaimed)
 	}
-	// Restart the SSH/VS Code host-side gateways for containers that already
-	// have them enabled, since those listeners/subprocesses live only in this
-	// process's memory and do not survive a restart on their own.
-	a.reconcileGateways(ctx)
 
 	stop := make(chan struct{})
 	go func() {
