@@ -1,6 +1,6 @@
 module mudp
 
-go 1.20
+go 1.21
 
 require (
 	github.com/docker/docker v25.0.7+incompatible
