@@ -4,6 +4,7 @@
 import { state, api, toast, refreshSection, renderView, canMutate, displayNameForUsername } from "../app.js";
 import { showModal, showModalNoShell, closeModal, readSSE, onModalClose } from "./ui.js";
 import { loadXterm, TERM_THEME } from "./terminal.js";
+import { registerJob } from "./jobs.js";
 
 const SAMPLE = `services:
   web:
@@ -272,16 +273,21 @@ function isActiveRun(id, verb) {
 }
 
 async function runStackStream(id, verb, term, doneVerb) {
+  const stack = (state.stacks || []).find((s) => s.id === id);
+  const stackName = stack?.name || `stack ${id}`;
+  const job = registerJob({ kind: `stack.${verb}`, name: stackName });
   try {
     const res = await fetch(`/api/stacks/${verb}/stream`, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
       body: JSON.stringify({ id }),
+      signal: job.signal,
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       const msg = data.error || `${verb === "up" ? "Deploy" : "Down"} failed (${res.status})`;
+      job.error(msg);
       if (isActiveRun(id, verb)) {
         appendStackLine(msg);
         state.stackRun.error = msg;
@@ -292,28 +298,44 @@ async function runStackStream(id, verb, term, doneVerb) {
       toast(msg);
       return;
     }
-    await streamStack(res, id, verb, term, doneVerb);
+    await streamStack(res, id, verb, term, doneVerb, job);
   } catch (err) {
-    if (isActiveRun(id, verb)) {
-      appendStackLine(err.message);
-      state.stackRun.error = err.message;
-      state.stackRun.active = false;
-      state.stackRun.done = true;
-      term.setStatus(err.message, "error");
+    if (job.signal.aborted) {
+      job.cancel();
+      if (isActiveRun(id, verb)) {
+        const msg = "Cancelled";
+        appendStackLine(`[cancelled] ${msg}`);
+        state.stackRun.error = msg;
+        state.stackRun.active = false;
+        state.stackRun.done = true;
+        term.setStatus(msg, "muted");
+      }
+    } else {
+      job.error(err.message);
+      if (isActiveRun(id, verb)) {
+        appendStackLine(err.message);
+        state.stackRun.error = err.message;
+        state.stackRun.active = false;
+        state.stackRun.done = true;
+        term.setStatus(err.message, "error");
+      }
+      toast(err.message);
     }
-    toast(err.message);
   }
 }
 
-async function streamStack(res, id, verb, term, doneVerb) {
+async function streamStack(res, id, verb, term, doneVerb, job) {
   await readSSE(res, (event, data) => {
     // Ignore stale output if the user switched to a different stack/verb.
     if (!isActiveRun(id, verb)) return;
     if (event === "progress") {
-      appendStackLine(data.message || "");
+      const line = data.message || "";
+      appendStackLine(line);
+      job.log(line);
     } else if (event === "error") {
       const msg = data.message || "failed";
       appendStackLine(`[error] ${msg}`);
+      job.error(msg);
       state.stackRun.error = msg;
       state.stackRun.active = false;
       state.stackRun.done = true;
@@ -322,6 +344,8 @@ async function streamStack(res, id, verb, term, doneVerb) {
     } else if (event === "done" || event === "cancelled") {
       const ok = event === "done";
       appendStackLine(`[${event}] ${data.message || ""}`);
+      if (ok) job.done(data.message || "Complete");
+      else job.cancel();
       state.stackRun.active = false;
       state.stackRun.done = true;
       term.setStatus(ok ? "Complete" : "Cancelled", ok ? "ok" : "muted");

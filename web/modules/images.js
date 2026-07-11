@@ -2,6 +2,7 @@
 
 import { state, api, toast, refreshSection, renderView, isAdmin } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
+import { registerJob } from "./jobs.js";
 
 export function renderImages() {
   const admin = isAdmin();
@@ -230,45 +231,64 @@ export function renderPullProgress() {
 export async function streamPull(payload) {
   state.pull = { active: true, logs: "", error: "", name: payload.sourceRef };
   renderPullProgress();
+  const job = registerJob({ kind: "image.pull", name: payload.sourceRef });
   try {
     const res = await fetch("/api/images/pull/stream", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
       body: JSON.stringify(payload),
+      signal: job.signal,
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       state.pull.error = data.error || `Request failed (${res.status})`;
       state.pull.active = false;
+      job.error(state.pull.error);
       renderPullProgress();
       toast(state.pull.error);
       return;
     }
     await readSSE(res, (event, data) => {
       if (event === "progress") {
-        state.pull.logs += (data.message || "") + "\n";
+        const line = data.message || "";
+        state.pull.logs += line + "\n";
+        job.log(line);
         renderPullProgress();
       } else if (event === "error") {
         state.pull.error = data.message || "Pull failed";
         state.pull.logs += `[error] ${state.pull.error}\n`;
         state.pull.active = false;
+        job.error(state.pull.error);
         renderPullProgress();
         toast(state.pull.error);
       } else if (event === "done") {
         state.pull.active = false;
         state.pull.logs += `[done] Published as ${data.dockerRef}\n`;
+        job.done(`Published as ${data.dockerRef}`);
         renderPullProgress();
         toast("Image pulled", true);
         refreshSection("images").then(() => renderView());
         setTimeout(() => closeModal(), 700);
+      } else if (event === "cancelled") {
+        state.pull.active = false;
+        state.pull.logs += `[cancelled] ${data.message || ""}\n`;
+        job.cancel();
+        renderPullProgress();
       }
     });
   } catch (err) {
-    state.pull.error = err.message;
     state.pull.active = false;
+    if (job.signal.aborted) {
+      state.pull.error = "Cancelled";
+      job.cancel();
+    } else {
+      state.pull.error = err.message;
+      job.error(err.message);
+    }
+    state.pull.logs += `[error] ${state.pull.error}\n`;
     renderPullProgress();
-    toast(err.message);
+    toast(state.pull.error);
   }
 }
 
@@ -331,42 +351,61 @@ export function openBuildModal() {
 async function streamBuild(payload) {
   state.pull = { active: true, logs: "", error: "", name: payload.tags.join(", ") };
   renderBuildProgress();
+  const job = registerJob({ kind: "image.build", name: payload.tags.join(", ") });
   try {
     const res = await fetch("/api/images/build/stream", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
       body: JSON.stringify(payload),
+      signal: job.signal,
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       state.pull.error = data.error || `Build failed (${res.status})`;
+      job.error(state.pull.error);
       renderBuildProgress();
       toast(state.pull.error);
       return;
     }
     await readSSE(res, (event, data) => {
       if (event === "progress") {
-        state.pull.logs += (data.message || "") + "\n";
+        const line = data.message || "";
+        state.pull.logs += line + "\n";
+        job.log(line);
         renderBuildProgress();
       } else if (event === "error") {
         state.pull.error = data.message || "Build failed";
         state.pull.logs += `[error] ${state.pull.error}\n`;
+        job.error(state.pull.error);
         renderBuildProgress();
         toast(state.pull.error);
       } else if (event === "done") {
         state.pull.active = false;
         state.pull.logs += `[done] Built ${(data.tags || []).join(", ")}\n`;
+        job.done(`Built ${(data.tags || []).join(", ")}`);
         renderBuildProgress();
         toast("Image built", true);
         refreshSection("images").then(() => renderView());
         setTimeout(() => closeModal(), 800);
+      } else if (event === "cancelled") {
+        state.pull.active = false;
+        state.pull.logs += `[cancelled] ${data.message || ""}\n`;
+        job.cancel();
+        renderBuildProgress();
       }
     });
   } catch (err) {
-    state.pull.error = err.message;
+    if (job.signal.aborted) {
+      state.pull.error = "Cancelled";
+      job.cancel();
+    } else {
+      state.pull.error = err.message;
+      job.error(err.message);
+    }
+    state.pull.logs += `[error] ${state.pull.error}\n`;
     renderBuildProgress();
-    toast(err.message);
+    toast(state.pull.error);
   }
 }
 
@@ -412,40 +451,58 @@ export function openImportModal() {
 async function streamImport(file) {
   state.pull = { active: true, logs: "Importing…\n", error: "", name: file.name };
   renderImportProgress();
+  const job = registerJob({ kind: "image.import", name: file.name });
   try {
     const res = await fetch("/api/images/import", {
       method: "POST",
       credentials: "same-origin",
       body: file,
       headers: { Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
+      signal: job.signal,
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       state.pull.error = data.error || `Import failed (${res.status})`;
+      job.error(state.pull.error);
       renderImportProgress();
       toast(state.pull.error);
       return;
     }
     await readSSE(res, (event, data) => {
       if (event === "progress") {
-        state.pull.logs += (data.message || "") + "\n";
+        const line = data.message || "";
+        state.pull.logs += line + "\n";
+        job.log(line);
         renderImportProgress();
       } else if (event === "error") {
         state.pull.error = data.message || "Import failed";
+        job.error(state.pull.error);
         renderImportProgress();
         toast(state.pull.error);
       } else if (event === "done") {
         state.pull.logs += "[done] Image loaded\n";
+        job.done("Image loaded");
         renderImportProgress();
         toast("Image imported", true);
         refreshSection("images").then(() => renderView());
         setTimeout(() => closeModal(), 800);
+      } else if (event === "cancelled") {
+        state.pull.active = false;
+        state.pull.logs += `[cancelled] ${data.message || ""}\n`;
+        job.cancel();
+        renderImportProgress();
       }
     });
   } catch (err) {
-    state.pull.error = err.message;
+    if (job.signal.aborted) {
+      state.pull.error = "Cancelled";
+      job.cancel();
+    } else {
+      state.pull.error = err.message;
+      job.error(err.message);
+    }
     renderImportProgress();
-    toast(err.message);
+    toast(state.pull.error);
   }
 }
 

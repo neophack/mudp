@@ -2018,3 +2018,91 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
   margin-top: 4px;
   font-size: 11px;
 }
+
+/* ---------- Background jobs button & list ---------- */
+.jobs-button {
+  position: relative;
+}
+.jobs-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 8px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fff;
+}
+.job-list {
+  max-height: 60vh;
+  overflow-y: auto;
+  display: grid;
+  gap: 10px;
+}
+.job-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--workspace);
+  transition: background 0.12s, border-color 0.12s;
+}
+.job-item:hover { border-color: var(--accent); }
+.job-item.job-inactive { opacity: 0.85; }
+.job-icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--ink-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.job-body { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.job-headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.job-name {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-headline .badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+.job-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.job-message {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-actions {
+  display: flex;
+  align-items: flex-start;
+}

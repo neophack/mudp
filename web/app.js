@@ -5,6 +5,7 @@ import { renderLogin } from "./modules/login.js";
 import { renderPending } from "./modules/pending.js";
 import { renderSetup } from "./modules/setup.js";
 import { renderNotificationBell, openNotificationsModal, fetchNotifications } from "./modules/notifications.js";
+import { renderJobsButton, openJobsModal } from "./modules/jobs.js";
 import { renderDashboard } from "./modules/dashboard.js";
 import { renderContainers } from "./modules/containers.js";
 import { openCreateModal } from "./modules/create.js";
@@ -72,6 +73,7 @@ export const state = {
   pull: { active: false, logs: "", error: "", name: "" },
   stackRun: { active: false, stackId: 0, verb: "", lines: [], error: "", done: false, controller: null },
   pending: new Set(),
+  jobs: [],
   terminal: { open: false, id: "", name: "", term: null, ws: null, fitAddon: null },
   modal: { open: false, kind: "", data: null },
   // gpuCount is the host's GPU count, loaded at boot so the create-container
@@ -319,6 +321,7 @@ export function render() {
             `<p>${subtitle(state.tab)}</p>` +
           `</div>` +
           `<div class="head-actions">` +
+            renderJobsButton() +
             renderNotificationBell() +
             (state.tab === "containers"
               ? `<div class="search"><input id="searchBox" placeholder="Search containers" value="${escapeHtml(state.search)}"></div>`
@@ -355,6 +358,8 @@ export function render() {
   };
   const bell = $("#notificationBell");
   if (bell) bell.onclick = openNotificationsModal;
+  const jobsBtn = $("#jobsButton");
+  if (jobsBtn) jobsBtn.onclick = openJobsModal;
   $("#refresh").onclick = async () => {
     try {
       await refreshAll();

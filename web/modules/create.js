@@ -2,6 +2,7 @@
 
 import { state, toast, refreshAll, renderView } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
+import { registerJob } from "./jobs.js";
 
 const STAGE_ORDER = ["image", "create", "start", "refresh", "done"];
 
@@ -218,6 +219,7 @@ function markStage(stage, message, st) {
 export async function streamCreate(payload) {
   state.create = { active: true, steps: [], logs: "", error: "" };
   renderCreateProgress();
+  const job = registerJob({ kind: "container.create", name: payload.name || "new container" });
   try {
     const headers = { "Content-Type": "application/json", Accept: "text/event-stream" };
     if (state.csrfToken) headers["X-CSRF-Token"] = state.csrfToken;
@@ -226,11 +228,13 @@ export async function streamCreate(payload) {
       credentials: "same-origin",
       headers,
       body: JSON.stringify(payload),
+      signal: job.signal,
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       state.create.error = data.error || `Request failed (${res.status})`;
       state.create.active = false;
+      job.error(state.create.error);
       renderCreateProgress();
       toast(state.create.error);
       return;
@@ -251,6 +255,7 @@ export async function streamCreate(payload) {
           markStage(stage, message, "active");
         }
         state.create.logs += `[${stage}] ${message}\n`;
+        job.log(message);
         renderCreateProgress();
       } else if (event === "error") {
         state.create.steps.forEach((s) => {
@@ -258,21 +263,35 @@ export async function streamCreate(payload) {
         });
         state.create.error = data.message || "Creation failed";
         state.create.logs += `[error] ${state.create.error}\n`;
+        job.error(state.create.error);
         renderCreateProgress();
         toast(state.create.error);
       } else if (event === "done") {
         state.create.active = false;
+        job.done(data.message || "Container created");
         renderCreateProgress();
         toast("Container created", true);
         refreshAll().then(() => renderView());
         setTimeout(() => closeModal(), 700);
+      } else if (event === "cancelled") {
+        state.create.active = false;
+        state.create.logs += `[cancelled] ${data.message || ""}\n`;
+        job.cancel();
+        renderCreateProgress();
       }
     });
   } catch (err) {
-    state.create.error = err.message;
     state.create.active = false;
+    if (job.signal.aborted) {
+      state.create.error = "Cancelled";
+      job.cancel();
+    } else {
+      state.create.error = err.message;
+      job.error(err.message);
+    }
+    state.create.logs += `[error] ${state.create.error}\n`;
     renderCreateProgress();
-    toast(err.message);
+    toast(state.create.error);
   }
 }
 
