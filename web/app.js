@@ -8,7 +8,7 @@ import { renderNotificationBell, openNotificationsModal, fetchNotifications } fr
 import { renderDashboard } from "./modules/dashboard.js";
 import { renderContainers } from "./modules/containers.js";
 import { openCreateModal } from "./modules/create.js";
-import { renderImages, openPullModal } from "./modules/images.js";
+import { renderImages } from "./modules/images.js";
 import { renderVolumes } from "./modules/volumes.js";
 import { renderNetworks } from "./modules/networks.js";
 import { renderStacks } from "./modules/stacks.js";
@@ -324,7 +324,6 @@ export function render() {
               ? `<div class="search"><input id="searchBox" placeholder="Search containers" value="${escapeHtml(state.search)}"></div>`
               : "") +
             (state.tab === "containers" && canMutate() ? `<button class="primary" id="newContainerBtn">+ New Container</button>` : "") +
-            (state.tab === "images" && isAdmin() ? `<button class="primary" id="pullImageBtn">+ Pull Image</button>` : "") +
             `<button class="ghost" id="refresh">Refresh</button>` +
           `</div>` +
         `</header>` +
@@ -367,8 +366,6 @@ export function render() {
   };
   const newBtn = $("#newContainerBtn");
   if (newBtn) newBtn.onclick = openCreateModal;
-  const pullBtn = $("#pullImageBtn");
-  if (pullBtn) pullBtn.onclick = openPullModal;
   const search = $("#searchBox");
   if (search) {
     search.oninput = (e) => {

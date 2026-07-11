@@ -35,6 +35,8 @@ export function renderImages() {
   if (importBtn) importBtn.onclick = openImportModal;
   const registerBtn = $("#registerImageBtn");
   if (registerBtn) registerBtn.onclick = openRegisterModal;
+  const pullBtn = $("#pullImageBtn");
+  if (pullBtn) pullBtn.onclick = openPullModal;
 }
 
 function imageRow(image, canEdit) {
@@ -78,9 +80,15 @@ export function openPresetModal(imageId) {
     .filter((n) => !n.system)
     .map((n) => `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}" ${(p.networks || []).includes(n.fullName || n.name) ? "checked" : ""}> ${escapeHtml(n.name)}</label>`)
     .join("");
+  const groupChecks = (state.groups || [])
+    .map((g) => {
+      const checked = (image.groups || []).includes(g.name) ? "checked" : "";
+      return `<label class="check"><input type="checkbox" name="groupIds" value="${g.id}" ${checked}> ${escapeHtml(g.name)}</label>`;
+    })
+    .join("");
   showModal({
     kind: "preset",
-    title: "Defaults · " + image.name,
+    title: "Edit · " + image.name,
     body:
       `<form id="presetForm" class="compact">` +
         `<p class="hint">These defaults auto-fill the create-container form when a user picks this image. Leave fields blank to let users decide.</p>` +
@@ -110,8 +118,11 @@ export function openPresetModal(imageId) {
         `<textarea name="devices" spellcheck="false">${escapeHtml((p.devices && p.devices.length ? p.devices : DEFAULT_NVIDIA_DEVICES).join("\n"))}</textarea>` +
         `<label class="field-label">CDI devices (one per line, e.g. nvidia.com/gpu=0)</label>` +
         `<textarea name="cdiDevices" spellcheck="false">${escapeHtml((p.cdiDevices || []).join("\n"))}</textarea>` +
+        `<label class="field-label">Visible to</label>` +
+        `<div class="check-grid">${groupChecks || '<span class="hint">No groups yet. Leave unchecked to make the image visible to all users.</span>'}</div>` +
+        `<p class="hint">Leave all groups unchecked to make the image visible to every activated user. Selecting one or more groups restricts visibility to members of those groups.</p>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="presetSubmit">Save Defaults</button>`,
+    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="presetSubmit">Save</button>`,
   });
   $("#presetSubmit").onclick = async () => {
     const form = $("#presetForm");
@@ -130,13 +141,17 @@ export function openPresetModal(imageId) {
       devices: lines(fd.get("devices")),
       cdiDevices: lines(fd.get("cdiDevices")),
     };
+    const groupIds = [...form.querySelectorAll("input[name=groupIds]:checked")].map((i) => Number(i.value));
     $("#presetSubmit").disabled = true;
     try {
-      await api("/api/images/preset", { method: "POST", body: JSON.stringify({ imageId: Number(imageId), preset }) });
+      await Promise.all([
+        api("/api/images/preset", { method: "POST", body: JSON.stringify({ imageId: Number(imageId), preset }) }),
+        api("/api/images/groups", { method: "POST", body: JSON.stringify({ imageId: Number(imageId), groupIds }) }),
+      ]);
       closeModal();
       await refreshSection("images");
       renderView();
-      toast("Image defaults saved", true);
+      toast("Image updated", true);
     } catch (err) {
       toast(err.message);
       $("#presetSubmit").disabled = false;
