@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
@@ -90,7 +90,7 @@ func (d *Client) containerFileListExec(ctx context.Context, id, dir string) ([]F
 	// stat %A = human mode, %s = size, %Y = mtime epoch, %n = full path.
 	cmd := fmt.Sprintf("find %s -maxdepth 1 -mindepth 1 -exec stat -c '%%A|%%s|%%Y|%%n' {} +",
 		shellQuote(dir))
-	execCfg := container.ExecOptions{
+	execCfg := types.ExecConfig{
 		AttachStdout: true,
 		AttachStderr: true,
 		Cmd:          []string{"/bin/sh", "-c", cmd},
@@ -100,7 +100,7 @@ func (d *Client) containerFileListExec(ctx context.Context, id, dir string) ([]F
 	if err != nil {
 		return nil, err
 	}
-	attach, err := d.c.ContainerExecAttach(ctx, resp.ID, container.ExecAttachOptions{})
+	attach, err := d.c.ContainerExecAttach(ctx, resp.ID, types.ExecStartCheck{})
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +162,7 @@ func (d *Client) containerRootListStopped(ctx context.Context, id, workingDir st
 	return out, nil
 }
 
-func mountDestinations(mounts []container.MountPoint) []string {
+func mountDestinations(mounts []types.MountPoint) []string {
 	out := make([]string, 0, len(mounts))
 	for _, m := range mounts {
 		if m.Destination != "" {
@@ -337,10 +337,10 @@ func formatFileMode(typeflag byte, mode int64) string {
 }
 
 // ContainerFileStat returns metadata for a single path inside the container.
-func (d *Client) ContainerFileStat(ctx context.Context, id, p string) (container.PathStat, error) {
+func (d *Client) ContainerFileStat(ctx context.Context, id, p string) (types.ContainerPathStat, error) {
 	p, err := cleanContainerPath(p)
 	if err != nil {
-		return container.PathStat{}, err
+		return types.ContainerPathStat{}, err
 	}
 	return d.c.ContainerStatPath(ctx, id, p)
 }
@@ -349,10 +349,10 @@ func (d *Client) ContainerFileStat(ctx context.Context, id, p string) (container
 // container. The returned reader is a tar containing the path (a single file's
 // content, or a directory tree). The caller must close the reader. stat holds
 // metadata for the requested path (use stat.Mode.IsDir() to decide file vs zip).
-func (d *Client) ContainerFileDownload(ctx context.Context, id, p string) (io.ReadCloser, container.PathStat, error) {
+func (d *Client) ContainerFileDownload(ctx context.Context, id, p string) (io.ReadCloser, types.ContainerPathStat, error) {
 	p, err := cleanContainerPath(p)
 	if err != nil {
-		return nil, container.PathStat{}, err
+		return nil, types.ContainerPathStat{}, err
 	}
 	return d.c.CopyFromContainer(ctx, id, p)
 }
@@ -366,7 +366,7 @@ func (d *Client) ContainerFileUpload(ctx context.Context, id, destDir string, ta
 	if err != nil {
 		return err
 	}
-	return d.c.CopyToContainer(ctx, id, destDir, tarStream, container.CopyToContainerOptions{})
+	return d.c.CopyToContainer(ctx, id, destDir, tarStream, types.CopyToContainerOptions{})
 }
 
 // assertContainerPath is a guard used by handlers to refuse obviously bad input

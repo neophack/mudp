@@ -79,7 +79,8 @@ func TestCSRFProtectBlocksMissingToken(t *testing.T) {
 
 func TestCSRFTokenRoundTrip(t *testing.T) {
 	rec := httptest.NewRecorder()
-	token, err := CSRFToken(rec, false)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	token, err := CSRFToken(rec, req)
 	if err != nil {
 		t.Fatalf("CSRFToken: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestCSRFTokenRoundTrip(t *testing.T) {
 		t.Fatalf("CSRF cookie not set: %+v", cookies)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req = httptest.NewRequest(http.MethodPost, "/", nil)
 	req.AddCookie(cookies[0])
 	req.Header.Set(csrfHeaderName, token)
 

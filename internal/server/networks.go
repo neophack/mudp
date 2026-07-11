@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"mudp/internal/dockerx"
+	"mudp/internal/httpx"
 	"mudp/internal/store"
 )
 
@@ -14,7 +15,16 @@ func (a *App) networks(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		items, err := a.docker.ListNetworks(r.Context(), u.Username, u.Role == "admin")
-		respond(w, items, err)
+		if err != nil {
+			httpx.Logger(r).Error("list networks failed", "error", err)
+			if dockerx.IsUnavailableError(err) {
+				writeErr(w, http.StatusServiceUnavailable, "docker unavailable")
+				return
+			}
+			respond(w, items, err)
+			return
+		}
+		respond(w, items, nil)
 	case http.MethodPost:
 		if u.Role != store.RoleAdmin {
 			writeErr(w, http.StatusForbidden, "only an admin can create networks")

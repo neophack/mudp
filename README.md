@@ -90,17 +90,23 @@ Open <http://127.0.0.1:9000>. Default first admin user is `admin`; the password 
 
 ## Build
 
+Requires **Go 1.20+**.
+
+```bash
+# Linux / macOS (native binary)
+./build.sh
+
+# Cross-compile
+GOOS=linux GOARCH=amd64 ./build.sh
+GOOS=windows GOARCH=amd64 ./build.sh
+GOOS=darwin GOARCH=arm64 ./build.sh
+```
+
 ```powershell
 # Windows
 go build -o dist/mudp.exe ./cmd/mudp
 # or:
 .\build.bat
-
-# Linux
-$env:GOOS="linux"; $env:GOARCH="amd64"; go build -o dist/mudp-linux-amd64 ./cmd/mudp
-
-# macOS
-$env:GOOS="darwin"; $env:GOARCH="arm64"; go build -o dist/mudp-darwin-arm64 ./cmd/mudp
 ```
 
 ## Test

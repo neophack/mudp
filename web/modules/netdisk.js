@@ -1,4 +1,4 @@
-import { state, api, toast, escapeHtml, fmtBytes, isAdmin, canMutate } from "../app.js";
+import { state, api, toast, escapeHtml, fmtBytes, isAdmin, canMutate, displayNameForUsername } from "../app.js";
 
 export async function renderNetdisk() {
   $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">Loading files...</p></div></div>`;
@@ -327,7 +327,7 @@ function adminShareRows(shares) {
   return (shares || []).map((s) => {
     const link = `${location.origin}/pan/${encodeURIComponent(s.token)}`;
     const access = s.hasPassword ? "Password" : "Public";
-    return `<tr class="${s.expired ? "row-muted" : ""}"><td><input type="checkbox" data-admin-share-token value="${escapeHtml(s.token)}"></td><td>${escapeHtml(s.owner || s.ownerId)}</td><td><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line">${(s.paths || []).map(escapeHtml).join(", ")}</div></td><td><a href="${link}" target="_blank">${escapeHtml(link)}</a></td><td>${shareExpiry(s)}</td><td>${escapeHtml(access)}</td></tr>`;
+    return `<tr class="${s.expired ? "row-muted" : ""}"><td><input type="checkbox" data-admin-share-token value="${escapeHtml(s.token)}"></td><td>${escapeHtml(displayNameForUsername(s.owner) || s.ownerId)}</td><td><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line">${(s.paths || []).map(escapeHtml).join(", ")}</div></td><td><a href="${link}" target="_blank">${escapeHtml(link)}</a></td><td>${shareExpiry(s)}</td><td>${escapeHtml(access)}</td></tr>`;
   }).join("") || `<tr class="empty-row"><td colspan="6">No external links.</td></tr>`;
 }
 

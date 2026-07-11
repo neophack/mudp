@@ -13,10 +13,8 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/registry"
 )
 
@@ -35,7 +33,7 @@ type ImageDetail struct {
 // ListImagesDetailed returns all local images with usage counts. Used by the
 // admin image browser (separate from the published mudp image catalog).
 func (d *Client) ListImagesDetailed(ctx context.Context) ([]ImageDetail, error) {
-	imgs, err := d.c.ImageList(ctx, image.ListOptions{})
+	imgs, err := d.c.ImageList(ctx, types.ImageListOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +92,7 @@ func (d *Client) BuildImage(ctx context.Context, opts BuildOptions, progress fun
 	// the image may be in use by a container, in which case Docker will untag it
 	// naturally during build.
 	for _, tag := range opts.Tags {
-		_, _ = d.c.ImageRemove(ctx, tag, image.RemoveOptions{Force: true, PruneChildren: true})
+		_, _ = d.c.ImageRemove(ctx, tag, types.ImageRemoveOptions{Force: true, PruneChildren: true})
 	}
 	danglingBefore := d.danglingImageIDs(ctx)
 	defer func() {
@@ -131,7 +129,7 @@ func (d *Client) BuildImage(ctx context.Context, opts BuildOptions, progress fun
 	if err := tw.Close(); err != nil {
 		return err
 	}
-	buildOpts := build.ImageBuildOptions{
+	buildOpts := types.ImageBuildOptions{
 		Dockerfile: "Dockerfile",
 		Tags:       opts.Tags,
 		BuildArgs:  opts.BuildArgs,
@@ -181,7 +179,7 @@ func (d *Client) BuildImage(ctx context.Context, opts BuildOptions, progress fun
 }
 
 func (d *Client) danglingImageIDs(ctx context.Context) map[string]struct{} {
-	imgs, err := d.c.ImageList(ctx, image.ListOptions{All: true})
+	imgs, err := d.c.ImageList(ctx, types.ImageListOptions{All: true})
 	if err != nil {
 		return nil
 	}
@@ -218,7 +216,7 @@ func (d *Client) removeNewDanglingImages(before map[string]struct{}) int {
 		if _, existed := before[id]; existed {
 			continue
 		}
-		if _, err := d.c.ImageRemove(ctx, id, image.RemoveOptions{Force: true, PruneChildren: true}); err == nil {
+		if _, err := d.c.ImageRemove(ctx, id, types.ImageRemoveOptions{Force: true, PruneChildren: true}); err == nil {
 			removed++
 		}
 	}
@@ -253,7 +251,7 @@ func decodeAuthForBuild(b64 string) (string, registry.AuthConfig, bool) {
 // ImageExists reports whether an image with the given reference (or ID prefix)
 // is present in the local image store.
 func (d *Client) ImageExists(ctx context.Context, ref string) (bool, error) {
-	refs, err := d.c.ImageList(ctx, image.ListOptions{All: true})
+	refs, err := d.c.ImageList(ctx, types.ImageListOptions{All: true})
 	if err != nil {
 		return false, err
 	}
@@ -290,7 +288,7 @@ func (d *Client) PruneImages(ctx context.Context) (int, int64, error) {
 
 // ImportImage imports an image from a tar reader (docker load).
 func (d *Client) ImportImage(ctx context.Context, r io.Reader, progress func(line string)) error {
-	resp, err := d.c.ImageLoad(ctx, r)
+	resp, err := d.c.ImageLoad(ctx, r, false)
 	if err != nil {
 		return err
 	}
@@ -323,7 +321,7 @@ func (d *Client) TagImage(ctx context.Context, src, dst string) error {
 
 // PushImage pushes an image to a registry, streaming progress.
 func (d *Client) PushImage(ctx context.Context, ref, auth string, progress func(line string)) error {
-	rc, err := d.c.ImagePush(ctx, ref, image.PushOptions{RegistryAuth: auth})
+	rc, err := d.c.ImagePush(ctx, ref, types.ImagePushOptions{RegistryAuth: auth})
 	if err != nil {
 		return err
 	}

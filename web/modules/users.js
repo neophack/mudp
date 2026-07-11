@@ -1,7 +1,7 @@
 // Users & Groups management: create users/groups, assign roles, group
 // membership (Feishu approval flow), reset passwords, disable/delete accounts.
 
-import { state, api, toast, escapeHtml, refreshSection, renderView } from "../app.js";
+import { state, api, toast, escapeHtml, refreshSection, renderView, displayName } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 const ROLES = [
@@ -97,9 +97,8 @@ function userRow(user) {
   const disabled = user.disabled;
   return (
     `<tr class="${disabled ? "row-muted" : ""}">` +
-      `<td><div class="primary-line">${escapeHtml(user.username)}${disabled ? ' <span class="badge badge-muted">disabled</span>' : ""}` +
-        `${user.comment ? ` <span class="badge badge-muted" title="${escapeHtml(user.comment)}">${escapeHtml(user.comment)}</span>` : ""}</div>` +
-        `${user.feishuOpenId ? `<div class="secondary-line">Feishu user</div>` : ""}` +
+      `<td><div class="primary-line">${escapeHtml(displayName(user))}${disabled ? ' <span class="badge badge-muted">disabled</span>' : ""}</div>` +
+        `${user.feishuOpenId ? `<div class="secondary-line">Feishu · ${escapeHtml(user.username)}</div>` : ""}` +
         `<div class="secondary-line" style="margin-top:2px;">limit ${user.containerCap} · netdisk ${formatQuota(user.netdiskQuotaBytes)}</div></td>` +
       `<td>${roleBadge}</td>` +
       `<td><div class="secondary-line">${escapeHtml((user.groups || []).join(", ") || "None")}</div></td>` +
@@ -160,7 +159,7 @@ function openUserGroups(userId, userName) {
     .join("");
   showModal({
     kind: "usergroups",
-    title: `Edit groups — ${userName}`,
+    title: `Edit groups — ${escapeHtml(displayName(user) || userName)}`,
     body: `<form id="groupForm" class="compact"><div class="check-grid">${checks || '<span class="hint">No groups.</span>'}</div></form>`,
     foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="saveGroups">Save</button>`,
   });
@@ -188,7 +187,7 @@ function openUserEdit(userId) {
   const checked = user.disabled ? "" : "checked";
   showModal({
     kind: "useredit",
-    title: `Edit — ${user.username}`,
+    title: `Edit — ${escapeHtml(displayName(user))}`,
     body:
       `<form id="editUser" class="compact">` +
         `<label class="field-label">Role</label>` +
@@ -207,12 +206,13 @@ function openUserEdit(userId) {
   });
   $("#saveUser").onclick = async () => {
     const fd = new FormData($("#editUser"));
+    const portPrefixRaw = fd.get("portPrefix").trim();
     const payload = {
       id: Number(userId),
       role: fd.get("role"),
       containerCap: Number(fd.get("containerCap") || 10),
       netdiskQuotaBytes: Math.round(Number(fd.get("netdiskQuotaGB") || 0) * 1024 * 1024 * 1024),
-      portPrefix: Number(fd.get("portPrefix") || 0),
+      portPrefix: portPrefixRaw === "" ? null : Number(portPrefixRaw),
       password: fd.get("password") || "",
       disabled: !fd.has("enabled"),
     };

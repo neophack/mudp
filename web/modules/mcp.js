@@ -1,7 +1,7 @@
 // MCP (Model Context Protocol): generate per-container access tokens so AI tools
 // can connect to one container over SSE and operate inside that scoped runtime.
 
-import { $, state, api, toast, renderView, canMutate, isAdmin } from "../app.js";
+import { $, state, api, toast, renderView, canMutate, isAdmin, displayNameForUsername } from "../app.js";
 import { showModal } from "./ui.js";
 import { escapeHtml, formatDate } from "../lib/common.js";
 
@@ -162,7 +162,7 @@ function tokenRow(t, admin) {
   const expCell = t.expiresAt
     ? `<span class="${expired ? "badge badge-warn" : "secondary-line"}">${formatDate(t.expiresAt)}</span>`
     : `<span class="secondary-line">never</span>`;
-  const ownerCell = admin ? `<td>${escapeHtml(t.owner || "-")}</td>` : "";
+  const ownerCell = admin ? `<td>${escapeHtml(displayNameForUsername(t.owner) || "-")}</td>` : "";
   return (
     `<tr>` +
       `<td><div class="primary-line">${escapeHtml(t.containerName || "-")}</div><div class="secondary-line mono">${escapeHtml((t.containerId || "").slice(0, 12))}</div></td>` +

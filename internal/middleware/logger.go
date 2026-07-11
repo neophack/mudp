@@ -3,7 +3,6 @@ package middleware
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -19,7 +18,7 @@ func RequestLogger(next http.Handler) http.Handler {
 			id = randomID(16)
 		}
 		r = httpx.WithRequestID(r, id)
-		logger := slog.Default().With("request_id", id, "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
+		logger := httpx.DefaultLogger().With("request_id", id, "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
 		r = httpx.WithLogger(r, logger)
 		w.Header().Set("X-Request-ID", id)
 

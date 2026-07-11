@@ -33,7 +33,7 @@ func (a *App) userUpdate(w http.ResponseWriter, r *http.Request) {
 		Role              string `json:"role"`
 		ContainerCap      int    `json:"containerCap"`
 		NetdiskQuotaBytes *int64 `json:"netdiskQuotaBytes"`
-		PortPrefix        int    `json:"portPrefix"`
+		PortPrefix        *int   `json:"portPrefix"`
 		Disabled          *bool  `json:"disabled"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
@@ -61,7 +61,7 @@ func (a *App) userUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	target, _ := a.db.UserByID(req.ID)
-	if req.PortPrefix < 0 || req.PortPrefix > 655 {
+	if req.PortPrefix != nil && (*req.PortPrefix < 0 || *req.PortPrefix > 655) {
 		writeErr(w, http.StatusBadRequest, "port prefix must be between 0 and 655")
 		return
 	}
@@ -69,8 +69,8 @@ func (a *App) userUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if req.PortPrefix >= 0 {
-		if err := a.db.UpdateUserPortPrefix(req.ID, req.PortPrefix); err != nil {
+	if req.PortPrefix != nil {
+		if err := a.db.UpdateUserPortPrefix(req.ID, *req.PortPrefix); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}

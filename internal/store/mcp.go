@@ -65,7 +65,7 @@ func (db *DB) MCPTokenByHash(tokenHash string) (MCPToken, error) {
 
 // MCPTokensForUser lists tokens. Admins see every token; others see only their own.
 func (db *DB) MCPTokensForUser(userID int64, admin bool) ([]MCPToken, error) {
-	q := `select t.id, t.token_plaintext, t.container_id, t.container_name, t.owner_id, t.label, t.created_at, t.last_used_at, t.expires_at, u.username
+	q := `select t.id, t.token_plaintext, t.container_id, t.container_name, t.owner_id, t.label, t.created_at, t.last_used_at, t.expires_at, coalesce(nullif(u.display_name,''), u.username)
 		from mcp_tokens t left join users u on u.id = t.owner_id`
 	args := []any{}
 	if !admin {
@@ -84,7 +84,7 @@ func (db *DB) MCPTokensForUser(userID int64, admin bool) ([]MCPToken, error) {
 // MCPTokensForContainer lists tokens for a single container. Admins see all
 // tokens for the container; others see only their own.
 func (db *DB) MCPTokensForContainer(userID int64, admin bool, containerID string) ([]MCPToken, error) {
-	q := `select t.id, t.token_plaintext, t.container_id, t.container_name, t.owner_id, t.label, t.created_at, t.last_used_at, t.expires_at, u.username
+	q := `select t.id, t.token_plaintext, t.container_id, t.container_name, t.owner_id, t.label, t.created_at, t.last_used_at, t.expires_at, coalesce(nullif(u.display_name,''), u.username)
 		from mcp_tokens t left join users u on u.id = t.owner_id
 		where t.container_id=?`
 	args := []any{containerID}

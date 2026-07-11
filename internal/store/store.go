@@ -19,6 +19,7 @@ type DB struct {
 type User struct {
 	ID                int64    `json:"id"`
 	Username          string   `json:"username"`
+	DisplayName       string   `json:"displayName,omitempty"`
 	Role              string   `json:"role"`
 	Groups            []string `json:"groups,omitempty"`
 	PortPrefix        int      `json:"portPrefix"`
@@ -143,7 +144,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 15
+const schemaVersion = 17
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -175,6 +176,8 @@ var migrations = []migration{
 	{13, "add netdisk_shares.password_hash", migrateAddSharePasswordHash},
 	{14, "create mcp_tokens", migrateCreateMCPTokens},
 	{15, "add mcp_tokens.token_plaintext", migrateAddMCPTokenPlaintext},
+	{16, "add unique port_prefix index", migrateAddPortPrefixUniqueIndex},
+	{17, "add users.display_name", migrateAddUserDisplayName},
 }
 
 func migrateCreateInitialTables(db executor) error {
@@ -191,7 +194,8 @@ func migrateCreateInitialTables(db executor) error {
 			created_at text not null,
 			last_login_at text,
 			feishu_open_id text default '',
-			comment text default ''
+			comment text default '',
+			display_name text default ''
 		)`,
 		`create table if not exists groups (
 			id integer primary key autoincrement,
@@ -293,6 +297,16 @@ func migrateAddUserComment(db executor) error {
 	return execIgnoring(db, `alter table users add column comment text default ''`, sqliteDuplicateColumn)
 }
 
+func migrateAddUserDisplayName(db executor) error {
+	if err := execIgnoring(db, `alter table users add column display_name text default ''`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
+	// Existing Feishu users kept their Chinese name in comment; copy it to the
+	// new display_name column so the UI shows it immediately after upgrade.
+	_, err := db.Exec(`update users set display_name=comment where feishu_open_id != '' and display_name = '' and comment != ''`)
+	return err
+}
+
 func migrateAddNetdiskQuotaBytes(db executor) error {
 	return execIgnoring(db, `alter table users add column netdisk_quota_bytes integer not null default 0`, sqliteDuplicateColumn)
 }
@@ -335,10 +349,18 @@ func migrateCreateMCPTokens(db executor) error {
 }
 
 // migrateAddMCPTokenPlaintext adds the cleartext column to databases created
-// before it existed. Existing rows get '' (the token shown only at creation was
-// never persisted); new tokens store the cleartext.
+// before it existed. Existing rows get an empty string (the token shown only at
+// creation was never persisted); new tokens store the cleartext.
 func migrateAddMCPTokenPlaintext(db executor) error {
 	return execIgnoring(db, `alter table mcp_tokens add column token_plaintext text not null default ''`, sqliteDuplicateColumn)
+}
+
+// migrateAddPortPrefixUniqueIndex adds a partial unique index so that two users
+// cannot be assigned the same non-zero port prefix. This closes a race where
+// concurrent CreateUser calls read the same max(port_prefix) and both insert
+// the next value.
+func migrateAddPortPrefixUniqueIndex(db executor) error {
+	return execIgnoring(db, `create unique index if not exists idx_users_port_prefix on users(port_prefix) where port_prefix > 0`, sqliteDuplicateIndex)
 }
 
 func migrateCreateIndexes(db executor) error {
@@ -523,6 +545,23 @@ func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap 
 	if err != nil {
 		return err
 	}
+	// Retry if another concurrent CreateUser claims the same port prefix. The
+	// unique partial index on port_prefix (where > 0) makes the conflict safe
+	// to detect and retry. Other constraint failures (e.g. duplicate username)
+	// are returned immediately so callers see the real cause.
+	for i := 0; i < 10; i++ {
+		err := db.createUserTx(username, string(hash), role, groupIDs, cap, quotaBytes)
+		if err == nil {
+			return nil
+		}
+		if !isPortPrefixConflict(err) {
+			return err
+		}
+	}
+	return errors.New("could not allocate a unique port prefix")
+}
+
+func (db *DB) createUserTx(username, passwordHash, role string, groupIDs []int64, cap int, quotaBytes int64) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -533,7 +572,7 @@ func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap 
 		return err
 	}
 	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,netdisk_quota_bytes,port_prefix,created_at) values(?,?,?,?,?,?,?)`,
-		username, string(hash), role, cap, quotaBytes, prefix, time.Now().Format(time.RFC3339))
+		username, passwordHash, role, cap, quotaBytes, prefix, time.Now().Format(time.RFC3339))
 	if err != nil {
 		return err
 	}
@@ -550,8 +589,8 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 	var u User
 	var hash string
 	var disabled int
-	err := db.QueryRow(`select id,username,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where username=?`, username).
-		Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
+	err := db.QueryRow(`select id,username,display_name,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where username=?`, username).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("invalid username or password")
 	}
@@ -574,8 +613,8 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 func (db *DB) UserByID(id int64) (*User, error) {
 	var u User
 	var disabled int
-	err := db.QueryRow(`select id,username,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where id=?`, id).
-		Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
+	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where id=?`, id).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
 	if err != nil {
 		return nil, err
 	}
@@ -593,7 +632,7 @@ func (db *DB) UserByUsername(username string) (*User, error) {
 }
 
 func (db *DB) Users() ([]User, error) {
-	rows, err := db.Query(`select id,username,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users order by username`)
+	rows, err := db.Query(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users order by username`)
 	if err != nil {
 		return nil, err
 	}
@@ -602,7 +641,7 @@ func (db *DB) Users() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var disabled int
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
@@ -668,11 +707,17 @@ func (db *DB) ImagesForUser(userID int64, admin bool) ([]Image, error) {
 		from images i order by i.display_name`
 	args := []any{}
 	if !admin {
+		// Images with no group assignment are public (visible to every activated
+		// user). Images assigned to one or more groups are only visible to members
+		// of those groups.
 		q = `select distinct i.id,i.display_name,i.docker_ref,i.source_ref,i.created_at,i.preset_json
 			from images i
-			join group_images gi on gi.image_id=i.id
-			join user_groups ug on ug.group_id=gi.group_id
-			where ug.user_id=?
+			where not exists (select 1 from group_images gi where gi.image_id=i.id)
+			   or exists (
+				   select 1 from group_images gi
+				   join user_groups ug on ug.group_id=gi.group_id
+				   where gi.image_id=i.id and ug.user_id=?
+			   )
 			order by i.display_name`
 		args = append(args, userID)
 	}
@@ -806,8 +851,8 @@ func (db *DB) UserByFeishu(openID string) (*User, error) {
 	}
 	var u User
 	var disabled int
-	err := db.QueryRow(`select id,username,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where feishu_open_id=?`, openID).
-		Scan(&u.ID, &u.Username, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
+	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where feishu_open_id=?`, openID).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
 	if err != nil {
 		return nil, err
 	}
@@ -819,7 +864,7 @@ func (db *DB) UserByFeishu(openID string) (*User, error) {
 // CreateFeishuUser registers a new user from a Feishu login. The user is placed
 // in the pending group until an admin assigns them a real group. Returns the
 // created user.
-func (db *DB) CreateFeishuUser(openID, username, comment string) (*User, error) {
+func (db *DB) CreateFeishuUser(openID, username, displayName string) (*User, error) {
 	if openID == "" {
 		return nil, errors.New("feishu open_id is required")
 	}
@@ -833,18 +878,18 @@ func (db *DB) CreateFeishuUser(openID, username, comment string) (*User, error) 
 		if i > 0 {
 			username = fmt.Sprintf("%s-%d", base, i)
 		}
-		u, err := db.createFeishuUserTx(openID, username, comment)
+		u, err := db.createFeishuUserTx(openID, username, displayName)
 		if err == nil {
 			return u, nil
 		}
-		if !isSQLiteConstraintError(err) {
+		if !isUsernameConflict(err) {
 			return nil, err
 		}
 	}
 	return nil, errors.New("could not allocate a unique username")
 }
 
-func (db *DB) createFeishuUserTx(openID, username, comment string) (*User, error) {
+func (db *DB) createFeishuUserTx(openID, username, displayName string) (*User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(openID), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
@@ -861,8 +906,8 @@ func (db *DB) createFeishuUserTx(openID, username, comment string) (*User, error
 	if existing != 0 {
 		return nil, errors.New("duplicate username")
 	}
-	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,created_at,feishu_open_id,comment) values(?,?,?,?,?,?,?)`,
-		username, string(hash), "user", 10, time.Now().Format(time.RFC3339), openID, comment)
+	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,created_at,feishu_open_id,comment,display_name) values(?,?,?,?,?,?,?,?)`,
+		username, string(hash), "user", 10, time.Now().Format(time.RFC3339), openID, displayName, displayName)
 	if err != nil {
 		return nil, err
 	}
@@ -886,6 +931,22 @@ func isSQLiteConstraintError(err error) bool {
 	}
 	return strings.Contains(err.Error(), "UNIQUE constraint failed") ||
 		strings.Contains(err.Error(), "constraint failed")
+}
+
+func isPortPrefixConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "UNIQUE constraint failed: users.port_prefix")
+}
+
+func isUsernameConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "duplicate username") ||
+		strings.Contains(msg, "UNIQUE constraint failed: users.username")
 }
 
 func pendingGroupIDTx(tx *sql.Tx) (int64, error) {
@@ -1373,11 +1434,20 @@ func (db *DB) DeleteStack(id int64) error {
 	return err
 }
 
-// usernameByID is a tiny helper for denormalising owner names into stack lists.
+// usernameByID is a tiny helper for denormalising owner display names into
+// stack / share / volume lists. It returns display_name when present so Feishu
+// users appear with their real name, while falling back to username for local
+// users and older records.
 func (db *DB) usernameByID(id int64) (string, error) {
-	var name string
-	err := db.QueryRow(`select username from users where id=?`, id).Scan(&name)
-	return name, err
+	var username, displayName string
+	err := db.QueryRow(`select username, display_name from users where id=?`, id).Scan(&username, &displayName)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(displayName) != "" {
+		return displayName, nil
+	}
+	return username, nil
 }
 
 // ---------------- Registries ----------------
@@ -1448,5 +1518,3 @@ func (db *DB) getSetting(key string) (string, error) {
 	}
 	return value, nil
 }
-
-

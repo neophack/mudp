@@ -9,3 +9,8 @@ web/playwright-report/
 web/coverage/
 *.e2e.db
 *.e2e.db-*
+
+# Runtime / local files
+mudp.pid
+cookies.txt
+.DS_Store

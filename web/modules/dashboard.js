@@ -1,7 +1,7 @@
 // Dashboard: environment overview, resource counts, and the caller's workspace
 // rollup. Rendered from a single /api/dashboard payload (no N+1 fetches).
 
-import { state, escapeHtml, isAdmin } from "../app.js";
+import { state, escapeHtml, isAdmin, displayName } from "../app.js";
 
 export function renderDashboard() {
   const d = state.dashboard;
@@ -176,7 +176,7 @@ function topUsersCard(usage) {
 function topRow(u) {
   return (
     `<tr>` +
-      `<td><div class="primary-line">${escapeHtml(u.username)}</div></td>` +
+      `<td><div class="primary-line">${escapeHtml(displayName(u))}</div></td>` +
       `<td>${u.containers || 0}</td>` +
       `<td>${fmtMB(u.memoryMb)}</td>` +
       `<td>${fmtMB(u.diskMb)}</td>` +

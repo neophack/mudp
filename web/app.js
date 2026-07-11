@@ -23,6 +23,21 @@ import { escapeHtml, fmtBytes, fmtMB, roleRank, isAdminUser, canMutateUser } fro
 // Re-export shared utilities so existing modules can keep importing them from app.js.
 export { escapeHtml, fmtBytes, fmtMB, roleRank };
 
+// displayName returns the human-readable name for a user: the Feishu-provided
+// display name when present, otherwise the system username.
+export function displayName(user) {
+  return user?.displayName || user?.username || "";
+}
+
+// displayNameForUsername resolves a system username to its human-readable
+// display name using the cached user list. Falls back to the raw username.
+export function displayNameForUsername(username) {
+  if (!username) return "";
+  if (state.me?.username === username) return displayName(state.me);
+  const u = state.users.find((x) => x.username === username);
+  return u ? displayName(u) : username;
+}
+
 // ---------------- Shared state ----------------
 
 export const state = {
@@ -281,7 +296,7 @@ export function render() {
             .join("") +
         `</nav>` +
         `<div class="profile">` +
-          `<strong>${escapeHtml(state.me.username)}</strong>` +
+          `<strong>${escapeHtml(displayName(state.me))}</strong>` +
           `<span>${escapeHtml(state.me.role)}${state.me.groups?.length ? " - " + escapeHtml(state.me.groups.join(", ")) : ""}</span>` +
           `<button id="logout" title="Logout">${ICONS.logout}<span class="nav-label">Logout</span></button>` +
         `</div>` +

@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"fmt"
-	"log/slog"
 	"net/http"
 	"runtime/debug"
 
@@ -14,7 +13,7 @@ func RecoverPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				slog.Default().Error("panic recovered",
+				httpx.DefaultLogger().Error("panic recovered",
 					"error", fmt.Sprint(rec),
 					"stack", string(debug.Stack()),
 					"path", r.URL.Path,

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
 	volumetypes "github.com/docker/docker/api/types/volume"
 )
 
@@ -127,7 +127,7 @@ func (d *Client) gatherSystemInfo(ctx context.Context, username string) SystemIn
 	//   Either way, internal derived images (final fused runtime images) are
 	//   skipped so the dashboard only counts
 	//   real user-facing base images.
-	if imgs, err := d.c.ImageList(ctx, image.ListOptions{}); err == nil {
+	if imgs, err := d.c.ImageList(ctx, types.ImageListOptions{}); err == nil {
 		var size int64
 		count := 0
 		for _, im := range imgs {
@@ -168,7 +168,7 @@ func (d *Client) gatherSystemInfo(ctx context.Context, username string) SystemIn
 	// networks (the caller's own, when scoped) plus Docker's built-in defaults
 	// (bridge, host, none). This keeps the dashboard tile consistent with the
 	// Networks page for both admins and regular users.
-	if nets, err := d.c.NetworkList(ctx, network.ListOptions{}); err == nil {
+	if nets, err := d.c.NetworkList(ctx, types.NetworkListOptions{}); err == nil {
 		count := 0
 		for _, n := range nets {
 			if isSystemNetworkName(n.Name) {

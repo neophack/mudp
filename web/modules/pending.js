@@ -1,7 +1,7 @@
 // Full-screen "waiting for admin approval" page shown to users still in the
 // pending group after a Feishu login.
 
-import { state, api, renderLogin } from "../app.js";
+import { state, api, renderLogin, displayName } from "../app.js";
 
 export function renderPending() {
   $("#app").innerHTML =
@@ -9,7 +9,7 @@ export function renderPending() {
       `<div class="pending-card card" style="padding:32px;">` +
         `<div class="pending-icon"></div>` +
         `<h1>Waiting for Admin Approval</h1>` +
-        `<p>Hello <strong>${escapeHtml(state.me?.username || "")}</strong>, your account has been created and placed in the pending approval group.<br>` +
+        `<p>Hello <strong>${escapeHtml(displayName(state.me))}</strong>, your account has been created and placed in the pending approval group.<br>` +
         `Please contact an administrator to add you to a business group before you can start using the platform.</p>` +
         `<button class="ghost" id="pendingLogout">Log Out</button>` +
       `</div>` +

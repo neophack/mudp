@@ -1,7 +1,7 @@
 // Volumes: list, create, delete, prune. mudp-managed volumes are namespaced
 // per user; admins see everyone's.
 
-import { state, api, toast, refreshSection, renderView, canMutate } from "../app.js";
+import { state, api, toast, refreshSection, renderView, canMutate, displayNameForUsername } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 import { openVolumeFiles } from "./volume_files.js";
 
@@ -42,7 +42,7 @@ function volumeRow(v) {
       `<td><div class="secondary-line">${escapeHtml(v.driver)}</div></td>` +
       `<td>${fmtMB(v.sizeMb)}</td>` +
       `<td>${v.inUse ? `<span class="badge badge-ok">in use</span>` : `<span class="badge badge-muted">free</span>`}</td>` +
-      `<td><div class="secondary-line">${escapeHtml(v.owner || "—")}</div></td>` +
+      `<td><div class="secondary-line">${escapeHtml(displayNameForUsername(v.owner) || "—")}</div></td>` +
       `<td class="actions">` +
         `<button class="icon" title="Browse files" data-vol-name="${escapeHtml(v.name)}" data-vol-fullname="${escapeHtml(v.fullName || v.name)}" data-vol-files="1">📁</button>` +
         (canMutate() ? `<button class="icon danger" title="Delete" data-vol-name="${escapeHtml(v.name)}" data-vol-fullname="${escapeHtml(v.fullName || v.name)}">✕</button>` : "") +

@@ -1,7 +1,7 @@
 // Activity log (admin only): filterable list of recent management actions,
 // with a CSV export button.
 
-import { state, api, toast } from "../app.js";
+import { state, api, toast, displayNameForUsername } from "../app.js";
 
 export function renderAudit() {
   const q = state.auditSearch || {};
@@ -31,7 +31,7 @@ function auditRow(e) {
   return (
     `<tr>` +
       `<td><div class="secondary-line">${escapeHtml(fmtTime(e.createdAt))}</div></td>` +
-      `<td><div class="primary-line">${escapeHtml(e.actor)}</div></td>` +
+      `<td><div class="primary-line">${escapeHtml(displayNameForUsername(e.actor))}</div></td>` +
       `<td><span class="badge badge-accent">${escapeHtml(e.action)}</span></td>` +
       `<td><span class="secondary-line mono">${escapeHtml(e.target)}</span></td>` +
     `</tr>`

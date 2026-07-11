@@ -16,7 +16,6 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -143,7 +142,7 @@ type InspectInfo struct {
 	Mounts        []MountInfo       `json:"mounts"`
 	Networks      []NetworkInfo     `json:"networks"`
 	IPAddress     string            `json:"ipAddress"`
-	GPU  string `json:"gpu"`
+	GPU           string            `json:"gpu"`
 	// User is the runtime user the container process runs as (from
 	// inspect.Config.User), surfaced for visibility in the details modal.
 	User string `json:"user"`
@@ -244,7 +243,7 @@ func (d *Client) PullAndTagProgress(ctx context.Context, sourceRef, display stri
 	if !strings.Contains(sourceRef, ":") {
 		sourceRef += ":latest"
 	}
-	rc, err := d.c.ImagePull(ctx, sourceRef, image.PullOptions{})
+	rc, err := d.c.ImagePull(ctx, sourceRef, types.ImagePullOptions{})
 	if err != nil {
 		return "", err
 	}
@@ -303,12 +302,12 @@ func (d *Client) RemoveManagedImage(ctx context.Context, ref string) error {
 	if !strings.HasPrefix(ref, Prefix) {
 		return fmt.Errorf("image %q is not managed by mudp", ref)
 	}
-	_, err := d.c.ImageRemove(ctx, ref, image.RemoveOptions{Force: true, PruneChildren: true})
+	_, err := d.c.ImageRemove(ctx, ref, types.ImageRemoveOptions{Force: true, PruneChildren: true})
 	return err
 }
 
 func (d *Client) ListManagedImages(ctx context.Context) ([]string, error) {
-	items, err := d.c.ImageList(ctx, image.ListOptions{})
+	items, err := d.c.ImageList(ctx, types.ImageListOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -472,11 +471,11 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		labels[k] = v
 	}
 	hostCfg := &container.HostConfig{
-		PortBindings:   portMap,
-		RestartPolicy:  container.RestartPolicy{Name: container.RestartPolicyMode(normalizeRestartPolicy(opts.RestartPolicy))},
-		CapAdd:         opts.CapAdd,
-		CapDrop:        opts.CapDrop,
-		Sysctls:        opts.Sysctls,
+		PortBindings:  portMap,
+		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyMode(normalizeRestartPolicy(opts.RestartPolicy))},
+		CapAdd:        opts.CapAdd,
+		CapDrop:       opts.CapDrop,
+		Sysctls:       opts.Sysctls,
 	}
 	// Resource limits. NanoCPUs/Memory are only set when positive so a zero
 	// value keeps the image/host default (no cgroup limit).
@@ -893,7 +892,7 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 
 // httpURL returns the host-side http:// URL for the given container private
 // port (e.g. 8080 or 80) when it is published.
-func httpURL(ports []container.Port, privatePort uint16) string {
+func httpURL(ports []types.Port, privatePort uint16) string {
 	for _, p := range ports {
 		if p.PrivatePort == privatePort && p.PublicPort > 0 {
 			host := p.IP
@@ -926,8 +925,14 @@ func (d *Client) memoryMB(ctx context.Context, id string) (float64, error) {
 		return 0, err
 	}
 	// Report the working set (usage minus page cache) so the listing matches the
-	// value shown in the live stats stream.
-	usage := s.MemoryStats.Usage - s.MemoryStats.Stats.Cache
+	// value shown in the live stats stream. Guard against Docker reporting more
+	// cache than total usage, which would underflow uint64.
+	usage := s.MemoryStats.Usage
+	if s.MemoryStats.Stats.Cache > usage {
+		usage = 0
+	} else {
+		usage -= s.MemoryStats.Stats.Cache
+	}
 	return float64(usage) / 1024 / 1024, nil
 }
 
@@ -1179,6 +1184,7 @@ func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username s
 	_ = d.c.ContainerStop(ctx, createdID, container.StopOptions{Timeout: &timeout})
 	return createdID, nil
 }
+
 // hijacked connection used by the WebSocket terminal pump. It prefers bash
 // (for full readline-style Tab completion and history) and falls back to sh.
 func (d *Client) ExecAttach(ctx context.Context, id string, rows, cols uint) (ExecConn, error) {
@@ -1189,7 +1195,7 @@ func (d *Client) ExecAttach(ctx context.Context, id string, rows, cols uint) (Ex
 	// A coloured prompt + xterm-256color TERM so ls/gcc/etc. emit ANSI colours.
 	// The prompt is: green user@host, blue cwd, grey $?  prompt marker.
 	colourPrompt := "\\[\\e[1;32m\\]\\u@\\h\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]\\$ "
-	execCfg := container.ExecOptions{
+	execCfg := types.ExecConfig{
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -1217,7 +1223,7 @@ func (d *Client) ExecAttach(ctx context.Context, id string, rows, cols uint) (Ex
 	if err != nil {
 		return ExecConn{}, err
 	}
-	attachResp, err := d.c.ContainerExecAttach(ctx, createResp.ID, container.ExecAttachOptions{Tty: true, ConsoleSize: &[2]uint{rows, cols}})
+	attachResp, err := d.c.ContainerExecAttach(ctx, createResp.ID, types.ExecStartCheck{Tty: true, ConsoleSize: &[2]uint{rows, cols}})
 	if err != nil {
 		return ExecConn{}, err
 	}
@@ -1240,7 +1246,7 @@ func (d *Client) Exec(ctx context.Context, id string, cmd []string, user string,
 	if info.State == nil || !info.State.Running {
 		return ExecResult{}, fmt.Errorf("container not running")
 	}
-	execCfg := container.ExecOptions{
+	execCfg := types.ExecConfig{
 		AttachStdout: true,
 		AttachStderr: true,
 		Cmd:          cmd,
@@ -1251,7 +1257,7 @@ func (d *Client) Exec(ctx context.Context, id string, cmd []string, user string,
 	if err != nil {
 		return ExecResult{}, err
 	}
-	attach, err := d.c.ContainerExecAttach(ctx, resp.ID, container.ExecAttachOptions{})
+	attach, err := d.c.ContainerExecAttach(ctx, resp.ID, types.ExecStartCheck{})
 	if err != nil {
 		return ExecResult{}, err
 	}
@@ -1289,7 +1295,7 @@ func pickShell(ctx context.Context, c client.APIClient, id string) string {
 		{"/bin/zsh", "/bin/zsh"},
 		{"/usr/bin/zsh", "/usr/bin/zsh"},
 	} {
-		check, err := c.ContainerExecCreate(ctx, id, container.ExecOptions{
+		check, err := c.ContainerExecCreate(ctx, id, types.ExecConfig{
 			AttachStdout: true,
 			AttachStderr: true,
 			Cmd:          []string{"test", "-x", candidate.probe},
@@ -1297,7 +1303,7 @@ func pickShell(ctx context.Context, c client.APIClient, id string) string {
 		if err != nil {
 			continue
 		}
-		attach, err := c.ContainerExecAttach(ctx, check.ID, container.ExecAttachOptions{})
+		attach, err := c.ContainerExecAttach(ctx, check.ID, types.ExecStartCheck{})
 		if err != nil {
 			continue
 		}
@@ -1513,7 +1519,7 @@ func (d *Client) validateNetworkAttachment(ctx context.Context, username, name s
 		return "bridge", nil
 	}
 	full := NetworkFullName(username, name)
-	info, err := d.c.NetworkInspect(ctx, full, network.InspectOptions{})
+	info, err := d.c.NetworkInspect(ctx, full, types.NetworkInspectOptions{})
 	if err != nil {
 		return "", fmt.Errorf("network %q not found", name)
 	}

@@ -41,6 +41,10 @@ function escapeHtml(v) {
   return String(v ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
 }
 
+function displayName(user) {
+  return user?.displayName || user?.username || "";
+}
+
 function getToken() {
   const meta = document.querySelector('meta[name="share-token"]');
   return meta?.content || window.__SHARE_TOKEN__ || location.pathname.split("/").pop();
@@ -66,7 +70,7 @@ async function loadMe() {
     state.me = await api("/api/me");
     if (state.me && state.me.authenticated !== false) {
       $("#loginBtn").hidden = true;
-      $("#userLabel").textContent = state.me.username;
+      $("#userLabel").textContent = displayName(state.me);
       $("#userLabel").hidden = false;
       $("#saveSelectedBtn").disabled = state.selected.size === 0;
     } else {

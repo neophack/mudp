@@ -1,7 +1,7 @@
 // Stacks: deploy docker-compose projects via the host's `docker compose` CLI.
 // Compose body + env live in the DB; deploys stream progress over SSE.
 
-import { state, api, toast, refreshSection, renderView, canMutate } from "../app.js";
+import { state, api, toast, refreshSection, renderView, canMutate, displayNameForUsername } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 
 const SAMPLE = `services:
@@ -59,7 +59,7 @@ function stackRow(s) {
       `<td><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line mono">${escapeHtml(s.projectName)}</div></td>` +
       `<td>${s.services || 0}</td>` +
       `<td>${status}</td>` +
-      `<td><div class="secondary-line">${escapeHtml(s.owner || "—")}</div></td>` +
+      `<td><div class="secondary-line">${escapeHtml(displayNameForUsername(s.owner) || "—")}</div></td>` +
       `<td><div class="secondary-line">${escapeHtml(fmtTime(s.updatedAt))}</div></td>` +
       `<td class="actions">` +
         (canMutate() ? `<button class="icon ok" title="Deploy / Up" data-stack-up="${s.id}">▶</button>` : "") +

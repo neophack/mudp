@@ -49,7 +49,7 @@ func CSRFProtect(next http.Handler) http.Handler {
 }
 
 // CSRFToken returns a new random CSRF token and sets the cookie.
-func CSRFToken(w http.ResponseWriter, secure bool) (string, error) {
+func CSRFToken(w http.ResponseWriter, r *http.Request) (string, error) {
 	token, err := randomToken(32)
 	if err != nil {
 		return "", err
@@ -59,7 +59,7 @@ func CSRFToken(w http.ResponseWriter, secure bool) (string, error) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   secure,
+		Secure:   httpx.IsSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 	}
 	http.SetCookie(w, cookie)

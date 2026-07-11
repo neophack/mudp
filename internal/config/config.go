@@ -21,10 +21,6 @@ type Config struct {
 	WebDir string
 }
 
-// Production reports whether dev affordances (on-disk web assets, verbose logs)
-// should be disabled. It is true unless MUDP_WEB_DIR is set.
-func (c Config) Production() bool { return c.WebDir == "" }
-
 // Load reads configuration from the environment. Missing secrets are generated
 // automatically so the server can start without manual setup.
 func Load() Config {

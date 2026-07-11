@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"mudp/internal/dockerx"
+	"mudp/internal/httpx"
 )
 
 // volumes handles GET (list) and POST (create) for mudp-managed volumes.
@@ -18,7 +19,16 @@ func (a *App) volumes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		items, err := a.docker.ListVolumes(r.Context(), u.Username, u.Role == "admin")
-		respond(w, items, err)
+		if err != nil {
+			httpx.Logger(r).Error("list volumes failed", "error", err)
+			if dockerx.IsUnavailableError(err) {
+				writeErr(w, http.StatusServiceUnavailable, "docker unavailable")
+				return
+			}
+			respond(w, items, err)
+			return
+		}
+		respond(w, items, nil)
 	case http.MethodPost:
 		if !canMutate(u) {
 			writeErr(w, http.StatusForbidden, "read-only role cannot create volumes")

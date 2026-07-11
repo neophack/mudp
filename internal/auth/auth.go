@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"mudp/internal/httpx"
 )
 
 const CookieName = "mudp_session"
@@ -16,15 +18,14 @@ const CookieName = "mudp_session"
 // Signer issues and verifies HMAC-signed session cookies.
 type Signer struct {
 	secret []byte
-	secure bool
 }
 
-// New creates a signer. If secure is true, session cookies set the Secure flag.
-func New(secret string, secure bool) Signer {
-	return Signer{secret: []byte(secret), secure: secure}
+// New creates a signer.
+func New(secret string) Signer {
+	return Signer{secret: []byte(secret)}
 }
 
-func (s Signer) Set(w http.ResponseWriter, userID int64) {
+func (s Signer) Set(w http.ResponseWriter, r *http.Request, userID int64) {
 	exp := time.Now().Add(24 * time.Hour).Unix()
 	body := fmt.Sprintf("%d:%d", userID, exp)
 	sig := s.sign(body)
@@ -34,19 +35,19 @@ func (s Signer) Set(w http.ResponseWriter, userID int64) {
 		Path:     "/",
 		Expires:  time.Unix(exp, 0),
 		HttpOnly: true,
-		Secure:   s.secure,
+		Secure:   httpx.IsSecureRequest(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func (s Signer) Clear(w http.ResponseWriter) {
+func (s Signer) Clear(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   s.secure,
+		Secure:   httpx.IsSecureRequest(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 }

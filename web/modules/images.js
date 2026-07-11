@@ -45,7 +45,7 @@ function imageRow(image, canEdit) {
     `<tr>` +
       `<td><div class="primary-line">${escapeHtml(image.name)}</div><div class="secondary-line mono">${escapeHtml(image.dockerRef)}</div>${preset.description ? `<div class="secondary-line">📝 ${escapeHtml(preset.description)}</div>` : ""}</td>` +
       `<td><div class="secondary-line">${escapeHtml(image.sourceRef)}</div></td>` +
-      (admin ? `<td><div class="secondary-line">${escapeHtml((image.groups || []).join(", ") || "Unassigned")}</div></td>` : "") +
+      (admin ? `<td><div class="secondary-line">${escapeHtml((image.groups || []).join(", ") || "All users")}</div></td>` : "") +
       `<td><div class="secondary-line">${summary}</div></td>` +
       `<td class="actions">` +
         (canEdit ? `<button class="icon" title="Configure defaults" data-image-preset="${escapeHtml(image.id)}">⚙</button><button class="icon danger" title="Delete" data-image-delete="${escapeHtml(image.id)}" data-image-ref="${escapeHtml(image.dockerRef)}">✕</button>` : "—") +

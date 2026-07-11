@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +116,106 @@ func TestImagePresetRoundTrip(t *testing.T) {
 	// Setting a preset on a non-existent image id is rejected.
 	if err := db.SetImagePreset(999999, preset); err == nil {
 		t.Fatal("expected error setting preset on missing image")
+	}
+}
+
+// TestImagesForUserVisibility verifies that unassigned images are visible to
+// every activated user, while images assigned to groups are only visible to
+// members of those groups.
+func TestImagesForUserVisibility(t *testing.T) {
+	db := newTestDB(t)
+
+	if err := db.CreateGroup("team-a"); err != nil {
+		t.Fatalf("CreateGroup team-a: %v", err)
+	}
+	if err := db.CreateGroup("team-b"); err != nil {
+		t.Fatalf("CreateGroup team-b: %v", err)
+	}
+	groups, err := db.Groups()
+	if err != nil {
+		t.Fatalf("Groups: %v", err)
+	}
+	var teamA, teamB int64
+	for _, g := range groups {
+		if g.Name == "team-a" {
+			teamA = g.ID
+		}
+		if g.Name == "team-b" {
+			teamB = g.ID
+		}
+	}
+	if teamA == 0 || teamB == 0 {
+		t.Fatal("failed to resolve group ids")
+	}
+
+	if err := db.CreateUser("visadmin", "x", RoleAdmin, nil, 0, 0); err != nil {
+		t.Fatalf("CreateUser visadmin: %v", err)
+	}
+	if err := db.CreateUser("alice", "x", RoleUser, []int64{teamA}, 0, 0); err != nil {
+		t.Fatalf("CreateUser alice: %v", err)
+	}
+	if err := db.CreateUser("bob", "x", RoleUser, []int64{teamB}, 0, 0); err != nil {
+		t.Fatalf("CreateUser bob: %v", err)
+	}
+
+	admin, _ := db.UserByUsername("visadmin")
+	alice, _ := db.UserByUsername("alice")
+	bob, _ := db.UserByUsername("bob")
+
+	if err := db.SaveImage("public-img", "mudp-public", "public:latest"); err != nil {
+		t.Fatalf("SaveImage public: %v", err)
+	}
+	if err := db.SaveImage("team-a-img", "mudp-a", "a:latest"); err != nil {
+		t.Fatalf("SaveImage team-a: %v", err)
+	}
+	if err := db.SaveImage("team-b-img", "mudp-b", "b:latest"); err != nil {
+		t.Fatalf("SaveImage team-b: %v", err)
+	}
+
+	imgs, _ := db.ImagesForUser(admin.ID, true)
+	var publicID, teamAID, teamBID int64
+	for _, img := range imgs {
+		switch img.DisplayName {
+		case "public-img":
+			publicID = img.ID
+		case "team-a-img":
+			teamAID = img.ID
+		case "team-b-img":
+			teamBID = img.ID
+		}
+	}
+	if publicID == 0 || teamAID == 0 || teamBID == 0 {
+		t.Fatalf("failed to resolve image ids: %+v", imgs)
+	}
+
+	// public-img remains unassigned; team images are restricted.
+	if err := db.SetImageGroups(teamAID, []int64{teamA}); err != nil {
+		t.Fatalf("SetImageGroups team-a: %v", err)
+	}
+	if err := db.SetImageGroups(teamBID, []int64{teamB}); err != nil {
+		t.Fatalf("SetImageGroups team-b: %v", err)
+	}
+
+	names := func(userID int64) map[string]bool {
+		imgs, err := db.ImagesForUser(userID, false)
+		if err != nil {
+			t.Fatalf("ImagesForUser(%d): %v", userID, err)
+		}
+		out := make(map[string]bool, len(imgs))
+		for _, img := range imgs {
+			out[img.DisplayName] = true
+		}
+		return out
+	}
+
+	aliceImgs := names(alice.ID)
+	if !aliceImgs["public-img"] || !aliceImgs["team-a-img"] || aliceImgs["team-b-img"] {
+		t.Fatalf("alice visibility wrong: %v", aliceImgs)
+	}
+
+	bobImgs := names(bob.ID)
+	if !bobImgs["public-img"] || bobImgs["team-a-img"] || !bobImgs["team-b-img"] {
+		t.Fatalf("bob visibility wrong: %v", bobImgs)
 	}
 }
 
@@ -451,8 +552,6 @@ func TestMCPTokenExpiry(t *testing.T) {
 	}
 }
 
-
-
 // TestMigrationPreservesPortPrefix simulates an older DB with the restrictive
 // role CHECK and a non-zero port_prefix, then runs Migrate and asserts the
 // prefix survives the table rebuild.
@@ -529,7 +628,6 @@ func TestSchemaVersionTracksMigrations(t *testing.T) {
 	}
 }
 
-
 // TestCreateUserQuota ensures the netdisk quota is persisted and returned.
 func TestCreateUserQuota(t *testing.T) {
 	db := newTestDB(t)
@@ -542,6 +640,43 @@ func TestCreateUserQuota(t *testing.T) {
 	}
 	if u.NetdiskQuotaBytes != 2*1024*1024*1024 {
 		t.Fatalf("NetdiskQuotaBytes = %d, want %d", u.NetdiskQuotaBytes, 2*1024*1024*1024)
+	}
+}
+
+// TestCreateUserDuplicateUsername verifies that a duplicate username returns
+// the underlying SQLite error immediately rather than being swallowed by the
+// port-prefix retry loop.
+func TestCreateUserDuplicateUsername(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateUser("dupuser", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	err := db.CreateUser("dupuser", "pw2", RoleUser, nil, 5, 0)
+	if err == nil {
+		t.Fatal("expected error for duplicate username")
+	}
+	if strings.Contains(err.Error(), "could not allocate a unique port prefix") {
+		t.Fatalf("duplicate username masked as port-prefix error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		t.Fatalf("expected UNIQUE constraint error, got: %v", err)
+	}
+}
+
+// TestCreateFeishuUserRetriesUsername verifies that CreateFeishuUser retries
+// with a numbered suffix when the generated username is already taken.
+func TestCreateFeishuUserRetriesUsername(t *testing.T) {
+	db := newTestDB(t)
+	// Pre-create a local user whose username matches the Feishu-generated one.
+	if err := db.CreateUser("feishuabc", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	u, err := db.CreateFeishuUser("oid-123", "feishuabc", "Feishu User")
+	if err != nil {
+		t.Fatalf("CreateFeishuUser: %v", err)
+	}
+	if u.Username != "feishuabc-1" {
+		t.Fatalf("expected username feishuabc-1, got %q", u.Username)
 	}
 }
 

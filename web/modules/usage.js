@@ -1,6 +1,6 @@
 // Per-user resource usage table (admin only).
 
-import { state, api, isAdmin } from "../app.js";
+import { state, api, isAdmin, displayName, displayNameForUsername } from "../app.js";
 
 export async function renderUsage() {
   const [history, processes, usage] = await Promise.all([
@@ -15,6 +15,7 @@ export async function renderUsage() {
     ? state.usage
     : [{
         username: state.me?.username || "me",
+        displayName: state.me?.displayName || "",
         containers: (state.containers || []).length,
         memoryMb: (state.containers || []).reduce((sum, c) => sum + (c.memoryMb || 0), 0),
         diskMb: (state.containers || []).reduce((sum, c) => sum + (c.diskMb || 0), 0),
@@ -33,7 +34,7 @@ export async function renderUsage() {
           .map(
             (u) =>
               `<tr>` +
-              `<td><div class="primary-line">${escapeHtml(u.username)}</div></td>` +
+              `<td><div class="primary-line">${escapeHtml(displayName(u))}</div></td>` +
               `<td>${u.containers}</td>` +
               `<td>${(u.memoryMb || 0).toFixed(0)} MB</td>` +
               `<td>${(u.diskMb || 0).toFixed(0)} MB</td>` +
@@ -70,7 +71,7 @@ function trendCards(history) {
     const maxMem = Math.max(...mem, 0).toFixed(0);
     const gpu = list.map((x) => x.gpuPct || 0);
     const maxGpu = Math.max(...gpu, 0).toFixed(1);
-    return `<div class="stat-card"><div class="stat-card-head">${escapeHtml(user)}</div><div class="stat-card-value">${maxCpu}% CPU</div><div class="stat-card-sub">${maxMem} MB peak memory · ${maxGpu}% peak GPU</div>${spark(cpu)}</div>`;
+    return `<div class="stat-card"><div class="stat-card-head">${escapeHtml(displayNameForUsername(user))}</div><div class="stat-card-value">${maxCpu}% CPU</div><div class="stat-card-sub">${maxMem} MB peak memory · ${maxGpu}% peak GPU</div>${spark(cpu)}</div>`;
   });
 }
 
@@ -93,7 +94,7 @@ function avg(values) {
 }
 
 function processRow(p) {
-  return `<tr><td>${escapeHtml(p.user || "")}</td><td>${escapeHtml(p.container || "")}</td><td class="mono">${escapeHtml(p.pid || "")}</td><td>${(p.cpuPct || 0).toFixed(1)}%</td><td><div class="secondary-line mono">${escapeHtml(p.command || "")}</div></td></tr>`;
+  return `<tr><td>${escapeHtml(displayNameForUsername(p.user || ""))}</td><td>${escapeHtml(p.container || "")}</td><td class="mono">${escapeHtml(p.pid || "")}</td><td>${(p.cpuPct || 0).toFixed(1)}%</td><td><div class="secondary-line mono">${escapeHtml(p.command || "")}</div></td></tr>`;
 }
 
 function spark(series) {

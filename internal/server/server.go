@@ -64,7 +64,7 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 		return nil, err
 	}
 	return &App{
-		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret, cfg.Production()),
+		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret),
 		mcpHub: mcp.NewSSEHub(),
 	}, nil
 }
@@ -361,8 +361,8 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	a.auth.Set(w, u.ID)
-	csrfToken, err := middleware.CSRFToken(w, a.cfg.Production())
+	a.auth.Set(w, r, u.ID)
+	csrfToken, err := middleware.CSRFToken(w, r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to create session")
 		return
@@ -371,7 +371,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
-	a.auth.Clear(w)
+	a.auth.Clear(w, r)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -389,7 +389,7 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 	// Surface pending state so the UI can show the waiting-for-approval screen.
 	type meUser struct {
 		*store.User
-		Pending    bool   `json:"pending"`
+		Pending   bool   `json:"pending"`
 		CSRFToken string `json:"csrfToken,omitempty"`
 	}
 	writeJSON(w, http.StatusOK, meUser{User: u, Pending: isPending(u), CSRFToken: middleware.CSRFTokenFromRequest(r)})
@@ -708,18 +708,18 @@ type createRequest struct {
 	CDIDevices    []string `json:"cdiDevices"`
 	// Advanced create fields (all optional). Command/Entrypoint are space-split
 	// from a single string by the frontend; the backend tolerates either form.
-	Command       string            `json:"command"`
-	Entrypoint    string            `json:"entrypoint"`
-	WorkingDir    string            `json:"workingDir"`
-	Hostname      string            `json:"hostname"`
-	RunUser       string            `json:"runUser"`
-	NanoCPUs      int64             `json:"nanoCpus"`
-	MemoryMB      int64             `json:"memoryMb"`
-	PidsLimit     int64             `json:"pidsLimit"`
-	Sysctls       map[string]string `json:"sysctls"`
-	CapAdd        []string          `json:"capAdd"`
-	CapDrop       []string          `json:"capDrop"`
-	Labels        map[string]string `json:"labels"`
+	Command    string            `json:"command"`
+	Entrypoint string            `json:"entrypoint"`
+	WorkingDir string            `json:"workingDir"`
+	Hostname   string            `json:"hostname"`
+	RunUser    string            `json:"runUser"`
+	NanoCPUs   int64             `json:"nanoCpus"`
+	MemoryMB   int64             `json:"memoryMb"`
+	PidsLimit  int64             `json:"pidsLimit"`
+	Sysctls    map[string]string `json:"sysctls"`
+	CapAdd     []string          `json:"capAdd"`
+	CapDrop    []string          `json:"capDrop"`
+	Labels     map[string]string `json:"labels"`
 }
 
 var errForbiddenImage = errors.New("image not visible")
@@ -770,9 +770,9 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		Username: u.Username, Name: req.Name, ImageRef: img.DockerRef, ImageName: img.DisplayName,
 		Env: normalizeEnv(req.Env), GPUs: req.GPUs,
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
-		Ports:     splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
-		Networks:  req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
-		Devices:   req.Devices, CDIDevices: req.CDIDevices,
+		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
+		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
+		Devices: req.Devices, CDIDevices: req.CDIDevices,
 		RestartPolicy: req.RestartPolicy,
 		// Advanced fields. Command/Entrypoint accept a shell-style string (split
 		// into argv) for ergonomics in the wizard; empty means "use image default".
@@ -1251,7 +1251,7 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 	u, err := a.db.UserByFeishu(fu.OpenID)
 	if err != nil {
 		// First login: create the user in the pending group.
-		u, err = a.db.CreateFeishuUser(fu.OpenID, fu.Username(), fu.Comment)
+		u, err = a.db.CreateFeishuUser(fu.OpenID, fu.Username(), fu.Name)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1263,8 +1263,8 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().Format(time.RFC3339)
 	_, _ = a.db.Exec(`update users set last_login_at=? where id=?`, now, u.ID)
-	a.auth.Set(w, u.ID)
-	if _, err := middleware.CSRFToken(w, a.cfg.Production()); err != nil {
+	a.auth.Set(w, r, u.ID)
+	if _, err := middleware.CSRFToken(w, r); err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}

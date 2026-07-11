@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/network"
 )
 
@@ -70,7 +71,7 @@ func NetworkFullName(username, name string) string {
 // the Networks view is never empty on a fresh host.
 func (d *Client) ListNetworks(ctx context.Context, username string, admin bool) ([]Network, error) {
 	// Fetch every network once, then partition into managed vs. system.
-	nets, err := d.c.NetworkList(ctx, network.ListOptions{})
+	nets, err := d.c.NetworkList(ctx, types.NetworkListOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -181,15 +182,14 @@ func (d *Client) CreateNetwork(ctx context.Context, opts CreateNetworkOptions) (
 	if len(configs) > 0 {
 		ipam.Config = configs
 	}
-	createOpts := network.CreateOptions{
+	createOpts := types.NetworkCreate{
 		Driver:     driver,
 		IPAM:       ipam,
 		Labels:     labels,
 		Attachable: true,
 	}
 	if opts.IPv6 {
-		enableIPv6 := true
-		createOpts.EnableIPv6 = &enableIPv6
+		createOpts.EnableIPv6 = true
 	}
 	resp, err := d.c.NetworkCreate(ctx, full, createOpts)
 	if err != nil {
@@ -202,7 +202,7 @@ func (d *Client) CreateNetwork(ctx context.Context, opts CreateNetworkOptions) (
 // Ownership is enforced: non-admin callers may only inspect their own
 // mudp-managed networks; system networks are readable by all.
 func (d *Client) InspectNetwork(ctx context.Context, full, username string, admin bool) (NetworkDetail, error) {
-	info, err := d.c.NetworkInspect(ctx, full, network.InspectOptions{})
+	info, err := d.c.NetworkInspect(ctx, full, types.NetworkInspectOptions{})
 	if err != nil {
 		return NetworkDetail{}, err
 	}
@@ -282,7 +282,7 @@ func (d *Client) NetworkDisconnectContainer(ctx context.Context, full, container
 // guardManagedNetwork verifies a network is mudp-managed and owned by username
 // (unless admin), so connect/disconnect can't touch another user's network.
 func (d *Client) guardManagedNetwork(ctx context.Context, full, username string, admin bool) error {
-	info, err := d.c.NetworkInspect(ctx, full, network.InspectOptions{})
+	info, err := d.c.NetworkInspect(ctx, full, types.NetworkInspectOptions{})
 	if err != nil {
 		return err
 	}
@@ -306,7 +306,7 @@ func sortNetworkContainers(cs []NetworkContainer) {
 
 // RemoveNetwork removes a mudp-managed network with an ownership guard.
 func (d *Client) RemoveNetwork(ctx context.Context, name string, username string, admin bool) error {
-	info, err := d.c.NetworkInspect(ctx, name, network.InspectOptions{})
+	info, err := d.c.NetworkInspect(ctx, name, types.NetworkInspectOptions{})
 	if err != nil {
 		return err
 	}
