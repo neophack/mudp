@@ -106,7 +106,7 @@ func (a *App) metrics(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) Routes() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RecoverPanic)
+	r.Use(a.recoverPanic)
 	r.Use(middleware.RequestLogger)
 
 	apiRateLimiter := middleware.DefaultAPIRateLimiter()
@@ -122,6 +122,8 @@ func (a *App) Routes() http.Handler {
 	r.With(loginRateLimiter.Middleware).Post("/api/login", a.login)
 	r.Post("/api/logout", a.logout)
 	r.Get("/api/me", a.me)
+	r.Get("/api/setup/status", a.setupStatus)
+	r.Post("/api/setup/init", a.setupInit)
 	r.Get("/api/feishu/config", a.feishuConfigPublic)
 	r.Get("/api/feishu/login", a.feishuLogin)
 	r.Get("/api/feishu/callback", a.feishuCallback)
@@ -208,6 +210,10 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/mcp/tokens", a.mcpTokenList)
 		r.Post("/api/mcp/tokens", a.mcpTokenCreate)
 		r.Delete("/api/mcp/tokens/{id}", a.mcpTokenDelete)
+
+		// In-app notifications for activated users.
+		r.Get("/api/notifications", a.notifications)
+		r.Post("/api/notifications/read", a.notificationsRead)
 	})
 
 	// Operator+ : image group visibility (assign images to groups). Pull/build/import are
@@ -249,6 +255,8 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/users/update", a.userUpdate)
 		r.Post("/api/users/delete", a.userDelete)
 		r.Post("/api/users/groups", a.setUserGroups)
+		r.Post("/api/users/approve", a.approveUser)
+		r.Post("/api/users/deactivate", a.deactivateUser)
 		r.Get("/api/registries", a.registries)
 		r.Post("/api/registries", a.registries)
 		r.Post("/api/registries/delete", a.registryDelete)
@@ -1249,6 +1257,7 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, err := a.db.UserByFeishu(fu.OpenID)
+	newUser := false
 	if err != nil {
 		// First login: create the user in the pending group.
 		u, err = a.db.CreateFeishuUser(fu.OpenID, fu.Username(), fu.Name)
@@ -1256,6 +1265,10 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		newUser = true
+	}
+	if newUser {
+		a.notifyAdminsPendingUser(u)
 	}
 	if u.Disabled {
 		writeErr(w, http.StatusForbidden, "user is disabled")
@@ -1337,12 +1350,18 @@ func (a *App) setUserGroups(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "userId is required")
 		return
 	}
+	before, _ := a.db.UserByID(req.UserID)
+	wasPending := before != nil && isPending(before)
 	if err := a.db.SetUserGroups(req.UserID, req.GroupIDs); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if u, _ := a.db.UserByID(req.UserID); u != nil {
-		a.record(r, "user.groups", u.Username)
+	after, _ := a.db.UserByID(req.UserID)
+	if after != nil {
+		a.record(r, "user.groups", after.Username)
+		if wasPending && !isPending(after) {
+			a.notifyUserApproved(after.ID, after.Groups)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

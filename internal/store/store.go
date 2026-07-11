@@ -53,11 +53,34 @@ const (
 // an admin assigns them to a real group.
 const PendingGroup = "pending"
 
+// DefaultUserGroup is the default business group used for approved local users
+// and as the approval target for Feishu sign-ups.
+const DefaultUserGroup = "users"
+
 type Group struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`
 	NetdiskPath string `json:"netdiskPath,omitempty"`
 }
+
+// Notification is an in-app message delivered to a single user.
+type Notification struct {
+	ID        int64  `json:"id"`
+	UserID    int64  `json:"userId"`
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	Message   string `json:"message"`
+	Data      map[string]any `json:"data"`
+	Read      bool   `json:"read"`
+	CreatedAt string `json:"createdAt"`
+}
+
+const (
+	NotificationPendingUser = "pending_user"
+	NotificationUserApproved = "user_approved"
+	NotificationUserDeactivated = "user_deactivated"
+	NotificationSystemAlert = "system_alert"
+)
 
 type Image struct {
 	ID          int64        `json:"id"`
@@ -144,7 +167,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 17
+const schemaVersion = 18
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -178,6 +201,7 @@ var migrations = []migration{
 	{15, "add mcp_tokens.token_plaintext", migrateAddMCPTokenPlaintext},
 	{16, "add unique port_prefix index", migrateAddPortPrefixUniqueIndex},
 	{17, "add users.display_name", migrateAddUserDisplayName},
+	{18, "create notifications table", migrateCreateNotifications},
 }
 
 func migrateCreateInitialTables(db executor) error {
@@ -305,6 +329,29 @@ func migrateAddUserDisplayName(db executor) error {
 	// new display_name column so the UI shows it immediately after upgrade.
 	_, err := db.Exec(`update users set display_name=comment where feishu_open_id != '' and display_name = '' and comment != ''`)
 	return err
+}
+
+func migrateCreateNotifications(db executor) error {
+	stmts := []string{
+		`create table if not exists notifications (
+			id integer primary key autoincrement,
+			user_id integer not null references users(id) on delete cascade,
+			type text not null,
+			title text not null,
+			message text not null,
+			data_json text not null default '{}',
+			read integer not null default 0,
+			created_at text not null
+		)`,
+		`create index if not exists idx_notifications_user_read on notifications(user_id, read, created_at desc)`,
+		`create index if not exists idx_notifications_created on notifications(created_at desc)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateAddNetdiskQuotaBytes(db executor) error {
@@ -498,16 +545,21 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 		}
 	}
 
-	var n int
-	if err := db.QueryRow(`select count(*) from users where role='admin'`).Scan(&n); err != nil {
-		return err
-	}
-	if n == 0 {
-		if err := db.CreateUser(adminUser, adminPassword, "admin", nil, 50, 0); err != nil {
+	// Only auto-create an admin when an explicit password is supplied. When the
+	// password is empty the first-run setup wizard is responsible for creating
+	// the administrator account.
+	if adminPassword != "" {
+		var n int
+		if err := db.QueryRow(`select count(*) from users where role='admin'`).Scan(&n); err != nil {
 			return err
 		}
+		if n == 0 {
+			if err := db.CreateUser(adminUser, adminPassword, "admin", nil, 50, 0); err != nil {
+				return err
+			}
+		}
 	}
-	return db.EnsurePendingGroup()
+	return db.EnsureDefaultGroups()
 }
 
 // recordSchemaVersionTx records a migration version inside a transaction.
@@ -577,7 +629,15 @@ func (db *DB) createUserTx(username, passwordHash, role string, groupIDs []int64
 		return err
 	}
 	uid, _ := res.LastInsertId()
-	for _, gid := range groupIDs {
+	gids := groupIDs
+	if len(gids) == 0 {
+		defaultGID, err := defaultUserGroupIDTx(tx)
+		if err != nil {
+			return err
+		}
+		gids = []int64{defaultGID}
+	}
+	for _, gid := range gids {
 		if _, err := tx.Exec(`insert or ignore into user_groups(user_id,group_id) values(?,?)`, uid, gid); err != nil {
 			return err
 		}
@@ -844,6 +904,23 @@ func (db *DB) PendingGroupID() (int64, error) {
 	return id, err
 }
 
+// EnsureDefaultGroups ensures both the pending holding group and the default
+// business group exist. Safe to call repeatedly.
+func (db *DB) EnsureDefaultGroups() error {
+	_, err := db.Exec(`insert or ignore into groups(name) values(?), (?)`, PendingGroup, DefaultUserGroup)
+	return err
+}
+
+// DefaultUserGroupID returns the id of the default users group, creating it if needed.
+func (db *DB) DefaultUserGroupID() (int64, error) {
+	if err := db.EnsureDefaultGroups(); err != nil {
+		return 0, err
+	}
+	var id int64
+	err := db.QueryRow(`select id from groups where name=?`, DefaultUserGroup).Scan(&id)
+	return id, err
+}
+
 // UserByFeishu looks up a user by their Feishu open_id.
 func (db *DB) UserByFeishu(openID string) (*User, error) {
 	if openID == "" {
@@ -955,6 +1032,15 @@ func pendingGroupIDTx(tx *sql.Tx) (int64, error) {
 	}
 	var id int64
 	err := tx.QueryRow(`select id from groups where name=?`, PendingGroup).Scan(&id)
+	return id, err
+}
+
+func defaultUserGroupIDTx(tx *sql.Tx) (int64, error) {
+	if _, err := tx.Exec(`insert or ignore into groups(name) values(?)`, DefaultUserGroup); err != nil {
+		return 0, err
+	}
+	var id int64
+	err := tx.QueryRow(`select id from groups where name=?`, DefaultUserGroup).Scan(&id)
 	return id, err
 }
 
@@ -1083,6 +1169,107 @@ type AuditFilter struct {
 	Action string
 	Target string
 	Limit  int
+}
+
+// ---------------- Notifications ----------------
+
+// CreateNotification persists a single notification.
+func (db *DB) CreateNotification(n *Notification) error {
+	if n.Data == nil {
+		n.Data = map[string]any{}
+	}
+	raw, err := json.Marshal(n.Data)
+	if err != nil {
+		return err
+	}
+	if n.CreatedAt == "" {
+		n.CreatedAt = time.Now().Format(time.RFC3339)
+	}
+	res, err := db.Exec(`insert into notifications(user_id, type, title, message, data_json, read, created_at)
+		values(?,?,?,?,?,?,?)`, n.UserID, n.Type, n.Title, n.Message, string(raw), 0, n.CreatedAt)
+	if err != nil {
+		return err
+	}
+	n.ID, _ = res.LastInsertId()
+	return nil
+}
+
+// NotificationsForUser returns the most recent notifications for a user.
+func (db *DB) NotificationsForUser(userID int64, limit int) ([]Notification, int, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	rows, err := db.Query(`select id, user_id, type, title, message, data_json, read, created_at
+		from notifications where user_id=? order by created_at desc limit ?`, userID, limit)
+	if err != nil {
+		return []Notification{}, 0, err
+	}
+	defer rows.Close()
+	out := []Notification{}
+	unread := 0
+	for rows.Next() {
+		var n Notification
+		var raw string
+		var read int
+		if err := rows.Scan(&n.ID, &n.UserID, &n.Type, &n.Title, &n.Message, &raw, &read, &n.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		n.Read = read != 0
+		_ = json.Unmarshal([]byte(raw), &n.Data)
+		if !n.Read {
+			unread++
+		}
+		out = append(out, n)
+	}
+	return out, unread, rows.Err()
+}
+
+// MarkNotificationsRead marks the given notification ids as read for a user.
+func (db *DB) MarkNotificationsRead(userID int64, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, userID)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	q := fmt.Sprintf(`update notifications set read=1 where user_id=? and id in (%s)`, strings.Join(placeholders, ","))
+	_, err := db.Exec(q, args...)
+	return err
+}
+
+// MarkAllNotificationsRead marks all notifications for a user as read.
+func (db *DB) MarkAllNotificationsRead(userID int64) error {
+	_, err := db.Exec(`update notifications set read=1 where user_id=?`, userID)
+	return err
+}
+
+// NotifyAdmins creates a notification for every admin user.
+func (db *DB) NotifyAdmins(n Notification) error {
+	admins, err := db.Users()
+	if err != nil {
+		return err
+	}
+	for _, u := range admins {
+		if u.Role != RoleAdmin {
+			continue
+		}
+		copy := n
+		copy.UserID = u.ID
+		if err := db.CreateNotification(&copy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// NotifyUser creates a notification for a single user.
+func (db *DB) NotifyUser(userID int64, n Notification) error {
+	n.UserID = userID
+	return db.CreateNotification(&n)
 }
 
 // AuditList returns the most recent audit entries matching the filter.
@@ -1355,6 +1542,30 @@ func netdiskShareExpired(s NetdiskShare) bool {
 func (db *DB) DeleteUser(id int64) error {
 	_, err := db.Exec(`delete from users where id=?`, id)
 	return err
+}
+
+// DeactivateUser disables an account and moves it to the pending group.
+// Existing resources (containers, stacks, shares) are preserved.
+func (db *DB) DeactivateUser(id int64) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`update users set disabled=1 where id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`delete from user_groups where user_id=?`, id); err != nil {
+		return err
+	}
+	pendingID, err := pendingGroupIDTx(tx)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`insert or ignore into user_groups(user_id,group_id) values(?,?)`, id, pendingID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ---------------- Stacks (Compose) ----------------

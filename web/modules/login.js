@@ -27,7 +27,7 @@ export async function renderLogin() {
           `<input name="username" placeholder="Username" autocomplete="username" required>` +
           `<input name="password" type="password" placeholder="Password" autocomplete="current-password" required>` +
           `<button class="primary">Sign In</button>` +
-          `<p class="hint">Default user: admin. Password is auto-generated and logged unless MUDP_ADMIN_PASSWORD is set.</p>` +
+          `<p class="hint">Sign in with the administrator account created during initial setup, or configured via MUDP_ADMIN_USER / MUDP_ADMIN_PASSWORD.</p>` +
           (feishuOn
             ? `<div class="login-divider">or</div><button type="button" class="login-feishu" id="feishuLogin">Sign in with Feishu</button>`
             : ``) +

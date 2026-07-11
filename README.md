@@ -45,7 +45,7 @@ Ownership is enforced server-side on every Docker operation — UI hiding is cos
 go run ./cmd/mudp
 ```
 
-Open <http://127.0.0.1:9000>. Default first admin user is `admin`; the password is auto-generated and printed in the server logs unless `MUDP_ADMIN_PASSWORD` is set.
+Open <http://127.0.0.1:9000>. On the first start without `MUDP_ADMIN_PASSWORD`, the web UI prompts for initial setup (admin username/password, default users group netdisk path, etc.). You can also pre-seed the admin account by setting `MUDP_ADMIN_USER` and `MUDP_ADMIN_PASSWORD`.
 
 ### Environment variables
 
@@ -55,7 +55,7 @@ Open <http://127.0.0.1:9000>. Default first admin user is `admin`; the password 
 | `MUDP_DB` | `mudp.db` | SQLite database path. |
 | `MUDP_SESSION_SECRET` | random per launch | Cookie signing secret. Auto-generated when not set. |
 | `MUDP_ADMIN_USER` | `admin` | Bootstrap admin username. |
-| `MUDP_ADMIN_PASSWORD` | random per launch | Bootstrap admin password. Auto-generated and logged when not set. |
+| `MUDP_ADMIN_PASSWORD` | _empty_ | Bootstrap admin password. When empty, the first-run setup wizard is required.
 | `MUDP_DOCKER_HOST` | _empty_ (uses `DOCKER_HOST`) | Override the Docker Engine endpoint. |
 | `MUDP_WEB_DIR` | _empty_ | Serve UI from disk (dev mode) instead of the embed. |
 
@@ -139,7 +139,7 @@ Docker-touching Go tests auto-skip when no daemon is reachable, so CI without Do
 - **Stacks** require the `docker compose` CLI plugin v2 on the host (`docker compose version` should print a version). Without it, the Stacks tab surfaces a clear "not installed" error.
 - GPU scheduling uses Docker NVIDIA device requests and expects the host NVIDIA container runtime.
 - Registry tokens are stored at-rest in the SQLite `settings` table. For a single-host deployment this is acceptable; encrypt-at-rest is a flagged follow-up.
-- **Production safety**: `MUDP_ADMIN_PASSWORD` and `MUDP_SESSION_SECRET` are auto-generated if omitted, but setting them explicitly keeps credentials and login cookies stable across restarts. CSRF tokens are required for all mutating API calls.
+- **Production safety**: Set `MUDP_ADMIN_PASSWORD` and `MUDP_SESSION_SECRET` explicitly to keep credentials and login cookies stable across restarts. When `MUDP_ADMIN_PASSWORD` is omitted, the first-run setup wizard creates the admin account. CSRF tokens are required for all mutating API calls.
 - Set `MUDP_SESSION_SECRET` in production to keep login cookies valid across restarts — otherwise the random default rotates on each launch.
 
 ## Roadmap (out of scope for this release)

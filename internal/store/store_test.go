@@ -702,3 +702,158 @@ func TestNetdiskSharePassword(t *testing.T) {
 		t.Errorf("PasswordHash = %q, want %q", s.PasswordHash, "hashed-password")
 	}
 }
+
+// TestDefaultGroupsExist confirms that Migrate creates both the pending and
+// default users groups.
+func TestDefaultGroupsExist(t *testing.T) {
+	db := newTestDB(t)
+	groups, err := db.Groups()
+	if err != nil {
+		t.Fatalf("Groups: %v", err)
+	}
+	hasPending, hasUsers := false, false
+	for _, g := range groups {
+		if g.Name == PendingGroup {
+			hasPending = true
+		}
+		if g.Name == DefaultUserGroup {
+			hasUsers = true
+		}
+	}
+	if !hasPending {
+		t.Error("missing pending group after migration")
+	}
+	if !hasUsers {
+		t.Error("missing default users group after migration")
+	}
+}
+
+// TestCreateUserAssignsDefaultGroup verifies that a local user created without
+// explicit groups is automatically placed in the default users group.
+func TestCreateUserAssignsDefaultGroup(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateUser("nogroups", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	u, err := db.Authenticate("nogroups", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u.Groups) != 1 || u.Groups[0] != DefaultUserGroup {
+		t.Fatalf("expected groups [%s], got %v", DefaultUserGroup, u.Groups)
+	}
+}
+
+// TestDeactivateUser moves an account to the pending group and disables it.
+func TestDeactivateUser(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateUser("active", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := db.Authenticate("active", "pw")
+	if err := db.DeactivateUser(u.ID); err != nil {
+		t.Fatalf("DeactivateUser: %v", err)
+	}
+	u2, err := db.UserByID(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !u2.Disabled {
+		t.Error("expected user to be disabled")
+	}
+	if len(u2.Groups) != 1 || u2.Groups[0] != PendingGroup {
+		t.Fatalf("expected groups [%s], got %v", PendingGroup, u2.Groups)
+	}
+	if _, err := db.Authenticate("active", "pw"); err == nil {
+		t.Fatal("deactivated user should not authenticate")
+	}
+}
+
+// TestNotificationLifecycle covers creating, listing, marking read, and
+// per-user isolation.
+func TestNotificationLifecycle(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateUser("alice", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateUser("bob", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	alice, _ := db.Authenticate("alice", "pw")
+	bob, _ := db.Authenticate("bob", "pw")
+
+	if err := db.NotifyUser(alice.ID, Notification{
+		Type:    NotificationUserApproved,
+		Title:   "Approved",
+		Message: "You have been approved.",
+	}); err != nil {
+		t.Fatalf("NotifyUser: %v", err)
+	}
+	if err := db.NotifyUser(bob.ID, Notification{
+		Type:    NotificationSystemAlert,
+		Title:   "Alert",
+		Message: "System issue.",
+	}); err != nil {
+		t.Fatalf("NotifyUser bob: %v", err)
+	}
+
+	aliceItems, unread, err := db.NotificationsForUser(alice.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aliceItems) != 1 || unread != 1 {
+		t.Fatalf("alice notifications = %d unread=%d", len(aliceItems), unread)
+	}
+	if aliceItems[0].Type != NotificationUserApproved {
+		t.Fatalf("unexpected type %q", aliceItems[0].Type)
+	}
+
+	bobItems, bobUnread, err := db.NotificationsForUser(bob.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bobItems) != 1 || bobUnread != 1 {
+		t.Fatalf("bob notifications = %d unread=%d", len(bobItems), bobUnread)
+	}
+
+	if err := db.MarkNotificationsRead(alice.ID, []int64{aliceItems[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	aliceItems, unread, _ = db.NotificationsForUser(alice.ID, 10)
+	if unread != 0 {
+		t.Fatalf("expected 0 unread after mark, got %d", unread)
+	}
+}
+
+// TestSetupWizardLeavesNoAdmin confirms that Migrate does not create an admin
+// when the provided password is empty, allowing the setup wizard to run.
+func TestSetupWizardLeavesNoAdmin(t *testing.T) {
+	// Migrate a fresh temp DB with an empty admin password.
+	// and migrate with an empty password.
+	path := filepath.Join(t.TempDir(), "setup.db")
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db2.Close()
+	if err := db2.Migrate("admin", ""); err != nil {
+		t.Fatalf("Migrate with empty password: %v", err)
+	}
+	var n int
+	if err := db2.QueryRow(`select count(*) from users where role='admin'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("expected no admin, got %d", n)
+	}
+	groups, _ := db2.Groups()
+	hasUsers := false
+	for _, g := range groups {
+		if g.Name == DefaultUserGroup {
+			hasUsers = true
+		}
+	}
+	if !hasUsers {
+		t.Error("expected default users group to exist even without admin")
+	}
+}

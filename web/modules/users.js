@@ -68,6 +68,10 @@ export function renderUsers() {
     payload.containerCap = Number(payload.containerCap || 10);
     payload.netdiskQuotaBytes = Math.round(Number(payload.netdiskQuotaGB || 0) * 1024 * 1024 * 1024);
     payload.groupIds = [...e.target.querySelectorAll("input[name=groupIds]:checked")].map((i) => Number(i.value));
+    if (payload.groupIds.length === 0) {
+      const defaultGroup = state.groups.find((g) => g.name === "users");
+      if (defaultGroup) payload.groupIds = [defaultGroup.id];
+    }
     try {
       await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
       await refreshSection("users", "groups");
@@ -82,6 +86,12 @@ export function renderUsers() {
   });
   document.querySelectorAll("[data-edit-user]").forEach((btn) => {
     btn.onclick = () => openUserEdit(btn.dataset.editUser);
+  });
+  document.querySelectorAll("[data-approve-user]").forEach((btn) => {
+    btn.onclick = () => approveUser(Number(btn.dataset.approveUser), btn.dataset.userName);
+  });
+  document.querySelectorAll("[data-deactivate-user]").forEach((btn) => {
+    btn.onclick = () => deactivateUser(Number(btn.dataset.deactivateUser), btn.dataset.userName);
   });
   document.querySelectorAll("[data-delete-user]").forEach((btn) => {
     btn.onclick = () => deleteUser(Number(btn.dataset.deleteUser), btn.dataset.userName);
@@ -105,7 +115,9 @@ function userRow(user) {
       `<td><div class="secondary-line">${user.portPrefix ? `${user.portPrefix * 100}-${user.portPrefix * 100 + 99}` : "Not assigned"}</div></td>` +
       `<td class="actions">` +
         `<button class="ghost" data-edit-groups="${user.id}" data-user-name="${escapeHtml(user.username)}">Groups</button>` +
+        (isPending ? `<button class="ok" data-approve-user="${user.id}" data-user-name="${escapeHtml(user.username)}">Approve</button>` : "") +
         `<button class="ghost" data-edit-user="${user.id}">Edit</button>` +
+        `<button class="warn" data-deactivate-user="${user.id}" data-user-name="${escapeHtml(user.username)}"${user.id === state.me.id ? " disabled" : ""}>Deactivate</button>` +
         `<button class="icon danger" title="Delete" data-delete-user="${user.id}" data-user-name="${escapeHtml(user.username)}"${user.id === state.me.id ? " disabled" : ""}>✕</button>` +
       `</td>` +
     `</tr>`
@@ -228,12 +240,40 @@ function openUserEdit(userId) {
   };
 }
 
+async function approveUser(userId, userName) {
+  if (!confirm(`Approve user “${userName}” and move them to the default users group?`)) return;
+  try {
+    await api("/api/users/approve", { method: "POST", body: JSON.stringify({ userId }) });
+    await refreshSection("users", "groups");
+    renderView();
+    toast("User approved", true);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function deactivateUser(userId, userName) {
+  if (userId === state.me.id) {
+    toast("You cannot deactivate your own account.");
+    return;
+  }
+  if (!confirm(`Deactivate user “${userName}”? Their account will be disabled and returned to the pending group.`)) return;
+  try {
+    await api("/api/users/deactivate", { method: "POST", body: JSON.stringify({ id: userId }) });
+    await refreshSection("users", "groups");
+    renderView();
+    toast("User deactivated", true);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 async function deleteUser(userId, userName) {
   if (userId === state.me.id) {
     toast("You cannot delete your own account.");
     return;
   }
-  if (!confirm(`Delete user “${userName}”? This removes their group memberships and stacks.`)) return;
+  if (!confirm(`Delete user “${userName}”? This removes their group memberships and stacks permanently.`)) return;
   try {
     await api("/api/users/delete", { method: "POST", body: JSON.stringify({ id: userId }) });
     await refreshSection("users", "groups");

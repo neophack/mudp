@@ -3,6 +3,8 @@
 
 import { renderLogin } from "./modules/login.js";
 import { renderPending } from "./modules/pending.js";
+import { renderSetup } from "./modules/setup.js";
+import { renderNotificationBell, openNotificationsModal, fetchNotifications } from "./modules/notifications.js";
 import { renderDashboard } from "./modules/dashboard.js";
 import { renderContainers } from "./modules/containers.js";
 import { openCreateModal } from "./modules/create.js";
@@ -58,6 +60,8 @@ export const state = {
   mcpTokens: [],
   disks: [],
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
+  notifications: [],
+  unreadCount: 0,
   search: "",
   // containerFilter narrows the containers list by state (all/running/stopped/paused).
   containerFilter: "all",
@@ -133,6 +137,11 @@ export function readCSRFCookie() {
 export async function load() {
   try {
     state.csrfToken = readCSRFCookie();
+    const setup = await api("/api/setup/status").catch(() => ({ setupNeeded: false }));
+    if (setup.setupNeeded) {
+      renderSetup();
+      return;
+    }
     const me = await api("/api/me");
     if (!me || me.authenticated === false) {
       state.me = null;
@@ -145,6 +154,7 @@ export async function load() {
     state.csrfToken = me.csrfToken || state.csrfToken || "";
     state.me = me;
     state.feishu = (await api("/api/feishu/config").catch(() => ({ enabled: false }))).enabled;
+    fetchNotifications().catch(() => {});
     if (me.pending) {
       renderPending();
       return;
@@ -189,6 +199,7 @@ export async function refreshSection(...keys) {
 export async function refreshAll() {
   const jobs = [api("/api/images"), api("/api/containers"), api("/api/dashboard"), api("/api/volumes"), api("/api/networks"), api("/api/stacks")];
   const labels = ["images", "containers", "dashboard", "volumes", "networks", "stacks"];
+  fetchNotifications().catch(() => {});
   if (isAdmin()) {
     jobs.push(api("/api/users"), api("/api/groups"), api("/api/admin/audit?limit=200"));
     labels.push("users", "groups", "audit");
@@ -308,6 +319,7 @@ export function render() {
             `<p>${subtitle(state.tab)}</p>` +
           `</div>` +
           `<div class="head-actions">` +
+            renderNotificationBell() +
             (state.tab === "containers"
               ? `<div class="search"><input id="searchBox" placeholder="Search containers" value="${escapeHtml(state.search)}"></div>`
               : "") +
@@ -342,6 +354,8 @@ export function render() {
     state.me = null;
     renderLogin();
   };
+  const bell = $("#notificationBell");
+  if (bell) bell.onclick = openNotificationsModal;
   $("#refresh").onclick = async () => {
     try {
       await refreshAll();

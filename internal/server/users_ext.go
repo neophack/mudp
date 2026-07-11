@@ -80,6 +80,75 @@ func (a *App) userUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// approveUser moves a pending user into the default users group. It is the
+// one-click approval flow used by administrators.
+func (a *App) approveUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		UserID int64 `json:"userId"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.UserID == 0 {
+		writeErr(w, http.StatusBadRequest, "userId is required")
+		return
+	}
+	u, err := a.db.UserByID(req.UserID)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if !isPending(u) {
+		writeErr(w, http.StatusBadRequest, "user is not pending approval")
+		return
+	}
+	gid, err := a.db.DefaultUserGroupID()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.db.SetUserGroups(req.UserID, []int64{gid}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.record(r, "user.approve", u.Username)
+	a.notifyUserApproved(req.UserID, []string{store.DefaultUserGroup})
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// deactivateUser disables an account and returns it to the pending group.
+func (a *App) deactivateUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		ID int64 `json:"id"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.ID == 0 {
+		writeErr(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	caller := currentUser(r)
+	if caller.ID == req.ID {
+		writeErr(w, http.StatusBadRequest, "you cannot deactivate your own account")
+		return
+	}
+	target, err := a.db.UserByID(req.ID)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if err := a.db.DeactivateUser(req.ID); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.record(r, "user.deactivate", targetName(target))
+	a.notifyUserDeactivated(req.ID)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // userDelete removes a user. Admins cannot delete themselves.
 func (a *App) userDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

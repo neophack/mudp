@@ -40,8 +40,7 @@ func Load() Config {
 	cfg.AdminUser = env("MUDP_ADMIN_USER", "admin")
 	cfg.AdminPassword = env("MUDP_ADMIN_PASSWORD", "")
 	if cfg.AdminPassword == "" {
-		cfg.AdminPassword = randomPassword()
-		log.Printf("WARNING: MUDP_ADMIN_PASSWORD is not set; generated admin password: %s", cfg.AdminPassword)
+		log.Println("INFO: MUDP_ADMIN_PASSWORD is not set; the first start will require initial setup via the web UI")
 	}
 
 	return cfg
@@ -62,10 +61,4 @@ func randomSecret() string {
 	return hex.EncodeToString(b)
 }
 
-func randomPassword() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		log.Fatalf("FATAL: unable to generate admin password: %v", err)
-	}
-	return hex.EncodeToString(b)
-}
+
