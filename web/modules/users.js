@@ -145,7 +145,7 @@ function groupChecks(groups) {
 }
 
 function groupPathRow(g) {
-  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td><div class="secondary-line mono">${escapeHtml(g.netdiskPath || "Not configured")}</div></td><td class="actions"><button class="ghost" data-group-path="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.netdiskPath || "")}">Set Path</button></td></tr>`;
+  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td class="path-cell"><div class="secondary-line mono">${escapeHtml(g.netdiskPath || "Not configured")}</div></td><td class="actions"><button class="ghost" data-group-path="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.netdiskPath || "")}">Set Path</button></td></tr>`;
 }
 
 async function setGroupPath(groupId, name, current) {

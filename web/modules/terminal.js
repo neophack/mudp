@@ -81,7 +81,7 @@ export async function openTerminal(id, name) {
     lineHeight: 1.25,
     fontFamily: "'Cascadia Code', 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
     scrollback: 10000,
-    convertEol: false,
+    convertEol: true,
     macOptionIsMeta: true,
     allowProposedApi: true,
     theme: TERM_THEME,
@@ -154,7 +154,7 @@ export async function openTerminal(id, name) {
 
 // TERM_THEME is a balanced dark palette (One Dark inspired) with distinct,
 // high-contrast ANSI colours so ls/git/gcc/diff output reads well.
-const TERM_THEME = {
+export const TERM_THEME = {
   background: "#1a1b26",
   foreground: "#a9b1d6",
   cursor: "#c0caf5",

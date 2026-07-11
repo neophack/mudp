@@ -469,6 +469,7 @@ table.data td .primary-line { font-weight: 600; color: var(--ink); }
 table.data td .secondary-line { color: var(--ink-soft); font-size: 12px; }
 table.data td.actions { text-align: right; white-space: nowrap; }
 table.data td.actions button { margin-left: 3px; }
+table.data td.path-cell { word-break: break-all; max-width: 220px; }
 
 /* ---------- Copy chip ---------- */
 .copy-chip {
@@ -691,8 +692,10 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 .detail-settings select { max-width: 320px; }
 
 /* ---------- Terminal ---------- */
-.terminal-modal .modal { width: min(960px, calc(100vw - 48px)); height: calc(100vh - 48px); }
-.terminal-modal .modal-body {
+.terminal-modal .modal,
+.stack-run-modal .modal { width: min(960px, calc(100vw - 48px)); height: calc(100vh - 48px); }
+.terminal-modal .modal-body,
+.stack-run-modal .modal-body {
   padding: 0;
   gap: 0;
   background: #1a1b26;

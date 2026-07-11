@@ -70,7 +70,7 @@ export const state = {
   logViewer: { open: false, title: "", content: "", id: "", tail: 300 },
   create: { active: false, steps: [], logs: "", error: "" },
   pull: { active: false, logs: "", error: "", name: "" },
-  stackRun: { title: "", logs: "", error: "" },
+  stackRun: { active: false, stackId: 0, verb: "", lines: [], error: "", done: false, controller: null },
   pending: new Set(),
   terminal: { open: false, id: "", name: "", term: null, ws: null, fitAddon: null },
   modal: { open: false, kind: "", data: null },

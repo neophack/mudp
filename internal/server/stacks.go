@@ -51,8 +51,12 @@ func (a *App) stacks(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Name = strings.TrimSpace(req.Name)
 		req.ComposeYAML = strings.TrimSpace(req.ComposeYAML)
-		if req.Name == "" || req.ComposeYAML == "" {
-			writeErr(w, http.StatusBadRequest, "name and compose yaml are required")
+		if req.ID == 0 && req.Name == "" {
+			writeErr(w, http.StatusBadRequest, "name is required")
+			return
+		}
+		if req.ComposeYAML == "" {
+			writeErr(w, http.StatusBadRequest, "compose yaml is required")
 			return
 		}
 		// Validate the YAML parses and count services for quota guard.

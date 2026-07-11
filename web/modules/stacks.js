@@ -2,7 +2,8 @@
 // Compose body + env live in the DB; deploys stream progress over SSE.
 
 import { state, api, toast, refreshSection, renderView, canMutate, displayNameForUsername } from "../app.js";
-import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
+import { showModal, showModalNoShell, closeModal, readSSE, onModalClose } from "./ui.js";
+import { loadXterm, TERM_THEME } from "./terminal.js";
 
 const SAMPLE = `services:
   web:
@@ -119,32 +120,160 @@ async function loadAndEdit(id) {
   }
 }
 
-async function deployStack(id) {
-  showStackProgress("Deploying stack…", "");
-  try {
-    const res = await fetch("/api/stacks/up/stream", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
-      body: JSON.stringify({ id }),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      toast(data.error || `Deploy failed (${res.status})`);
-      closeModal();
-      return;
-    }
-    await streamStack(res, "deployed");
-  } catch (err) {
-    toast(err.message);
+// appendStackLine adds a line to the persistent run log and writes it to the
+// active terminal (if the modal is currently open). The lines array lets us
+// replay the whole session when the user reopens the terminal after hiding it.
+function appendStackLine(line) {
+  state.stackRun.lines.push(line);
+  state.stackRun.controller?.write(line);
+}
+
+async function openStackTerminal(title) {
+  // If the modal is already open, just bring it to the front.
+  if (document.querySelector(".modal-backdrop.stack-run-modal")) {
+    return state.stackRun.controller || { write: () => {}, setStatus: () => {}, close: closeModal };
   }
+
+  showModalNoShell(
+    "stack-run-modal",
+    "wide stack-run-modal",
+    `<div class="modal-head">` +
+      `<div class="term-title"><h2>${escapeHtml(title)}</h2></div>` +
+      `<div class="modal-tools"><button class="ghost" data-close>Close</button></div>` +
+    `</div>` +
+    `<div class="modal-body">` +
+      `<div id="stackTermBox" class="term-box"></div>` +
+      `<div class="term-statusbar">` +
+        `<span class="term-stat" id="stackTermStatus"><span class="dot dot-muted"></span>Running…</span>` +
+        `<span class="term-stat term-keys">Read-only build log</span>` +
+      `</div>` +
+    `</div>`,
+    false
+  );
+  const wrapper = document.querySelector(".modal-backdrop.stack-run-modal");
+  document.querySelectorAll(".stack-run-modal [data-close]").forEach((b) => (b.onclick = closeModal));
+
+  try {
+    await loadXterm();
+  } catch {
+    const box = $("#stackTermBox");
+    if (box) box.textContent = "Failed to load terminal library";
+    return { write: () => {}, setStatus: () => {}, close: closeModal };
+  }
+
+  const term = new window.Terminal({
+    cursorBlink: false,
+    fontSize: 13,
+    lineHeight: 1.25,
+    fontFamily: "'Cascadia Code', 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
+    scrollback: 10000,
+    convertEol: true,
+    disableStdin: true,
+    theme: TERM_THEME,
+  });
+  const fitAddon = new window.FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open($("#stackTermBox"));
+  fitAddon.fit();
+
+  const resizeObs = new ResizeObserver(() => {
+    try { fitAddon.fit(); } catch {}
+  });
+  resizeObs.observe(wrapper);
+
+  const cleanup = () => {
+    resizeObs.disconnect();
+    try { term.dispose(); } catch {}
+    if (state.stackRun.controller === controller) {
+      state.stackRun.controller = null;
+    }
+  };
+  onModalClose(wrapper, cleanup);
+
+  // Docker pull/build progress lines are meant to overwrite the same row.
+  // The server strips \r, so we reconstruct the overwrite behavior here:
+  // consecutive progress lines use \r to redraw, normal lines advance.
+  let lastWasProgress = false;
+  const PROGRESS_RE = /(?:Downloading|Extracting|Pulling|Pushing|Waiting|Importing|Verifying|Loading|Saving|Uploading).*?\d+(?:\.\d+)?\s*(?:MB|GB|kB|B)/;
+  const controller = {
+    term,
+    write(line) {
+      const raw = String(line || "");
+      const isProgress = PROGRESS_RE.test(raw);
+      if (isProgress) {
+        if (lastWasProgress) {
+          // Move up one line, clear it, then redraw the updated progress.
+          term.write("\x1b[1A\x1b[2K" + raw + "\r");
+        } else {
+          term.write(raw + "\r");
+        }
+        lastWasProgress = true;
+      } else {
+        if (lastWasProgress) {
+          // Leave the progress line visible and start a fresh line.
+          term.write("\n" + raw + "\r\n");
+        } else {
+          term.write(raw + "\r\n");
+        }
+        lastWasProgress = false;
+      }
+    },
+    setStatus(text, kind = "muted") {
+      const el = document.getElementById("stackTermStatus");
+      if (!el) return;
+      const dotClass = kind === "ok" ? "dot-ok" : kind === "error" ? "dot-danger" : "dot-muted";
+      el.innerHTML = `<span class="dot ${dotClass}"></span>${escapeHtml(text)}`;
+    },
+    close: closeModal,
+  };
+
+  // Replay the buffered session so reopening the modal shows the same output.
+  for (const line of state.stackRun.lines) {
+    controller.write(line);
+  }
+
+  state.stackRun.controller = controller;
+  return controller;
+}
+
+async function deployStack(id) {
+  // Reopen the existing terminal if the same stack is still being deployed.
+  if (state.stackRun.active && state.stackRun.stackId === id && state.stackRun.verb === "up") {
+    const term = await openStackTerminal("Stack Deploy");
+    syncStackStatus(term);
+    return;
+  }
+  // Otherwise start a fresh run.
+  state.stackRun = { active: true, stackId: id, verb: "up", lines: [], error: "", done: false, controller: null };
+  const term = await openStackTerminal("Stack Deploy");
+  runStackStream(id, "up", term, "deployed");
 }
 
 async function downStack(id) {
   if (!confirm("Tear down this stack? Containers will be stopped and removed (volumes kept).")) return;
-  showStackProgress("Tearing down stack…", "");
+  if (state.stackRun.active && state.stackRun.stackId === id && state.stackRun.verb === "down") {
+    const term = await openStackTerminal("Stack Down");
+    syncStackStatus(term);
+    return;
+  }
+  state.stackRun = { active: true, stackId: id, verb: "down", lines: [], error: "", done: false, controller: null };
+  const term = await openStackTerminal("Stack Down");
+  runStackStream(id, "down", term, "torn down");
+}
+
+function syncStackStatus(term) {
+  if (state.stackRun.error) term.setStatus(state.stackRun.error, "error");
+  else if (state.stackRun.done) term.setStatus("Complete", "ok");
+  else term.setStatus("Running…", "muted");
+}
+
+function isActiveRun(id, verb) {
+  return state.stackRun.stackId === id && state.stackRun.verb === verb;
+}
+
+async function runStackStream(id, verb, term, doneVerb) {
   try {
-    const res = await fetch("/api/stacks/down/stream", {
+    const res = await fetch(`/api/stacks/${verb}/stream`, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
@@ -152,49 +281,60 @@ async function downStack(id) {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      toast(data.error || `Down failed (${res.status})`);
-      closeModal();
+      const msg = data.error || `${verb === "up" ? "Deploy" : "Down"} failed (${res.status})`;
+      if (isActiveRun(id, verb)) {
+        appendStackLine(msg);
+        state.stackRun.error = msg;
+        state.stackRun.active = false;
+        state.stackRun.done = true;
+        term.setStatus(msg, "error");
+      }
+      toast(msg);
       return;
     }
-    await streamStack(res, "torn down");
+    await streamStack(res, id, verb, term, doneVerb);
   } catch (err) {
+    if (isActiveRun(id, verb)) {
+      appendStackLine(err.message);
+      state.stackRun.error = err.message;
+      state.stackRun.active = false;
+      state.stackRun.done = true;
+      term.setStatus(err.message, "error");
+    }
     toast(err.message);
   }
 }
 
-function showStackProgress(title, logs) {
-  state.stackRun = { title, logs: logs || "", error: "" };
-  renderStackProgress();
-}
-
-function renderStackProgress() {
-  const sr = state.stackRun || { logs: "", error: "", title: "" };
-  setModalBody(
-    `<div class="step active"><span class="step-icon"><span class="spinner"></span></span><span class="step-label">${escapeHtml(sr.title)}</span></div>` +
-    (sr.error ? `<div class="error-box">✗ ${escapeHtml(sr.error)}</div>` : "") +
-    `<pre class="log-output">${escapeHtml(sr.logs || "")}</pre>` +
-    `<div style="display:flex;gap:8px;justify-content:flex-end;"><button class="ghost" data-close>${sr.error ? "Close" : "Hide"}</button></div>`
-  );
-  const log = document.querySelector(".modal-body .log-output");
-  if (log) log.scrollTop = log.scrollHeight;
-}
-
-async function streamStack(res, doneVerb) {
+async function streamStack(res, id, verb, term, doneVerb) {
   await readSSE(res, (event, data) => {
+    // Ignore stale output if the user switched to a different stack/verb.
+    if (!isActiveRun(id, verb)) return;
     if (event === "progress") {
-      state.stackRun.logs += (data.message || "") + "\n";
-      renderStackProgress();
+      appendStackLine(data.message || "");
     } else if (event === "error") {
-      state.stackRun.error = data.message || "failed";
-      state.stackRun.logs += `[error] ${state.stackRun.error}\n`;
-      renderStackProgress();
-      toast(state.stackRun.error);
+      const msg = data.message || "failed";
+      appendStackLine(`[error] ${msg}`);
+      state.stackRun.error = msg;
+      state.stackRun.active = false;
+      state.stackRun.done = true;
+      term.setStatus(msg, "error");
+      toast(msg);
     } else if (event === "done" || event === "cancelled") {
-      state.stackRun.logs += `[${event}] ${data.message || ""}\n`;
-      renderStackProgress();
-      toast(`Stack ${doneVerb}`, true);
+      const ok = event === "done";
+      appendStackLine(`[${event}] ${data.message || ""}`);
+      state.stackRun.active = false;
+      state.stackRun.done = true;
+      term.setStatus(ok ? "Complete" : "Cancelled", ok ? "ok" : "muted");
+      toast(`Stack ${doneVerb}`, ok);
       refreshSection("stacks", "containers").then(() => renderView());
-      setTimeout(() => closeModal(), 800);
+      // Only auto-close if this controller still owns the active terminal.
+      if (ok) {
+        setTimeout(() => {
+          if (state.stackRun.controller === term && document.querySelector(".modal-backdrop.stack-run-modal")) {
+            term.close();
+          }
+        }, 1200);
+      }
     }
   });
 }
