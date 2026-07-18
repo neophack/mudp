@@ -5,7 +5,7 @@
 //   - state filtering (all / running / stopped / paused)
 //   - multi-select with a batch action toolbar (start/stop/restart/remove/unpause)
 
-import { state, api, toast, refreshAll, renderView, escapeHtml, canMutate } from "../app.js";
+import { state, api, toast, refreshAll, renderView, escapeHtml, canMutate, isAdmin, displayNameForUsername } from "../app.js";
 import { openLogs } from "./logs.js";
 import { openTerminal } from "./terminal.js";
 import { openDetails } from "./details.js";
@@ -26,7 +26,7 @@ export function renderContainers() {
 
   const rows =
     list.map((c) => containerRow(c)).join("") ||
-    `<tr class="empty-row"><td colspan="6">No containers match. Adjust the filter or click “+ New Container”.</td></tr>`;
+    `<tr class="empty-row"><td colspan="${colSpan()}">No containers match. Adjust the filter or click “+ New Container”.</td></tr>`;
 
   const sel = state.containerSelection;
   const anySelected = sel.size > 0;
@@ -38,7 +38,9 @@ export function renderContainers() {
     `<div class="card"><table class="data">` +
     `<thead><tr>` +
       (canMutate() ? `<th class="chk-col"><input type="checkbox" id="selectAll" ${allChecked ? "checked" : ""}></th>` : "") +
-      `<th>Container</th><th>Status</th><th>Image</th><th>Resources</th><th class="actions">Actions</th>` +
+      `<th>Container</th>` +
+      (isAdmin() ? `<th>Owner</th>` : "") +
+      `<th>Status</th><th>Image</th><th>Resources</th><th class="actions">Actions</th>` +
     `</tr></thead>` +
     `<tbody>${rows}</tbody></table></div>`;
 
@@ -81,6 +83,13 @@ export function renderContainers() {
       renderView();
     };
   }
+}
+
+// colSpan returns the table's column count for the empty-state row: the five
+// base columns plus the optional checkbox column (mutating roles) and the
+// optional owner column (admins).
+function colSpan() {
+  return 5 + (canMutate() ? 1 : 0) + (isAdmin() ? 1 : 0);
 }
 
 // applyStateFilter narrows the container list by the active state filter. The
@@ -209,6 +218,7 @@ function containerRow(c) {
     `<tr>` +
       (canMutate() ? `<td class="chk-col"><input type="checkbox" data-cid="${escapeHtml(c.id)}" ${checked}></td>` : "") +
       `<td><div class="primary-line">${escapeHtml(name)}</div><div class="secondary-line">${conn.length ? conn.join(" <span class='sep'>·</span> ") : escapeHtml(ports)}</div></td>` +
+      (isAdmin() ? `<td><div class="secondary-line">${escapeHtml(displayNameForUsername(c.owner) || "—")}</div></td>` : "") +
       `<td>${statusBadge}</td>` +
       `<td><div class="secondary-line">${escapeHtml(c.image || c.Image || "—")}</div></td>` +
       `<td><div class="secondary-line">${num(c.memoryMb).toFixed(0)} MB mem · ${num(c.diskMb).toFixed(0)} MB disk</div>` +

@@ -592,6 +592,59 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 }
 .toast.ok { border-left-color: var(--ok); }
 
+/* ---------- Upload progress overlay ---------- */
+.upload-overlay {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 70;
+  width: min(420px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  background: var(--workspace);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+}
+.upload-title { font-size: 13px; font-weight: 600; }
+.upload-bar { margin: 8px 0 6px; }
+.upload-bar .bar-fill { background: var(--accent); }
+.upload-meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.upload-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+}
+.upload-file-row { display: flex; flex-direction: column; gap: 3px; }
+.upload-file-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.upload-file-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.upload-file-size { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+.upload-file-bar { height: 4px; background: var(--line-soft); border-radius: 2px; overflow: hidden; }
+.upload-file-bar .bar-fill { height: 100%; background: var(--accent); transition: width .2s; }
+.upload-file-meta { font-size: 11px; color: var(--ink-soft); }
+.upload-file-row.is-done .upload-file-bar .bar-fill { background: var(--ok); }
+.upload-file-row.is-done .upload-file-status { color: var(--ok); }
+.upload-file-row.is-error .upload-file-bar .bar-fill { background: var(--danger); }
+.upload-file-row.is-error .upload-file-status { color: var(--danger); }
+.upload-file-row.is-uploading .upload-file-status { color: var(--accent); }
+
 /* ---------- Modals ---------- */
 .modal-backdrop {
   position: fixed;
@@ -1127,11 +1180,12 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
   background: #fafbfc;
 }
 .netdisk-table td { padding: 7px 12px; }
-.netdisk-table col.col-name { width: auto; }
-.netdisk-table col.col-size { width: 96px; }
-.netdisk-table col.col-time { width: 150px; }
+/* Size/Modified get ~15% of the table each — about half of their previous
+   equal share of the remaining width; Name takes the rest. */
+.netdisk-table th.size-col { width: 15%; }
+.netdisk-table th.time-col { width: 15%; }
 .netdisk-table th.actions,
-.netdisk-table td.actions { width: 360px; }
+.netdisk-table td.actions { width: 150px; }
 .netdisk-table th.chk-col,
 .netdisk-table td.chk-col { width: 32px; text-align: center; }
 .netdisk-table td.chk-col input { cursor: pointer; }
@@ -1157,20 +1211,50 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
 .netdisk-name-link:hover { color: var(--accent); text-decoration: underline; }
 .netdisk-size,
 .netdisk-time { color: var(--ink-soft); font-size: 12px; white-space: nowrap; }
-.netdisk-row-actions { white-space: nowrap; text-align: right; display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
+.netdisk-row-actions { white-space: nowrap; text-align: right; display: flex; justify-content: flex-end; align-items: center; gap: 2px; }
 .netdisk-row-actions button,
 .netdisk-row-actions .ghost-link {
   min-height: 28px;
-  padding: 0 8px;
-  font-size: 12px;
+  min-width: 28px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
 }
-.netdisk-row-actions button.icon { padding: 0 6px; min-width: 28px; }
 
 @media (max-width: 860px) {
   .netdisk-toolbar { flex-direction: column; align-items: stretch; }
   .netdisk-actions { justify-content: flex-end; }
   .netdisk-table th:nth-child(3),
   .netdisk-table td:nth-child(3) { display: none; }
+}
+
+/* ---------- Netdisk share tables (ellipsis for long links/paths) ---------- */
+.netdisk-shares,
+.netdisk-admin-shares { table-layout: fixed; }
+/* Name column flexes; the others are fixed so the table never overflows. */
+.netdisk-shares .share-name-col,
+.netdisk-admin-shares .share-name-col { width: auto; }
+.netdisk-shares .share-link-col,
+.netdisk-admin-shares .share-link-col { width: 30%; }
+.netdisk-shares .share-expires-col,
+.netdisk-admin-shares .share-expires-col { width: 96px; }
+.netdisk-shares .share-access-col,
+.netdisk-admin-shares .share-access-col { width: 76px; }
+.netdisk-admin-shares .share-owner-col { width: 130px; }
+/* Clip long names/path lists with an ellipsis instead of overflowing the row. */
+.share-name-cell { min-width: 0; overflow: hidden; }
+.share-name-cell .primary-line,
+.share-name-cell .secondary-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-link-cell { min-width: 0; }
+.share-link-cell a {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .share-page {
@@ -1438,6 +1522,23 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
   font-size: 13px;
   font-weight: 500;
 }
+.picker-row.disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+.picker-row.disabled:hover {
+  background: transparent;
+}
+.picker-empty {
+  padding: 40px 22px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+.picker-modal .modal-foot {
+  justify-content: space-between;
+  align-items: center;
+}
 
 @media (max-width: 860px) {
   .picker-layout {
@@ -1446,6 +1547,94 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
   .picker-tree {
     display: none;
   }
+}
+
+/* ---------- Share modal (Baidu-style) ---------- */
+/* Compact two-column form (label / control) with a segmented expiry picker,
+   optional extraction code, and a two-step flow that ends showing the link
+   inline so it can be copied without leaving the dialog. */
+.share-modal .modal { width: min(520px, calc(100vw - 48px)); }
+.share-modal .modal-head { gap: 12px; padding: 16px 20px; }
+.share-modal .modal-head h2 { font-size: 15px; }
+.share-modal .share-head-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+/* The filename hint can be a long path — clamp to one line with an ellipsis
+   and surface the full text via the native title tooltip on hover. */
+.share-modal .share-name-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.share-modal .modal-body.share-form { padding: 18px 20px; gap: 16px; }
+.share-modal .modal-body.share-result { padding: 18px 20px; gap: 12px; }
+.share-form .share-row,
+.share-link-row {
+  display: grid;
+  grid-template-columns: 116px 1fr;
+  align-items: center;
+  gap: 14px;
+}
+.share-row-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.share-seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  width: fit-content;
+  background: #fff;
+}
+.share-seg-btn {
+  min-height: 32px;
+  padding: 0 14px;
+  background: transparent;
+  color: var(--ink-soft);
+  border: 0;
+  border-radius: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  border-right: 1px solid var(--line);
+  transition: background .12s, color .12s;
+}
+.share-seg-btn:last-child { border-right: 0; }
+.share-seg-btn:hover { background: var(--line-soft); color: var(--ink); }
+.share-seg-btn.active { background: var(--accent); color: #fff; }
+
+.share-code-row { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.share-code-field { display: flex; gap: 8px; align-items: center; }
+.share-code-field.is-hidden { display: none; }
+.share-code-field input {
+  width: 110px;
+  min-height: 32px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  font-weight: 600;
+  text-align: center;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+/* Result (link) step */
+.share-copy-chip { width: 100%; padding: 5px 6px 5px 12px; }
+.share-copy-chip code {
+  font-size: 12px;
+  max-width: 100%;
+  flex: 1;
+  min-width: 0;
+}
+.share-link-row .share-row-label { align-self: center; }
+.share-copy-all {
+  width: fit-content;
+  margin-top: 4px;
+}
+
+@media (max-width: 560px) {
+  .share-form .share-row,
+  .share-link-row { grid-template-columns: 1fr; gap: 6px; }
+  .share-code-row { align-items: stretch; }
 }
 
 /* ---------------- Hardware monitoring page ---------------- */

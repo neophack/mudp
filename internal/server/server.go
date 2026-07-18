@@ -640,7 +640,11 @@ func (a *App) setImageGroups(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.record(r, "image.groups", fmt.Sprintf("image#%d", req.ImageID))
+	name := fmt.Sprintf("image#%d", req.ImageID)
+	if img, err := a.db.ImageByID(req.ImageID); err == nil {
+		name = img.DisplayName
+	}
+	a.record(r, "image.groups", name)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -915,6 +919,9 @@ func (a *App) containerAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "read-only role cannot modify containers")
 		return
 	}
+	// Resolve the audit target before the action: after a remove the container
+	// (and its name/owner labels) no longer exists.
+	target := a.containerAuditTarget(r.Context(), req.ID)
 	if err := a.docker.Action(r.Context(), req.ID, req.Action); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -926,8 +933,22 @@ func (a *App) containerAction(w http.ResponseWriter, r *http.Request) {
 		// Synchronously refresh so the next list request reflects the new state.
 		a.refreshRuntimeCache(r.Context())
 	}
-	a.record(r, "container."+req.Action, req.ID)
+	a.record(r, "container."+req.Action, target)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// containerAuditTarget renders a container for audit logs as "name (owner)",
+// resolving the owning account to its display name. It falls back to the raw
+// id when the container is missing or not mudp-managed.
+func (a *App) containerAuditTarget(ctx context.Context, id string) string {
+	name := a.docker.ContainerName(ctx, id)
+	if name == "" {
+		name = id
+	}
+	if owner := a.userDisplayName(a.docker.ManagedOwner(ctx, id)); owner != "" {
+		return fmt.Sprintf("%s (%s)", name, owner)
+	}
+	return name
 }
 
 // containerOwnedBy reports whether the given user may touch a container. Admins
@@ -1020,6 +1041,7 @@ func (a *App) containerBatch(w http.ResponseWriter, r *http.Request) {
 		Error string `json:"error"`
 	}
 	var ok, failed []string
+	var okTargets []string
 	var failures []batchFailure
 	for _, id := range req.IDs {
 		id = strings.TrimSpace(id)
@@ -1033,12 +1055,15 @@ func (a *App) containerBatch(w http.ResponseWriter, r *http.Request) {
 			failed = append(failed, id)
 			continue
 		}
+		// Resolve name/owner before the action: a removed container is gone.
+		target := a.containerAuditTarget(r.Context(), id)
 		if err := a.docker.Action(r.Context(), id, req.Action); err != nil {
 			failures = append(failures, batchFailure{ID: id, Error: err.Error()})
 			failed = append(failed, id)
 			continue
 		}
 		ok = append(ok, id)
+		okTargets = append(okTargets, target)
 	}
 	if req.Action == "remove" && len(ok) > 0 {
 		a.evictCachedContainers(ok...)
@@ -1048,7 +1073,7 @@ func (a *App) containerBatch(w http.ResponseWriter, r *http.Request) {
 		a.refreshRuntimeCache(r.Context())
 	}
 	if len(ok) > 0 {
-		a.record(r, "container.batch."+req.Action, fmt.Sprintf("%d container(s)", len(ok)))
+		a.record(r, "container.batch."+req.Action, strings.Join(okTargets, ", "))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": ok, "failed": failed, "failures": failures})
 }
@@ -1358,7 +1383,7 @@ func (a *App) setUserGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	after, _ := a.db.UserByID(req.UserID)
 	if after != nil {
-		a.record(r, "user.groups", after.Username)
+		a.record(r, "user.groups", targetName(after))
 		if wasPending && !isPending(after) {
 			a.notifyUserApproved(after.ID, after.Groups)
 		}
@@ -1472,7 +1497,7 @@ func (a *App) containerUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.record(r, "container.update", req.ID)
+	a.record(r, "container.update", a.containerAuditTarget(r.Context(), req.ID))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

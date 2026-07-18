@@ -34,6 +34,26 @@ export async function fetchNotifications() {
   }
 }
 
+// updateNotificationBadge refreshes only the bell's unread-count badge in
+// place, so the auto-refresh loop can surface new notifications without a
+// full shell re-render.
+export function updateNotificationBadge() {
+  const bell = document.querySelector("#notificationBell");
+  if (!bell) return;
+  const count = state.unreadCount || 0;
+  let dot = bell.querySelector(".notification-dot");
+  if (count > 0) {
+    if (!dot) {
+      dot = document.createElement("span");
+      dot.className = "notification-dot";
+      bell.appendChild(dot);
+    }
+    dot.textContent = count > 99 ? "99+" : String(count);
+  } else if (dot) {
+    dot.remove();
+  }
+}
+
 export function openNotificationsModal() {
   const items = state.notifications || [];
   const body = items.length

@@ -546,15 +546,16 @@ func (a *App) netdiskShareCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	passwordHash := ""
-	if strings.TrimSpace(req.Password) != "" {
-		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	password := strings.TrimSpace(req.Password)
+	if password != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		passwordHash = string(hash)
 	}
-	if err := a.db.CreateNetdiskShare(u.ID, token, name, clean, expiresAt, req.Permanent, passwordHash); err != nil {
+	if err := a.db.CreateNetdiskShare(u.ID, token, name, clean, expiresAt, req.Permanent, passwordHash, password); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -604,37 +605,35 @@ func (a *App) netdiskSharePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reqPath := r.URL.Query().Get("path")
-	if reqPath != "" && !shareContains(share.Paths, reqPath) {
+	if reqPath == "" {
+		// Share root: list each shared path as a flat top-level row. A shared
+		// file is shown directly (no parent folder/breadcrumb); only a shared
+		// folder appears as a navigable folder. This keeps "share a file inside
+		// a folder" from exposing the folder path or its other contents.
+		writeJSON(w, http.StatusOK, map[string]any{"share": share, "items": flatShareRootItems(ownerRoot, share.Paths), "readOnly": true, "path": ""})
+		return
+	}
+	// Browsing into a folder: it must itself be shared or lead to a shared
+	// item (e.g. the parent of a shared file). Direct files are not browseable.
+	if !shareVisible(share.Paths, reqPath) {
 		writeErr(w, http.StatusForbidden, "path is not in this share")
 		return
 	}
-	listDir := ownerRoot
-	listRel := ""
-	if reqPath != "" {
-		full, rel, err := cleanUserPath(ownerRoot, reqPath)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		info, err := os.Stat(full)
-		if err != nil {
-			writeErr(w, http.StatusNotFound, err.Error())
-			return
-		}
-		if !info.IsDir() {
-			// For a single shared file, still list its containing directory so the
-			// UI can render it consistently.
-			listDir = filepath.Dir(full)
-			listRel = filepath.Dir(rel)
-			if listRel == "." {
-				listRel = ""
-			}
-		} else {
-			listDir = full
-			listRel = rel
-		}
+	full, rel, err := cleanUserPath(ownerRoot, reqPath)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	entries, err := os.ReadDir(listDir)
+	info, err := os.Stat(full)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if !info.IsDir() {
+		writeErr(w, http.StatusBadRequest, "path is not a folder")
+		return
+	}
+	entries, err := os.ReadDir(full)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -645,21 +644,22 @@ func (a *App) netdiskSharePublic(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		li, err := os.Lstat(filepath.Join(listDir, entry.Name()))
+		li, err := os.Lstat(filepath.Join(full, entry.Name()))
 		if err != nil || li.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
-		p := filepath.ToSlash(filepath.Join(listRel, entry.Name()))
-		if listRel == "." || listRel == "" {
+		p := filepath.ToSlash(filepath.Join(rel, entry.Name()))
+		if rel == "." || rel == "" {
 			p = entry.Name()
 		}
-		// When listing the share root, only show the shared top-level items.
-		if reqPath == "" && !shareContains(share.Paths, p) {
+		// Inside a browsed folder, show only entries that are shared themselves
+		// or that lead to a shared item, so unshared siblings stay hidden.
+		if !shareVisible(share.Paths, p) {
 			continue
 		}
 		items = append(items, fileItem{Name: entry.Name(), Path: p, Dir: entry.IsDir(), Size: info.Size(), ModTime: info.ModTime().Format(time.RFC3339)})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"share": share, "items": items, "readOnly": true, "path": filepath.ToSlash(listRel)})
+	writeJSON(w, http.StatusOK, map[string]any{"share": share, "items": items, "readOnly": true, "path": filepath.ToSlash(rel)})
 }
 
 func (a *App) netdiskSharePage(w http.ResponseWriter, r *http.Request) {
@@ -1117,11 +1117,67 @@ func nextFreeNameWithPlanned(dir, name string, planned map[string]bool) string {
 	return candidate
 }
 
+// shareContains reports whether req is itself shared, or is a descendant of a
+// shared path. It is the strict check used for downloads and saves so a folder
+// shown for navigation can never be zipped wholesale when only some of its
+// children were shared.
 func shareContains(paths []string, req string) bool {
 	req = filepath.ToSlash(strings.TrimPrefix(filepath.Clean("/"+req), "/"))
 	for _, p := range paths {
 		p = filepath.ToSlash(strings.TrimPrefix(filepath.Clean("/"+p), "/"))
 		if req == p || strings.HasPrefix(req, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// flatShareRootItems builds the top-level listing for a share. Each shared path
+// is shown by its base name so a file shared from inside a folder appears
+// directly, without exposing the folder or its other contents. Shared folders
+// keep dir=true so the UI renders them as navigable entries.
+func flatShareRootItems(ownerRoot string, paths []string) []fileItem {
+	items := make([]fileItem, 0, len(paths))
+	for _, sp := range paths {
+		full, _, err := cleanUserPath(ownerRoot, sp)
+		if err != nil {
+			continue
+		}
+		info, err := os.Stat(full)
+		if err != nil || isSymlink(full) {
+			continue
+		}
+		items = append(items, fileItem{
+			Name:    filepath.Base(sp),
+			Path:    filepath.ToSlash(sp),
+			Dir:     info.IsDir(),
+			Size:    info.Size(),
+			ModTime: info.ModTime().Format(time.RFC3339),
+		})
+	}
+	return items
+}
+
+// shareVisible reports whether req may be shown in a share listing. Unlike
+// shareContains it also accepts an ancestor folder of a shared path: sharing
+// sub/a.txt must reveal the "sub" folder so the visitor can reach the file.
+// Sibling files that were never shared are never visible.
+func shareVisible(paths []string, req string) bool {
+	req = filepath.ToSlash(strings.TrimPrefix(filepath.Clean("/"+req), "/"))
+	if req == "" {
+		return false
+	}
+	for _, p := range paths {
+		p = filepath.ToSlash(strings.TrimPrefix(filepath.Clean("/"+p), "/"))
+		if req == p {
+			return true
+		}
+		// req is a descendant of a shared path.
+		if strings.HasPrefix(req, p+"/") {
+			return true
+		}
+		// req is an ancestor folder that leads to a shared path.
+		if strings.HasPrefix(p, req+"/") {
 			return true
 		}
 	}

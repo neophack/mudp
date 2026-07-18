@@ -6,6 +6,7 @@
 
 import { api, toast, canMutate, state } from "../app.js";
 import { showModalNoShell } from "./ui.js";
+import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -217,19 +218,38 @@ async function doUpload(fileList) {
   const btns = $$(".files-toolbar button");
   btns.forEach((b) => (b.disabled = true));
   let ok = 0;
+  // Files upload sequentially, one request per file. The overlay shows overall
+  // progress: completed bytes plus the in-flight file's fraction of its size.
+  const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+  let baseBytes = 0;
+  const overlay = showUploadOverlay(`Uploading ${files.length} file(s)…`);
   try {
-    for (const file of files) {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      overlay.setLabel(`Uploading ${i + 1}/${files.length}: ${file.name}`);
       const fd = new FormData();
       fd.append("name", session.fullName);
       fd.append("path", session.path || "");
       fd.append("files", file, file.name);
-      const headers = state.csrfToken ? { "X-CSRF-Token": state.csrfToken } : undefined;
-      const res = await fetch("/api/volumes/files/upload", { method: "POST", credentials: "same-origin", headers, body: fd });
-      if (res.ok) ok++;
-      else {
-        const data = await res.json().catch(() => ({}));
-        toast(data.error || `Upload failed (${res.status})`);
+      try {
+        await uploadWithProgress("/api/volumes/files/upload", fd, {
+          csrfToken: state.csrfToken,
+          onProgress: (p) => {
+            const frac = p.total > 0 ? p.loaded / p.total : 0;
+            const loaded = baseBytes + frac * (file.size || 0);
+            overlay.update({
+              loaded,
+              total: totalBytes,
+              percent: totalBytes > 0 ? Math.min(100, Math.round((loaded / totalBytes) * 100)) : 0,
+              speedBps: p.speedBps,
+            });
+          },
+        });
+        ok++;
+      } catch (err) {
+        toast(err.message);
       }
+      baseBytes += file.size || 0;
     }
     toast(`Uploaded ${ok} file(s)`, true);
     await load();
@@ -238,6 +258,7 @@ async function doUpload(fileList) {
     toast(err.message);
     setStatus(err.message);
   } finally {
+    overlay.close();
     btns.forEach((b) => (b.disabled = false));
     const input = $("#volUploadInput");
     if (input) input.value = "";

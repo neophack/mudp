@@ -44,6 +44,7 @@ type Container struct {
 	ID               string            `json:"id"`
 	Name             string            `json:"name"`
 	FullName         string            `json:"fullName"`
+	Owner            string            `json:"owner,omitempty"`
 	Image            string            `json:"image"`
 	State            string            `json:"state"`
 	Status           string            `json:"status"`
@@ -870,7 +871,7 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 			}
 		}
 		out = append(out, Container{
-			ID: c.ID, Name: display, FullName: full, Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
+			ID: c.ID, Name: display, FullName: full, Owner: c.Labels[UserLabel], Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
 			HTTP8080URL: httpURL(c.Ports, 8080), HTTP80URL: httpURL(c.Ports, 80),
 		})

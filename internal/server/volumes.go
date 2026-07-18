@@ -116,7 +116,7 @@ func (a *App) volumePrune(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.record(r, "volume.prune", u.Username)
+	a.record(r, "volume.prune", targetName(u))
 	writeJSON(w, http.StatusOK, map[string]any{"removed": count, "bytesFreed": bytes})
 }
 

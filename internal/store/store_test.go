@@ -521,6 +521,77 @@ func TestMCPTokenCRUD(t *testing.T) {
 	}
 }
 
+// TestMCPTokenListOrphanedOwner is a regression test: legacy databases can hold
+// tokens whose owner was deleted without cascading (foreign_keys was only set
+// on one pooled connection). Listing must tolerate the NULL owner, and the
+// cleanup migration must remove the orphans.
+func TestMCPTokenListOrphanedOwner(t *testing.T) {
+	db := newTestDB(t)
+	// Pin the pool to one connection so the pragma below applies to every
+	// following statement (SQLite pragmas are per-connection).
+	db.SetMaxOpenConns(1)
+	if err := db.CreateUser("bob", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	bob, err := db.Authenticate("bob", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateMCPToken(bob.ID, "container-id-9", "dev", "claude", "tok-orphan", "orphan-hash", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Recreate a legacy orphan: with foreign_keys off, deleting the user does
+	// not cascade to mcp_tokens.
+	if _, err := db.Exec(`pragma foreign_keys = off`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteUser(bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`pragma foreign_keys = on`); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := db.MCPTokensForUser(1, true)
+	if err != nil {
+		t.Fatalf("admin list with orphaned token: %v", err)
+	}
+	if len(all) != 1 || all[0].Owner != "" {
+		t.Fatalf("expected one token with empty owner, got %+v", all)
+	}
+	byContainer, err := db.MCPTokensForContainer(1, true, "container-id-9")
+	if err != nil || len(byContainer) != 1 {
+		t.Fatalf("byContainer with orphaned token: %v (len=%d)", err, len(byContainer))
+	}
+
+	// The cleanup migration deletes orphaned tokens.
+	if err := migrateDeleteOrphanedMCPTokens(db); err != nil {
+		t.Fatal(err)
+	}
+	left, err := db.MCPTokensForUser(1, true)
+	if err != nil || len(left) != 0 {
+		t.Fatalf("orphan cleanup: %v (len=%d)", err, len(left))
+	}
+
+	// With foreign_keys enabled (via the DSN), deleting a user cascades.
+	if err := db.CreateUser("charlie", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	charlie, err := db.Authenticate("charlie", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateMCPToken(charlie.ID, "c2", "dev2", "bot", "tok-casc", "casc-hash", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteUser(charlie.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.MCPTokenByHash("casc-hash"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("token should cascade-delete with its owner, got err=%v", err)
+	}
+}
+
 // TestMCPTokenExpiry verifies Expired() and the expiry-stamp path.
 func TestMCPTokenExpiry(t *testing.T) {
 	db := newTestDB(t)
@@ -688,7 +759,7 @@ func TestNetdiskSharePassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, _ := db.Authenticate("shareowner", "pw")
-	if err := db.CreateNetdiskShare(u.ID, "tok1", "files", []string{"a.txt"}, "", true, "hashed-password"); err != nil {
+	if err := db.CreateNetdiskShare(u.ID, "tok1", "files", []string{"a.txt"}, "", true, "hashed-password", "secret"); err != nil {
 		t.Fatal(err)
 	}
 	s, err := db.NetdiskShare("tok1")
@@ -700,6 +771,18 @@ func TestNetdiskSharePassword(t *testing.T) {
 	}
 	if s.PasswordHash != "hashed-password" {
 		t.Errorf("PasswordHash = %q, want %q", s.PasswordHash, "hashed-password")
+	}
+	// The public single-fetch path must not expose the cleartext code...
+	if s.Password != "" {
+		t.Errorf("Password = %q on single fetch, want empty", s.Password)
+	}
+	// ...while the owner/admin list queries expose it for later viewing.
+	items, err := db.NetdiskShares(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Password != "secret" {
+		t.Errorf("NetdiskShares Password = %q, want %q", items[0].Password, "secret")
 	}
 }
 

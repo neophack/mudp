@@ -14,7 +14,7 @@ import (
 func (a *App) record(r *http.Request, action, target string) {
 	actor := "anonymous"
 	if u := currentUser(r); u != nil {
-		actor = u.Username
+		actor = targetName(u)
 	}
 	a.db.Audit(actor, action, target)
 }
@@ -112,7 +112,7 @@ func (a *App) approveUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.record(r, "user.approve", u.Username)
+	a.record(r, "user.approve", targetName(u))
 	a.notifyUserApproved(req.UserID, []string{store.DefaultUserGroup})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -189,9 +189,26 @@ func decodeJSON(r *http.Request, dst any) error {
 	return nil
 }
 
+// targetName renders a user for audit logs: the display name when one is set
+// (Feishu accounts carry their open_id as username), otherwise the username.
 func targetName(u *store.User) string {
 	if u == nil {
 		return ""
 	}
+	if u.DisplayName != "" {
+		return u.DisplayName
+	}
 	return u.Username
+}
+
+// userDisplayName resolves a username to its audit display name. Unknown or
+// deleted users keep their raw username.
+func (a *App) userDisplayName(username string) string {
+	if username == "" {
+		return ""
+	}
+	if u, err := a.db.UserByUsername(username); err == nil && u != nil {
+		return targetName(u)
+	}
+	return username
 }

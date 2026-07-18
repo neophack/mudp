@@ -117,10 +117,24 @@ type NetdiskShare struct {
 	Expired      bool     `json:"expired"`
 	PasswordHash string   `json:"-"`
 	HasPassword  bool     `json:"hasPassword"`
+	// Password holds the cleartext extraction code so the owner (or an admin)
+	// can view it again later, mirroring mcp_tokens.token_plaintext. It is only
+	// populated by the owner/admin list queries, never on the public share path.
+	Password string `json:"password,omitempty"`
 }
 
 func Open(path string) (*DB, error) {
-	db, err := sql.Open("sqlite", path)
+	// Per-connection pragmas must go in the DSN: database/sql pools up to
+	// MaxOpenConns connections and a one-shot Exec would apply them only to
+	// whichever connection ran it. modernc.org/sqlite applies each _pragma to
+	// every connection it opens. Without this, foreign_keys (and with it
+	// `on delete cascade`) silently stays off on most pooled connections.
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	dsn := path + sep + "_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=journal_mode(WAL)&_pragma=wal_autocheckpoint(1000)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -128,15 +142,6 @@ func Open(path string) (*DB, error) {
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(0)
 	if err := db.Ping(); err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec(`
-		pragma journal_mode = wal;
-		pragma foreign_keys = on;
-		pragma busy_timeout = 5000;
-		pragma synchronous = normal;
-		pragma wal_autocheckpoint = 1000;
-	`); err != nil {
 		return nil, err
 	}
 	return &DB{DB: db}, nil
@@ -167,7 +172,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 18
+const schemaVersion = 20
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -202,6 +207,8 @@ var migrations = []migration{
 	{16, "add unique port_prefix index", migrateAddPortPrefixUniqueIndex},
 	{17, "add users.display_name", migrateAddUserDisplayName},
 	{18, "create notifications table", migrateCreateNotifications},
+	{19, "delete orphaned mcp_tokens", migrateDeleteOrphanedMCPTokens},
+	{20, "add netdisk_shares.password", migrateAddSharePassword},
 }
 
 func migrateCreateInitialTables(db executor) error {
@@ -286,7 +293,8 @@ func migrateCreateInitialTables(db executor) error {
 			created_at text not null,
 			expires_at text not null default '',
 			permanent integer not null default 0,
-			password_hash text not null default ''
+			password_hash text not null default '',
+			password text not null default ''
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -362,6 +370,13 @@ func migrateAddSharePasswordHash(db executor) error {
 	return execIgnoring(db, `alter table netdisk_shares add column password_hash text not null default ''`, sqliteDuplicateColumn)
 }
 
+// migrateAddSharePassword stores the cleartext extraction code alongside its
+// bcrypt hash so the share owner (or an admin) can view the code again later;
+// password_hash remains for verifying incoming requests.
+func migrateAddSharePassword(db executor) error {
+	return execIgnoring(db, `alter table netdisk_shares add column password text not null default ''`, sqliteDuplicateColumn)
+}
+
 func migrateAddImagePreset(db executor) error {
 	return execIgnoring(db, `alter table images add column preset_json text not null default ''`, sqliteDuplicateColumn)
 }
@@ -400,6 +415,15 @@ func migrateCreateMCPTokens(db executor) error {
 // creation was never persisted); new tokens store the cleartext.
 func migrateAddMCPTokenPlaintext(db executor) error {
 	return execIgnoring(db, `alter table mcp_tokens add column token_plaintext text not null default ''`, sqliteDuplicateColumn)
+}
+
+// migrateDeleteOrphanedMCPTokens removes tokens whose owning user no longer
+// exists. Such orphans accumulated while foreign_keys was only enabled on one
+// pooled connection (so `on delete cascade` did not fire); they also crash the
+// token list query, which LEFT JOINs users for the owner name.
+func migrateDeleteOrphanedMCPTokens(db executor) error {
+	_, err := db.Exec(`delete from mcp_tokens where owner_id not in (select id from users)`)
+	return err
 }
 
 // migrateAddPortPrefixUniqueIndex adds a partial unique index so that two users
@@ -800,6 +824,22 @@ func (db *DB) ImagesForUser(userID int64, admin bool) ([]Image, error) {
 		imgs = append(imgs, img)
 	}
 	return imgs, rows.Err()
+}
+
+// ImageByID returns the image with the given id, or an error when absent.
+func (db *DB) ImageByID(id int64) (Image, error) {
+	var img Image
+	var presetJSON string
+	err := db.QueryRow(`select id,display_name,docker_ref,source_ref,created_at,preset_json from images where id=?`, id).
+		Scan(&img.ID, &img.DisplayName, &img.DockerRef, &img.SourceRef, &img.CreatedAt, &presetJSON)
+	if err != nil {
+		return Image{}, err
+	}
+	if p, err := DecodePreset(presetJSON); err == nil {
+		img.Preset = p
+	}
+	img.Groups = db.ImageGroupNames(img.ID)
+	return img, nil
 }
 
 func (db *DB) SetImageGroups(imageID int64, groupIDs []int64) error {
@@ -1423,7 +1463,7 @@ func (db *DB) ResourceSamples(userID int64, admin bool, since time.Time) ([]Reso
 	return out, rows.Err()
 }
 
-func (db *DB) CreateNetdiskShare(ownerID int64, token, name string, paths []string, expiresAt string, permanent bool, passwordHash string) error {
+func (db *DB) CreateNetdiskShare(ownerID int64, token, name string, paths []string, expiresAt string, permanent bool, passwordHash, password string) error {
 	raw, err := json.Marshal(paths)
 	if err != nil {
 		return err
@@ -1432,8 +1472,8 @@ func (db *DB) CreateNetdiskShare(ownerID int64, token, name string, paths []stri
 	if permanent {
 		permanentInt = 1
 	}
-	_, err = db.Exec(`insert into netdisk_shares(token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash) values(?,?,?,?,?,?,?,?)`,
-		token, ownerID, strings.TrimSpace(name), string(raw), time.Now().Format(time.RFC3339), expiresAt, permanentInt, passwordHash)
+	_, err = db.Exec(`insert into netdisk_shares(token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash, password) values(?,?,?,?,?,?,?,?,?)`,
+		token, ownerID, strings.TrimSpace(name), string(raw), time.Now().Format(time.RFC3339), expiresAt, permanentInt, passwordHash, password)
 	return err
 }
 
@@ -1457,12 +1497,12 @@ func (db *DB) NetdiskShare(token string) (NetdiskShare, error) {
 }
 
 func (db *DB) NetdiskShares(ownerID int64) ([]NetdiskShare, error) {
-	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash from netdisk_shares where owner_id=? order by created_at desc`, ownerID)
+	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash, password from netdisk_shares where owner_id=? order by created_at desc`, ownerID)
 	return scanNetdiskShares(rows, err)
 }
 
 func (db *DB) AllNetdiskShares() ([]NetdiskShare, error) {
-	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash from netdisk_shares order by created_at desc`)
+	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash, password from netdisk_shares order by created_at desc`)
 	items, err := scanNetdiskShares(rows, err)
 	if err != nil {
 		return nil, err
@@ -1485,7 +1525,7 @@ func scanNetdiskShares(rows *sql.Rows, err error) ([]NetdiskShare, error) {
 		var s NetdiskShare
 		var raw string
 		var permanent int
-		if err := rows.Scan(&s.Token, &s.OwnerID, &s.Name, &raw, &s.CreatedAt, &s.ExpiresAt, &permanent, &s.PasswordHash); err != nil {
+		if err := rows.Scan(&s.Token, &s.OwnerID, &s.Name, &raw, &s.CreatedAt, &s.ExpiresAt, &permanent, &s.PasswordHash, &s.Password); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(raw), &s.Paths)

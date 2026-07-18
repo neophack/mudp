@@ -3,11 +3,15 @@
 import { state, api, isAdmin, displayName, displayNameForUsername } from "../app.js";
 
 export async function renderUsage() {
+  const tabAtEntry = state.tab;
   const [history, processes, usage] = await Promise.all([
     api("/api/resources/history").catch(() => []),
     isAdmin() ? api("/api/admin/processes").catch(() => []) : Promise.resolve([]),
     isAdmin() ? api("/api/admin/usage").catch(() => state.usage || []) : Promise.resolve(null),
   ]);
+  // The user switched tabs mid-fetch: drop the result instead of painting
+  // usage over the newly active view.
+  if (state.tab !== tabAtEntry) return;
   if (isAdmin() && usage) {
     state.usage = usage;
   }

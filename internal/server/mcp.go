@@ -233,10 +233,16 @@ func (a *App) mcpTokenDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid token id")
 		return
 	}
+	// Capture the token's container/label before deletion so the audit entry
+	// says what was revoked (matching the mcp.token.create target format).
+	target := ""
+	if t, err := a.db.MCPTokenByID(id); err == nil {
+		target = t.ContainerName + "#" + t.Label
+	}
 	if err := a.db.DeleteMCPToken(u.ID, u.Role == "admin", id); err != nil {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	a.record(r, "mcp.token.delete", "")
+	a.record(r, "mcp.token.delete", target)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

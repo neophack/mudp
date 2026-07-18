@@ -198,7 +198,7 @@ func (a *App) imagePrune(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.record(r, "image.prune", u.Username)
+	a.record(r, "image.prune", targetName(u))
 	writeJSON(w, http.StatusOK, map[string]any{"removed": count, "bytesFreed": bytes})
 }
 

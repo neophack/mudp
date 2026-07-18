@@ -1,7 +1,18 @@
 import { state, api, toast, escapeHtml, fmtBytes, isAdmin, canMutate, displayNameForUsername } from "../app.js";
+import { showModalNoShell, closeModal } from "./ui.js";
+import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
 
 export async function renderNetdisk() {
-  $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">Loading files...</p></div></div>`;
+  const tabAtEntry = state.tab;
+  // Only the first load shows a placeholder; background refreshes keep the
+  // current content until the new data arrives (no white flash).
+  const firstLoad = !$("#netdiskCard");
+  if (firstLoad) {
+    $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">Loading files...</p></div></div>`;
+  }
+  const prevSig = state.netdisk?.sig;
+  const prevSelSig = state.netdisk?.selSig;
+  let sig;
   try {
     const [list, quota, shares, adminShares] = await Promise.all([
       api(`/api/netdisk?path=${encodeURIComponent(state.netdisk.path || "")}`),
@@ -9,6 +20,7 @@ export async function renderNetdisk() {
       api("/api/netdisk/shares").catch(() => []),
       isAdmin() ? api("/api/admin/netdisk/shares").catch(() => []) : Promise.resolve([]),
     ]);
+    sig = JSON.stringify([list.path, list.items, quota, shares, adminShares]);
     state.netdisk = {
       path: list.path || "",
       items: list.items || [],
@@ -16,11 +28,25 @@ export async function renderNetdisk() {
       shares,
       adminShares,
       selected: state.netdisk?.selected || new Set(),
+      sig,
     };
   } catch (err) {
-    $("#view").innerHTML = `<div class="card"><div class="card-body"><div class="error-box">${escapeHtml(err.message)}</div></div></div>`;
+    // A failed background refresh keeps the previous content; only the first
+    // load surfaces the error.
+    if (firstLoad) {
+      $("#view").innerHTML = `<div class="card"><div class="card-body"><div class="error-box">${escapeHtml(err.message)}</div></div></div>`;
+    }
     return;
   }
+  // The user switched tabs mid-fetch: drop the result instead of painting
+  // netdisk over the newly active view.
+  if (state.tab !== tabAtEntry) return;
+  // Nothing changed — neither the listing nor the checkbox selection: leave
+  // the DOM untouched so scroll position, selections and focus survive quiet
+  // background refreshes.
+  const selSig = JSON.stringify([...state.netdisk.selected].sort());
+  if (!firstLoad && sig === prevSig && selSig === prevSelSig) return;
+  state.netdisk.selSig = selSig;
 
   const mutable = canMutate();
   const rows = sortedItems(state.netdisk.items).map((f) => fileRow(f, mutable)).join("") ||
@@ -55,13 +81,13 @@ export async function renderNetdisk() {
         `</div>` +
         `<table class="data netdisk-table"><thead><tr>` +
           (mutable ? `<th class="chk-col"><input type="checkbox" id="selectAllFiles"></th>` : "") +
-          `<th>Name</th><th>Size</th><th>Modified</th><th class="actions">Actions</th>` +
+          `<th>Name</th><th class="size-col">Size</th><th class="time-col">Modified</th><th class="actions">Actions</th>` +
         `</tr></thead><tbody>${rows}</tbody></table>` +
       `</div>` +
       `<div class="card"><div class="card-head"><h2>External Links</h2></div>` +
-      `<table class="data"><thead><tr><th>Name</th><th>Link</th><th>Expires</th><th>Access</th><th class="actions">Actions</th></tr></thead><tbody>${shareRows(state.netdisk.shares || [])}</tbody></table></div>` +
+      `<table class="data netdisk-shares"><thead><tr><th class="share-name-col">Name</th><th class="share-link-col">Link</th><th class="share-expires-col">Expires</th><th class="share-access-col">Access</th><th class="actions">Actions</th></tr></thead><tbody>${shareRows(state.netdisk.shares || [])}</tbody></table></div>` +
       (isAdmin() ? `<div class="card"><div class="card-head"><h2>All External Links</h2><div class="head-tools"><label class="check compact-check" for="selectAllShares"><input type="checkbox" id="selectAllShares"><span>Select all</span></label><button class="danger" id="deleteSelectedShares">Delete Selected</button></div></div>` +
-      `<table class="data"><thead><tr><th class="chk-col"></th><th>Owner</th><th>Name</th><th>Link</th><th>Expires</th><th>Access</th></tr></thead><tbody>${adminShareRows(state.netdisk.adminShares || [])}</tbody></table></div>` : "") +
+      `<table class="data netdisk-admin-shares"><thead><tr><th class="chk-col"></th><th class="share-owner-col">Owner</th><th class="share-name-col">Name</th><th class="share-link-col">Link</th><th class="share-expires-col">Expires</th><th class="share-access-col">Access</th></tr></thead><tbody>${adminShareRows(state.netdisk.adminShares || [])}</tbody></table></div>` : "") +
     `</div>`;
 
   bindNetdiskEvents(mutable);
@@ -133,17 +159,13 @@ function bindNetdiskEvents(mutable) {
       btn.onclick = async () => renameItem(btn.dataset.ren, btn.dataset.name);
     });
     document.querySelectorAll("[data-copy]").forEach((btn) => {
-      btn.onclick = async () => copyItems([{ from: btn.dataset.copy, to: state.netdisk.path }]);
+      btn.onclick = () => openFolderPicker(false, [btn.dataset.copy]);
     });
     document.querySelectorAll("[data-move]").forEach((btn) => {
-      btn.onclick = async () => {
-        const dest = prompt("Move to folder", state.netdisk.path || "");
-        if (dest == null) return;
-        await moveItems([{ from: btn.dataset.move, to: dest }]);
-      };
+      btn.onclick = () => openFolderPicker(true, [btn.dataset.move]);
     });
     document.querySelectorAll("[data-share]").forEach((btn) => {
-      btn.onclick = async () => createShare([btn.dataset.share], btn.dataset.name);
+      btn.onclick = () => openShareModal([btn.dataset.share], btn.dataset.name);
     });
     document.querySelectorAll(".netdisk-row-check").forEach((cb) => {
       cb.onchange = () => toggleFileSelection(cb.dataset.path, cb.checked);
@@ -165,8 +187,10 @@ function bindNetdiskEvents(mutable) {
 
   document.querySelectorAll("[data-copy-link]").forEach((btn) => {
     btn.onclick = async () => {
-      await navigator.clipboard.writeText(btn.dataset.copyLink);
-      toast("Link copied", true);
+      const code = btn.dataset.copyCode;
+      const text = code ? `${btn.dataset.copyLink}\nExtraction code: ${code}` : btn.dataset.copyLink;
+      await navigator.clipboard.writeText(text);
+      toast(code ? "Link & code copied" : "Link copied", true);
     };
   });
   document.querySelectorAll("[data-share-del]").forEach((btn) => {
@@ -206,14 +230,14 @@ function fileRow(f, mutable) {
     ? `<td class="chk-col"><input type="checkbox" class="netdisk-row-check" data-path="${escapeHtml(f.path)}" ${checked}></td>`
     : "";
   const actionCell = mutable
-    ? `<a class="ghost-link" href="${href}">Download</a>` +
-      `<button class="ghost" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">Rename</button>` +
-      `<button class="ghost" data-copy="${escapeHtml(f.path)}">Copy</button>` +
-      `<button class="ghost" data-move="${escapeHtml(f.path)}">Move</button>` +
-      `<button class="ghost" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">Share</button>` +
-      `<button class="icon danger" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">Del</button>`
-    : `<a class="ghost-link" href="${href}">Download</a>`;
-  return `<tr>${checkCell}<td><div class="netdisk-file"><span class="netdisk-icon ${f.dir ? "folder" : "file"}" aria-hidden="true">${fileIcon(f.dir)}</span><div class="primary-line">${name}</div></div></td><td class="netdisk-size">${f.dir ? "-" : fmtBytes(f.size)}</td><td class="netdisk-time">${escapeHtml(new Date(f.modTime).toLocaleString())}</td><td class="actions netdisk-row-actions">${actionCell}</td></tr>`;
+    ? `<a class="icon" href="${href}" title="Download">⬇</a>` +
+      `<button class="icon" title="Rename" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✎</button>` +
+      `<button class="icon" title="Copy" data-copy="${escapeHtml(f.path)}">⧉</button>` +
+      `<button class="icon" title="Move" data-move="${escapeHtml(f.path)}">↗</button>` +
+      `<button class="icon" title="Share" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">⤴</button>` +
+      `<button class="icon danger" title="Delete" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✕</button>`
+    : `<a class="icon" href="${href}" title="Download">⬇</a>`;
+  return `<tr>${checkCell}<td><div class="netdisk-file"><span class="netdisk-icon ${f.dir ? "folder" : "file"}" aria-hidden="true">${fileIcon(f.dir)}</span><div class="primary-line">${name}</div></div></td><td class="netdisk-size">${f.dir ? "-" : fmtBytes(f.size)}</td><td class="netdisk-time" title="${escapeHtml(new Date(f.modTime).toLocaleString())}">${escapeHtml(fmtDate(f.modTime))}</td><td class="actions netdisk-row-actions">${actionCell}</td></tr>`;
 }
 
 function toggleFileSelection(path, checked) {
@@ -232,14 +256,122 @@ async function batchDelete() {
   renderNetdisk();
 }
 
-async function batchCopyMove(move) {
+function batchCopyMove(move) {
   const paths = [...state.netdisk.selected];
   if (!paths.length) return;
-  const dest = prompt(move ? "Move selected items to folder" : "Copy selected items to folder", state.netdisk.path || "");
-  if (dest == null) return;
-  const items = paths.map((p) => ({ from: p, to: dest }));
+  openFolderPicker(move, paths);
+}
+
+// ---------- Folder picker (move/copy destination) ----------
+
+// folderPicker holds the in-flight picker's state while the modal is open.
+let folderPicker = null;
+
+function openFolderPicker(move, paths) {
+  folderPicker = { move, paths, path: state.netdisk.path || "", items: [] };
+  const action = move ? "Move" : "Copy";
+  showModalNoShell(
+    "netdisk-picker",
+    "wide picker-modal",
+    `<div class="modal-head">` +
+      `<div><h2>${action} ${paths.length} item(s)</h2><p class="hint" style="margin-top:4px">Choose a destination folder</p></div>` +
+      `<button class="icon" data-close>✕</button>` +
+    `</div>` +
+    `<div class="picker-layout">` +
+      `<aside class="picker-tree"><div class="picker-tree-item active">My Netdisk</div></aside>` +
+      `<section class="picker-main">` +
+        `<div class="picker-toolbar">` +
+          `<button class="ghost" id="pickerUp">↑ Up</button>` +
+          `<div class="picker-path" id="pickerPath">/</div>` +
+          `<button class="ghost" id="pickerMkdir">+ New Folder</button>` +
+        `</div>` +
+        `<div class="picker-list" id="pickerList"><div class="picker-empty">Loading…</div></div>` +
+      `</section>` +
+    `</div>` +
+    `<div class="modal-foot">` +
+      `<span class="hint" id="pickerHint"></span>` +
+      `<div class="modal-tools">` +
+        `<button class="ghost" data-close>Cancel</button>` +
+        `<button class="primary" id="pickerConfirm">${action} Here</button>` +
+      `</div>` +
+    `</div>`
+  );
+  $("#pickerUp").onclick = () => {
+    const parts = folderPicker.path.split("/").filter(Boolean);
+    parts.pop();
+    loadPickerFolder(parts.join("/"));
+  };
+  $("#pickerMkdir").onclick = pickerMkdirFolder;
+  $("#pickerConfirm").onclick = confirmFolderPicker;
+  loadPickerFolder(folderPicker.path);
+}
+
+async function loadPickerFolder(path) {
+  if (!folderPicker) return;
+  folderPicker.path = path;
+  const listEl = $("#pickerList");
+  if (!listEl) return; // modal closed while navigating
+  listEl.innerHTML = `<div class="picker-empty">Loading…</div>`;
+  try {
+    const data = await api(`/api/netdisk?path=${encodeURIComponent(path)}`);
+    folderPicker.items = (data.items || []).filter((f) => f.dir);
+    renderFolderPicker();
+  } catch (err) {
+    if (listEl.isConnected) listEl.innerHTML = `<div class="picker-empty">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderFolderPicker() {
+  const listEl = $("#pickerList");
+  if (!folderPicker || !listEl) return; // modal closed mid-load
+  const path = folderPicker.path;
+  $("#pickerPath").textContent = "/" + path;
+  $("#pickerUp").disabled = !path;
+
+  // A folder being moved cannot be its own destination: show it disabled.
+  const sources = new Set(folderPicker.paths);
+  const rows = (folderPicker.items || []).map((f) => {
+    const blocked = folderPicker.move && sources.has(f.path);
+    return `<div class="picker-row${blocked ? " disabled" : ""}"${blocked ? "" : ` data-open="${escapeHtml(f.path)}"`}>` +
+      `<span class="picker-folder-icon">${fileIcon(true)}</span>` +
+      `<span class="picker-folder-name">${escapeHtml(f.name)}</span>` +
+    `</div>`;
+  }).join("");
+  listEl.innerHTML = rows || `<div class="picker-empty">No subfolders</div>`;
+  listEl.querySelectorAll("[data-open]").forEach((row) => {
+    row.onclick = () => loadPickerFolder(row.dataset.open);
+  });
+
+  // Moving items onto their current location is a no-op; block it.
+  const alreadyHere = folderPicker.move && folderPicker.paths.every((p) => parentDir(p) === path);
+  $("#pickerConfirm").disabled = alreadyHere;
+  $("#pickerHint").textContent = alreadyHere ? "Items are already in this folder" : `Destination: /${path}`;
+}
+
+async function pickerMkdirFolder() {
+  const name = prompt("New folder name");
+  if (!name || !folderPicker) return;
+  try {
+    await api("/api/netdisk/mkdir", { method: "POST", body: JSON.stringify({ path: joinPath(folderPicker.path, name) }) });
+    toast("Folder created", true);
+    await loadPickerFolder(folderPicker.path);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function confirmFolderPicker() {
+  if (!folderPicker) return;
+  const { move, paths, path } = folderPicker;
+  folderPicker = null;
+  closeModal();
+  const items = paths.map((p) => ({ from: p, to: path }));
   if (move) await moveItems(items);
   else await copyItems(items);
+}
+
+function parentDir(p) {
+  return (p || "").split("/").filter(Boolean).slice(0, -1).join("/");
 }
 
 async function copyItems(items) {
@@ -267,9 +399,8 @@ async function moveItems(items) {
 async function batchShare() {
   const paths = [...state.netdisk.selected];
   if (!paths.length) return;
-  const name = prompt("Share name", paths.length === 1 ? paths[0].split("/").pop() : "Shared items");
-  if (!name) return;
-  await createShare(paths, name);
+  const name = paths.length === 1 ? paths[0].split("/").pop() : "Shared items";
+  openShareModal(paths, name);
 }
 
 async function batchDownload() {
@@ -318,16 +449,19 @@ function fileIcon(dir) {
 function shareRows(shares) {
   return (shares || []).map((s) => {
     const link = `${location.origin}/pan/${encodeURIComponent(s.token)}`;
-    const access = s.hasPassword ? "Password" : "Public";
-    return `<tr class="${s.expired ? "row-muted" : ""}"><td><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line">${(s.paths || []).map(escapeHtml).join(", ")}</div></td><td><a href="${link}" target="_blank">${escapeHtml(link)}</a></td><td>${shareExpiry(s)}</td><td>${escapeHtml(access)}</td><td class="actions"><button class="ghost" data-copy-link="${escapeHtml(link)}">Copy</button><button class="icon danger" data-share-del="${escapeHtml(s.token)}">Del</button></td></tr>`;
+    const access = s.hasPassword ? s.password || "Password" : "Public";
+    const pathsText = (s.paths || []).join(", ");
+    const copyCode = s.password ? ` data-copy-code="${escapeHtml(s.password)}"` : "";
+    return `<tr class="${s.expired ? "row-muted" : ""}"><td class="share-name-cell" title="${escapeHtml(s.name)}${pathsText ? ` · ${escapeHtml(pathsText)}` : ""}"><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line">${(s.paths || []).map(escapeHtml).join(", ")}</div></td><td class="share-link-cell" title="${escapeHtml(link)}"><a href="${link}" target="_blank">${escapeHtml(link)}</a></td><td>${shareExpiry(s)}</td><td${s.password ? ` title="Extraction code"` : ""}>${escapeHtml(access)}</td><td class="actions"><button class="ghost" data-copy-link="${escapeHtml(link)}"${copyCode}>Copy</button><button class="icon danger" data-share-del="${escapeHtml(s.token)}">Del</button></td></tr>`;
   }).join("") || `<tr class="empty-row"><td colspan="5">No external links.</td></tr>`;
 }
 
 function adminShareRows(shares) {
   return (shares || []).map((s) => {
     const link = `${location.origin}/pan/${encodeURIComponent(s.token)}`;
-    const access = s.hasPassword ? "Password" : "Public";
-    return `<tr class="${s.expired ? "row-muted" : ""}"><td><input type="checkbox" data-admin-share-token value="${escapeHtml(s.token)}"></td><td>${escapeHtml(displayNameForUsername(s.owner) || s.ownerId)}</td><td><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line">${(s.paths || []).map(escapeHtml).join(", ")}</div></td><td><a href="${link}" target="_blank">${escapeHtml(link)}</a></td><td>${shareExpiry(s)}</td><td>${escapeHtml(access)}</td></tr>`;
+    const access = s.hasPassword ? s.password || "Password" : "Public";
+    const pathsText = (s.paths || []).join(", ");
+    return `<tr class="${s.expired ? "row-muted" : ""}"><td><input type="checkbox" data-admin-share-token value="${escapeHtml(s.token)}"></td><td>${escapeHtml(displayNameForUsername(s.owner) || s.ownerId)}</td><td class="share-name-cell" title="${escapeHtml(s.name)}${pathsText ? ` · ${escapeHtml(pathsText)}` : ""}"><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line">${(s.paths || []).map(escapeHtml).join(", ")}</div></td><td class="share-link-cell" title="${escapeHtml(link)}"><a href="${link}" target="_blank">${escapeHtml(link)}</a></td><td>${shareExpiry(s)}</td><td${s.password ? ` title="Extraction code"` : ""}>${escapeHtml(access)}</td></tr>`;
   }).join("") || `<tr class="empty-row"><td colspan="6">No external links.</td></tr>`;
 }
 
@@ -348,46 +482,247 @@ async function renameItem(path, oldName) {
   renderNetdisk();
 }
 
-async function createShare(paths, name) {
-  const permanent = !!$("#permanentShare")?.checked;
-  const days = prompt("Link expires in days (0 = permanent)", permanent ? "0" : "7");
-  if (days == null) return;
-  const expiresDays = parseInt(days, 10) || 0;
-  const password = prompt("Optional password (leave empty for public link)", "");
-  if (password == null) return;
-  const body = { paths, name };
-  if (expiresDays > 0) {
-    body.expiresDays = expiresDays;
-  } else {
-    body.permanent = true;
-  }
-  if (password) body.password = password;
-  const out = await api("/api/netdisk/share", { method: "POST", body: JSON.stringify(body) });
-  const link = `${location.origin}${out.url}`;
-  await navigator.clipboard?.writeText(link).catch(() => {});
-  toast("External link created", true);
-  renderNetdisk();
+// ---------- Share modal (Baidu-style) ----------
+//
+// State of the open share modal. Cleared on close. `step` is "form" while the
+// user picks expiry/password and "link" once the share has been created and the
+// link is shown inline.
+let shareModal = null;
+
+function randomCode(len = 4) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I, O, 0, 1 — legibility
+  let out = "";
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
 }
+
+function openShareModal(paths, name) {
+  shareModal = {
+    paths,
+    name,
+    expiry: 7, // days; 0 = permanent
+    usePassword: true,
+    code: randomCode(4),
+    step: "form",
+    creating: false,
+    created: null,
+  };
+  renderShareModal();
+}
+
+function renderShareModal() {
+  if (!shareModal) return;
+  showModalNoShell(
+    "netdisk-share",
+    "share-modal",
+    shareModal.step === "form" ? shareFormHtml() : shareLinkHtml(),
+  );
+  bindShareModalEvents();
+}
+
+function shareFormHtml() {
+  const s = shareModal;
+  const expiryOptions = [
+    { d: 1, label: "1 day" },
+    { d: 7, label: "7 days" },
+    { d: 30, label: "30 days" },
+    { d: 0, label: "Permanent" },
+  ];
+  const expiryButtons = expiryOptions
+    .map((o) => `<button class="share-seg-btn${s.expiry === o.d ? " active" : ""}" data-expiry="${o.d}">${escapeHtml(o.label)}</button>`)
+    .join("");
+  const oneItem = s.paths.length === 1;
+  return (
+    `<div class="modal-head">` +
+      `<div class="share-head-text"><h2>Share ${oneItem ? "file" : "items"}</h2>` +
+      `<p class="hint share-name-line" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</p></div>` +
+      `<button class="icon" data-close>✕</button>` +
+    `</div>` +
+    `<div class="modal-body share-form">` +
+      `<div class="share-row">` +
+        `<div class="share-row-label">Valid for</div>` +
+        `<div class="share-seg">${expiryButtons}</div>` +
+      `</div>` +
+      `<div class="share-row">` +
+        `<div class="share-row-label">Extraction code</div>` +
+        `<div class="share-row-body share-code-row">` +
+          `<label class="check"><input type="checkbox" id="shareUseCode" ${s.usePassword ? "checked" : ""}><span>Protect with code</span></label>` +
+          `<div class="share-code-field ${s.usePassword ? "" : "is-hidden"}">` +
+            `<input id="shareCode" value="${escapeHtml(s.code)}" maxlength="8" autocomplete="off">` +
+            `<button class="ghost" id="shareRandomCode" type="button">Random</button>` +
+          `</div>` +
+        `</div>` +
+      `</div>` +
+    `</div>` +
+    `<div class="modal-foot">` +
+      `<button class="ghost" data-close>Cancel</button>` +
+      `<button class="primary" id="shareCreate"${s.creating ? " disabled" : ""}>${s.creating ? "Creating…" : "Create link"}</button>` +
+    `</div>`
+  );
+}
+
+function shareLinkHtml() {
+  const s = shareModal;
+  const link = `${location.origin}/pan/${encodeURIComponent(s.created.token)}`;
+  return (
+    `<div class="modal-head">` +
+      `<div class="share-head-text"><h2>Share link ready</h2>` +
+      `<p class="hint share-name-line" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</p></div>` +
+      `<button class="icon" data-close>✕</button>` +
+    `</div>` +
+    `<div class="modal-body share-result">` +
+      `<div class="share-link-row">` +
+        `<div class="share-row-label">Link</div>` +
+        `<div class="copy-chip share-copy-chip" title="${escapeHtml(link)}">` +
+          `<code>${escapeHtml(link)}</code>` +
+          `<button class="copy-btn" data-copy="${escapeHtml(link)}" data-copy-target="link" type="button">Copy</button>` +
+        `</div>` +
+      `</div>` +
+      (s.usePassword
+        ? `<div class="share-link-row">` +
+          `<div class="share-row-label">Code</div>` +
+          `<div class="copy-chip share-copy-chip">` +
+            `<code>${escapeHtml(s.code)}</code>` +
+            `<button class="copy-btn" data-copy="${escapeHtml(s.code)}" data-copy-target="code" type="button">Copy</button>` +
+          `</div>` +
+        `</div>`
+        : "") +
+      `<button class="subtle share-copy-all" id="shareCopyAll" type="button">Copy link${s.usePassword ? " & code" : ""}</button>` +
+    `</div>` +
+    `<div class="modal-foot">` +
+      `<button class="ghost" data-close>Close</button>` +
+      `<button class="primary" id="shareDone" type="button">Done</button>` +
+    `</div>`
+  );
+}
+
+function bindShareModalEvents() {
+  if (!shareModal) return;
+  if (shareModal.step === "form") {
+    document.querySelectorAll("[data-expiry]").forEach((btn) => {
+      btn.onclick = () => {
+        shareModal.expiry = parseInt(btn.dataset.expiry, 10) || 0;
+        renderShareModal();
+      };
+    });
+    $("#shareUseCode").onchange = (e) => {
+      shareModal.usePassword = e.target.checked;
+      if (shareModal.usePassword && !shareModal.code) shareModal.code = randomCode(4);
+      renderShareModal();
+    };
+    $("#shareCode").oninput = (e) => { shareModal.code = e.target.value; };
+    $("#shareRandomCode").onclick = () => {
+      shareModal.code = randomCode(4);
+      renderShareModal();
+    };
+    $("#shareCreate").onclick = submitShare;
+  } else {
+    // link step
+    document.querySelectorAll("[data-copy]").forEach((btn) => {
+      btn.onclick = async () => {
+        await navigator.clipboard.writeText(btn.dataset.copy);
+        flashCopy(btn);
+      };
+    });
+    $("#shareCopyAll").onclick = async (btn) => {
+      const s = shareModal;
+      const link = `${location.origin}/pan/${encodeURIComponent(s.created.token)}`;
+      const text = s.usePassword ? `${link}\nExtraction code: ${s.code}` : link;
+      await navigator.clipboard.writeText(text);
+      flashCopy(btn);
+    };
+    $("#shareDone").onclick = () => { closeModal(); renderNetdisk(); };
+  }
+}
+
+function flashCopy(btn) {
+  const prev = btn.textContent;
+  btn.textContent = "Copied";
+  btn.classList.add("copied");
+  setTimeout(() => { btn.textContent = prev; btn.classList.remove("copied"); }, 1200);
+}
+
+async function submitShare() {
+  if (!shareModal || shareModal.creating) return;
+  shareModal.creating = true;
+  renderShareModal();
+  const s = shareModal;
+  const body = { paths: s.paths, name: s.name };
+  if (s.expiry > 0) body.expiresDays = s.expiry;
+  else body.permanent = true;
+  if (s.usePassword && s.code.trim()) body.password = s.code.trim();
+  try {
+    const out = await api("/api/netdisk/share", { method: "POST", body: JSON.stringify(body) });
+    shareModal.created = out;
+    shareModal.step = "link";
+    shareModal.creating = false;
+    renderShareModal();
+  } catch (err) {
+    shareModal.creating = false;
+    toast(err.message);
+    renderShareModal();
+  }
+}
+
+// Guard against concurrent uploads: each file is its own request but the
+// overlay is shared, so a second pick while one is running would race it.
+let uploading = false;
 
 async function uploadFiles(files, path) {
   if (!files || !files.length) return;
   if (!canMutate()) return toast("Read-only account cannot upload");
-  const fd = new FormData();
-  fd.append("path", path);
-  [...files].forEach((f) => {
+  if (uploading) return toast("An upload is already in progress");
+  const list = [...files];
+  uploading = true;
+  const overlay = showUploadOverlay(list);
+
+  // Per-file loaded bytes for the aggregate bar; total = sum of file sizes.
+  const loaded = new Array(list.length).fill(0);
+  const totalBytes = list.reduce((s, f) => s + (f.size || 0), 0);
+  let doneBytes = 0;
+  let ok = 0;
+  let failed = 0;
+  let batchStart = performance.now();
+
+  for (let i = 0; i < list.length; i++) {
+    overlay.setLabel(`Uploading ${i + 1}/${list.length}…`);
+    overlay.setStatus(i, "uploading");
+    const f = list[i];
+    const fd = new FormData();
+    fd.append("path", path);
     // webkitdirectory supplies webkitRelativePath; fall back to name.
-    const name = f.webkitRelativePath || f.name;
-    fd.append("files", f, name);
-  });
-  const headers = state.csrfToken ? { "X-CSRF-Token": state.csrfToken } : undefined;
-  const res = await fetch("/api/netdisk/upload", { method: "POST", credentials: "same-origin", headers, body: fd });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    toast(data.error || "Upload failed");
-    return;
+    fd.append("files", f, f.webkitRelativePath || f.name);
+    try {
+      await uploadWithProgress("/api/netdisk/upload", fd, {
+        csrfToken: state.csrfToken,
+        onProgress: (p) => {
+          doneBytes += Math.max(0, p.loaded - loaded[i]);
+          loaded[i] = p.loaded;
+          overlay.updateFile(i, p);
+          const elapsed = (performance.now() - batchStart) / 1000;
+          const speedBps = elapsed > 0 ? doneBytes / elapsed : 0;
+          const percent = totalBytes > 0 ? Math.min(100, Math.round((doneBytes / totalBytes) * 100)) : 0;
+          const etaSec = speedBps > 0 ? (totalBytes - doneBytes) / speedBps : 0;
+          overlay.updateOverall({ percent, loaded: doneBytes, total: totalBytes, speedBps, etaSec });
+        },
+      });
+      overlay.setStatus(i, "done");
+      ok++;
+    } catch (err) {
+      overlay.setStatus(i, "error", err.message);
+      failed++;
+    }
   }
-  toast(`Uploaded ${data.count || files.length} file(s)`, true);
+
+  overlay.setLabel(`Uploaded ${ok} of ${list.length} file(s)`);
+  const summary = failed
+    ? `Uploaded ${ok} file(s), ${failed} failed`
+    : `Uploaded ${ok} file(s)`;
+  toast(summary, !failed);
   renderNetdisk();
+  // Let the user see the final per-file state before the card disappears.
+  setTimeout(() => overlay.close(), failed ? 3000 : 1500);
+  uploading = false;
 }
 
 function quotaBar(q) {
@@ -405,6 +740,15 @@ function quotaBar(q) {
 
 function joinPath(a, b) {
   return [a, b].filter(Boolean).join("/");
+}
+
+// Compact "date HH:MM" for the Modified column — full timestamp stays
+// available via the cell's title attribute.
+function fmtDate(ts) {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "-";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.toLocaleDateString()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function downloadURL(path) {

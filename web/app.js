@@ -21,6 +21,7 @@ import { renderNetdisk } from "./modules/netdisk.js";
 import { renderDisks } from "./modules/disks.js";
 import { renderHardware, stopPolling as stopHardwarePolling } from "./modules/hardware.js";
 import { renderMCP } from "./modules/mcp.js";
+import { startAutoRefresh, refreshActiveTab } from "./modules/refresh.js";
 import { escapeHtml, fmtBytes, fmtMB, roleRank, isAdminUser, canMutateUser } from "./lib/common.js";
 
 // Re-export shared utilities so existing modules can keep importing them from app.js.
@@ -167,6 +168,9 @@ export async function load() {
     // MCP tokens are fetched on demand when the user opens the MCP tab
     // (renderMCP), so there's no boot-time background load racing the render.
     render();
+    // Begin background auto-refresh: the active tab re-fetches on its own
+    // interval and re-renders only when the data actually changed.
+    startAutoRefresh();
   } catch {
     renderLogin();
   }
@@ -341,6 +345,10 @@ export function render() {
       if (state.tab === "hardware" && btn.dataset.tab !== "hardware") stopHardwarePolling();
       state.tab = btn.dataset.tab;
       render();
+      // Quietly refresh the tab just entered so it shows fresh data without
+      // waiting for the next poll interval. Self-fetching views (netdisk,
+      // usage) are skipped: their renderView() already fetched above.
+      refreshActiveTab({ includeSelfFetch: false });
     };
   });
   const toggle = $("#sidebarToggle");
