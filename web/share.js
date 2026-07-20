@@ -16,11 +16,23 @@ const state = {
 
 const $ = (s) => document.querySelector(s);
 
+function readCSRFCookie() {
+  const m = document.cookie.match(/(?:^|; )mudp_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
 async function api(path, opts = {}) {
+  const { headers, ...rest } = opts;
+  const method = (opts.method || "GET").toUpperCase();
+  const csrfToken = readCSRFCookie();
+  const mergedHeaders = { "Content-Type": "application/json", ...(headers || {}) };
+  if (csrfToken && method !== "GET" && method !== "HEAD") {
+    mergedHeaders["X-CSRF-Token"] = csrfToken;
+  }
   const res = await fetch(path, {
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-    ...opts,
+    headers: mergedHeaders,
+    ...rest,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

@@ -30,6 +30,7 @@ type User struct {
 	NetdiskQuotaBytes int64    `json:"netdiskQuotaBytes"`
 	FeishuOpenID      string   `json:"feishuOpenId,omitempty"`
 	Comment           string   `json:"comment,omitempty"`
+	Language          string   `json:"language,omitempty"`
 }
 
 // ValidRole reports whether r is one of the supported RBAC roles.
@@ -62,6 +63,7 @@ type Group struct {
 	Name        string `json:"name"`
 	NetdiskPath string `json:"netdiskPath,omitempty"`
 	BackupPath  string `json:"backupPath,omitempty"`
+	Language    string `json:"language,omitempty"`
 }
 
 // Notification is an in-app message delivered to a single user.
@@ -173,7 +175,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 22
+const schemaVersion = 24
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -212,6 +214,8 @@ var migrations = []migration{
 	{20, "add netdisk_shares.password", migrateAddSharePassword},
 	{21, "add groups.backup_path", migrateAddGroupBackupPath},
 	{22, "create backup_schedule", migrateCreateBackupSchedule},
+	{23, "add users.language", migrateAddUserLanguage},
+	{24, "add groups.language", migrateAddGroupLanguage},
 }
 
 func migrateCreateInitialTables(db executor) error {
@@ -341,6 +345,14 @@ func migrateCreateBackupSchedule(db executor) error {
 	// Seed the single config row if it doesn't exist.
 	_, err = db.Exec(`insert or ignore into backup_schedule(id, hour, minute, enabled, last_run_at) values (1, 2, 0, 0, '')`)
 	return err
+}
+
+func migrateAddUserLanguage(db executor) error {
+	return execIgnoring(db, `alter table users add column language text default ''`, sqliteDuplicateColumn)
+}
+
+func migrateAddGroupLanguage(db executor) error {
+	return execIgnoring(db, `alter table groups add column language text default ''`, sqliteDuplicateColumn)
 }
 
 func migrateAddShareExpiresAt(db executor) error {
@@ -762,7 +774,7 @@ func (db *DB) Users() ([]User, error) {
 }
 
 func (db *DB) Groups() ([]Group, error) {
-	rows, err := db.Query(`select id,name,netdisk_path,backup_path from groups order by name`)
+	rows, err := db.Query(`select id,name,netdisk_path,backup_path,language from groups order by name`)
 	if err != nil {
 		return nil, err
 	}
@@ -770,7 +782,7 @@ func (db *DB) Groups() ([]Group, error) {
 	var groups []Group
 	for rows.Next() {
 		var g Group
-		if err := rows.Scan(&g.ID, &g.Name, &g.NetdiskPath, &g.BackupPath); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.NetdiskPath, &g.BackupPath, &g.Language); err != nil {
 			return nil, err
 		}
 		groups = append(groups, g)
@@ -790,6 +802,11 @@ func (db *DB) UpdateGroupNetdiskPath(groupID int64, path string) error {
 
 func (db *DB) UpdateGroupBackupPath(groupID int64, path string) error {
 	_, err := db.Exec(`update groups set backup_path=? where id=?`, strings.TrimSpace(path), groupID)
+	return err
+}
+
+func (db *DB) UpdateGroupLanguage(groupID int64, language string) error {
+	_, err := db.Exec(`update groups set language=? where id=?`, language, groupID)
 	return err
 }
 
@@ -1521,6 +1538,18 @@ func (db *DB) UpdateUserPortPrefix(id int64, prefix int) error {
 		return errors.New("port prefix must be between 0 and 655")
 	}
 	_, err := db.Exec(`update users set port_prefix=? where id=?`, prefix, id)
+	return err
+}
+
+// UpdateUserLanguage updates the language preference for a user
+func (db *DB) UpdateUserLanguage(id int64, language string) error {
+	_, err := db.Exec(`update users set language=? where id=?`, language, id)
+	return err
+}
+
+// UpdateDefaultLanguageForNewUsers updates the language for users who don't have one set
+func (db *DB) UpdateDefaultLanguageForNewUsers(language string) error {
+	_, err := db.Exec(`update users set language=? where language='' or language is null`, language)
 	return err
 }
 

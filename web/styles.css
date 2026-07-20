@@ -297,6 +297,9 @@ a:hover { text-decoration: underline; }
   color: #fff;
 }
 .login-feishu::before { content: "🐦 "; }
+.login-lang { display: flex; gap: 8px; justify-content: center; margin-top: 4px; }
+.lang-btn { flex: 1; padding: 6px; font-size: 12px; background: var(--bg2); color: var(--muted); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.lang-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* ---------- Shell layout ---------- */
 .shell { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
@@ -2784,4 +2787,92 @@ audio.viewer-media {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   font-size: 13px;
+}
+
+/* ---------- Language Selector ---------- */
+.language-selector {
+  position: relative;
+  display: inline-block;
+  margin-left: 12px;
+}
+
+.lang-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  transition: background 0.12s, color 0.12s;
+}
+
+.lang-label:hover {
+  background: var(--line-soft);
+  color: var(--ink);
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 70;
+  min-width: 140px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 32px rgba(16, 24, 40, 0.18);
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+}
+
+.dropdown-menu[hidden] {
+  display: none;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--ink);
+  border: 0;
+  border-radius: 5px;
+  padding: 8px 12px;
+  min-height: 0;
+  font-weight: 400;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.dropdown-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dropdown-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.dropdown-item::after {
+  content: "✓";
+  display: inline-block;
+  font-size: 12px;
+}
+
+.dropdown-item:not(.active)::after {
+  content: "";
 }

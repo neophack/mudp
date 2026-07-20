@@ -103,7 +103,7 @@ export function openPresetModal(imageId) {
         `<div class="check-grid">` +
           presetCheck("forward8080", "Forward port 8080", p.forward8080) +
           presetCheck("forward80", "Forward port 80", p.forward80) +
-          presetCheck("mountNetdisk", "Mount netdisk at /netdisk", p.mountNetdisk) +
+          presetCheck("mountNetdisk", "Mount netdisk at /workspace", p.mountNetdisk) +
           presetCheck("mountShm", "Mount host /dev/shm", p.mountShm) +
         `</div>` +
         (networkChecks ? `<label class="field-label">Networks</label><div class="check-grid">${networkChecks}</div>` : "") +

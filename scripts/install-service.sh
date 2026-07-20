@@ -111,9 +111,11 @@ fi
 
 # ---------------------------------------------------------------------------
 # Stop old service and uninstall previous files before fresh install
+# NOTE: Database and data directory are PRESERVED during upgrade
 # ---------------------------------------------------------------------------
 if systemctl list-unit-files --type=service --all 2>/dev/null | awk '{print $1}' | grep -Fxq "${SERVICE_NAME}.service" || [[ -f "$UNIT_FILE" ]]; then
-    info "Existing service detected. Stopping and uninstalling old ${SERVICE_NAME} service..."
+    info "Existing service detected. Stopping and upgrading ${SERVICE_NAME} service..."
+    info "Database and data will be preserved."
     systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
     systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
     rm -f "$UNIT_FILE"
@@ -223,4 +225,7 @@ echo "  Logs:          journalctl -u ${SERVICE_NAME} -f"
 echo "  Data dir:      ${DATA_DIR}"
 echo "  Database:      ${MUDP_DB_PATH}"
 echo "  Env file:      ${ENV_FILE}"
-echo "  Uninstall:     systemctl disable --now ${SERVICE_NAME} && rm ${UNIT_FILE} ${INSTALL_DIR}/mudp ${ENV_FILE}"
+echo ""
+echo "Uninstall options:"
+echo "  Safe uninstall (keep data):   systemctl disable --now ${SERVICE_NAME} && rm ${UNIT_FILE} ${INSTALL_DIR}/mudp ${ENV_FILE}"
+echo "  Full uninstall (remove data): systemctl disable --now ${SERVICE_NAME} && rm -rf ${UNIT_FILE} ${INSTALL_DIR}/mudp ${ENV_FILE} ${DATA_DIR}"

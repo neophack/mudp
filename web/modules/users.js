@@ -1,7 +1,7 @@
 // Users & Groups management: create users/groups, assign roles, group
 // membership (Feishu approval flow), reset passwords, disable/delete accounts.
 
-import { state, api, toast, escapeHtml, fmtBytes, refreshSection, renderView, displayName } from "../app.js";
+import { state, api, toast, escapeHtml, fmtBytes, refreshSection, renderView, displayName, $ } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 const ROLES = [
@@ -60,6 +60,11 @@ export async function renderUsers() {
           `<p class="hint" style="padding:0 16px;margin:0 0 8px">Slower mechanical disks where netdisk files are mirrored. Backup is not quota-bound.</p>` +
           `<table class="data"><thead><tr><th>Group</th><th>Backup Path</th><th class="actions">Actions</th></tr></thead>` +
           `<tbody>${state.groups.map(groupBackupRow).join("") || `<tr class="empty-row"><td colspan="3">No groups yet.</td></tr>`}</tbody></table>` +
+        `</div>` +
+        `<div class="card"><div class="card-head"><h2>Group Languages</h2></div>` +
+          `<p class="hint" style="padding:0 16px;margin:0 0 8px">Default language for new members of each group.</p>` +
+          `<table class="data"><thead><tr><th>Group</th><th>Language</th><th class="actions">Actions</th></tr></thead>` +
+          `<tbody>${state.groups.map(groupLanguageRow).join("") || `<tr class="empty-row"><td colspan="3">No groups yet.</td></tr>`}</tbody></table>` +
         `</div>` +
       `</section>` +
       `<section class="stack users-main-col">` +
@@ -132,6 +137,9 @@ export async function renderUsers() {
   document.querySelectorAll("[data-group-backup]").forEach((btn) => {
     btn.onclick = () => setGroupBackupPath(Number(btn.dataset.groupBackup), btn.dataset.groupName, btn.dataset.current || "");
   });
+  document.querySelectorAll("[data-group-lang]").forEach((btn) => {
+    btn.onclick = () => setGroupLanguage(Number(btn.dataset.groupLang), btn.dataset.groupName, btn.dataset.current || "");
+  });
 }
 
 function userRow(user) {
@@ -198,6 +206,11 @@ function groupBackupRow(g) {
   return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td class="path-cell"><div class="secondary-line mono">${escapeHtml(g.backupPath || "Not configured")}</div></td><td class="actions"><button class="ghost" data-group-backup="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.backupPath || "")}">Set Backup Path</button></td></tr>`;
 }
 
+function groupLanguageRow(g) {
+  const langName = g.language === "zh_CN" ? "中文" : (g.language === "en_US" ? "English" : "Not set");
+  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td><div class="secondary-line">${escapeHtml(langName)}</div></td><td class="actions"><button class="ghost" data-group-lang="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.language || "")}">Set Language</button></td></tr>`;
+}
+
 async function setGroupBackupPath(groupId, name, current) {
   const path = prompt(`Backup disk root path for ${name} (mechanical disk recommended)`, current || "");
   if (path === null) return;
@@ -209,6 +222,45 @@ async function setGroupBackupPath(groupId, name, current) {
   } catch (err) {
     toast(err.message);
   }
+}
+
+async function setGroupLanguage(groupId, name, current) {
+  // Create a simple dialog to select language
+  const languages = [
+    { value: "zh_CN", label: "中文" },
+    { value: "en_US", label: "English" },
+  ];
+  
+  let html = `<div style="padding: 16px"><p style="margin-bottom: 12px">Select default language for group <strong>${escapeHtml(name)}</strong>:</p>`;
+  languages.forEach((lang) => {
+    const checked = current === lang.value ? "checked" : "";
+    html += `<label class="check"><input type="radio" name="language" value="${lang.value}" ${checked}> ${lang.label}</label>`;
+  });
+  html += `</div>`;
+  
+  showModal({
+    kind: "confirm",
+    title: `Set Language for ${name}`,
+    body: html,
+    foot: `<button class="primary" id="saveGroupLang">Save</button><button class="ghost" data-close>Cancel</button>`,
+  });
+
+  document.getElementById("saveGroupLang").onclick = async () => {
+    const selected = document.querySelector('input[name="language"]:checked');
+    if (!selected) return;
+    try {
+      await api("/api/admin/group/language", {
+        method: "POST",
+        body: JSON.stringify({ groupId, language: selected.value }),
+      });
+      await refreshSection("users", "groups");
+      renderView();
+      closeModal();
+      toast("Group language saved", true);
+    } catch (err) {
+      toast(err.message);
+    }
+  };
 }
 
 function openUserGroups(userId, userName) {
@@ -332,10 +384,6 @@ async function deleteUser(userId, userName) {
   } catch (err) {
     toast(err.message);
   }
-}
-
-function $(selector) {
-  return document.querySelector(selector);
 }
 
 function formatQuota(bytes) {

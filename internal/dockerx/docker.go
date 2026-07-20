@@ -516,7 +516,7 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		resolvedNetworks = append(resolvedNetworks, full)
 	}
 	if opts.MountNetdisk && strings.TrimSpace(opts.NetdiskPath) != "" {
-		hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{Type: mount.TypeBind, Source: strings.TrimSpace(opts.NetdiskPath), Target: "/netdisk"})
+		hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{Type: mount.TypeBind, Source: strings.TrimSpace(opts.NetdiskPath), Target: "/workspace"})
 	}
 	if opts.MountShm {
 		hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{Type: mount.TypeBind, Source: "/dev/shm", Target: "/dev/shm"})

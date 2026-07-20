@@ -25,9 +25,10 @@ import { renderMCP } from "./modules/mcp.js";
 import { startAutoRefresh, refreshActiveTab } from "./modules/refresh.js";
 import { startBackupJobsPolling } from "./modules/jobs.js";
 import { escapeHtml, fmtBytes, fmtMB, roleRank, isAdminUser, canMutateUser } from "./lib/common.js";
+import { initI18n, t } from "./lib/i18n.js";
 
 // Re-export shared utilities so existing modules can keep importing them from app.js.
-export { escapeHtml, fmtBytes, fmtMB, roleRank };
+export { escapeHtml, fmtBytes, fmtMB, roleRank, t };
 
 // displayName returns the human-readable name for a user: the Feishu-provided
 // display name when present, otherwise the system username.
@@ -159,6 +160,10 @@ export async function load() {
     state.csrfToken = me.csrfToken || state.csrfToken || "";
     state.me = me;
     state.feishu = (await api("/api/feishu/config").catch(() => ({ enabled: false }))).enabled;
+    
+    // Initialize i18n with user language preference, group language, and system default
+    initI18n(me.language, me.defaultLanguage, me.groupLanguage);
+    
     fetchNotifications().catch(() => {});
     if (me.pending) {
       renderPending();
@@ -259,20 +264,20 @@ const ICONS = {
 function label(tab) {
   return (
     {
-      dashboard: "Dashboard",
-      netdisk: "Netdisk",
-      containers: "Containers",
-      images: "Images",
-      volumes: "Volumes",
-      networks: "Networks",
-      stacks: "Stacks",
-      users: "Users & Groups",
-      usage: "Usage",
-      help: "Help",
-      audit: "Activity Log",
-      disks: "Disks",
-      scripts: "Settings",
-      hardware: "Hardware",
+      dashboard: t("nav.dashboard"),
+      netdisk: t("nav.netdisk"),
+      containers: t("nav.containers"),
+      images: t("nav.images"),
+      volumes: t("nav.volumes"),
+      networks: t("nav.networks"),
+      stacks: t("nav.stacks"),
+      users: t("nav.usersGroups"),
+      usage: t("nav.usage"),
+      help: t("nav.help"),
+      audit: t("nav.activityLog"),
+      disks: t("nav.disks"),
+      scripts: t("nav.settings"),
+      hardware: t("nav.hardware"),
       mcp: "MCP",
     }[tab] || tab
   );
@@ -281,21 +286,21 @@ function label(tab) {
 function subtitle(tab) {
   return (
     {
-      dashboard: "Environment overview, resource counts, and your workspace at a glance.",
-      netdisk: "Manage personal files, batch uploads, resumed uploads, and downloads.",
-      containers: "Create and manage containers with a built-in web terminal.",
-      images: "Publish and share mudp-managed images with user groups.",
-      volumes: "Persistent volumes scoped to your workspace.",
-      networks: "Custom networks for service-to-service connectivity.",
-      stacks: "Deploy and manage docker-compose projects with live progress.",
-      users: "Manage users, groups, roles, port prefixes, and Feishu approvals.",
-      usage: "Per-user and per-container CPU, memory, disk, GPU, and process usage.",
-      help: "Quick user and admin guides, common workflows, and troubleshooting tips.",
-      audit: "Recent management actions across the platform.",
-      disks: "Host disk overview, mount helpers, and database backups.",
-      scripts: "Configure registries, Feishu SSO, and system settings.",
-      hardware: "Real-time CPU, memory, temperature, and per-GPU monitoring.",
-      mcp: "Generate per-container tokens so AI tools (Claude Code, Codex, Kimi) can connect and work.",
+      dashboard: t("subtitle.dashboard"),
+      netdisk: t("subtitle.netdisk"),
+      containers: t("subtitle.containers"),
+      images: t("subtitle.images"),
+      volumes: t("subtitle.volumes"),
+      networks: t("subtitle.networks"),
+      stacks: t("subtitle.stacks"),
+      users: t("subtitle.users"),
+      usage: t("subtitle.usage"),
+      help: t("subtitle.help"),
+      audit: t("subtitle.audit"),
+      disks: t("subtitle.disks"),
+      scripts: t("subtitle.settings"),
+      hardware: t("subtitle.hardware"),
+      mcp: t("subtitle.mcp"),
     }[tab] || ""
   );
 }
@@ -304,7 +309,7 @@ export function render() {
   const admin = isAdmin();
   const tabs = admin
     ? ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", "users", "audit", "disks", "scripts", "help"]
-    : ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", "help"];
+    : ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", "scripts", "help"];
 
   const collapsed = state.sidebarCollapsed;
   $("#app").innerHTML =
@@ -326,7 +331,7 @@ export function render() {
         `<div class="profile">` +
           `<strong>${escapeHtml(displayName(state.me))}</strong>` +
           `<span>${escapeHtml(state.me.role)}${state.me.groups?.length ? " - " + escapeHtml(state.me.groups.join(", ")) : ""}</span>` +
-          `<button id="logout" title="Logout">${ICONS.logout}<span class="nav-label">Logout</span></button>` +
+          `<button id="logout" title="${t("user.logout")}">${ICONS.logout}<span class="nav-label">${t("user.logout")}</span></button>` +
         `</div>` +
       `</aside>` +
       `<section class="work">` +
@@ -339,10 +344,10 @@ export function render() {
             renderJobsButton() +
             renderNotificationBell() +
             (state.tab === "containers"
-              ? `<div class="search"><input id="searchBox" placeholder="Search containers" value="${escapeHtml(state.search)}"></div>`
+              ? `<div class="search"><input id="searchBox" placeholder="${t("action.searchContainers")}" value="${escapeHtml(state.search)}"></div>`
               : "") +
-            (state.tab === "containers" && canMutate() ? `<button class="primary" id="newContainerBtn">+ New Container</button>` : "") +
-            `<button class="ghost" id="refresh">Refresh</button>` +
+            (state.tab === "containers" && canMutate() ? `<button class="primary" id="newContainerBtn">${t("action.newContainer")}</button>` : "") +
+            `<button class="ghost" id="refresh">${t("action.refresh")}</button>` +
           `</div>` +
         `</header>` +
         `<div id="view"></div>` +
@@ -383,7 +388,7 @@ export function render() {
     try {
       await refreshAll();
       render();
-      toast("Refreshed", true);
+      toast(t("toast.refreshed"), true);
     } catch (err) {
       toast(err.message);
     }

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -111,6 +112,10 @@ func (a *App) approveUser(w http.ResponseWriter, r *http.Request) {
 	if err := a.db.SetUserGroups(req.UserID, []int64{gid}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Ensure user netdisk directories and shortcuts/symlinks are created
+	if netdiskPath, err := a.db.NetdiskPathForUser(req.UserID); err == nil && netdiskPath != "" {
+		_ = EnsureUserNetdiskDir(netdiskPath, u.FeishuOpenID, fmt.Sprintf("%d", u.ID), u.DisplayName)
 	}
 	a.record(r, "user.approve", targetName(u))
 	a.notifyUserApproved(req.UserID, []string{store.DefaultUserGroup})

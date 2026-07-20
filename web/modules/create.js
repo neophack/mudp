@@ -58,7 +58,7 @@ export function openCreateModal() {
 
         `<label class="check"><input type="checkbox" name="forward8080"> Forward container port 8080</label>` +
         `<label class="check"><input type="checkbox" name="forward80"> Forward container port 80</label>` +
-        `<label class="check"><input type="checkbox" name="mountNetdisk" checked> Mount netdisk at /netdisk</label>` +
+        `<label class="check"><input type="checkbox" name="mountNetdisk" checked> Mount netdisk at /workspace</label>` +
         `<label class="check"><input type="checkbox" name="mountShm" checked> Mount host /dev/shm (shared memory)</label>` +
         // Collapsible advanced block. Empty fields inherit the image defaults
         // (the backend treats them as "unset"), so leaving this collapsed keeps

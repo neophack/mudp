@@ -1,7 +1,9 @@
-// Settings: Feishu SSO + registries.
+// Settings: Feishu SSO + registries + language preferences.
 
-import { state, api, toast, renderView, escapeHtml } from "../app.js";
+import { state, api, toast, renderView, escapeHtml, isAdmin, t, $ } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
+import { createUserLanguageSettings, createAdminLanguageSettings } from "../lib/languageUI.js";
+import { getCurrentLanguage, switchLanguage } from "../lib/i18n.js";
 
 export function renderSettings() {
   if (!state.feishuAdmin.loaded) {
@@ -10,8 +12,15 @@ export function renderSettings() {
   if (!state.registries) {
     loadRegistries();
   }
+
+  const currentLanguage = getCurrentLanguage();
+  const defaultLanguage = state.me?.defaultLanguage || "en_US";
+  const adminLanguagePanel = isAdmin() ? createAdminLanguageSettings(defaultLanguage) : "";
+
   $("#view").innerHTML =
     `<div class="stack">` +
+      createUserLanguageSettings(currentLanguage) +
+      adminLanguagePanel +
       `<div class="card"><div class="card-head"><h2>Registries</h2>` +
         `<button class="primary" id="newRegistryBtn">+ Add Registry</button>` +
       `</div>` +
@@ -31,6 +40,42 @@ export function renderSettings() {
         `</form></div>` +
       `</div>` +
     `</div>`;
+
+  // Handle user language settings
+  const userLangForm = $("#userLanguageForm");
+  if (userLangForm) {
+    userLangForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const lang = fd.get("language");
+      try {
+        await switchLanguage(lang);
+        toast(t("settings.languageChanged"), true);
+        // Reload to apply language changes
+        setTimeout(() => location.reload(), 500);
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+
+  // Handle admin language settings
+  const adminLangForm = $("#adminLanguageForm");
+  if (adminLangForm) {
+    adminLangForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        await api("/api/admin/settings/language", {
+          method: "POST",
+          body: JSON.stringify({ defaultLanguage: fd.get("defaultLanguage") }),
+        });
+        toast(t("admin.saved"), true);
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
 
   $("#feishuForm").onsubmit = async (e) => {
     e.preventDefault();
@@ -159,8 +204,4 @@ export async function loadRegistries() {
     state.registries = [];
   }
   if (state.tab === "scripts") renderView();
-}
-
-function $(selector) {
-  return document.querySelector(selector);
 }

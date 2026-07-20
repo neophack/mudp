@@ -19,7 +19,7 @@ Admins assign a netdisk root path per group from **Users & Groups -> Group Netdi
 <group-netdisk-root>/<username>-<user-id>/
 ```
 
-When a container is created, **Mount netdisk at /netdisk** is checked by default. The host user directory is bind-mounted into the container at `/netdisk`.
+When a container is created, **Mount netdisk at /workspace** is checked by default. The host user directory is bind-mounted into the container at `/workspace`.
 
 The Netdisk page supports:
 

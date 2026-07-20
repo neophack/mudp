@@ -289,6 +289,12 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/users/groups", a.setUserGroups)
 		r.Post("/api/users/approve", a.approveUser)
 		r.Post("/api/users/deactivate", a.deactivateUser)
+		r.Get("/api/user/language", a.userLanguage)
+		r.Post("/api/user/language", a.userLanguage)
+		r.Get("/api/admin/settings/language", a.adminLanguageSettings)
+		r.Post("/api/admin/settings/language", a.adminLanguageSettings)
+		r.Get("/api/admin/group/language", a.groupLanguage)
+		r.Post("/api/admin/group/language", a.groupLanguage)
 		r.Get("/api/registries", a.registries)
 		r.Post("/api/registries", a.registries)
 		r.Post("/api/registries/delete", a.registryDelete)
@@ -435,13 +441,21 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
 		return
 	}
+	// Get the user's first group's language as a fallback
+	var groupLanguage string
+	if len(u.Groups) > 0 {
+		groupLanguage = a.getGroupLanguage(u.Groups[0])
+	}
+
 	// Surface pending state so the UI can show the waiting-for-approval screen.
 	type meUser struct {
 		*store.User
-		Pending   bool   `json:"pending"`
-		CSRFToken string `json:"csrfToken,omitempty"`
+		Pending         bool   `json:"pending"`
+		CSRFToken       string `json:"csrfToken,omitempty"`
+		DefaultLanguage string `json:"defaultLanguage"`
+		GroupLanguage   string `json:"groupLanguage,omitempty"`
 	}
-	writeJSON(w, http.StatusOK, meUser{User: u, Pending: isPending(u), CSRFToken: middleware.CSRFTokenFromRequest(r)})
+	writeJSON(w, http.StatusOK, meUser{User: u, Pending: isPending(u), CSRFToken: middleware.CSRFTokenFromRequest(r), DefaultLanguage: a.cfg.DefaultLanguage, GroupLanguage: groupLanguage})
 }
 
 // isPending reports whether a user is still awaiting admin approval: a non-admin
@@ -458,6 +472,20 @@ func isPending(u *store.User) bool {
 		}
 	}
 	return !activated
+}
+
+// getGroupLanguage retrieves the language preference for a specific group by name
+func (a *App) getGroupLanguage(groupName string) string {
+	groups, err := a.db.Groups()
+	if err != nil {
+		return ""
+	}
+	for _, g := range groups {
+		if g.Name == groupName {
+			return g.Language
+		}
+	}
+	return ""
 }
 
 func (a *App) users(w http.ResponseWriter, r *http.Request) {
@@ -1427,6 +1455,10 @@ func (a *App) setUserGroups(w http.ResponseWriter, r *http.Request) {
 		a.record(r, "user.groups", targetName(after))
 		if wasPending && !isPending(after) {
 			a.notifyUserApproved(after.ID, after.Groups)
+		}
+		// Ensure user netdisk directories and shortcuts/symlinks are created
+		if netdiskPath, err := a.db.NetdiskPathForUser(after.ID); err == nil && netdiskPath != "" {
+			_ = EnsureUserNetdiskDir(netdiskPath, after.FeishuOpenID, fmt.Sprintf("%d", after.ID), after.DisplayName)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

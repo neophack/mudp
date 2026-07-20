@@ -18,17 +18,19 @@ type Config struct {
 	DockerHost string
 	// WebDir, when non-empty, serves the UI from disk (dev mode) instead of the
 	// embedded filesystem. Lets you iterate on web/ without rebuilding.
-	WebDir string
+	WebDir          string
+	DefaultLanguage string
 }
 
 // Load reads configuration from the environment. Missing secrets are generated
 // automatically so the server can start without manual setup.
 func Load() Config {
 	cfg := Config{
-		Addr:       env("MUDP_ADDR", "0.0.0.0:9000"),
-		DBPath:     env("MUDP_DB", "mudp.db"),
-		DockerHost: env("MUDP_DOCKER_HOST", ""),
-		WebDir:     env("MUDP_WEB_DIR", ""),
+		Addr:            env("MUDP_ADDR", "0.0.0.0:9000"),
+		DBPath:          env("MUDP_DB", "mudp.db"),
+		DockerHost:      env("MUDP_DOCKER_HOST", ""),
+		WebDir:          env("MUDP_WEB_DIR", ""),
+		DefaultLanguage: env("MUDP_DEFAULT_LANGUAGE", "en_US"),
 	}
 
 	cfg.SessionSecret = env("MUDP_SESSION_SECRET", "")
@@ -60,5 +62,3 @@ func randomSecret() string {
 	}
 	return hex.EncodeToString(b)
 }
-
-
