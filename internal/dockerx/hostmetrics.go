@@ -72,9 +72,11 @@ func (d *Client) HostMetrics(ctx context.Context) HostMetrics {
 // readHostMetrics performs the actual reads. Separated for testability.
 func readHostMetrics() HostMetrics {
 	m := HostMetrics{}
+	if runtime.GOOS == "windows" {
+		return readHostMetricsWindows()
+	}
 	if runtime.GOOS != "linux" {
-		// Non-Linux: CPU%/temp sensors aren't available without extra deps. Memory is
-		// still useful via the agent runtime, surfaced by SystemInfo instead.
+		// Non-Linux/Windows: CPU%/temp sensors aren't available without extra deps.
 		return m
 	}
 	m.CPUPercent = readCPUPercent()
