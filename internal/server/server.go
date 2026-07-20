@@ -48,6 +48,7 @@ type App struct {
 	cachedContainers []dockerx.Container
 	cacheAt          time.Time
 	registryMu       sync.Mutex
+	backupJobs       *BackupJobRegistry
 }
 
 type contextKey string
@@ -65,7 +66,8 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 	}
 	return &App{
 		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret),
-		mcpHub: mcp.NewSSEHub(),
+		mcpHub:     mcp.NewSSEHub(),
+		backupJobs: NewBackupJobRegistry(),
 	}, nil
 }
 
@@ -129,6 +131,7 @@ func (a *App) Routes() http.Handler {
 	r.Get("/api/feishu/callback", a.feishuCallback)
 	r.Get("/api/netdisk/share/public", a.netdiskSharePublic)
 	r.Get("/api/netdisk/share/download", a.netdiskShareDownload)
+	r.Get("/api/netdisk/share/raw", a.netdiskShareRaw)
 	r.Get("/pan/{token}", a.netdiskSharePage)
 	r.Handle("/api/dashboard", a.requireRole(rankUser, a.dashboard))
 
@@ -193,13 +196,28 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/netdisk/delete", a.netdiskDelete)
 		r.Post("/api/netdisk/rename", a.netdiskRename)
 		r.Post("/api/netdisk/copy", a.netdiskCopy)
+		r.Post("/api/netdisk/transfer", a.netdiskTransfer)
 		r.Post("/api/netdisk/upload", a.netdiskUpload)
 		r.Get("/api/netdisk/download", a.netdiskDownload)
+		r.Get("/api/netdisk/raw", a.netdiskRaw)
 		r.Get("/api/netdisk/quota", a.netdiskQuota)
 		r.Get("/api/netdisk/shares", a.netdiskShares)
 		r.Post("/api/netdisk/share", a.netdiskShareCreate)
 		r.Post("/api/netdisk/share/delete", a.netdiskShareDelete)
 		r.Post("/api/netdisk/share/save", a.netdiskShareSave)
+		// Backup: per-user netdisk → group backup disk, plus the live job list
+		// and cancel (the jobs themselves run detached from any HTTP request).
+		r.Post("/api/netdisk/backup", a.netdiskBackup)
+		r.Get("/api/netdisk/backup/browse", a.netdiskBackupBrowse)
+		r.Post("/api/netdisk/backup/mkdir", a.netdiskBackupMkdir)
+		r.Post("/api/netdisk/backup/delete", a.netdiskBackupDelete)
+		r.Post("/api/netdisk/backup/rename", a.netdiskBackupRename)
+		r.Post("/api/netdisk/backup/copy", a.netdiskBackupCopy)
+		r.Post("/api/netdisk/backup/restore", a.netdiskBackupRestore)
+		r.Get("/api/netdisk/backup/download", a.netdiskBackupDownload)
+		r.Get("/api/netdisk/backup/raw", a.netdiskBackupRaw)
+		r.Get("/api/backup/jobs", a.backupJobsList)
+		r.Post("/api/backup/jobs/cancel", a.backupJobCancel)
 		// Hardware monitoring is visible to all activated users (admins see host-wide
 		// detail; users see the shared GPU/CPU/memory snapshot of the host they run on).
 		r.Get("/api/hardware", a.hardwareSnapshot)
@@ -266,8 +284,15 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/settings/feishu", a.feishuSettings)
 		r.Post("/api/settings/feishu", a.feishuSettings)
 		r.Post("/api/groups/netdisk", a.groupNetdisk)
+		r.Post("/api/groups/backup", a.groupBackup)
 		r.Get("/api/admin/netdisk/shares", a.netdiskSharesAdmin)
 		r.Post("/api/admin/netdisk/shares/delete", a.netdiskSharesDeleteAdmin)
+		r.Get("/api/admin/netdisk/usage", a.netdiskUsageAdmin)
+		// Backup disk management: trigger an all-user backup, read/write the
+		// daily schedule. (Per-user backup + job list are user-facing above.)
+		r.Post("/api/netdisk/backup/all", a.netdiskBackupAll)
+		r.Get("/api/backup/schedule", a.backupScheduleGet)
+		r.Post("/api/backup/schedule", a.backupSchedulePost)
 		r.Get("/api/admin/disks", a.disks)
 		r.Post("/api/admin/disks/mount", a.diskMount)
 		r.Post("/api/admin/disks/unmount", a.diskUnmount)

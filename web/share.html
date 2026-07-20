@@ -112,6 +112,23 @@
   <!-- Result / progress toast container -->
   <div id="toastContainer"></div>
 
+  <!-- File preview modal -->
+  <div class="modal-backdrop" id="viewerBackdrop" hidden>
+    <div class="modal wide viewer-modal">
+      <div class="modal-head">
+        <div class="viewer-head-text"><h2 id="viewerTitle">Preview</h2></div>
+        <div class="modal-tools">
+          <button class="ghost" id="viewerFullscreen" title="Toggle fullscreen" hidden>⛶ Fullscreen</button>
+          <a class="ghost" id="viewerDownload" href="#" title="Download">⬇ Download</a>
+          <button class="icon" id="closeViewer">✕</button>
+        </div>
+      </div>
+      <div class="modal-body viewer-body" id="viewerBody"><div class="viewer-loading">Loading…</div></div>
+    </div>
+  </div>
+
+  <script src="/vendor/pdf.min.js"></script>
+  <script src="/vendor/marked.min.js"></script>
   <script type="module" src="/share.js"></script>
 </body>
 </html>

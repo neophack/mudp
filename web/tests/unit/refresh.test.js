@@ -13,6 +13,7 @@ vi.mock("../../app.js", () => ({
     audit: [],
     auditSearch: {},
   },
+  api: vi.fn(async () => []),
   refreshSection: vi.fn(async () => {}),
   renderView: vi.fn(),
 }));
@@ -24,6 +25,7 @@ vi.mock("../../modules/notifications.js", () => ({
 
 vi.mock("../../modules/usage.js", () => ({ renderUsage: vi.fn(async () => {}) }));
 vi.mock("../../modules/netdisk.js", () => ({ renderNetdisk: vi.fn(async () => {}) }));
+vi.mock("../../modules/mcp.js", () => ({ refreshMCPTokens: vi.fn(async () => {}) }));
 
 const { state, refreshSection, renderView } = await import("../../app.js");
 const { fetchNotifications, updateNotificationBadge } = await import("../../modules/notifications.js");
@@ -114,13 +116,20 @@ describe("refreshActiveTab", () => {
     expect(fetchNotifications).toHaveBeenCalled();
   });
 
-  it("never polls tabs with inline forms (scripts/mcp/disks)", async () => {
-    for (const tab of ["scripts", "mcp", "disks"]) {
+  it("never polls the static scripts tab, but does poll mcp/disks for live data", async () => {
+    // scripts is a static config form — never polled.
+    state.tab = "scripts";
+    await refreshActiveTab();
+    expect(refreshSection).not.toHaveBeenCalled();
+    expect(renderView).not.toHaveBeenCalled();
+    vi.clearAllMocks();
+
+    // mcp polls its token list (via refreshMCPTokens), disks polls state.disks.
+    for (const tab of ["mcp", "disks"]) {
       state.tab = tab;
       await refreshActiveTab();
     }
-    expect(refreshSection).not.toHaveBeenCalled();
-    expect(renderView).not.toHaveBeenCalled();
+    expect(refreshSection).toHaveBeenCalled(); // disks loader calls refreshSection
   });
 
   it("skips audit polling while filters are active", async () => {

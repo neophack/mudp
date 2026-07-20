@@ -40,6 +40,21 @@ func (a *App) userNetdiskRoot(u *store.User) (string, error) {
 	return a.ensureUserNetdisk(u, root)
 }
 
+// userBackupRoot resolves the per-user directory on the backup disk. Unlike
+// userNetdiskRoot it does NOT auto-create the directory: backup disks are often
+// slow mechanical drives and we only want to touch them when a backup actually
+// runs. Callers that need the dir to exist should os.MkdirAll it themselves.
+func (a *App) userBackupRoot(u *store.User) (string, error) {
+	root, err := a.db.BackupPathForUser(u.ID)
+	if err != nil {
+		return "", err
+	}
+	if root == "" {
+		return "", fmt.Errorf("backup path is not configured for your group")
+	}
+	return filepath.Join(root, fmt.Sprintf("%s-%d", sanitizePathPart(u.Username), u.ID)), nil
+}
+
 func (a *App) ensureUserNetdisk(u *store.User, root string) (string, error) {
 	dir := filepath.Join(root, fmt.Sprintf("%s-%d", sanitizePathPart(u.Username), u.ID))
 	if err := os.MkdirAll(dir, 0750); err != nil {
@@ -220,7 +235,7 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Items  []struct {
+		Items []struct {
 			From string `json:"from"`
 			To   string `json:"to"`
 		} `json:"items"`
@@ -448,6 +463,32 @@ func (a *App) netdiskDownload(w http.ResponseWriter, r *http.Request) {
 	serveZipDownload(w, full, info.Name()+".zip")
 }
 
+// netdiskRaw serves a single file inline so the browser can preview it
+// (PDF / image / video / audio / text). It shares the same path and symlink
+// guards as download, only the Content-Disposition differs.
+func (a *App) netdiskRaw(w http.ResponseWriter, r *http.Request) {
+	root, err := a.userNetdiskRoot(currentUser(r))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	full, _, err := cleanUserPath(root, r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if info.IsDir() {
+		writeErr(w, http.StatusBadRequest, "path is a folder")
+		return
+	}
+	serveFileInline(w, r, full, info.Name())
+}
+
 func (a *App) netdiskQuota(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	root, err := a.userNetdiskRoot(u)
@@ -469,6 +510,51 @@ func (a *App) netdiskQuota(w http.ResponseWriter, r *http.Request) {
 		q["diskFreeBytes"] = free
 	}
 	writeJSON(w, http.StatusOK, q)
+}
+
+// netdiskUsageAdmin reports each user's current netdisk usage so admins can see
+// how much space everyone is consuming against their quota. Users with no
+// configured netdisk path report usedBytes=0 and configured=false.
+func (a *App) netdiskUsageAdmin(w http.ResponseWriter, r *http.Request) {
+	users, err := a.db.Users()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	type userUsage struct {
+		ID          int64  `json:"id"`
+		Username    string `json:"username"`
+		DisplayName string `json:"displayName"`
+		UsedBytes   int64  `json:"usedBytes"`
+		QuotaBytes  int64  `json:"quotaBytes"`
+		Configured  bool   `json:"configured"`
+		PathMissing bool   `json:"pathMissing"`
+	}
+	out := make([]userUsage, 0, len(users))
+	for _, u := range users {
+		entry := userUsage{
+			ID:          u.ID,
+			Username:    u.Username,
+			DisplayName: u.DisplayName,
+			QuotaBytes:  u.NetdiskQuotaBytes,
+		}
+		// Resolve this user's netdisk root the same way their own requests do.
+		// A missing on-disk directory or an unconfigured group path is reported
+		// rather than counted as an error so the table still renders.
+		root, err := a.userNetdiskRoot(&u)
+		if err != nil {
+			entry.Configured = false
+		} else {
+			entry.Configured = true
+			if _, err := os.Stat(root); err != nil {
+				entry.PathMissing = true
+			} else {
+				entry.UsedBytes = dirSize(root)
+			}
+		}
+		out = append(out, entry)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func dirSize(root string) int64 {
@@ -497,12 +583,12 @@ func (a *App) netdiskShareCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Paths      []string `json:"paths"`
-		Name       string   `json:"name"`
-		Permanent  bool     `json:"permanent"`
-		ExpiresAt  string   `json:"expiresAt"`
-		ExpiresDays int     `json:"expiresDays"`
-		Password   string   `json:"password"`
+		Paths       []string `json:"paths"`
+		Name        string   `json:"name"`
+		Permanent   bool     `json:"permanent"`
+		ExpiresAt   string   `json:"expiresAt"`
+		ExpiresDays int      `json:"expiresDays"`
+		Password    string   `json:"password"`
 	}
 	if err := decodeJSON(r, &req); err != nil || len(req.Paths) == 0 {
 		writeErr(w, http.StatusBadRequest, "paths are required")
@@ -733,6 +819,48 @@ func (a *App) netdiskShareDownload(w http.ResponseWriter, r *http.Request) {
 	serveFileDownload(w, r, full, info.Name())
 }
 
+// netdiskShareRaw serves a single file inline on the public share page so a
+// visitor can preview it. Same resolution + password + scope checks as the
+// download handler; only the Content-Disposition differs.
+func (a *App) netdiskShareRaw(w http.ResponseWriter, r *http.Request) {
+	share, ownerRoot, err := a.resolveShare(r.URL.Query().Get("token"))
+	if err != nil {
+		status := http.StatusNotFound
+		if err == errShareExpired {
+			status = http.StatusGone
+		}
+		writeErr(w, status, err.Error())
+		return
+	}
+	if err := checkSharePassword(r, share); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error(), "needsPassword": true})
+		return
+	}
+	reqPath := r.URL.Query().Get("path")
+	if reqPath == "" && len(share.Paths) == 1 {
+		reqPath = share.Paths[0]
+	}
+	if !shareContains(share.Paths, reqPath) {
+		writeErr(w, http.StatusForbidden, "path is not in this share")
+		return
+	}
+	full, _, err := cleanUserPath(ownerRoot, reqPath)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if info.IsDir() {
+		writeErr(w, http.StatusBadRequest, "path is a folder")
+		return
+	}
+	serveFileInline(w, r, full, info.Name())
+}
+
 func (a *App) netdiskShareSave(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	if !canMutate(u) {
@@ -922,6 +1050,136 @@ func serveFileDownload(w http.ResponseWriter, r *http.Request, full, name string
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	w.Header().Set("Content-Disposition", contentDisposition(name))
 	http.ServeContent(w, r, name, info.ModTime(), f)
+}
+
+// serveFileInline streams a single regular file with Content-Disposition:
+// inline so the browser can render it (PDF/image/video/audio/text preview). It
+// shares the symlink + regular-file guards of serveFileDownload and relies on
+// http.ServeContent for Range requests (video seek, PDF page fetch).
+func serveFileInline(w http.ResponseWriter, r *http.Request, full, name string) {
+	if isSymlink(full) {
+		writeErr(w, http.StatusForbidden, "symlinks are not allowed")
+		return
+	}
+	f, err := openNoFollow(full)
+	if err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		writeErr(w, http.StatusForbidden, "not a regular file")
+		return
+	}
+	// Browsers fall back to download when the type is unknown; sniff a friendly
+	// Content-Type for previewable extensions so <video>/<img>/pdf.js work.
+	ct := sniffContentType(full, name)
+	if ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.Header().Set("Cache-Control", "private, max-age=0")
+	// "inline" with an ASCII fallback filename so the browser tab title is sane
+	// but the file is still rendered, not downloaded.
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, asciiFilename(name)))
+	http.ServeContent(w, r, name, info.ModTime(), f)
+}
+
+// previewableContentType maps a file extension to the MIME type the browser
+// needs to render it inline. Returns "" when the extension is not previewable
+// (the caller then decides whether to sniff or refuse).
+var previewableContentType = map[string]string{
+	// Documents
+	".pdf": "application/pdf",
+	// Images
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".bmp":  "image/bmp",
+	".svg":  "image/svg+xml",
+	// Audio
+	".mp3":  "audio/mpeg",
+	".wav":  "audio/wav",
+	".ogg":  "audio/ogg",
+	".m4a":  "audio/mp4",
+	".flac": "audio/flac",
+	// Video
+	".mp4":  "video/mp4",
+	".webm": "video/webm",
+	".m4v":  "video/x-m4v",
+	".mov":  "video/quicktime",
+}
+
+// textishContentType reports a text/* Content-Type for source/config files so
+// the browser renders them as text rather than offering a download.
+var textishContentType = map[string]string{
+	".txt":       "text/plain; charset=utf-8",
+	".log":       "text/plain; charset=utf-8",
+	".md":        "text/markdown; charset=utf-8",
+	".markdown":  "text/markdown; charset=utf-8",
+	".json":      "application/json; charset=utf-8",
+	".csv":       "text/csv; charset=utf-8",
+	".tsv":       "text/tab-separated-values; charset=utf-8",
+	".ini":       "text/plain; charset=utf-8",
+	".conf":      "text/plain; charset=utf-8",
+	".cfg":       "text/plain; charset=utf-8",
+	".yml":       "text/plain; charset=utf-8",
+	".yaml":      "text/plain; charset=utf-8",
+	".toml":      "text/plain; charset=utf-8",
+	".xml":       "text/xml; charset=utf-8",
+	".html":      "text/html; charset=utf-8",
+	".htm":       "text/html; charset=utf-8",
+	".css":       "text/css; charset=utf-8",
+	".js":        "text/javascript; charset=utf-8",
+	".mjs":       "text/javascript; charset=utf-8",
+	".ts":        "text/plain; charset=utf-8",
+	".go":        "text/plain; charset=utf-8",
+	".py":        "text/plain; charset=utf-8",
+	".rb":        "text/plain; charset=utf-8",
+	".java":      "text/plain; charset=utf-8",
+	".c":         "text/plain; charset=utf-8",
+	".h":         "text/plain; charset=utf-8",
+	".cpp":       "text/plain; charset=utf-8",
+	".hpp":       "text/plain; charset=utf-8",
+	".cc":        "text/plain; charset=utf-8",
+	".sh":        "text/plain; charset=utf-8",
+	".bash":      "text/plain; charset=utf-8",
+	".zsh":       "text/plain; charset=utf-8",
+	".sql":       "text/plain; charset=utf-8",
+	".env":       "text/plain; charset=utf-8",
+	".gitignore": "text/plain; charset=utf-8",
+}
+
+// sniffContentType returns a browser-friendly Content-Type for previewable
+// file extensions (PDF / image / audio / video / text / markdown). For unknown
+// extensions it returns "" so the caller can fall back to a download.
+func sniffContentType(full, name string) string {
+	ext := strings.ToLower(filepath.Ext(name))
+	if ct, ok := previewableContentType[ext]; ok {
+		return ct
+	}
+	if ct, ok := textishContentType[ext]; ok {
+		return ct
+	}
+	// Fall back to content sniffing only for files with no extension at all,
+	// so we never override a known type with a guessed one.
+	if ext == "" {
+		if head, err := os.Open(full); err == nil {
+			defer head.Close()
+			buf := make([]byte, 512)
+			n, _ := head.Read(buf)
+			ct := http.DetectContentType(buf[:n])
+			if strings.HasPrefix(ct, "image/") ||
+				strings.HasPrefix(ct, "audio/") ||
+				strings.HasPrefix(ct, "video/") ||
+				strings.HasPrefix(ct, "text/") {
+				return ct
+			}
+		}
+	}
+	return ""
 }
 
 func serveZipDownload(w http.ResponseWriter, root, name string) {
@@ -1115,6 +1373,34 @@ func nextFreeNameWithPlanned(dir, name string, planned map[string]bool) string {
 		}
 	}
 	return candidate
+}
+
+// nextBackupName returns a non-conflicting destination name for a backup copy.
+// Unlike nextFreeName (which appends " (1)", " (2)"), it stamps the basename
+// with the current date and time using dashes: "report-20260720-023015.pdf".
+// If the stamped name still collides it falls back to "-2", "-3", etc. This
+// makes backup history self-describing on the (slow) backup disk.
+func nextBackupName(dir, name string) string {
+	candidate := filepath.Join(dir, name)
+	if _, err := os.Stat(candidate); os.IsNotExist(err) {
+		return candidate
+	}
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	stamp := time.Now().Format("20060102-150405")
+	stamped := fmt.Sprintf("%s-%s%s", base, stamp, ext)
+	candidate = filepath.Join(dir, stamped)
+	if _, err := os.Stat(candidate); os.IsNotExist(err) {
+		return candidate
+	}
+	// Same-second collision (rare): append -2, -3, …
+	for i := 2; i < 10000; i++ {
+		candidate = filepath.Join(dir, fmt.Sprintf("%s-%s-%d%s", base, stamp, i, ext))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+	return filepath.Join(dir, stamped)
 }
 
 // shareContains reports whether req is itself shared, or is a descendant of a

@@ -1,5 +1,7 @@
 // Standalone public share page. Baidu-Netdisk-style browsing + save-to-directory.
 
+import { openYuvViewer } from "/lib/yuv.js";
+
 const state = {
   token: "",
   path: "",
@@ -203,9 +205,12 @@ function renderItems() {
   $("#shareEmpty").hidden = true;
   const rows = state.items.map((f) => {
     const checked = state.selected.has(f.path) ? "checked" : "";
+    const kind = !f.dir ? previewKind(f.name) : null;
     const nameCell = f.dir
       ? `<button class="share-name linklike" data-open="${escapeHtml(f.path)}">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></button>`
-      : `<span class="share-name">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></span>`;
+      : kind
+        ? `<button class="share-name linklike" data-view="${escapeHtml(f.path)}" title="Preview">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></button>`
+        : `<span class="share-name">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></span>`;
     return `<tr data-path="${escapeHtml(f.path)}">
       <td class="chk-cell"><input type="checkbox" class="chk share-select" data-path="${escapeHtml(f.path)}" ${checked}></td>
       <td>${nameCell}</td>
@@ -219,6 +224,9 @@ function renderItems() {
   // Bind events
   document.querySelectorAll("[data-open]").forEach((btn) => {
     btn.onclick = () => loadShare(btn.dataset.open);
+  });
+  document.querySelectorAll("[data-view]").forEach((btn) => {
+    btn.onclick = () => openViewer(btn.dataset.view);
   });
   document.querySelectorAll(".share-select").forEach((cb) => {
     cb.onchange = () => toggleSelection(cb.dataset.path, cb.checked);
@@ -439,6 +447,9 @@ function bindEvents() {
   };
   $("#pickerMkdir").onclick = pickerMkdir;
 
+  $("#closeViewer").onclick = closeViewer;
+  $("#viewerFullscreen").onclick = toggleViewerFullscreen;
+
   // Click on the backdrop ring (not the modal contents) closes the top modal.
   let pressOnBackdrop = false;
   document.addEventListener("mousedown", (e) => {
@@ -460,11 +471,222 @@ function downloadURL(path) {
   return `/api/netdisk/share/download?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(path)}${pw}&ts=${Date.now()}`;
 }
 
+function rawURL(path) {
+  const pw = state.password ? `&password=${encodeURIComponent(state.password)}` : "";
+  return `/api/netdisk/share/raw?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(path)}${pw}&ts=${Date.now()}`;
+}
+
 function closeTopModal() {
-  // Picker takes precedence over the login prompt when both are shown.
-  if (!$("#pickerBackdrop").hidden) closePicker();
+  // Viewer is topmost (it covers the others when open).
+  if (!$("#viewerBackdrop").hidden) closeViewer();
+  else if (!$("#pickerBackdrop").hidden) closePicker();
   else if (!$("#loginBackdrop").hidden) closeLogin();
   else if (!$("#passwordBackdrop").hidden) closePasswordPrompt();
+}
+
+// ---------- File preview ----------
+
+const TEXT_PREVIEW_EXTS = new Set([
+  "txt", "log", "json", "csv", "tsv", "ini", "conf", "cfg", "yml", "yaml", "toml",
+  "xml", "html", "htm", "css", "js", "mjs", "ts", "go", "py", "rb", "java", "c",
+  "h", "cpp", "hpp", "cc", "sh", "bash", "zsh", "sql", "env", "gitignore",
+]);
+
+function previewKind(name) {
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  if (!ext) return null;
+  if (ext === "pdf") return "pdf";
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext)) return "image";
+  if (["mp3", "wav", "ogg", "m4a", "flac"].includes(ext)) return "audio";
+  if (["mp4", "webm", "m4v", "mov"].includes(ext)) return "video";
+  if (ext === "yuv") return "yuv";
+  if (TEXT_PREVIEW_EXTS.has(ext)) return "text";
+  return null;
+}
+
+function openViewer(path) {
+  const name = path.split("/").pop() || path;
+  const kind = previewKind(name);
+  resetViewerState(); // clears any previous fullscreen / cached PDF
+  $("#viewerTitle").textContent = name;
+  // Hide the fullscreen button for types that can't use it (text/markdown/audio).
+  const fsBtn = $("#viewerFullscreen");
+  if (fsBtn) fsBtn.hidden = !(kind === "pdf" || kind === "video" || kind === "image" || kind === "yuv");
+  $("#viewerDownload").href = downloadURL(path);
+  $("#viewerBackdrop").hidden = false;
+  if (!kind) {
+    // Unsupported type: show a friendly prompt with a direct download.
+    $("#viewerBody").innerHTML =
+      `<div class="viewer-unsupported">` +
+        `<div class="viewer-unsupported-icon" aria-hidden="true">📄</div>` +
+        `<p>Preview is not available for this file type yet.</p>` +
+        `<p class="hint">You can download it to view locally.</p>` +
+        `<a class="primary" href="${downloadURL(path)}" download>⬇ Download</a>` +
+      `</div>`;
+    return;
+  }
+  $("#viewerBody").innerHTML = `<div class="viewer-loading">Loading…</div>`;
+  renderViewerContent(kind, name, rawURL(path)).catch((err) => {
+    const body = $("#viewerBody");
+    if (body) body.innerHTML = `<div class="viewer-error">${escapeHtml(err.message || "Failed to load file")}</div>`;
+  });
+}
+
+function closeViewer() {
+  resetViewerState();
+  $("#viewerBackdrop").hidden = true;
+  // Release media resources so audio/video playback stops on close.
+  $("#viewerBody").innerHTML = "";
+}
+
+// resetViewerState clears fullscreen and cached PDF/YUV state. Called on close
+// and before each new preview so the previous file's resources don't leak.
+function resetViewerState() {
+  pdfRenderState = null;
+  if (yuvController) {
+    yuvController.destroy();
+    yuvController = null;
+  }
+  $("#viewerBackdrop").classList.remove("viewer-fullscreen");
+  const fsBtn = $("#viewerFullscreen");
+  if (fsBtn) fsBtn.textContent = "⛶ Fullscreen";
+  const media = $("#viewerBody").querySelector("video.viewer-media, audio.viewer-media");
+  if (media) {
+    try { media.pause(); } catch { /* best-effort */ }
+  }
+  if (document.fullscreenElement) {
+    document.exitFullscreen?.().catch(() => {});
+  }
+}
+
+function toggleViewerFullscreen() {
+  const backdrop = $("#viewerBackdrop");
+  if (!backdrop || backdrop.hidden) return;
+  const isFs = backdrop.classList.toggle("viewer-fullscreen");
+  const fsBtn = $("#viewerFullscreen");
+  if (fsBtn) fsBtn.textContent = isFs ? "⛶ Exit fullscreen" : "⛶ Fullscreen";
+  // For <video>/<img>, prefer the native Fullscreen API so controls stay usable.
+  const media = backdrop.querySelector("video.viewer-media, img.viewer-media");
+  if (media && media.requestFullscreen) {
+    if (isFs) media.requestFullscreen?.().catch(() => {});
+    else if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  }
+  // Re-render PDF pages at the new container width for crisp output.
+  if (pdfRenderState && backdrop.querySelector("#pdfPages")) {
+    paintPdfPages($("#viewerBody"));
+  }
+  // Re-paint the YUV frame so the canvas adapts to the new viewport.
+  if (yuvController) {
+    yuvController.repaint();
+  }
+}
+
+async function renderViewerContent(kind, name, url) {
+  const body = $("#viewerBody");
+  if (!body) return;
+  switch (kind) {
+    case "pdf":
+      return renderPdf(url, body);
+    case "markdown":
+      return renderMarkdown(url, body);
+    case "text":
+      return renderText(url, body);
+    case "image":
+      body.innerHTML = `<img class="viewer-media" src="${url}" alt="${escapeHtml(name)}" />`;
+      return;
+    case "audio":
+      body.innerHTML = `<audio class="viewer-media" controls preload="metadata" src="${url}"></audio>`;
+      return;
+    case "video":
+      body.innerHTML = `<video class="viewer-media" controls preload="metadata" src="${url}"></video>`;
+      return;
+    case "yuv":
+      return renderYuv(url, body, name);
+  }
+}
+
+// renderYuv builds the YUV viewer. The returned controller is stashed in
+// yuvController so toggleViewerFullscreen can repaint the frame and
+// resetViewerState can cancel its in-flight fetch on close.
+function renderYuv(url, body, name) {
+  body.innerHTML = `<div class="viewer-loading">Loading YUV…</div>`;
+  yuvController = openYuvViewer({ name, url, bodyEl: body });
+}
+
+// pdfRenderState caches the loaded PDF document so a fullscreen toggle can
+// re-render pages at the new width without re-downloading.
+let pdfRenderState = null;
+
+// yuvController holds the active YUV viewer's handle so a fullscreen toggle can
+// repaint the frame and resetViewerState can cancel its in-flight fetch.
+let yuvController = null;
+
+async function renderPdf(url, body) {
+  const pdfjs = window.pdfjsLib;
+  if (!pdfjs) {
+    body.innerHTML = `<div class="viewer-error">PDF viewer failed to load. Try refreshing the page.</div>`;
+    return;
+  }
+  pdfjs.workerSrc = "/vendor/pdf.worker.min.js";
+  body.innerHTML = `<div class="viewer-loading">Rendering PDF…</div>`;
+  const pdf = await pdfjs.getDocument({ url }).promise;
+  pdfRenderState = { pdf, url };
+  await paintPdfPages(body);
+}
+
+// paintPdfPages lays out each PDF page in a vertical scroll container. The
+// canvas is drawn at device-pixel resolution (CSS × devicePixelRatio) and then
+// sized down via CSS, keeping text crisp on Retina/4K displays.
+async function paintPdfPages(body) {
+  const { pdf } = pdfRenderState || {};
+  if (!pdf) return;
+  body.innerHTML = `<div class="viewer-canvas-wrap" id="pdfPages"></div>`;
+  const pages = document.getElementById("pdfPages");
+  const maxWidth = Math.max(360, pages.clientWidth || 820);
+  for (let i = 1; i <= pdf.numPages; i++) {
+    if (!pages || !pages.isConnected) return; // viewer closed mid-render
+    const page = await pdf.getPage(i);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = Math.max(1, maxWidth / baseViewport.width);
+    const viewport = page.getViewport({ scale });
+    const dpr = window.devicePixelRatio || 1;
+    const canvas = document.createElement("canvas");
+    canvas.className = "viewer-page";
+    canvas.width = Math.floor(viewport.width * dpr);
+    canvas.height = Math.floor(viewport.height * dpr);
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+    pages.appendChild(canvas);
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+  }
+}
+
+async function renderMarkdown(url, body) {
+  const res = await fetch(url, { credentials: "same-origin" });
+  const text = await res.text();
+  const marked = window.marked;
+  if (!marked || typeof marked.parse !== "function") {
+    body.innerHTML = `<pre class="viewer-text"></pre>`;
+    body.querySelector("pre").textContent = text;
+    return;
+  }
+  body.innerHTML = `<div class="viewer-markdown md-body"></div>`;
+  body.querySelector(".viewer-markdown").innerHTML = marked.parse(text);
+}
+
+async function renderText(url, body) {
+  const res = await fetch(url, { credentials: "same-origin" });
+  const len = Number(res.headers.get("Content-Length") || 0);
+  if (len > 2 * 1024 * 1024) {
+    body.innerHTML = `<div class="viewer-error">This file is larger than 2 MB. Please download it to view.</div>`;
+    return;
+  }
+  const text = await res.text();
+  body.innerHTML = `<pre class="viewer-text"></pre>`;
+  body.querySelector("pre").textContent = text;
 }
 
 init();

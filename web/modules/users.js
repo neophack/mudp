@@ -1,7 +1,7 @@
 // Users & Groups management: create users/groups, assign roles, group
 // membership (Feishu approval flow), reset passwords, disable/delete accounts.
 
-import { state, api, toast, escapeHtml, refreshSection, renderView, displayName } from "../app.js";
+import { state, api, toast, escapeHtml, fmtBytes, refreshSection, renderView, displayName } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 const ROLES = [
@@ -12,10 +12,29 @@ const ROLES = [
   { value: "admin", label: "Administrator", hint: "Full control + user management" },
 ];
 
-export function renderUsers() {
+export async function renderUsers() {
+  // Prefer the usage rows the refresh engine already fetched for this tick
+  // (state.netdiskUsageRows) so we don't double-fetch on every background
+  // refresh. Fall back to a one-off fetch on first entry, when no rows are
+  // cached yet. Keep the previous usage map until fresh data arrives so
+  // background refreshes don't flash "Loading…" every tick.
+  const prevUsage = state.netdiskUsage || null;
+  state.netdiskUsage = prevUsage;
+  if (state.netdiskUsageRows) {
+    state.netdiskUsage = mapUsageById(state.netdiskUsageRows);
+  } else {
+    api("/api/admin/netdisk/usage")
+      .then((rows) => {
+        state.netdiskUsageRows = rows || [];
+        state.netdiskUsage = mapUsageById(state.netdiskUsageRows);
+        paintNetdiskUsage();
+      })
+      .catch(() => { if (!prevUsage) state.netdiskUsage = {}; });
+  }
+
   $("#view").innerHTML =
-    `<div class="grid two">` +
-      `<section class="stack">` +
+    `<div class="grid two users-layout">` +
+      `<section class="stack users-settings-col">` +
         `<div class="card"><div class="card-head"><h2>New Group</h2></div>` +
           `<div class="card-body"><form id="newGroup" class="compact">` +
             `<input name="name" placeholder="Group name, e.g. research" required>` +
@@ -37,14 +56,25 @@ export function renderUsers() {
           `<table class="data"><thead><tr><th>Group</th><th>Path</th><th class="actions">Actions</th></tr></thead>` +
           `<tbody>${state.groups.map(groupPathRow).join("") || `<tr class="empty-row"><td colspan="3">No groups yet.</td></tr>`}</tbody></table>` +
         `</div>` +
+        `<div class="card"><div class="card-head"><h2>Group Backup Paths</h2></div>` +
+          `<p class="hint" style="padding:0 16px;margin:0 0 8px">Slower mechanical disks where netdisk files are mirrored. Backup is not quota-bound.</p>` +
+          `<table class="data"><thead><tr><th>Group</th><th>Backup Path</th><th class="actions">Actions</th></tr></thead>` +
+          `<tbody>${state.groups.map(groupBackupRow).join("") || `<tr class="empty-row"><td colspan="3">No groups yet.</td></tr>`}</tbody></table>` +
+        `</div>` +
       `</section>` +
-      `<div class="card">` +
-        `<div class="card-head"><h2>Users</h2></div>` +
-        `<table class="data">` +
-          `<thead><tr><th>User</th><th>Role</th><th>Groups</th><th>Ports</th><th class="actions">Actions</th></tr></thead>` +
-          `<tbody>${state.users.map(userRow).join("") || `<tr class="empty-row"><td colspan="5">No users yet.</td></tr>`}</tbody>` +
-        `</table>` +
-      `</div>` +
+      `<section class="stack users-main-col">` +
+        `<div class="card">` +
+          `<div class="card-head"><h2>Users</h2></div>` +
+          `<table class="data">` +
+            `<thead><tr><th>User</th><th>Role</th><th>Groups</th><th>Ports</th><th class="actions">Actions</th></tr></thead>` +
+            `<tbody>${state.users.map(userRow).join("") || `<tr class="empty-row"><td colspan="5">No users yet.</td></tr>`}</tbody>` +
+          `</table>` +
+        `</div>` +
+        `<div class="card"><div class="card-head"><h2>Netdisk Usage</h2><span class="hint" id="netdiskUsageTotal"></span></div>` +
+          `<table class="data netdisk-usage-table"><thead><tr><th>User</th><th class="netdisk-used-col">Used</th><th>Quota</th><th class="netdisk-bar-col"></th></tr></thead>` +
+          `<tbody id="netdiskUsageBody">${prevUsage ? usageRowsHtml(prevUsage) : `<tr class="empty-row"><td colspan="4">Loading…</td></tr>`}</tbody></table>` +
+        `</div>` +
+      `</section>` +
     `</div>`;
 
   $("#newGroup").onsubmit = async (e) => {
@@ -98,6 +128,9 @@ export function renderUsers() {
   });
   document.querySelectorAll("[data-group-path]").forEach((btn) => {
     btn.onclick = () => setGroupPath(Number(btn.dataset.groupPath), btn.dataset.groupName, btn.dataset.current || "");
+  });
+  document.querySelectorAll("[data-group-backup]").forEach((btn) => {
+    btn.onclick = () => setGroupBackupPath(Number(btn.dataset.groupBackup), btn.dataset.groupName, btn.dataset.current || "");
   });
 }
 
@@ -156,6 +189,23 @@ async function setGroupPath(groupId, name, current) {
     await refreshSection("users", "groups");
     renderView();
     toast("Netdisk path saved", true);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function groupBackupRow(g) {
+  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td class="path-cell"><div class="secondary-line mono">${escapeHtml(g.backupPath || "Not configured")}</div></td><td class="actions"><button class="ghost" data-group-backup="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.backupPath || "")}">Set Backup Path</button></td></tr>`;
+}
+
+async function setGroupBackupPath(groupId, name, current) {
+  const path = prompt(`Backup disk root path for ${name} (mechanical disk recommended)`, current || "");
+  if (path === null) return;
+  try {
+    await api("/api/groups/backup", { method: "POST", body: JSON.stringify({ groupId, path }) });
+    await refreshSection("users", "groups");
+    renderView();
+    toast("Backup path saved", true);
   } catch (err) {
     toast(err.message);
   }
@@ -295,6 +345,62 @@ function formatQuota(bytes) {
   const mb = bytes / 1024 / 1024;
   if (mb >= 1) return `${mb.toFixed(1)} MB`;
   return `${bytes} B`;
+}
+
+// ---------- Netdisk usage (admin) ----------
+
+// mapUsageById indexes the usage rows by user id for O(1) lookup while painting.
+function mapUsageById(rows) {
+  const m = {};
+  for (const r of rows) m[r.id] = r;
+  return m;
+}
+
+// paintNetdiskUsage fills the dedicated usage card once /api/admin/netdisk/usage
+// resolves. Called after the initial render so the table can paint progressively.
+function paintNetdiskUsage() {
+  const body = $("#netdiskUsageBody");
+  const totalEl = $("#netdiskUsageTotal");
+  if (!body) return; // user navigated away before usage loaded
+  const usage = state.netdiskUsage || {};
+  body.innerHTML = usageRowsHtml(usage);
+  if (totalEl) {
+    const total = Object.values(usage).reduce((s, r) => s + (r.usedBytes || 0), 0);
+    totalEl.textContent = `Total used: ${fmtBytes(total)}`;
+  }
+}
+
+// usageRowsHtml builds the sorted <tr> list for a given usage map. Shared by the
+// initial render (when usage is already cached) and the post-fetch repaint.
+// Sort by used bytes (desc) so the heaviest consumers appear at the top.
+function usageRowsHtml(usage) {
+  const map = usage || {};
+  const rows = [...state.users]
+    .sort((a, b) => (map[b.id]?.usedBytes || 0) - (map[a.id]?.usedBytes || 0))
+    .map((u) => usageRow(u, map[u.id]));
+  return rows.join("") || `<tr class="empty-row"><td colspan="4">No users.</td></tr>`;
+}
+
+function usageRow(user, info) {
+  const name = escapeHtml(displayName(user) || user.username);
+  const used = info ? info.usedBytes || 0 : 0;
+  const quota = info ? info.quotaBytes || 0 : user.netdiskQuotaBytes || 0;
+  // A user may legitimately have no netdisk path yet (group not configured, or
+  // the on-disk folder has never been created). Surface that instead of "0 B".
+  let status = "";
+  if (info && !info.configured) status = ` <span class="badge badge-muted">no path</span>`;
+  else if (info && info.pathMissing) status = ` <span class="badge badge-muted">not created</span>`;
+  const pct = quota > 0 ? Math.min(100, Math.round((used / quota) * 100)) : 0;
+  const barCls = pct >= 90 ? "danger" : pct >= 70 ? "warn" : "";
+  const quotaText = quota > 0 ? `${pct}% of ${fmtBytes(quota)}` : "unlimited";
+  return (
+    `<tr>` +
+      `<td>${name}${status}</td>` +
+      `<td class="netdisk-used-col">${fmtBytes(used)}</td>` +
+      `<td>${escapeHtml(quotaText)}</td>` +
+      `<td class="netdisk-bar-col">${quota > 0 ? `<span class="quota-bar ${barCls}"><span style="width:${pct}%"></span></span>` : ""}</td>` +
+    `</tr>`
+  );
 }
 
 

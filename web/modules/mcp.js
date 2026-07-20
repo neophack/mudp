@@ -39,12 +39,13 @@ const MCP_TOOL_GROUPS = [
 ];
 
 export async function renderMCP() {
-  // Show a loading placeholder, then fetch the latest tokens so the view always
-  // reflects the database — not whatever the boot-time background load happened
-  // to populate (which races with rendering and caused tokens to appear only
-  // after a few manual refreshes).
-  $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">Loading MCP tokens…</p></div></div>`;
-  await refreshMCPTokens();
+  // The refresh engine fetches tokens into state.mcpTokens before calling this;
+  // only fetch on first entry (no cached data yet) to avoid a redundant request
+  // on every signature-driven repaint.
+  if (!state.mcpTokens) {
+    $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">Loading MCP tokens…</p></div></div>`;
+    await refreshMCPTokens();
+  }
 
   if (!state.mcpTokens) state.mcpTokens = [];
   const mutable = canMutate();

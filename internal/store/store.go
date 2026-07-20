@@ -61,6 +61,7 @@ type Group struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`
 	NetdiskPath string `json:"netdiskPath,omitempty"`
+	BackupPath  string `json:"backupPath,omitempty"`
 }
 
 // Notification is an in-app message delivered to a single user.
@@ -172,7 +173,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 20
+const schemaVersion = 22
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -209,6 +210,8 @@ var migrations = []migration{
 	{18, "create notifications table", migrateCreateNotifications},
 	{19, "delete orphaned mcp_tokens", migrateDeleteOrphanedMCPTokens},
 	{20, "add netdisk_shares.password", migrateAddSharePassword},
+	{21, "add groups.backup_path", migrateAddGroupBackupPath},
+	{22, "create backup_schedule", migrateCreateBackupSchedule},
 }
 
 func migrateCreateInitialTables(db executor) error {
@@ -228,11 +231,12 @@ func migrateCreateInitialTables(db executor) error {
 			comment text default '',
 			display_name text default ''
 		)`,
-		`create table if not exists groups (
-			id integer primary key autoincrement,
-			name text not null unique,
-			netdisk_path text not null default ''
-		)`,
+	`create table if not exists groups (
+		id integer primary key autoincrement,
+		name text not null unique,
+		netdisk_path text not null default '',
+		backup_path text not null default ''
+	)`,
 		`create table if not exists user_groups (
 			user_id integer not null references users(id) on delete cascade,
 			group_id integer not null references groups(id) on delete cascade,
@@ -315,6 +319,28 @@ func migrateAddPortPrefix(db executor) error {
 
 func migrateAddGroupNetdiskPath(db executor) error {
 	return execIgnoring(db, `alter table groups add column netdisk_path text not null default ''`, sqliteDuplicateColumn)
+}
+
+func migrateAddGroupBackupPath(db executor) error {
+	return execIgnoring(db, `alter table groups add column backup_path text not null default ''`, sqliteDuplicateColumn)
+}
+
+// migrateCreateBackupSchedule creates the single-row backup schedule config
+// table used by the daily scheduled-backup ticker. A row is seeded on first use.
+func migrateCreateBackupSchedule(db executor) error {
+	_, err := db.Exec(`create table if not exists backup_schedule (
+		id integer primary key check (id = 1),
+		hour integer not null default 2,
+		minute integer not null default 0,
+		enabled integer not null default 0,
+		last_run_at text not null default ''
+	)`)
+	if err != nil {
+		return err
+	}
+	// Seed the single config row if it doesn't exist.
+	_, err = db.Exec(`insert or ignore into backup_schedule(id, hour, minute, enabled, last_run_at) values (1, 2, 0, 0, '')`)
+	return err
 }
 
 func migrateAddShareExpiresAt(db executor) error {
@@ -736,7 +762,7 @@ func (db *DB) Users() ([]User, error) {
 }
 
 func (db *DB) Groups() ([]Group, error) {
-	rows, err := db.Query(`select id,name,netdisk_path from groups order by name`)
+	rows, err := db.Query(`select id,name,netdisk_path,backup_path from groups order by name`)
 	if err != nil {
 		return nil, err
 	}
@@ -744,7 +770,7 @@ func (db *DB) Groups() ([]Group, error) {
 	var groups []Group
 	for rows.Next() {
 		var g Group
-		if err := rows.Scan(&g.ID, &g.Name, &g.NetdiskPath); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.NetdiskPath, &g.BackupPath); err != nil {
 			return nil, err
 		}
 		groups = append(groups, g)
@@ -759,6 +785,11 @@ func (db *DB) CreateGroup(name string) error {
 
 func (db *DB) UpdateGroupNetdiskPath(groupID int64, path string) error {
 	_, err := db.Exec(`update groups set netdisk_path=? where id=?`, strings.TrimSpace(path), groupID)
+	return err
+}
+
+func (db *DB) UpdateGroupBackupPath(groupID int64, path string) error {
+	_, err := db.Exec(`update groups set backup_path=? where id=?`, strings.TrimSpace(path), groupID)
 	return err
 }
 
@@ -777,6 +808,67 @@ func (db *DB) NetdiskPathForUser(userID int64) (string, error) {
 		return strings.TrimSpace(path), nil
 	}
 	return "", nil
+}
+
+// BackupPathForUser resolves the configured backup disk root for a user's
+// primary group, mirroring NetdiskPathForUser.
+func (db *DB) BackupPathForUser(userID int64) (string, error) {
+	rows, err := db.Query(`select g.backup_path from groups g join user_groups ug on ug.group_id=g.id
+		where ug.user_id=? and g.backup_path != '' order by g.id limit 1`, userID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(path), nil
+	}
+	return "", nil
+}
+
+// BackupSchedule is the single-row daily backup schedule config.
+type BackupSchedule struct {
+	Hour      int    `json:"hour"`
+	Minute    int    `json:"minute"`
+	Enabled   bool   `json:"enabled"`
+	LastRunAt string `json:"lastRunAt"`
+}
+
+func (db *DB) BackupScheduleGet() (BackupSchedule, error) {
+	var s BackupSchedule
+	var enabled int
+	err := db.QueryRow(`select hour, minute, enabled, last_run_at from backup_schedule where id=1`).
+		Scan(&s.Hour, &s.Minute, &enabled, &s.LastRunAt)
+	if err != nil {
+		return s, err
+	}
+	s.Enabled = enabled != 0
+	return s, nil
+}
+
+func (db *DB) BackupScheduleSet(hour, minute int, enabled bool) error {
+	if hour < 0 || hour > 23 {
+		hour = 2
+	}
+	if minute < 0 || minute > 59 {
+		minute = 0
+	}
+	e := 0
+	if enabled {
+		e = 1
+	}
+	_, err := db.Exec(`update backup_schedule set hour=?, minute=?, enabled=? where id=1`, hour, minute, e)
+	return err
+}
+
+// BackupScheduleMarkRun records that the daily backup ran at the given RFC3339
+// timestamp, so the ticker doesn't fire twice in the same minute.
+func (db *DB) BackupScheduleMarkRun(ts string) error {
+	_, err := db.Exec(`update backup_schedule set last_run_at=? where id=1`, ts)
+	return err
 }
 
 func (db *DB) SaveImage(displayName, dockerRef, sourceRef string) error {

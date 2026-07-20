@@ -1,8 +1,10 @@
-// Global background-jobs tracker. Long-running SSE operations (image pull/build,
-// container create, stack up/down) register themselves here so users can see all
-// active work in one place and cancel it manually from the header dropdown.
+// Global background-jobs tracker. Two kinds of jobs live here side by side:
+//   - client-side SSE jobs (image pull/build, container create, stack up/down)
+//     identified by ids like "job_…" and cancelled by aborting their fetch;
+//   - server-side backup jobs (id prefix "backup_") that survive the browser
+//     tab — polled from /api/backup/jobs and cancelled via /api/backup/jobs/cancel.
 
-import { state } from "../app.js";
+import { state, api } from "../app.js";
 import { showModal, setModalBody } from "./ui.js";
 
 const KIND_LABEL = {
@@ -12,6 +14,7 @@ const KIND_LABEL = {
   "stack.up": "Stack deploy",
   "stack.down": "Stack down",
   "container.create": "Create container",
+  "backup.run": "Netdisk backup",
 };
 
 const KIND_ICON = {
@@ -21,6 +24,7 @@ const KIND_ICON = {
   "stack.up": `<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/>`,
   "stack.down": `<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/>`,
   "container.create": `<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/>`,
+  "backup.run": `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>`,
 };
 
 function generateId() {
@@ -98,6 +102,15 @@ export function cancelJob(id) {
   const job = (state.jobs || []).find((j) => j.id === id);
   if (!job) return;
   if (!job.active) return;
+  // Server-side backup jobs are cancelled through their own endpoint; the next
+  // poll tick will flip the status to "cancelled". Client-side SSE jobs are
+  // cancelled by aborting the fetch stream.
+  if (job.server) {
+    api("/api/backup/jobs/cancel", { method: "POST", body: JSON.stringify({ id }) })
+      .then(() => { /* status flips on next poll */ })
+      .catch(() => { /* best-effort */ });
+    return;
+  }
   try {
     job.controller.abort();
   } catch {
@@ -111,9 +124,82 @@ export function cancelJob(id) {
 }
 
 export function clearCompletedJobs() {
+  // Keep running jobs (both client and server-side) so a clear mid-backup
+  // doesn't drop a still-active server job from view.
   state.jobs = (state.jobs || []).filter((j) => j.active);
   updateBadge();
   refreshJobsModal();
+}
+
+// ---------- Server-side backup job sync ----------
+//
+// Backup jobs live on the server (they survive the browser tab). We poll
+// /api/backup/jobs every few seconds and merge the server's view into state.jobs
+// so the existing panel/render code shows them with no extra plumbing. Server
+// jobs are tagged server:true and use the server's id verbatim (prefixed
+// "backup_"), which is what cancelJob keys off to pick the cancel endpoint.
+
+let backupPollTimer = null;
+
+export function startBackupJobsPolling() {
+  // One poller for the whole app lifetime; idempotent so repeated calls no-op.
+  if (backupPollTimer) return;
+  const tick = () => {
+    api("/api/backup/jobs")
+      .then((jobs) => mergeBackupJobs(jobs || []))
+      .catch(() => { /* best-effort; keep the previous snapshot */ });
+  };
+  tick();
+  backupPollTimer = setInterval(tick, 3000);
+}
+
+function mergeBackupJobs(serverJobs) {
+  if (!Array.isArray(serverJobs)) return;
+  // Replace the server-side slice of state.jobs with the fresh snapshot, keep
+  // all client-side (SSE) jobs untouched.
+  const clientJobs = (state.jobs || []).filter((j) => !j.server);
+  const mapped = serverJobs.map((j) => mapServerJob(j));
+  // Preserve the local "removed" intent: a server job the user dismissed via
+  // 🗑 is tracked in dismissedBackupIds so it doesn't reappear next poll.
+  const kept = mapped.filter((j) => !dismissedBackupIds.has(j.id));
+  state.jobs = [...clientJobs, ...kept];
+  updateBadge();
+  refreshJobsModal();
+}
+
+const dismissedBackupIds = new Set();
+
+function mapServerJob(j) {
+  // Server jobs are "active" while running; everything else (done/error/
+  // cancelled) is inactive so the badge counts only live work.
+  const active = j.status === "running";
+  // Compose a human message that includes progress % and byte counts when present.
+  let message = j.message || "";
+  if (active && j.total > 0) {
+    const pct = j.progress || 0;
+    message = `${message} (${pct}% · ${fmtBytes(j.done)}/${fmtBytes(j.total)})`;
+  }
+  return {
+    id: j.id,
+    kind: j.kind || "backup.run",
+    name: j.name || "Backup",
+    status: j.status,
+    startedAt: j.startedAt ? Date.parse(j.startedAt) : Date.now(),
+    message,
+    active,
+    server: true,
+    progress: j.progress || 0,
+    done: j.done || 0,
+    total: j.total || 0,
+  };
+}
+
+function fmtBytes(n) {
+  if (!n) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 export function renderJobsButton() {
@@ -163,6 +249,10 @@ function bindJobsModal() {
   document.querySelectorAll("[data-job-remove]").forEach((btn) => {
     btn.onclick = () => {
       const id = btn.dataset.jobRemove;
+      // Server jobs would otherwise reappear on the next poll tick; remember the
+      // dismissal so mergeBackupJobs filters them out.
+      const job = (state.jobs || []).find((j) => j.id === id);
+      if (job && job.server) dismissedBackupIds.add(id);
       state.jobs = (state.jobs || []).filter((j) => j.id !== id);
       updateBadge();
       refreshJobsModal();
@@ -204,6 +294,12 @@ function jobRow(job) {
   const action = job.active
     ? `<button class="icon danger" title="Cancel job" data-job-cancel="${escapeHtml(job.id)}">✕</button>`
     : `<button class="icon" title="Remove from list" data-job-remove="${escapeHtml(job.id)}">🗑</button>`;
+  // Backup jobs report a 0..100 progress; render a thin bar under the message
+  // so the user can watch a long backup advance without opening the row.
+  const progressHtml =
+    job.active && typeof job.progress === "number" && job.total > 0
+      ? `<div class="job-progress"><div class="job-progress-fill" style="width:${Math.min(100, job.progress)}%"></div></div>`
+      : ``;
   return (
     `<div class="job-item ${job.active ? "job-active" : "job-inactive"}" data-job-id="${escapeHtml(job.id)}">` +
       `<div class="job-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></div>` +
@@ -217,6 +313,7 @@ function jobRow(job) {
           `<span class="job-time">${escapeHtml(elapsed)}</span>` +
         `</div>` +
         `<div class="job-message hint">${escapeHtml(truncate(job.message || "", 140))}</div>` +
+        progressHtml +
       `</div>` +
       `<div class="job-actions">${action}</div>` +
     `</div>`

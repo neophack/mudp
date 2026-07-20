@@ -9,10 +9,11 @@
 //  - state-backed views re-render only when the fetched data signature
 //    changed, so scroll position, selections and focus survive quiet ticks.
 
-import { state, refreshSection, renderView } from "../app.js";
+import { state, api, refreshSection, renderView } from "../app.js";
 import { fetchNotifications, updateNotificationBadge } from "./notifications.js";
 import { renderUsage } from "./usage.js";
 import { renderNetdisk } from "./netdisk.js";
+import { refreshMCPTokens } from "./mcp.js";
 
 // sectionLoader polls one or more global-state sections and returns a
 // signature string used for change detection.
@@ -33,11 +34,29 @@ async function auditLoader() {
   return JSON.stringify(state.audit);
 }
 
+// usersLoader refreshes the user/group lists and the admin netdisk-usage
+// report in parallel, then folds all three into the change-detection
+// signature. Folding usage in is what makes the "Netdisk Usage" card update
+// live when a user uploads or deletes files in another session — without it,
+// only users/groups changes would trigger a re-render.
+async function usersLoader() {
+  const usagePromise = state.me && state.me.role === "admin"
+    ? api("/api/admin/netdisk/usage").catch(() => null)
+    : Promise.resolve(null);
+  // refreshSection writes users/groups into state in parallel with the usage
+  // fetch; we don't need its return value, just the state mutation.
+  await Promise.all([refreshSection("users", "groups"), usagePromise]);
+  const usage = await usagePromise;
+  // Stash the fresh usage rows so renderUsers() can paint them without a
+  // duplicate fetch on this tick. renderUsers re-indexes by id at render time.
+  if (usage) state.netdiskUsageRows = usage;
+  return JSON.stringify([state.users, state.groups, usage]);
+}
+
 // TAB_REFRESH maps a tab to its poll interval and data loader. A loader
 // returning null means "the render function fetches and decides itself"
-// (self-fetching views, marked selfFetch). hardware polls itself;
-// mcp/scripts/disks hold inline DOM-only forms and already re-render after
-// the user's own mutations, so they are deliberately excluded.
+// (self-fetching views, marked selfFetch). hardware polls itself on its own
+// timer; scripts is a static config form and is intentionally excluded.
 const TAB_REFRESH = {
   containers: { ms: 5000, load: sectionLoader("containers") },
   dashboard: { ms: 8000, load: sectionLoader("dashboard") },
@@ -46,9 +65,13 @@ const TAB_REFRESH = {
   networks: { ms: 10000, load: sectionLoader("networks") },
   stacks: { ms: 10000, load: sectionLoader("stacks") },
   usage: { ms: 10000, selfFetch: true, load: async () => { await renderUsage(); return null; } },
-  users: { ms: 15000, load: sectionLoader("users", "groups") },
+  users: { ms: 15000, load: usersLoader },
   audit: { ms: 15000, load: auditLoader },
   netdisk: { ms: 15000, selfFetch: true, load: async () => { await renderNetdisk(); return null; } },
+  // MCP: refresh the token list into state, then only re-render when it changed.
+  // This keeps the inline create-token form from being clobbered every tick.
+  mcp: { ms: 15000, load: async () => { await refreshMCPTokens(); return JSON.stringify(state.mcpTokens); } },
+  disks: { ms: 15000, load: sectionLoader("disks") },
 };
 
 const FALLBACK_MS = 10000;

@@ -441,6 +441,10 @@ header .titles p { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 .stack { display: grid; gap: 16px; }
 .compact { display: grid; gap: 10px; }
 
+/* Page-specific balancing for admin panels with asymmetrical content. */
+.disks-layout .disks-table-card { grid-column: 1 / -1; }
+.users-layout .users-main-col .card:first-child { min-height: 360px; }
+
 /* ---------- Data tables ---------- */
 table.data {
   width: 100%;
@@ -1131,9 +1135,36 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
   border-bottom: 1px solid var(--line-soft);
   background: #fafbfc;
 }
-.netdisk-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.netdisk-title { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
 .netdisk-title h2 { margin: 0; font-size: 15px; font-weight: 700; }
-.netdisk-title span { font-size: 12px; color: var(--muted); }
+.netdisk-title .netdisk-count { font-size: 12px; color: var(--muted); }
+/* Segmented toggle that switches the file browser between the netdisk and the
+   backup disk. A two-button tablist; the active side carries the accent fill. */
+.netdisk-mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #fff;
+}
+.netdisk-mode-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  cursor: pointer;
+  border-right: 1px solid var(--line);
+  transition: background .12s, color .12s;
+}
+.netdisk-mode-btn:last-child { border-right: none; }
+.netdisk-mode-btn:hover { background: var(--line-soft); }
+.netdisk-mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
 .netdisk-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .netdisk-pathbar {
   display: flex;
@@ -1538,6 +1569,12 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
 .picker-modal .modal-foot {
   justify-content: space-between;
   align-items: center;
+}
+.backup-mode-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
 }
 
 @media (max-width: 860px) {
@@ -2291,7 +2328,424 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Thin progress bar shown under running backup jobs. */
+.job-progress {
+  margin-top: 6px;
+  height: 4px;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.job-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width .25s ease;
+}
 .job-actions {
   display: flex;
   align-items: flex-start;
+}
+
+/* ---------- Admin netdisk usage table ---------- */
+.netdisk-usage-table { table-layout: fixed; }
+.netdisk-usage-table .netdisk-used-col { width: 90px; font-variant-numeric: tabular-nums; }
+.netdisk-usage-table .netdisk-bar-col { width: 110px; }
+.netdisk-usage-table .quota-bar { width: 100px; }
+/* Quota fill color shifts toward warn/danger as a user approaches the limit. */
+.netdisk-usage-table .quota-bar.warn span { background: var(--warn); }
+.netdisk-usage-table .quota-bar.danger span { background: var(--danger); }
+
+/* ---------- File preview viewer ---------- */
+/* A large, near-fullscreen modal that renders PDF/images/video/text inline.
+   Shared by the in-app netdisk modal and the public share page's #viewerBackdrop. */
+.viewer-modal .modal {
+  width: min(1080px, calc(100vw - 48px));
+  height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+.viewer-modal .modal-head { gap: 12px; }
+.viewer-modal .viewer-head-text { min-width: 0; }
+.viewer-modal .modal-head h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viewer-modal .modal-body.viewer-body {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  background: #2a2c3a;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.viewer-loading,
+.viewer-error {
+  color: #e6e8f2;
+  padding: 32px;
+  text-align: center;
+  font-size: 13px;
+  margin: auto;
+}
+.viewer-error { color: #ffb4b4; }
+
+/* PDF: vertical stack of page canvases centered on a dark backdrop. */
+.viewer-canvas-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+}
+.viewer-canvas-wrap .viewer-page {
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  max-width: 100%;
+  height: auto;
+}
+
+/* Text / markdown: light surface so it reads like a document. */
+.viewer-text {
+  margin: 0;
+  padding: 20px 24px;
+  background: #fff;
+  color: var(--ink);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1;
+  overflow: auto;
+}
+.viewer-markdown {
+  padding: 24px 28px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.65;
+  flex: 1;
+  overflow: auto;
+}
+.viewer-markdown h1,
+.viewer-markdown h2,
+.viewer-markdown h3 { line-height: 1.3; margin: 1.2em 0 0.5em; }
+.viewer-markdown h1 { font-size: 1.6em; }
+.viewer-markdown h2 { font-size: 1.35em; }
+.viewer-markdown h3 { font-size: 1.15em; }
+.viewer-markdown p { margin: 0.6em 0; }
+.viewer-markdown pre {
+  background: var(--line-soft);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  overflow: auto;
+}
+.viewer-markdown code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+.viewer-markdown pre code { background: none; padding: 0; }
+.viewer-markdown :not(pre) > code {
+  background: var(--line-soft);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.viewer-markdown img { max-width: 100%; }
+.viewer-markdown table { border-collapse: collapse; }
+.viewer-markdown th,
+.viewer-markdown td { border: 1px solid var(--line); padding: 6px 10px; }
+.viewer-markdown blockquote {
+  margin: 0.6em 0;
+  padding-left: 14px;
+  border-left: 3px solid var(--line);
+  color: var(--ink-soft);
+}
+.viewer-markdown a { color: var(--accent); }
+
+/* Media (image/audio/video): centered, fit-to-viewport. */
+.viewer-media {
+  display: block;
+  margin: auto;
+  max-width: 100%;
+  max-height: 100%;
+  background: #000;
+}
+img.viewer-media {
+  background: #fff;
+  object-fit: contain;
+  padding: 16px;
+}
+video.viewer-media,
+audio.viewer-media {
+  padding: 16px;
+}
+
+/* Unsupported-file prompt shown inside the viewer body. */
+.viewer-unsupported {
+  margin: auto;
+  text-align: center;
+  color: #e6e8f2;
+  padding: 40px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 360px;
+}
+.viewer-unsupported .viewer-unsupported-icon {
+  font-size: 42px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.viewer-unsupported p { margin: 0; font-size: 14px; }
+.viewer-unsupported .hint { color: #b8bdce; font-size: 12.5px; }
+.viewer-unsupported a.primary {
+  margin-top: 12px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 16px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 13px;
+}
+.viewer-unsupported a.primary:hover { filter: brightness(1.05); }
+
+/* Fullscreen viewer: cover the whole viewport. Mirrors the terminal's
+   .term-fullscreen pattern so PDF pages can be re-rendered wide and crisp. */
+.modal-backdrop.viewer-fullscreen {
+  padding: 0;
+  z-index: 80;
+  background: #1b1c31;
+}
+.modal-backdrop.viewer-fullscreen .modal {
+  width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  border-radius: 0;
+}
+.modal-backdrop.viewer-fullscreen .viewer-body {
+  background: #1b1c31;
+}
+
+/* ---------- YUV viewer ---------- */
+/* Two-pane layout: canvas on the left (scrollable, dark), controls on the
+   right (fixed width, light). The viewer body already has a dark backdrop so
+   the canvas reads like a video frame; the control panel is a light card. */
+.viewer-yuv-layout {
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+/* The canvas wrap is a scroll container: when the image is larger than the
+   viewport (zoomed in, or intrically big) it scrolls freely in both axes and
+   never squashes the canvas. When the image is smaller it stays centered via
+   margin:auto on the canvas. Using a block canvas with auto margins (rather
+   than flex centering) is what makes overflow scroll correctly reach the
+   top-left corner — flex centering clips off the start when content overflows. */
+.yuv-canvas-wrap {
+  overflow: auto;
+  padding: 16px;
+  background: #1b1c31;
+  text-align: center;
+}
+.yuv-canvas {
+  background: #000;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  /* No max-width/max-height: the canvas is sized in CSS pixels to the zoomed
+     image dimensions and may be much larger than the viewport. */
+  display: block;
+  margin: auto;
+  image-rendering: pixelated;
+}
+.yuv-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: #fff;
+  border-left: 1px solid var(--line);
+  overflow: auto;
+}
+.yuv-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.yuv-control-group > label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+/* ISP checkbox group: inline checkbox + an explanatory hint beneath it. */
+.yuv-checkbox-group label.check {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.yuv-checkbox-group .hint {
+  font-size: 11px;
+  line-height: 1.4;
+}
+.yuv-control-group input[type="number"],
+.yuv-control-group select {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--border, var(--line));
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  color: var(--ink);
+  background: #fff;
+  font-weight: 600;
+}
+.yuv-control-group select option {
+  color: #1f2430;
+  background: #fff;
+}
+/* Playback transport: prev / play-pause / next buttons in a row. */
+.yuv-play-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.yuv-play-bar button {
+  flex: 1;
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.yuv-play-bar #yuvPlayBtn {
+  flex: 1.6;
+  font-weight: 600;
+}
+/* Frame scrubber row: the range slider fills the width, with a compact
+   "N / total" number input pinned to the right. */
+.yuv-frame-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.yuv-frame-slider-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+.yuv-frame-readout {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.yuv-frame-readout input[type="number"] {
+  width: 52px;
+  min-height: 26px;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  text-align: center;
+}
+/* FPS + Loop options row. */
+.yuv-fps-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+.yuv-fps-row label.check {
+  font-size: 11.5px;
+}
+.yuv-fps-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.yuv-fps-label input[type="number"] {
+  width: 48px;
+  min-height: 26px;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  text-align: center;
+}
+/* Zoom readout: shows current zoom % and a reset button. Zoom itself is driven
+   by the mouse wheel over the image, not a slider here. */
+.yuv-zoom-readout .yuv-zoom-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.yuv-zoom-readout #yuvZoomVal {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.yuv-zoom-readout button {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+.yuv-status {
+  margin-top: auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 600;
+  /* Use full-ink rather than ink-soft so the frame/format readout is legible at
+     a glance even on the small control panel. */
+  color: var(--ink);
+  background: var(--line-soft);
+  border-radius: var(--radius-sm);
+  word-break: break-word;
+}
+/* In fullscreen the control panel keeps its width; the canvas area grows. */
+.modal-backdrop.viewer-fullscreen .viewer-yuv-layout {
+  grid-template-columns: 1fr 260px;
+  height: 100%;
+}
+/* On narrow screens stack the controls under the canvas. */
+@media (max-width: 720px) {
+  .viewer-yuv-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+  }
+  .yuv-controls {
+    border-left: none;
+    border-top: 1px solid var(--line);
+    max-height: 40%;
+  }
+}
+
+/* ---------- Backup schedule form (admin disks page) ---------- */
+.bk-sched-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+}
+.bk-sched-time label {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.bk-sched-time input[type="number"] {
+  width: 56px;
+  min-height: 30px;
+  padding: 4px 6px;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
 }

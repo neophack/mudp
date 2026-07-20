@@ -1,8 +1,61 @@
 import { state, api, toast, escapeHtml, fmtBytes, isAdmin, canMutate, displayNameForUsername } from "../app.js";
-import { showModalNoShell, closeModal } from "./ui.js";
+import { showModalNoShell, closeModal, onModalClose } from "./ui.js";
 import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
+import { openYuvViewer } from "../lib/yuv.js";
+
+// netdiskMode is "netdisk" (primary SSD, the default) or "backup" (the slow
+// mechanical backup disk). The whole view branches on this: which list/quota
+// endpoints it fetches, which action buttons show, and how download/preview
+// URLs are built. Toggling also resets the path so each disk starts at its root.
+let netdiskMode = "netdisk";
+
+// Keep independent browsing context for each disk so toggling does not lose
+// the current folder/selection state of the other side.
+const modeState = {
+  netdisk: { path: "", selected: new Set() },
+  backup: { path: "", selected: new Set() },
+};
+
+function currentModeState() {
+  return modeState[isBackupMode() ? "backup" : "netdisk"];
+}
+
+function saveCurrentModeState() {
+  const slot = currentModeState();
+  slot.path = state.netdisk?.path || "";
+  slot.selected = new Set(state.netdisk?.selected || []);
+}
+
+function restoreModeState(mode) {
+  const slot = modeState[mode] || { path: "", selected: new Set() };
+  state.netdisk = {
+    ...(state.netdisk || {}),
+    path: slot.path || "",
+    selected: new Set(slot.selected || []),
+  };
+}
+
+function setCurrentPath(path) {
+  state.netdisk.path = path;
+  currentModeState().path = path;
+}
+
+function setCurrentSelection(next) {
+  const set = next instanceof Set ? next : new Set(next || []);
+  state.netdisk.selected = set;
+  currentModeState().selected = new Set(set);
+}
+
+function clearCurrentSelection() {
+  setCurrentSelection(new Set());
+}
+
+function isBackupMode() {
+  return netdiskMode === "backup";
+}
 
 export async function renderNetdisk() {
+  restoreModeState(netdiskMode);
   const tabAtEntry = state.tab;
   // Only the first load shows a placeholder; background refreshes keep the
   // current content until the new data arrives (no white flash).
@@ -15,12 +68,15 @@ export async function renderNetdisk() {
   let sig;
   try {
     const [list, quota, shares, adminShares] = await Promise.all([
-      api(`/api/netdisk?path=${encodeURIComponent(state.netdisk.path || "")}`),
-      api("/api/netdisk/quota").catch(() => null),
-      api("/api/netdisk/shares").catch(() => []),
-      isAdmin() ? api("/api/admin/netdisk/shares").catch(() => []) : Promise.resolve([]),
+      isBackupMode()
+        ? api(`${"/api/netdisk/backup/browse"}?path=${encodeURIComponent(state.netdisk.path || "")}`)
+        : api(`/api/netdisk?path=${encodeURIComponent(state.netdisk.path || "")}`),
+      // Quota and shares are netdisk-only concepts; skip both in backup mode.
+      isBackupMode() ? Promise.resolve(null) : api("/api/netdisk/quota").catch(() => null),
+      isBackupMode() ? Promise.resolve([]) : api("/api/netdisk/shares").catch(() => []),
+      isBackupMode() || !isAdmin() ? Promise.resolve([]) : api("/api/admin/netdisk/shares").catch(() => []),
     ]);
-    sig = JSON.stringify([list.path, list.items, quota, shares, adminShares]);
+    sig = JSON.stringify([netdiskMode, list.path, list.items, quota, shares, adminShares]);
     state.netdisk = {
       path: list.path || "",
       items: list.items || [],
@@ -30,6 +86,9 @@ export async function renderNetdisk() {
       selected: state.netdisk?.selected || new Set(),
       sig,
     };
+    // Keep the mode-local cursor in sync with server-normalized path.
+    setCurrentPath(state.netdisk.path || "");
+    setCurrentSelection(state.netdisk.selected || new Set());
   } catch (err) {
     // A failed background refresh keeps the previous content; only the first
     // load surfaces the error.
@@ -49,28 +108,38 @@ export async function renderNetdisk() {
   state.netdisk.selSig = selSig;
 
   const mutable = canMutate();
-  const rows = sortedItems(state.netdisk.items).map((f) => fileRow(f, mutable)).join("") ||
+  const backup = isBackupMode();
+  const rows = sortedItems(state.netdisk.items).map((f) => fileRow(f, mutable, backup)).join("") ||
     `<tr class="empty-row"><td colspan="${mutable ? 6 : 5}">No files.</td></tr>`;
   const fileCount = state.netdisk.items.filter((f) => !f.dir).length;
   const folderCount = state.netdisk.items.length - fileCount;
-  const quotaHtml = quotaBar(state.netdisk.quota);
+  const quotaHtml = backup ? "" : quotaBar(state.netdisk.quota);
   const selectionSize = [...state.netdisk.selected].length;
 
   $("#view").innerHTML =
     `<div class="stack netdisk-stack">` +
       `<div class="card netdisk-card" id="netdiskCard">` +
         `<div class="netdisk-toolbar">` +
-          `<div class="netdisk-title"><h2>My Netdisk</h2><span>${folderCount} folders, ${fileCount} files</span></div>` +
+          `<div class="netdisk-title">` +
+            `<div class="netdisk-mode-toggle" role="tablist">` +
+              `<button class="netdisk-mode-btn${backup ? "" : " active"}" data-mode="netdisk" role="tab" aria-selected="${backup ? "false" : "true"}">Netdisk</button>` +
+              `<button class="netdisk-mode-btn${backup ? " active" : ""}" data-mode="backup" role="tab" aria-selected="${backup ? "true" : "false"}">Backup Disk</button>` +
+            `</div>` +
+            `<span class="netdisk-count">${folderCount} folders, ${fileCount} files</span>` +
+          `</div>` +
           `<div class="head-tools netdisk-actions">` +
             `<button class="ghost" id="upDir">Up</button>` +
             `<button class="ghost" id="mkdirBtn">New Folder</button>` +
-            `<label class="buttonlike"><input id="uploadFiles" type="file" multiple> Upload</label>` +
-            `<label class="buttonlike"><input id="uploadFolder" type="file" webkitdirectory directory multiple> Folder</label>` +
+            // Upload and Folder-upload are netdisk-only: a backup disk is a
+            // mirror target, not a place to drop arbitrary new files.
+            (backup ? "" : `<label class="buttonlike"><input id="uploadFiles" type="file" multiple> Upload</label>`) +
+            (backup ? "" : `<label class="buttonlike"><input id="uploadFolder" type="file" webkitdirectory directory multiple> Folder</label>`) +
             (mutable
               ? `<button class="ghost danger" id="batchDelete" ${selectionSize ? "" : "disabled"}>Delete (${selectionSize})</button>` +
                 `<button class="ghost" id="batchCopy" ${selectionSize ? "" : "disabled"}>Copy (${selectionSize})</button>` +
                 `<button class="ghost" id="batchMove" ${selectionSize ? "" : "disabled"}>Move (${selectionSize})</button>` +
-                `<button class="ghost" id="batchShare" ${selectionSize ? "" : "disabled"}>Share (${selectionSize})</button>` +
+                // Share and Backup-to-backup don't apply on the backup disk.
+                (backup ? "" : `<button class="ghost" id="batchShare" ${selectionSize ? "" : "disabled"}>Share (${selectionSize})</button>`) +
                 `<button class="ghost" id="batchDownload" ${selectionSize ? "" : "disabled"}>Download (${selectionSize})</button>`
               : "") +
           `</div>` +
@@ -84,28 +153,47 @@ export async function renderNetdisk() {
           `<th>Name</th><th class="size-col">Size</th><th class="time-col">Modified</th><th class="actions">Actions</th>` +
         `</tr></thead><tbody>${rows}</tbody></table>` +
       `</div>` +
-      `<div class="card"><div class="card-head"><h2>External Links</h2></div>` +
-      `<table class="data netdisk-shares"><thead><tr><th class="share-name-col">Name</th><th class="share-link-col">Link</th><th class="share-expires-col">Expires</th><th class="share-access-col">Access</th><th class="actions">Actions</th></tr></thead><tbody>${shareRows(state.netdisk.shares || [])}</tbody></table></div>` +
-      (isAdmin() ? `<div class="card"><div class="card-head"><h2>All External Links</h2><div class="head-tools"><label class="check compact-check" for="selectAllShares"><input type="checkbox" id="selectAllShares"><span>Select all</span></label><button class="danger" id="deleteSelectedShares">Delete Selected</button></div></div>` +
-      `<table class="data netdisk-admin-shares"><thead><tr><th class="chk-col"></th><th class="share-owner-col">Owner</th><th class="share-name-col">Name</th><th class="share-link-col">Link</th><th class="share-expires-col">Expires</th><th class="share-access-col">Access</th></tr></thead><tbody>${adminShareRows(state.netdisk.adminShares || [])}</tbody></table></div>` : "") +
+      // External Links cards are netdisk-only — backup files can't be shared.
+      (backup ? "" :
+        `<div class="card"><div class="card-head"><h2>External Links</h2></div>` +
+        `<table class="data netdisk-shares"><thead><tr><th class="share-name-col">Name</th><th class="share-link-col">Link</th><th class="share-expires-col">Expires</th><th class="share-access-col">Access</th><th class="actions">Actions</th></tr></thead><tbody>${shareRows(state.netdisk.shares || [])}</tbody></table></div>` +
+        (isAdmin() ? `<div class="card"><div class="card-head"><h2>All External Links</h2><div class="head-tools"><label class="check compact-check" for="selectAllShares"><input type="checkbox" id="selectAllShares"><span>Select all</span></label><button class="danger" id="deleteSelectedShares">Delete Selected</button></div></div>` +
+        `<table class="data netdisk-admin-shares"><thead><tr><th class="chk-col"></th><th class="share-owner-col">Owner</th><th class="share-name-col">Name</th><th class="share-link-col">Link</th><th class="share-expires-col">Expires</th><th class="share-access-col">Access</th></tr></thead><tbody>${adminShareRows(state.netdisk.adminShares || [])}</tbody></table></div>` : "")
+      ) +
     `</div>`;
 
   bindNetdiskEvents(mutable);
 }
 
 function bindNetdiskEvents(mutable) {
+  const backup = isBackupMode();
+  const base = backup ? "/api/netdisk/backup" : "/api/netdisk";
+
+  // --- Mode toggle: switch between the netdisk and the backup disk. Switching
+  // resets path + selection so each disk opens at its own root.
+  document.querySelectorAll("[data-mode]").forEach((btn) => {
+    btn.onclick = () => {
+      if (btn.dataset.mode === netdiskMode) return;
+      saveCurrentModeState();
+      netdiskMode = btn.dataset.mode;
+      restoreModeState(netdiskMode);
+      state.netdisk.sig = null; // force a repaint (mode is part of sig anyway)
+      renderNetdisk();
+    };
+  });
+
   $("#upDir").onclick = () => {
     const parts = (state.netdisk.path || "").split("/").filter(Boolean);
     parts.pop();
-    state.netdisk.path = parts.join("/");
-    state.netdisk.selected = new Set();
+    setCurrentPath(parts.join("/"));
+    clearCurrentSelection();
     renderNetdisk();
   };
 
   document.querySelectorAll("[data-crumb]").forEach((btn) => {
     btn.onclick = () => {
-      state.netdisk.path = btn.dataset.crumb;
-      state.netdisk.selected = new Set();
+      setCurrentPath(btn.dataset.crumb);
+      clearCurrentSelection();
       renderNetdisk();
     };
   });
@@ -113,44 +201,59 @@ function bindNetdiskEvents(mutable) {
   $("#mkdirBtn").onclick = async () => {
     const name = prompt("Folder name");
     if (!name) return;
-    await api("/api/netdisk/mkdir", { method: "POST", body: JSON.stringify({ path: joinPath(state.netdisk.path, name) }) });
+    await api(`${base}/mkdir`, { method: "POST", body: JSON.stringify({ path: joinPath(state.netdisk.path, name) }) });
     toast("Folder created", true);
     renderNetdisk();
   };
 
-  $("#uploadFiles").onchange = async (e) => {
-    await uploadFiles(e.target.files, state.netdisk.path || "");
-    e.target.value = "";
-  };
-  $("#uploadFolder").onchange = async (e) => {
-    await uploadFiles(e.target.files, state.netdisk.path || "");
-    e.target.value = "";
-  };
+  // Upload labels are only rendered in netdisk mode; guard so a missing element
+  // (backup mode) doesn't throw.
+  const uploadFiles = $("#uploadFiles");
+  if (uploadFiles) {
+    uploadFiles.onchange = async (e) => {
+      await uploadFilesHandler(e.target.files, state.netdisk.path || "");
+      e.target.value = "";
+    };
+  }
+  const uploadFolder = $("#uploadFolder");
+  if (uploadFolder) {
+    uploadFolder.onchange = async (e) => {
+      await uploadFilesHandler(e.target.files, state.netdisk.path || "");
+      e.target.value = "";
+    };
+  }
 
-  const card = $("#netdiskCard");
-  card.ondragover = (e) => { e.preventDefault(); card.classList.add("drag-over"); };
-  card.ondragleave = () => card.classList.remove("drag-over");
-  card.ondrop = async (e) => {
-    e.preventDefault();
-    card.classList.remove("drag-over");
-    if (!mutable) return toast("Read-only account cannot upload");
-    const files = e.dataTransfer?.files;
-    if (files?.length) await uploadFiles(files, state.netdisk.path || "");
-  };
+  // Drag-drop upload is netdisk-only.
+  if (!backup) {
+    const card = $("#netdiskCard");
+    card.ondragover = (e) => { e.preventDefault(); card.classList.add("drag-over"); };
+    card.ondragleave = () => card.classList.remove("drag-over");
+    card.ondrop = async (e) => {
+      e.preventDefault();
+      card.classList.remove("drag-over");
+      if (!mutable) return toast("Read-only account cannot upload");
+      const files = e.dataTransfer?.files;
+      if (files?.length) await uploadFilesHandler(files, state.netdisk.path || "");
+    };
+  }
 
   document.querySelectorAll("[data-open]").forEach((btn) => {
     btn.onclick = () => {
-      state.netdisk.path = btn.dataset.open;
-      state.netdisk.selected = new Set();
+      setCurrentPath(btn.dataset.open);
+      clearCurrentSelection();
       renderNetdisk();
     };
+  });
+
+  document.querySelectorAll("[data-view]").forEach((btn) => {
+    btn.onclick = () => openFileViewer(btn.dataset.view, btn.dataset.backup === "1");
   });
 
   if (mutable) {
     document.querySelectorAll("[data-del]").forEach((btn) => {
       btn.onclick = async () => {
         if (!confirm(`Delete ${btn.dataset.name}?`)) return;
-        await api("/api/netdisk/delete", { method: "POST", body: JSON.stringify({ paths: [btn.dataset.del] }) });
+        await api(`${base}/delete`, { method: "POST", body: JSON.stringify({ paths: [btn.dataset.del] }) });
         toast("Deleted", true);
         renderNetdisk();
       };
@@ -164,6 +267,8 @@ function bindNetdiskEvents(mutable) {
     document.querySelectorAll("[data-move]").forEach((btn) => {
       btn.onclick = () => openFolderPicker(true, [btn.dataset.move]);
     });
+    // Share buttons only render in netdisk mode; the selector matches nothing
+    // in backup mode and these blocks simply no-op.
     document.querySelectorAll("[data-share]").forEach((btn) => {
       btn.onclick = () => openShareModal([btn.dataset.share], btn.dataset.name);
     });
@@ -174,14 +279,18 @@ function bindNetdiskEvents(mutable) {
       if (e.target.checked) {
         state.netdisk.items.forEach((f) => state.netdisk.selected.add(f.path));
       } else {
-        state.netdisk.selected = new Set();
+        clearCurrentSelection();
+        renderNetdisk();
+        return;
       }
+      setCurrentSelection(state.netdisk.selected);
       renderNetdisk();
     };
     $("#batchDelete").onclick = batchDelete;
     $("#batchCopy").onclick = () => batchCopyMove(false);
     $("#batchMove").onclick = () => batchCopyMove(true);
-    $("#batchShare").onclick = batchShare;
+    const batchShareBtn = $("#batchShare");
+    if (batchShareBtn) batchShareBtn.onclick = batchShare;
     $("#batchDownload").onclick = batchDownload;
   }
 
@@ -220,21 +329,27 @@ function bindNetdiskEvents(mutable) {
   }
 }
 
-function fileRow(f, mutable) {
-  const href = downloadURL(f.path);
+function fileRow(f, mutable, backup) {
+  const href = backup ? backupDownloadURL(f.path) : downloadURL(f.path);
   const checked = state.netdisk.selected.has(f.path) ? "checked" : "";
+  const kind = previewKind(f.name);
   const name = f.dir
     ? `<button class="linklike netdisk-name-link" data-open="${escapeHtml(f.path)}">${escapeHtml(f.name)}</button>`
-    : `<a class="netdisk-name-link" href="${href}">${escapeHtml(f.name)}</a>`;
+    : kind
+      ? `<button class="linklike netdisk-name-link" data-view="${escapeHtml(f.path)}" data-backup="${backup ? "1" : ""}" title="Preview">${escapeHtml(f.name)}</button>`
+      : `<a class="netdisk-name-link" href="${href}">${escapeHtml(f.name)}</a>`;
   const checkCell = mutable
     ? `<td class="chk-col"><input type="checkbox" class="netdisk-row-check" data-path="${escapeHtml(f.path)}" ${checked}></td>`
     : "";
+  // On the backup disk we drop Share (no sharing from backup) and the
+  // Backup-to-backup button (it's already there). Everything else — download,
+  // rename, copy/move within the disk, delete — stays for full management.
   const actionCell = mutable
     ? `<a class="icon" href="${href}" title="Download">⬇</a>` +
       `<button class="icon" title="Rename" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✎</button>` +
       `<button class="icon" title="Copy" data-copy="${escapeHtml(f.path)}">⧉</button>` +
       `<button class="icon" title="Move" data-move="${escapeHtml(f.path)}">↗</button>` +
-      `<button class="icon" title="Share" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">⤴</button>` +
+      (backup ? "" : `<button class="icon" title="Share" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">⤴</button>`) +
       `<button class="icon danger" title="Delete" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✕</button>`
     : `<a class="icon" href="${href}" title="Download">⬇</a>`;
   return `<tr>${checkCell}<td><div class="netdisk-file"><span class="netdisk-icon ${f.dir ? "folder" : "file"}" aria-hidden="true">${fileIcon(f.dir)}</span><div class="primary-line">${name}</div></div></td><td class="netdisk-size">${f.dir ? "-" : fmtBytes(f.size)}</td><td class="netdisk-time" title="${escapeHtml(new Date(f.modTime).toLocaleString())}">${escapeHtml(fmtDate(f.modTime))}</td><td class="actions netdisk-row-actions">${actionCell}</td></tr>`;
@@ -243,6 +358,7 @@ function fileRow(f, mutable) {
 function toggleFileSelection(path, checked) {
   if (checked) state.netdisk.selected.add(path);
   else state.netdisk.selected.delete(path);
+  setCurrentSelection(state.netdisk.selected);
   renderNetdisk();
 }
 
@@ -250,8 +366,9 @@ async function batchDelete() {
   const paths = [...state.netdisk.selected];
   if (!paths.length) return;
   if (!confirm(`Delete ${paths.length} item(s)?`)) return;
-  await api("/api/netdisk/delete", { method: "POST", body: JSON.stringify({ paths }) });
-  state.netdisk.selected = new Set();
+  const endpoint = isBackupMode() ? "/api/netdisk/backup/delete" : "/api/netdisk/delete";
+  await api(endpoint, { method: "POST", body: JSON.stringify({ paths }) });
+  clearCurrentSelection();
   toast("Deleted", true);
   renderNetdisk();
 }
@@ -268,22 +385,30 @@ function batchCopyMove(move) {
 let folderPicker = null;
 
 function openFolderPicker(move, paths) {
-  folderPicker = { move, paths, path: state.netdisk.path || "", items: [] };
+  const sourceDisk = isBackupMode() ? "backup" : "netdisk";
+  folderPicker = { move, paths, path: state.netdisk.path || "", items: [], sourceDisk, targetDisk: sourceDisk };
   const action = move ? "Move" : "Copy";
+  const diskLabel = sourceDisk === "backup" ? "Backup Disk" : "My Netdisk";
+  const onNetdisk = sourceDisk === "netdisk" ? "checked" : "";
+  const onBackup = sourceDisk === "backup" ? "checked" : "";
   showModalNoShell(
     "netdisk-picker",
     "wide picker-modal",
     `<div class="modal-head">` +
-      `<div><h2>${action} ${paths.length} item(s)</h2><p class="hint" style="margin-top:4px">Choose a destination folder</p></div>` +
+      `<div><h2>${action} ${paths.length} item(s)</h2><p class="hint" style="margin-top:4px">Choose a destination folder on ${diskLabel.toLowerCase()}</p></div>` +
       `<button class="icon" data-close>✕</button>` +
     `</div>` +
     `<div class="picker-layout">` +
-      `<aside class="picker-tree"><div class="picker-tree-item active">My Netdisk</div></aside>` +
+      `<aside class="picker-tree"><div class="picker-tree-item active">${diskLabel}</div></aside>` +
       `<section class="picker-main">` +
         `<div class="picker-toolbar">` +
           `<button class="ghost" id="pickerUp">↑ Up</button>` +
           `<div class="picker-path" id="pickerPath">/</div>` +
           `<button class="ghost" id="pickerMkdir">+ New Folder</button>` +
+        `</div>` +
+        `<div class="backup-mode-row" style="padding:0 12px 10px">` +
+          `<label class="check"><input type="radio" name="pickerTargetDisk" value="netdisk" ${onNetdisk}><span>Netdisk</span></label>` +
+          `<label class="check"><input type="radio" name="pickerTargetDisk" value="backup" ${onBackup}><span>Backup Disk</span></label>` +
         `</div>` +
         `<div class="picker-list" id="pickerList"><div class="picker-empty">Loading…</div></div>` +
       `</section>` +
@@ -301,6 +426,16 @@ function openFolderPicker(move, paths) {
     parts.pop();
     loadPickerFolder(parts.join("/"));
   };
+  document.querySelectorAll("input[name='pickerTargetDisk']").forEach((input) => {
+    input.onchange = () => {
+      if (!folderPicker || !input.checked) return;
+      folderPicker.targetDisk = input.value;
+      folderPicker.path = "";
+      const tree = document.querySelector(".picker-tree-item");
+      if (tree) tree.textContent = folderPicker.targetDisk === "backup" ? "Backup Disk" : "My Netdisk";
+      loadPickerFolder("");
+    };
+  });
   $("#pickerMkdir").onclick = pickerMkdirFolder;
   $("#pickerConfirm").onclick = confirmFolderPicker;
   loadPickerFolder(folderPicker.path);
@@ -313,7 +448,10 @@ async function loadPickerFolder(path) {
   if (!listEl) return; // modal closed while navigating
   listEl.innerHTML = `<div class="picker-empty">Loading…</div>`;
   try {
-    const data = await api(`/api/netdisk?path=${encodeURIComponent(path)}`);
+    const url = folderPicker.targetDisk === "backup"
+      ? `/api/netdisk/backup/browse?path=${encodeURIComponent(path)}`
+      : `/api/netdisk?path=${encodeURIComponent(path)}`;
+    const data = await api(url);
     folderPicker.items = (data.items || []).filter((f) => f.dir);
     renderFolderPicker();
   } catch (err) {
@@ -352,7 +490,8 @@ async function pickerMkdirFolder() {
   const name = prompt("New folder name");
   if (!name || !folderPicker) return;
   try {
-    await api("/api/netdisk/mkdir", { method: "POST", body: JSON.stringify({ path: joinPath(folderPicker.path, name) }) });
+    const endpoint = folderPicker.targetDisk === "backup" ? "/api/netdisk/backup/mkdir" : "/api/netdisk/mkdir";
+    await api(endpoint, { method: "POST", body: JSON.stringify({ path: joinPath(folderPicker.path, name) }) });
     toast("Folder created", true);
     await loadPickerFolder(folderPicker.path);
   } catch (err) {
@@ -362,41 +501,302 @@ async function pickerMkdirFolder() {
 
 async function confirmFolderPicker() {
   if (!folderPicker) return;
-  const { move, paths, path } = folderPicker;
+  const { move, paths, path, targetDisk } = folderPicker;
   folderPicker = null;
   closeModal();
   const items = paths.map((p) => ({ from: p, to: path }));
-  if (move) await moveItems(items);
-  else await copyItems(items);
+  if (move) await moveItems(items, targetDisk);
+  else await copyItems(items, targetDisk);
 }
 
 function parentDir(p) {
   return (p || "").split("/").filter(Boolean).slice(0, -1).join("/");
 }
 
-async function copyItems(items) {
-  const data = await api("/api/netdisk/copy", {
+async function copyItems(items, targetDisk) {
+  const sourceDisk = isBackupMode() ? "backup" : "netdisk";
+  const sameDisk = sourceDisk === targetDisk;
+  const endpoint = sameDisk
+    ? (sourceDisk === "backup" ? "/api/netdisk/backup/copy" : "/api/netdisk/copy")
+    : "/api/netdisk/transfer";
+  const body = sameDisk
+    ? { items, move: false, policy: "rename" }
+    : { fromDisk: sourceDisk, toDisk: targetDisk, items, move: false, policy: "rename" };
+  const data = await api(endpoint, {
     method: "POST",
-    body: JSON.stringify({ items, move: false, policy: "rename" }),
+    body: JSON.stringify(body),
   });
-  state.netdisk.selected = new Set();
+  clearCurrentSelection();
   const errors = (data.results || []).filter((r) => r.status === "error").length;
   toast(errors ? `Copied ${data.count || 0} item(s), ${errors} failed` : `Copied ${data.count || 0} item(s)`, !errors);
   renderNetdisk();
 }
 
-async function moveItems(items) {
-  const data = await api("/api/netdisk/copy", {
+async function moveItems(items, targetDisk) {
+  const sourceDisk = isBackupMode() ? "backup" : "netdisk";
+  const sameDisk = sourceDisk === targetDisk;
+  const endpoint = sameDisk
+    ? (sourceDisk === "backup" ? "/api/netdisk/backup/copy" : "/api/netdisk/copy")
+    : "/api/netdisk/transfer";
+  const body = sameDisk
+    ? { items, move: true, policy: "rename" }
+    : { fromDisk: sourceDisk, toDisk: targetDisk, items, move: true, policy: "rename" };
+  const data = await api(endpoint, {
     method: "POST",
-    body: JSON.stringify({ items, move: true, policy: "rename" }),
+    body: JSON.stringify(body),
   });
-  state.netdisk.selected = new Set();
+  clearCurrentSelection();
   const errors = (data.results || []).filter((r) => r.status === "error").length;
   toast(errors ? `Moved ${data.count || 0} item(s), ${errors} failed` : `Moved ${data.count || 0} item(s)`, !errors);
   renderNetdisk();
 }
 
+// ---------- Backup picker (mirror of the copy/move picker, rooted at the
+// backup disk) ----------
+//
+// Like openFolderPicker but the list comes from /api/netdisk/backup/browse
+// (which reads the caller's backup disk, not their netdisk), and confirming
+// starts a detached server-side backup job rather than a synchronous copy.
+
+let backupPicker = null;
+
+let restorePicker = null;
+
+function openBackupPicker(paths) {
+  backupPicker = { paths, path: "", items: [], mode: "now" };
+  showModalNoShell(
+    "netdisk-backup-picker",
+    "wide picker-modal",
+    `<div class="modal-head">` +
+      `<div><h2>Backup ${paths.length} item(s)</h2><p class="hint" style="margin-top:4px">Choose a destination folder on the backup disk</p></div>` +
+      `<button class="icon" data-close>✕</button>` +
+    `</div>` +
+    `<div class="picker-layout">` +
+      `<aside class="picker-tree"><div class="picker-tree-item active">Backup Disk</div></aside>` +
+      `<section class="picker-main">` +
+        `<div class="picker-toolbar">` +
+          `<button class="ghost" id="bkPickerUp">↑ Up</button>` +
+          `<div class="picker-path" id="bkPickerPath">/</div>` +
+          `<button class="ghost" id="bkPickerMkdir">+ New Folder</button>` +
+        `</div>` +
+        `<div class="picker-list" id="bkPickerList"><div class="picker-empty">Loading…</div></div>` +
+      `</section>` +
+    `</div>` +
+    `<div class="modal-foot">` +
+      `<div class="backup-mode-row">` +
+        `<label class="check"><input type="radio" name="backupMode" value="now" checked><span>Immediate backup</span></label>` +
+        `<label class="check"><input type="radio" name="backupMode" value="idle"><span>Delayed backup (backup window)</span></label>` +
+      `</div>` +
+      `<span class="hint" id="bkPickerHint"></span>` +
+      `<div class="modal-tools">` +
+        `<button class="ghost" data-close>Cancel</button>` +
+        `<button class="primary" id="bkPickerConfirm">Backup Here</button>` +
+      `</div>` +
+    `</div>`
+  );
+  $("#bkPickerUp").onclick = () => {
+    const parts = backupPicker.path.split("/").filter(Boolean);
+    parts.pop();
+    loadBackupPickerFolder(parts.join("/"));
+  };
+  $("#bkPickerMkdir").onclick = backupPickerMkdir;
+  $("#bkPickerConfirm").onclick = confirmBackupPicker;
+  document.querySelectorAll("input[name='backupMode']").forEach((input) => {
+    input.onchange = () => {
+      if (input.checked && backupPicker) backupPicker.mode = input.value || "now";
+    };
+  });
+  loadBackupPickerFolder("");
+}
+
+async function loadBackupPickerFolder(path) {
+  if (!backupPicker) return;
+  backupPicker.path = path;
+  const listEl = $("#bkPickerList");
+  if (!listEl) return; // modal closed while navigating
+  listEl.innerHTML = `<div class="picker-empty">Loading…</div>`;
+  try {
+    const data = await api(`/api/netdisk/backup/browse?path=${encodeURIComponent(path)}`);
+    backupPicker.items = data.items || [];
+    renderBackupPicker();
+  } catch (err) {
+    // No backup path configured → guide the user to it instead of a bare error.
+    if (listEl.isConnected) {
+      listEl.innerHTML = `<div class="picker-empty">${escapeHtml(err.message)}<br><span class="hint">Ask an admin to set your group's backup path on the Users &amp; Groups page.</span></div>`;
+    }
+  }
+}
+
+function renderBackupPicker() {
+  const listEl = $("#bkPickerList");
+  if (!backupPicker || !listEl) return;
+  const path = backupPicker.path;
+  $("#bkPickerPath").textContent = "/" + path;
+  $("#bkPickerUp").disabled = !path;
+  const rows = (backupPicker.items || []).map((f) =>
+    `<div class="picker-row" data-open="${escapeHtml(f.path)}">` +
+      `<span class="picker-folder-icon">${fileIcon(true)}</span>` +
+      `<span class="picker-folder-name">${escapeHtml(f.name)}</span>` +
+    `</div>`
+  ).join("");
+  listEl.innerHTML = rows || `<div class="picker-empty">No subfolders</div>`;
+  listEl.querySelectorAll("[data-open]").forEach((row) => {
+    row.onclick = () => loadBackupPickerFolder(row.dataset.open);
+  });
+  $("#bkPickerHint").textContent = `Destination: /${path}`;
+}
+
+async function backupPickerMkdir() {
+  const name = prompt("New folder name on the backup disk");
+  if (!name || !backupPicker) return;
+  // Reuse the browse endpoint's lazy-create-by-MkdirAll on the parent; for a
+  // real mkdir we POST to the netdisk mkdir with the backup-relative path. The
+  // backup browse root and netdisk root differ, so we make a dedicated call.
+  try {
+    await api("/api/netdisk/backup/mkdir", { method: "POST", body: JSON.stringify({ path: joinPath(backupPicker.path, name) }) });
+    toast("Folder created", true);
+    await loadBackupPickerFolder(backupPicker.path);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function confirmBackupPicker() {
+  if (!backupPicker) return;
+  const { paths, path, mode } = backupPicker;
+  backupPicker = null;
+  closeModal();
+  await submitBackup(paths, path, mode || "now");
+}
+
+// submitBackup starts the server-side backup job(s) and registers them with the
+// background-jobs panel so the user can follow progress / cancel. We pass the
+// selected backup-disk sub-path as `to` so the job writes there rather than the
+// user's backup root directly.
+async function submitBackup(paths, to, mode = "now") {
+  try {
+    const data = await api("/api/netdisk/backup", {
+      method: "POST",
+      body: JSON.stringify({ paths, to, mode }),
+    });
+    clearCurrentSelection();
+    const ids = data.jobIds || [];
+    const kind = mode === "idle" ? "Delayed backup queued" : "Backup started";
+    toast(`${kind} (${ids.length} job${ids.length === 1 ? "" : "s"}) — see Background jobs`, true);
+    renderNetdisk();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function openRestorePicker(paths) {
+  restorePicker = { paths, path: "", items: [] };
+  showModalNoShell(
+    "netdisk-restore-picker",
+    "wide picker-modal",
+    `<div class="modal-head">` +
+      `<div><h2>Restore ${paths.length} item(s)</h2><p class="hint" style="margin-top:4px">Choose a destination folder on netdisk</p></div>` +
+      `<button class="icon" data-close>✕</button>` +
+    `</div>` +
+    `<div class="picker-layout">` +
+      `<aside class="picker-tree"><div class="picker-tree-item active">My Netdisk</div></aside>` +
+      `<section class="picker-main">` +
+        `<div class="picker-toolbar">` +
+          `<button class="ghost" id="rtPickerUp">↑ Up</button>` +
+          `<div class="picker-path" id="rtPickerPath">/</div>` +
+          `<button class="ghost" id="rtPickerMkdir">+ New Folder</button>` +
+        `</div>` +
+        `<div class="picker-list" id="rtPickerList"><div class="picker-empty">Loading…</div></div>` +
+      `</section>` +
+    `</div>` +
+    `<div class="modal-foot">` +
+      `<span class="hint" id="rtPickerHint"></span>` +
+      `<div class="modal-tools">` +
+        `<button class="ghost" data-close>Cancel</button>` +
+        `<button class="primary" id="rtPickerConfirm">Restore Here</button>` +
+      `</div>` +
+    `</div>`
+  );
+  $("#rtPickerUp").onclick = () => {
+    const parts = restorePicker.path.split("/").filter(Boolean);
+    parts.pop();
+    loadRestorePickerFolder(parts.join("/"));
+  };
+  $("#rtPickerMkdir").onclick = restorePickerMkdir;
+  $("#rtPickerConfirm").onclick = confirmRestorePicker;
+  loadRestorePickerFolder("");
+}
+
+async function loadRestorePickerFolder(path) {
+  if (!restorePicker) return;
+  restorePicker.path = path;
+  const listEl = $("#rtPickerList");
+  if (!listEl) return;
+  listEl.innerHTML = `<div class="picker-empty">Loading…</div>`;
+  try {
+    const data = await api(`/api/netdisk?path=${encodeURIComponent(path)}`);
+    restorePicker.items = (data.items || []).filter((f) => f.dir);
+    renderRestorePicker();
+  } catch (err) {
+    if (listEl.isConnected) listEl.innerHTML = `<div class="picker-empty">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderRestorePicker() {
+  const listEl = $("#rtPickerList");
+  if (!restorePicker || !listEl) return;
+  const path = restorePicker.path;
+  $("#rtPickerPath").textContent = "/" + path;
+  $("#rtPickerUp").disabled = !path;
+  const rows = (restorePicker.items || []).map((f) =>
+    `<div class="picker-row" data-open="${escapeHtml(f.path)}">` +
+      `<span class="picker-folder-icon">${fileIcon(true)}</span>` +
+      `<span class="picker-folder-name">${escapeHtml(f.name)}</span>` +
+    `</div>`
+  ).join("");
+  listEl.innerHTML = rows || `<div class="picker-empty">No subfolders</div>`;
+  listEl.querySelectorAll("[data-open]").forEach((row) => {
+    row.onclick = () => loadRestorePickerFolder(row.dataset.open);
+  });
+  $("#rtPickerHint").textContent = `Destination: /${path}`;
+}
+
+async function restorePickerMkdir() {
+  const name = prompt("New folder name on netdisk");
+  if (!name || !restorePicker) return;
+  try {
+    await api("/api/netdisk/mkdir", { method: "POST", body: JSON.stringify({ path: joinPath(restorePicker.path, name) }) });
+    toast("Folder created", true);
+    await loadRestorePickerFolder(restorePicker.path);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function confirmRestorePicker() {
+  if (!restorePicker) return;
+  const { paths, path } = restorePicker;
+  restorePicker = null;
+  closeModal();
+  await submitRestore(paths, path);
+}
+
+async function submitRestore(paths, to) {
+  try {
+    const out = await api("/api/netdisk/backup/restore", {
+      method: "POST",
+      body: JSON.stringify({ paths, to, policy: "rename" }),
+    });
+    clearCurrentSelection();
+    toast(`Restored ${out.count || 0} item(s) to netdisk`, true);
+    renderNetdisk();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 async function batchShare() {
+  if (isBackupMode()) return toast("Backup disk does not support sharing");
   const paths = [...state.netdisk.selected];
   if (!paths.length) return;
   const name = paths.length === 1 ? paths[0].split("/").pop() : "Shared items";
@@ -406,15 +806,16 @@ async function batchShare() {
 async function batchDownload() {
   const paths = [...state.netdisk.selected];
   if (!paths.length) return;
+  const urlFor = isBackupMode() ? backupDownloadURL : downloadURL;
   if (paths.length === 1 && !state.netdisk.items.find((f) => f.path === paths[0])?.dir) {
-    location.href = downloadURL(paths[0]);
+    location.href = urlFor(paths[0]);
     return;
   }
   // Multiple items: download each as a separate zip/file.
   paths.forEach((p, i) => {
     setTimeout(() => {
       const a = document.createElement("a");
-      a.href = downloadURL(p);
+      a.href = urlFor(p);
       a.download = "";
       a.click();
     }, i * 300);
@@ -477,7 +878,8 @@ async function renameItem(path, oldName) {
   const parts = path.split("/");
   parts.pop();
   const to = joinPath(parts.join("/"), next);
-  await api("/api/netdisk/rename", { method: "POST", body: JSON.stringify({ from: path, to }) });
+  const endpoint = isBackupMode() ? "/api/netdisk/backup/rename" : "/api/netdisk/rename";
+  await api(endpoint, { method: "POST", body: JSON.stringify({ from: path, to }) });
   toast("Renamed", true);
   renderNetdisk();
 }
@@ -497,6 +899,10 @@ function randomCode(len = 4) {
 }
 
 function openShareModal(paths, name) {
+  if (isBackupMode()) {
+    toast("Backup disk does not support sharing");
+    return;
+  }
   shareModal = {
     paths,
     name,
@@ -668,7 +1074,10 @@ async function submitShare() {
 // overlay is shared, so a second pick while one is running would race it.
 let uploading = false;
 
-async function uploadFiles(files, path) {
+// uploadFilesHandler uploads a batch of files to the netdisk (never the backup
+// disk — uploads are netdisk-only). Renamed from uploadFiles so the bindEvents
+// scope can use a local `uploadFiles` DOM handle without colliding.
+async function uploadFilesHandler(files, path) {
   if (!files || !files.length) return;
   if (!canMutate()) return toast("Read-only account cannot upload");
   if (uploading) return toast("An upload is already in progress");
@@ -719,6 +1128,7 @@ async function uploadFiles(files, path) {
     ? `Uploaded ${ok} file(s), ${failed} failed`
     : `Uploaded ${ok} file(s)`;
   toast(summary, !failed);
+  setCurrentSelection(state.netdisk.selected || new Set());
   renderNetdisk();
   // Let the user see the final per-file state before the card disappears.
   setTimeout(() => overlay.close(), failed ? 3000 : 1500);
@@ -753,6 +1163,272 @@ function fmtDate(ts) {
 
 function downloadURL(path) {
   return `/api/netdisk/download?path=${encodeURIComponent(path)}&ts=${Date.now()}`;
+}
+
+function backupDownloadURL(path) {
+  return `/api/netdisk/backup/download?path=${encodeURIComponent(path)}&ts=${Date.now()}`;
+}
+
+function rawURL(path) {
+  return `/api/netdisk/raw?path=${encodeURIComponent(path)}&ts=${Date.now()}`;
+}
+
+function backupRawURL(path) {
+  return `/api/netdisk/backup/raw?path=${encodeURIComponent(path)}&ts=${Date.now()}`;
+}
+
+const TEXT_PREVIEW_EXTS = new Set([
+  "txt", "log", "json", "csv", "tsv", "ini", "conf", "cfg", "yml", "yaml", "toml",
+  "xml", "html", "htm", "css", "js", "mjs", "ts", "go", "py", "rb", "java", "c",
+  "h", "cpp", "hpp", "cc", "sh", "bash", "zsh", "sql", "env", "gitignore",
+]);
+
+// previewKind maps a file name to a preview category the viewer understands, or
+// null when the type cannot be previewed (the row then keeps its download link).
+function previewKind(name) {
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  if (!ext) return null;
+  if (ext === "pdf") return "pdf";
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext)) return "image";
+  if (["mp3", "wav", "ogg", "m4a", "flac"].includes(ext)) return "audio";
+  if (["mp4", "webm", "m4v", "mov"].includes(ext)) return "video";
+  if (ext === "yuv") return "yuv";
+  if (TEXT_PREVIEW_EXTS.has(ext)) return "text";
+  return null;
+}
+
+// ---------- File preview viewer ----------
+//
+// Renders a single file inline inside a modal. PDF is rendered by pdf.js, text
+// and markdown are fetched and shown in a <pre> / formatted block, and media
+// types use the native <img>/<audio>/<video> elements pointing at the raw URL.
+
+function openFileViewer(path, fromBackup) {
+  const name = path.split("/").pop() || path;
+  const kind = previewKind(name);
+  const dl = fromBackup ? backupDownloadURL(path) : downloadURL(path);
+  const raw = fromBackup ? backupRawURL(path) : rawURL(path);
+  if (!kind) {
+    // Unsupported type: prompt the user with a small dialog offering a direct
+    // download rather than silently doing nothing.
+    showUnsupportedPreviewModal(name, dl);
+    return;
+  }
+  const supportsFullscreen = kind === "pdf" || kind === "video" || kind === "image" || kind === "yuv";
+  showModalNoShell(
+    "netdisk-viewer",
+    "wide viewer-modal",
+    `<div class="modal-head">` +
+      `<div class="viewer-head-text"><h2>${escapeHtml(name)}</h2></div>` +
+      `<div class="modal-tools">` +
+        (supportsFullscreen ? `<button class="ghost" id="viewerFullscreen" title="Toggle fullscreen">⛶ Fullscreen</button>` : ``) +
+        `<a class="ghost" href="${dl}" title="Download">⬇ Download</a>` +
+        `<button class="icon" data-close>✕</button>` +
+      `</div>` +
+    `</div>` +
+    `<div class="modal-body viewer-body" id="viewerBody"><div class="viewer-loading">Loading…</div></div>`,
+  );
+  const fsBtn = document.getElementById("viewerFullscreen");
+  if (fsBtn) fsBtn.onclick = () => toggleViewerFullscreen();
+  // Drop the cached PDF document + pause media when the modal closes so the
+  // next preview starts fresh and audio/video doesn't keep playing in the bg.
+  const backdrop = document.querySelector(".modal-backdrop.netdisk-viewer");
+  if (backdrop) onModalClose(backdrop, resetViewerState);
+  renderViewerContent(kind, path, name, raw).catch((err) => {
+    const body = document.getElementById("viewerBody");
+    if (body) body.innerHTML = `<div class="viewer-error">${escapeHtml(err.message || "Failed to load file")}</div>`;
+  });
+}
+
+// showUnsupportedPreviewModal renders a small centered dialog explaining the
+// file can't be previewed and offering a one-click download.
+function showUnsupportedPreviewModal(name, href) {
+  showModalNoShell(
+    "netdisk-viewer unsupported-viewer",
+    "viewer-modal",
+    `<div class="modal-head">` +
+      `<div class="viewer-head-text"><h2>${escapeHtml(name)}</h2></div>` +
+      `<button class="icon" data-close>✕</button>` +
+    `</div>` +
+    `<div class="modal-body viewer-body">` +
+      `<div class="viewer-unsupported">` +
+        `<div class="viewer-unsupported-icon" aria-hidden="true">📄</div>` +
+        `<p>Preview is not available for this file type yet.</p>` +
+        `<p class="hint">You can download it to view locally.</p>` +
+        `<a class="primary" href="${href}" download>⬇ Download</a>` +
+      `</div>` +
+    `</div>`,
+  );
+}
+
+// toggleViewerFullscreen flips a class on the modal backdrop so the viewer
+// occupies the whole viewport. PDF re-renders crisply at the new size.
+function toggleViewerFullscreen() {
+  const backdrop = document.querySelector(".modal-backdrop.netdisk-viewer");
+  if (!backdrop) return;
+  const isFs = backdrop.classList.toggle("viewer-fullscreen");
+  const fsBtn = document.getElementById("viewerFullscreen");
+  if (fsBtn) fsBtn.textContent = isFs ? "⛶ Exit fullscreen" : "⛶ Fullscreen";
+  // For <video>, prefer the native Fullscreen API so controls stay usable.
+  if (!isFs && document.fullscreenElement) {
+    document.exitFullscreen?.().catch(() => {});
+  }
+  const media = backdrop.querySelector("video.viewer-media, img.viewer-media");
+  if (media && media.requestFullscreen) {
+    if (isFs) media.requestFullscreen?.().catch(() => {});
+  }
+  // Re-render PDF pages to the new container width for crisp output.
+  if (backdrop.querySelector("#pdfPages")) {
+    rerenderPdf();
+  }
+  // Re-paint the YUV frame so the canvas adapts to the new viewport.
+  if (yuvController) {
+    yuvController.repaint();
+  }
+}
+
+async function renderViewerContent(kind, path, name, url) {
+  const body = document.getElementById("viewerBody");
+  if (!body) return; // modal closed mid-load
+  switch (kind) {
+    case "pdf":
+      return renderPdf(url, body);
+    case "markdown":
+      return renderMarkdown(url, body);
+    case "text":
+      return renderText(url, body);
+    case "image":
+      body.innerHTML = `<img class="viewer-media" src="${url}" alt="${escapeHtml(name)}" />`;
+      return;
+    case "audio":
+      body.innerHTML = `<audio class="viewer-media" controls preload="metadata" src="${url}"></audio>`;
+      return;
+    case "video":
+      body.innerHTML = `<video class="viewer-media" controls preload="metadata" src="${url}"></video>`;
+      return;
+    case "yuv":
+      return renderYuv(url, body, name);
+  }
+}
+
+// pdfRenderState holds the current document + viewport scale so a fullscreen
+// toggle can re-render every page at the new container width without
+// re-downloading the PDF.
+let pdfRenderState = null;
+
+// yuvController holds the active YUV viewer's control handle so a fullscreen
+// toggle can repaint the frame and resetViewerState can cancel its fetch.
+let yuvController = null;
+
+async function renderPdf(url, body) {
+  const pdfjs = window.pdfjsLib;
+  if (!pdfjs) {
+    body.innerHTML = `<div class="viewer-error">PDF viewer failed to load. Try refreshing the page.</div>`;
+    return;
+  }
+  pdfjs.workerSrc = "/vendor/pdf.worker.min.js";
+  body.innerHTML = `<div class="viewer-loading">Rendering PDF…</div>`;
+  const pdf = await pdfjs.getDocument({ url }).promise;
+  pdfRenderState = { pdf, url };
+  await paintPdfPages(body);
+}
+
+// paintPdfPages lays out each PDF page in a vertical scroll container. The
+// canvas is drawn at device-pixel resolution (CSS pixels × devicePixelRatio)
+// and then sized down via CSS, which keeps text crisp on Retina/4K displays
+// instead of the blurry 1× scaling the default viewport produces.
+async function paintPdfPages(body) {
+  const { pdf } = pdfRenderState || {};
+  if (!pdf) return;
+  const wrap = body;
+  wrap.innerHTML = `<div class="viewer-canvas-wrap" id="pdfPages"></div>`;
+  const pages = document.getElementById("pdfPages");
+  // Fit one page to the container width; clamp so tiny documents stay readable.
+  const maxWidth = Math.max(360, pages.clientWidth || 820);
+  for (let i = 1; i <= pdf.numPages; i++) {
+    if (!pages.isConnected) return; // viewer closed mid-render
+    const page = await pdf.getPage(i);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = Math.max(1, maxWidth / baseViewport.width);
+    const viewport = page.getViewport({ scale });
+    const dpr = window.devicePixelRatio || 1;
+    const canvas = document.createElement("canvas");
+    canvas.className = "viewer-page";
+    // Backing store at device pixels for crispness; CSS size keeps layout.
+    canvas.width = Math.floor(viewport.width * dpr);
+    canvas.height = Math.floor(viewport.height * dpr);
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+    pages.appendChild(canvas);
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+  }
+}
+
+// rerenderPdf re-paints the current PDF at the new container size after a
+// fullscreen toggle (or window resize). Cheap because the document is cached.
+async function rerenderPdf() {
+  const body = document.getElementById("viewerBody");
+  if (!body || !pdfRenderState) return;
+  await paintPdfPages(body);
+}
+
+async function renderMarkdown(url, body) {
+  const res = await fetch(url, { credentials: "same-origin" });
+  const text = await res.text();
+  if (!body.isConnected) return;
+  const marked = window.marked;
+  if (!marked || typeof marked.parse !== "function") {
+    // Fallback: show as plain text.
+    body.innerHTML = `<pre class="viewer-text"></pre>`;
+    body.querySelector("pre").textContent = text;
+    return;
+  }
+  // Render into a sandboxed node via innerHTML, then rebind nothing (no scripts
+  // execute from innerHTML assignment, and marked escapes inline code/markup).
+  body.innerHTML = `<div class="viewer-markdown md-body"></div>`;
+  body.querySelector(".viewer-markdown").innerHTML = marked.parse(text);
+}
+
+async function renderText(url, body) {
+  const res = await fetch(url, { credentials: "same-origin" });
+  const len = Number(res.headers.get("Content-Length") || 0);
+  if (len > 2 * 1024 * 1024) {
+    body.innerHTML = `<div class="viewer-error">This file is larger than 2 MB. Please download it to view.</div>`;
+    return;
+  }
+  const text = await res.text();
+  if (!body.isConnected) return;
+  body.innerHTML = `<pre class="viewer-text"></pre>`;
+  body.querySelector("pre").textContent = text;
+}
+
+// renderYuv builds the YUV viewer. The returned controller is stashed in
+// yuvController so toggleViewerFullscreen can ask it to repaint at the new
+// container size and resetViewerState can cancel its in-flight fetch on close.
+function renderYuv(url, body, name) {
+  body.innerHTML = `<div class="viewer-loading">Loading YUV…</div>`;
+  yuvController = openYuvViewer({ name, url, bodyEl: body });
+}
+
+// resetViewerState releases the cached PDF document and stops any media
+// playback. Registered as the modal teardown callback so it runs on close,
+// backdrop click, and Esc.
+function resetViewerState() {
+  pdfRenderState = null;
+  if (yuvController) {
+    yuvController.destroy();
+    yuvController = null;
+  }
+  const media = document.querySelector(".netdisk-viewer video.viewer-media, .netdisk-viewer audio.viewer-media");
+  if (media) {
+    try { media.pause(); } catch { /* best-effort */ }
+  }
+  if (document.fullscreenElement) {
+    document.exitFullscreen?.().catch(() => {});
+  }
 }
 
 function $(selector) {

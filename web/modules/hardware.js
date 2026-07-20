@@ -73,6 +73,10 @@ export function renderHardware() {
 }
 
 async function refreshHardware() {
+  // Skip while the tab is hidden: the centralized refresh engine does the same
+  // (tickBlocked), and there's no point sampling sensors nobody is looking at.
+  // The interval itself keeps running so sampling resumes immediately on focus.
+  if (document.hidden) return;
   let snap;
   try {
     snap = await api("/api/hardware");

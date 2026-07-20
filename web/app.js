@@ -22,6 +22,7 @@ import { renderDisks } from "./modules/disks.js";
 import { renderHardware, stopPolling as stopHardwarePolling } from "./modules/hardware.js";
 import { renderMCP } from "./modules/mcp.js";
 import { startAutoRefresh, refreshActiveTab } from "./modules/refresh.js";
+import { startBackupJobsPolling } from "./modules/jobs.js";
 import { escapeHtml, fmtBytes, fmtMB, roleRank, isAdminUser, canMutateUser } from "./lib/common.js";
 
 // Re-export shared utilities so existing modules can keep importing them from app.js.
@@ -171,6 +172,9 @@ export async function load() {
     // Begin background auto-refresh: the active tab re-fetches on its own
     // interval and re-renders only when the data actually changed.
     startAutoRefresh();
+    // Server-side backup jobs survive the browser tab; poll them so the
+    // background-jobs badge reflects in-progress backups started elsewhere.
+    startBackupJobsPolling();
   } catch {
     renderLogin();
   }
@@ -186,6 +190,7 @@ const SECTION_URLS = {
   users: "/api/users",
   groups: "/api/groups",
   audit: "/api/admin/audit?limit=200",
+  disks: "/api/admin/disks",
 };
 
 // Refresh only the specified data sections. Faster than refreshAll() for

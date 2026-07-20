@@ -168,3 +168,18 @@ func (a *App) groupNetdisk(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, map[string]bool{"ok": true}, a.db.UpdateGroupNetdiskPath(req.GroupID, req.Path))
 }
+
+// groupBackup sets the per-group backup disk root, mirroring groupNetdisk. We do
+// NOT create the directory here: the backup disk may be a slow mechanical drive
+// and we only want to touch it once a backup actually runs.
+func (a *App) groupBackup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		GroupID int64  `json:"groupId"`
+		Path    string `json:"path"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.GroupID == 0 {
+		writeErr(w, http.StatusBadRequest, "groupId is required")
+		return
+	}
+	respond(w, map[string]bool{"ok": true}, a.db.UpdateGroupBackupPath(req.GroupID, req.Path))
+}

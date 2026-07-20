@@ -163,6 +163,8 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 	sample := time.NewTicker(60 * time.Second)
 	prune := time.NewTicker(24 * time.Hour)
 	checkpoint := time.NewTicker(60 * time.Minute)
+	// backupTick fires every minute so we can hit an exact HH:MM schedule.
+	backupTick := time.NewTicker(60 * time.Second)
 
 	// Run an initial sample and prune so a fresh server has data immediately
 	// and does not start with stale records from a previous process.
@@ -186,11 +188,14 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 				if err := a.db.Checkpoint(); err != nil {
 					// Best-effort; noisy logs on shutdown are unhelpful.
 				}
+			case <-backupTick.C:
+				a.maybeRunScheduledBackup(ctx)
 			case <-stop:
 				cache.Stop()
 				sample.Stop()
 				prune.Stop()
 				checkpoint.Stop()
+				backupTick.Stop()
 				return
 			}
 		}
