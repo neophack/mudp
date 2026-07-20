@@ -1286,6 +1286,12 @@ func (a *App) feishuConfigPublic(w http.ResponseWriter, r *http.Request) {
 
 // feishuSettings lets an admin read/write the Feishu OAuth configuration.
 func (a *App) feishuSettings(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil || roleRank(u.Role) < rankAdmin {
+		writeErr(w, http.StatusForbidden, "insufficient privileges")
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		cfg, err := a.db.FeishuConfig()

@@ -1132,8 +1132,12 @@ func (db *DB) createFeishuUserTx(openID, username, displayName string) (*User, e
 	if existing != 0 {
 		return nil, errors.New("duplicate username")
 	}
-	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,created_at,feishu_open_id,comment,display_name) values(?,?,?,?,?,?,?,?)`,
-		username, string(hash), "user", 10, time.Now().Format(time.RFC3339), openID, displayName, displayName)
+	prefix, err := db.nextPortPrefix(tx)
+	if err != nil {
+		return nil, err
+	}
+	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,port_prefix,created_at,feishu_open_id,comment,display_name) values(?,?,?,?,?,?,?,?,?)`,
+		username, string(hash), "user", 10, prefix, time.Now().Format(time.RFC3339), openID, displayName, displayName)
 	if err != nil {
 		return nil, err
 	}

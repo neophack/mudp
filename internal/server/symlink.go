@@ -115,7 +115,7 @@ func EnsureUserNetdiskDir(parentDir, userOpenID, userID, displayName string) err
 	}
 
 	// Construct the user's directory name from OpenID and user ID
-	dirName := fmt.Sprintf("%s-%d", userOpenID, userID)
+	dirName := fmt.Sprintf("%s-%s", userOpenID, userID)
 	userDir := filepath.Join(parentDir, dirName)
 
 	// Create the user directory if it doesn't exist

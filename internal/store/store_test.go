@@ -751,6 +751,26 @@ func TestCreateFeishuUserRetriesUsername(t *testing.T) {
 	}
 }
 
+// TestCreateFeishuUserAssignsNextPortPrefix verifies that Feishu-created users
+// use the same incremental port-prefix allocator as local users.
+func TestCreateFeishuUserAssignsNextPortPrefix(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateUser("alice", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := db.UserByUsername("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := db.CreateFeishuUser("oid-pp-1", "feishuport", "Feishu Port")
+	if err != nil {
+		t.Fatalf("CreateFeishuUser: %v", err)
+	}
+	if u.PortPrefix != alice.PortPrefix+1 {
+		t.Fatalf("portPrefix = %d, want %d", u.PortPrefix, alice.PortPrefix+1)
+	}
+}
+
 // TestNetdiskSharePassword ensures password-protected shares store and expose
 // the has-password flag without leaking the hash.
 func TestNetdiskSharePassword(t *testing.T) {

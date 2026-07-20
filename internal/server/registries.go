@@ -9,6 +9,12 @@ import (
 
 // registries handles admin CRUD for stored registry credentials.
 func (a *App) registries(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil || roleRank(u.Role) < rankAdmin {
+		writeErr(w, http.StatusForbidden, "insufficient privileges")
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		items, err := a.db.Registries()
@@ -85,6 +91,12 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request) {
 
 // registryDelete removes a stored registry.
 func (a *App) registryDelete(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil || roleRank(u.Role) < rankAdmin {
+		writeErr(w, http.StatusForbidden, "insufficient privileges")
+		return
+	}
+
 	a.registryMu.Lock()
 	defer a.registryMu.Unlock()
 	if r.Method != http.MethodPost {
@@ -122,6 +134,12 @@ func (a *App) registryDelete(w http.ResponseWriter, r *http.Request) {
 
 // registryTest verifies a stored credential by performing a registry login.
 func (a *App) registryTest(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil || roleRank(u.Role) < rankAdmin {
+		writeErr(w, http.StatusForbidden, "insufficient privileges")
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return

@@ -6,30 +6,28 @@ import { createUserLanguageSettings, createAdminLanguageSettings } from "../lib/
 import { getCurrentLanguage, switchLanguage } from "../lib/i18n.js";
 
 export function renderSettings() {
-  if (!state.feishuAdmin.loaded) {
+  if (isAdmin() && !state.feishuAdmin.loaded) {
     loadFeishuAdmin();
   }
-  if (!state.registries) {
+  if (isAdmin() && !state.registries) {
     loadRegistries();
   }
 
   const currentLanguage = getCurrentLanguage();
   const defaultLanguage = state.me?.defaultLanguage || "en_US";
   const adminLanguagePanel = isAdmin() ? createAdminLanguageSettings(defaultLanguage) : "";
-
-  $("#view").innerHTML =
-    `<div class="stack">` +
-      createUserLanguageSettings(currentLanguage) +
-      adminLanguagePanel +
-      `<div class="card"><div class="card-head"><h2>Registries</h2>` +
+  const registriesPanel = isAdmin()
+    ? `<div class="card"><div class="card-head"><h2>Registries</h2>` +
         `<button class="primary" id="newRegistryBtn">+ Add Registry</button>` +
       `</div>` +
         `<table class="data">` +
           `<thead><tr><th>Name</th><th>URL</th><th>Username</th><th class="actions">Actions</th></tr></thead>` +
           `<tbody>${(state.registries || []).map(registryRow).join("") || `<tr class="empty-row"><td colspan="4">No registries configured.</td></tr>`}</tbody>` +
         `</table>` +
-      `</div>` +
-      `<div class="card"><div class="card-head"><h2>Feishu SSO</h2></div>` +
+      `</div>`
+    : "";
+  const feishuSettingsPanel = isAdmin()
+    ? `<div class="card"><div class="card-head"><h2>Feishu SSO</h2></div>` +
         `<div class="card-body"><form id="feishuForm" class="compact">` +
           `<p class="hint">Configure a Feishu (Lark) app to enable single sign-on. New users auto-join the <strong>pending</strong> group until an admin approves them.</p>` +
           `<input name="appId" placeholder="App ID" value="${escapeHtml(state.feishuAdmin.appId)}">` +
@@ -38,7 +36,15 @@ export function renderSettings() {
           `<p class="hint">Callback URL: <span class="mono">${location.origin}/api/feishu/callback</span></p>` +
           `<button>Save Feishu Settings</button>` +
         `</form></div>` +
-      `</div>` +
+      `</div>`
+    : "";
+
+  $("#view").innerHTML =
+    `<div class="stack">` +
+      createUserLanguageSettings(currentLanguage) +
+      adminLanguagePanel +
+      registriesPanel +
+      feishuSettingsPanel +
     `</div>`;
 
   // Handle user language settings
@@ -77,26 +83,29 @@ export function renderSettings() {
     };
   }
 
-  $("#feishuForm").onsubmit = async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    try {
-      await api("/api/settings/feishu", {
-        method: "POST",
-        body: JSON.stringify({
-          appId: fd.get("appId"),
-          appSecret: fd.get("appSecret") || "",
-          enabled: fd.has("enabled"),
-        }),
-      });
-      state.feishu = fd.has("enabled");
-      state.feishuAdmin.loaded = false;
-      loadFeishuAdmin();
-      toast("Feishu settings saved", true);
-    } catch (err) {
-      toast(err.message);
-    }
-  };
+  const feishuForm = $("#feishuForm");
+  if (feishuForm) {
+    feishuForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        await api("/api/settings/feishu", {
+          method: "POST",
+          body: JSON.stringify({
+            appId: fd.get("appId"),
+            appSecret: fd.get("appSecret") || "",
+            enabled: fd.has("enabled"),
+          }),
+        });
+        state.feishu = fd.has("enabled");
+        state.feishuAdmin.loaded = false;
+        loadFeishuAdmin();
+        toast("Feishu settings saved", true);
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
 
   const newReg = $("#newRegistryBtn");
   if (newReg) newReg.onclick = () => openRegistryEditor(null);
@@ -183,6 +192,10 @@ async function testRegistry(id) {
 }
 
 export async function loadFeishuAdmin() {
+  if (!isAdmin()) {
+    state.feishuAdmin = { appId: "", appSecret: "", enabled: false, loaded: true };
+    return;
+  }
   try {
     const cfg = await api("/api/settings/feishu");
     state.feishuAdmin = {
@@ -198,6 +211,10 @@ export async function loadFeishuAdmin() {
 }
 
 export async function loadRegistries() {
+  if (!isAdmin()) {
+    state.registries = [];
+    return;
+  }
   try {
     state.registries = (await api("/api/registries")) || [];
   } catch {
