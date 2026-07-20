@@ -115,7 +115,7 @@ func (a *App) approveUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ensure user netdisk directories and shortcuts/symlinks are created
 	if netdiskPath, err := a.db.NetdiskPathForUser(req.UserID); err == nil && netdiskPath != "" {
-		_ = EnsureUserNetdiskDir(netdiskPath, u.FeishuOpenID, fmt.Sprintf("%d", u.ID), u.DisplayName)
+		_ = EnsureUserNetdiskDir(netdiskPath, u.Username, fmt.Sprintf("%d", u.ID), u.DisplayName)
 	}
 	a.record(r, "user.approve", targetName(u))
 	a.notifyUserApproved(req.UserID, []string{store.DefaultUserGroup})

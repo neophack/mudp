@@ -417,6 +417,9 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auth.Set(w, r, u.ID)
+	if netdiskPath, err := a.db.NetdiskPathForUser(u.ID); err == nil && netdiskPath != "" {
+		_ = EnsureUserNetdiskDir(netdiskPath, u.Username, fmt.Sprintf("%d", u.ID), u.DisplayName)
+	}
 	csrfToken, err := middleware.CSRFToken(w, r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to create session")
@@ -1377,6 +1380,9 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Format(time.RFC3339)
 	_, _ = a.db.Exec(`update users set last_login_at=? where id=?`, now, u.ID)
 	a.auth.Set(w, r, u.ID)
+	if netdiskPath, err := a.db.NetdiskPathForUser(u.ID); err == nil && netdiskPath != "" {
+		_ = EnsureUserNetdiskDir(netdiskPath, u.Username, fmt.Sprintf("%d", u.ID), u.DisplayName)
+	}
 	if _, err := middleware.CSRFToken(w, r); err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to create session")
 		return
@@ -1464,7 +1470,7 @@ func (a *App) setUserGroups(w http.ResponseWriter, r *http.Request) {
 		}
 		// Ensure user netdisk directories and shortcuts/symlinks are created
 		if netdiskPath, err := a.db.NetdiskPathForUser(after.ID); err == nil && netdiskPath != "" {
-			_ = EnsureUserNetdiskDir(netdiskPath, after.FeishuOpenID, fmt.Sprintf("%d", after.ID), after.DisplayName)
+			_ = EnsureUserNetdiskDir(netdiskPath, after.Username, fmt.Sprintf("%d", after.ID), after.DisplayName)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

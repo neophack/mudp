@@ -108,14 +108,15 @@ func escapePathForPowerShell(path string) string {
 }
 
 // EnsureUserNetdiskDir creates the user's netdisk directory and a shortcut/symlink
-// to it using the user's display name. Does nothing if the directory already exists.
-func EnsureUserNetdiskDir(parentDir, userOpenID, userID, displayName string) error {
-	if parentDir == "" || userOpenID == "" {
+// to it using the user's display name. The symlink/shortcut is recreated if it is
+// missing, so calling it on every login ensures shortcuts stay in sync.
+func EnsureUserNetdiskDir(parentDir, username, userID, displayName string) error {
+	if parentDir == "" || username == "" {
 		return nil // Netdisk not configured or user lacks identifying info
 	}
 
-	// Construct the user's directory name from OpenID and user ID
-	dirName := fmt.Sprintf("%s-%s", userOpenID, userID)
+	// Construct the user's directory name the same way netdisk access does.
+	dirName := fmt.Sprintf("%s-%s", sanitizePathPart(username), userID)
 	userDir := filepath.Join(parentDir, dirName)
 
 	// Create the user directory if it doesn't exist
