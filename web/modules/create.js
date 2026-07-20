@@ -1,6 +1,6 @@
 // New-container modal and its SSE-driven progress panel.
 
-import { state, toast, refreshAll, renderView } from "../app.js";
+import { state, toast, refreshAll, renderView, readCSRFCookie } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 import { registerJob } from "./jobs.js";
 
@@ -222,7 +222,8 @@ export async function streamCreate(payload) {
   const job = registerJob({ kind: "container.create", name: payload.name || "new container" });
   try {
     const headers = { "Content-Type": "application/json", Accept: "text/event-stream" };
-    if (state.csrfToken) headers["X-CSRF-Token"] = state.csrfToken;
+    const csrfToken = readCSRFCookie() || state.csrfToken || "";
+    if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
     const res = await fetch("/api/containers/create/stream", {
       method: "POST",
       credentials: "same-origin",

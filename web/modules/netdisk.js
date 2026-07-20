@@ -1,4 +1,4 @@
-import { state, api, toast, escapeHtml, fmtBytes, isAdmin, canMutate, displayNameForUsername } from "../app.js";
+import { state, api, toast, escapeHtml, fmtBytes, isAdmin, canMutate, displayNameForUsername, readCSRFCookie } from "../app.js";
 import { showModalNoShell, closeModal, onModalClose } from "./ui.js";
 import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
 import { openYuvViewer } from "../lib/yuv.js";
@@ -1135,7 +1135,7 @@ async function uploadFilesHandler(files, path) {
     fd.append("files", f, f.webkitRelativePath || f.name);
     try {
       await uploadWithProgress("/api/netdisk/upload", fd, {
-        csrfToken: state.csrfToken,
+        csrfToken: readCSRFCookie() || state.csrfToken || "",
         onProgress: (p) => {
           doneBytes += Math.max(0, p.loaded - loaded[i]);
           loaded[i] = p.loaded;

@@ -1,6 +1,6 @@
 // Images list, pull modal with SSE progress, and image deletion.
 
-import { state, api, toast, refreshSection, renderView, isAdmin } from "../app.js";
+import { state, api, toast, refreshSection, renderView, isAdmin, readCSRFCookie } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 import { registerJob } from "./jobs.js";
 
@@ -236,7 +236,7 @@ export async function streamPull(payload) {
     const res = await fetch("/api/images/pull/stream", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": readCSRFCookie() || state.csrfToken || "" },
       body: JSON.stringify(payload),
       signal: job.signal,
     });
@@ -356,7 +356,7 @@ async function streamBuild(payload) {
     const res = await fetch("/api/images/build/stream", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": readCSRFCookie() || state.csrfToken || "" },
       body: JSON.stringify(payload),
       signal: job.signal,
     });
@@ -457,7 +457,7 @@ async function streamImport(file) {
       method: "POST",
       credentials: "same-origin",
       body: file,
-      headers: { Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
+      headers: { Accept: "text/event-stream", "X-CSRF-Token": readCSRFCookie() || state.csrfToken || "" },
       signal: job.signal,
     });
     if (!res.ok) {

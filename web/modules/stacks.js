@@ -1,7 +1,7 @@
 // Stacks: deploy docker-compose projects via the host's `docker compose` CLI.
 // Compose body + env live in the DB; deploys stream progress over SSE.
 
-import { state, api, toast, refreshSection, renderView, canMutate, displayNameForUsername } from "../app.js";
+import { state, api, toast, refreshSection, renderView, canMutate, displayNameForUsername, readCSRFCookie } from "../app.js";
 import { showModal, showModalNoShell, closeModal, readSSE, onModalClose } from "./ui.js";
 import { loadXterm, TERM_THEME } from "./terminal.js";
 import { registerJob } from "./jobs.js";
@@ -280,7 +280,7 @@ async function runStackStream(id, verb, term, doneVerb) {
     const res = await fetch(`/api/stacks/${verb}/stream`, {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": state.csrfToken },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": readCSRFCookie() || state.csrfToken || "" },
       body: JSON.stringify({ id }),
       signal: job.signal,
     });

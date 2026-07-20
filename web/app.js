@@ -106,8 +106,13 @@ export async function api(path, opts = {}) {
   const { headers, ...rest } = opts;
   const method = (opts.method || "GET").toUpperCase();
   const mergedHeaders = { "Content-Type": "application/json", ...(headers || {}) };
-  if (state.csrfToken && method !== "GET" && method !== "HEAD") {
-    mergedHeaders["X-CSRF-Token"] = state.csrfToken;
+  // Always prefer the live cookie value: the CSRF cookie is SameSite=Strict,
+  // so it may not be sent on a cross-site top-level navigation and the cached
+  // state.csrfToken can end up empty/stale. Reading document.cookie each request
+  // keeps the header in sync with the cookie the browser will actually send.
+  const csrfToken = readCSRFCookie() || state.csrfToken || "";
+  if (csrfToken && method !== "GET" && method !== "HEAD") {
+    mergedHeaders["X-CSRF-Token"] = csrfToken;
   }
   const res = await fetch(path, {
     credentials: "same-origin",

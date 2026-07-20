@@ -1,6 +1,6 @@
 // In-app notification bell + list modal.
 
-import { state, api, toast, escapeHtml, displayNameForUsername } from "../app.js";
+import { state, api, toast, escapeHtml, displayNameForUsername, render } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 const ICONS = {
@@ -72,11 +72,22 @@ export function openNotificationsModal() {
   document.querySelectorAll("[data-notification-id]").forEach((row) => {
     row.onclick = async () => {
       const id = Number(row.dataset.notificationId);
+      const type = row.dataset.notificationType || "";
+      // Pending-user notifications should take the admin straight to the Users &
+      // Groups page where they can approve the new user.
+      if (type === "pending_user") {
+        closeModal();
+        state.tab = "users";
+        render();
+      }
       if (!row.classList.contains("read")) {
         try {
           await api("/api/notifications/read", { method: "POST", body: JSON.stringify({ ids: [id] }) });
           await fetchNotifications();
-          openNotificationsModal();
+          // Reopen the modal only if we did not navigate away.
+          if (type !== "pending_user") {
+            openNotificationsModal();
+          }
         } catch (err) {
           toast(err.message);
         }
@@ -133,7 +144,7 @@ function notificationRow(n) {
     detail = `Groups: ${escapeHtml((data.groups || []).join(", "))}`;
   }
   return (
-    `<div class="notification-item ${n.read ? "read" : "unread"}" data-notification-id="${n.id}">` +
+    `<div class="notification-item ${n.read ? "read" : "unread"}" data-notification-id="${n.id}" data-notification-type="${escapeHtml(n.type)}">` +
       `<div class="notification-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></div>` +
       `<div class="notification-body">` +
         `<div class="notification-title">${escapeHtml(n.title)}</div>` +

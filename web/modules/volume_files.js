@@ -4,7 +4,7 @@
 // Mirrors the table styling of files.js (the dual-pane container/netdisk
 // explorer) but operates only on the volume filesystem.
 
-import { api, toast, canMutate, state } from "../app.js";
+import { api, toast, canMutate, state, readCSRFCookie } from "../app.js";
 import { showModalNoShell } from "./ui.js";
 import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
 
@@ -233,7 +233,7 @@ async function doUpload(fileList) {
       fd.append("files", file, file.name);
       try {
         await uploadWithProgress("/api/volumes/files/upload", fd, {
-          csrfToken: state.csrfToken,
+          csrfToken: readCSRFCookie() || state.csrfToken || "",
           onProgress: (p) => {
             const frac = p.total > 0 ? p.loaded / p.total : 0;
             const loaded = baseBytes + frac * (file.size || 0);
