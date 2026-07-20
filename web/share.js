@@ -325,8 +325,7 @@ function renderPicker() {
     });
   }
 
-  const defaultName = state.share?.name || "From Share";
-  $("#pickerHint").textContent = `Will save to: /${escapeHtml(path || "")}/${escapeHtml(defaultName)}`;
+  $("#pickerHint").textContent = `Will save to: /${escapeHtml(path || "")}`;
 }
 
 async function pickerMkdir() {
@@ -343,8 +342,7 @@ async function pickerMkdir() {
 }
 
 async function confirmSave() {
-  const defaultName = state.share?.name || "From Share";
-  const to = joinPath(state.pickerPath, defaultName);
+  const to = state.pickerPath || "";
   const paths = [...state.selected];
   const btn = $("#confirmPicker");
   btn.disabled = true;

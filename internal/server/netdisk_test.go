@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"mudp/internal/store"
 )
 
 func TestNetdiskCopyOne(t *testing.T) {
@@ -203,4 +205,89 @@ func itemPath(items []fileItem, name string) string {
 		return it.Path
 	}
 	return ""
+}
+
+// TestPlanShareSaveNoDoubleFolder ensures saving a shared file or folder to a
+// destination directory does not create an extra share-name folder around it.
+// Regression: a file "welcome.ipynb" saved into "ggg" ended up at
+// "ggg/welcome.ipynb/welcome.ipynb" because both the front-end and the back-end
+// added the share name to the destination path.
+func TestPlanShareSaveNoDoubleFolder(t *testing.T) {
+	tmp := t.TempDir()
+	ownerRoot := filepath.Join(tmp, "owner")
+	dstRoot := filepath.Join(tmp, "dst")
+	if err := os.MkdirAll(ownerRoot, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dstRoot, 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Owner layout:
+	//   welcome.ipynb
+	//   photos/a.jpg
+	if err := os.WriteFile(filepath.Join(ownerRoot, "welcome.ipynb"), []byte("nb"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ownerRoot, "photos"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ownerRoot, "photos", "a.jpg"), []byte("jpg"), 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	// Single file share saved into a destination subfolder.
+	share := store.NetdiskShare{Name: "welcome.ipynb", Paths: []string{"welcome.ipynb"}}
+	tasks, _ := planShareSave(filepath.Join(dstRoot, "ggg"), ownerRoot, share, []string{"welcome.ipynb"}, "overwrite")
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	want := filepath.Join(dstRoot, "ggg", "welcome.ipynb")
+	if tasks[0].target != want {
+		t.Errorf("single file target = %q, want %q", tasks[0].target, want)
+	}
+
+	// Folder share saved into the destination root.
+	share = store.NetdiskShare{Name: "photos", Paths: []string{"photos"}}
+	tasks, _ = planShareSave(dstRoot, ownerRoot, share, []string{"photos"}, "overwrite")
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	want = filepath.Join(dstRoot, "photos")
+	if tasks[0].target != want {
+		t.Errorf("folder target = %q, want %q", tasks[0].target, want)
+	}
+
+	// Nested file inside a shared folder.
+	tasks, _ = planShareSave(dstRoot, ownerRoot, share, []string{"photos/a.jpg"}, "overwrite")
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	want = filepath.Join(dstRoot, "photos", "a.jpg")
+	if tasks[0].target != want {
+		t.Errorf("nested file target = %q, want %q", tasks[0].target, want)
+	}
+
+	// Multi-item share with a custom display name: items should land directly
+	// under the destination, not under a "My Share" folder.
+	share = store.NetdiskShare{Name: "My Share", Paths: []string{"welcome.ipynb", "photos"}}
+	tasks, _ = planShareSave(dstRoot, ownerRoot, share, []string{"welcome.ipynb", "photos"}, "overwrite")
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2", len(tasks))
+	}
+	got := map[string]bool{}
+	for _, tsk := range tasks {
+		got[tsk.target] = true
+	}
+	for _, w := range []string{
+		filepath.Join(dstRoot, "welcome.ipynb"),
+		filepath.Join(dstRoot, "photos"),
+	} {
+		if !got[w] {
+			t.Errorf("missing target %q, got %v", w, got)
+		}
+	}
+	if got[filepath.Join(dstRoot, "My Share")] {
+		t.Errorf("unexpected share-name folder created")
+	}
 }

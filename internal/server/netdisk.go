@@ -902,6 +902,35 @@ func (a *App) netdiskShareRaw(w http.ResponseWriter, r *http.Request) {
 	serveFileInline(w, r, full, info.Name())
 }
 
+// planShareSave builds the copy tasks for saving shared paths into the user's
+// destination directory. Each source is placed directly under dstDir using its
+// path relative to the owner's netdisk root, preserving the original hierarchy
+// without adding an extra share-name folder.
+func planShareSave(dstDir, ownerRoot string, share store.NetdiskShare, reqPaths []string, policy string) ([]copyTask, int64) {
+	var toCopy []copyTask
+	var required int64
+	plannedTargets := make(map[string]bool)
+	for _, p := range reqPaths {
+		if !shareContains(share.Paths, p) {
+			continue
+		}
+		src, rel, err := cleanUserPath(ownerRoot, p)
+		if err != nil {
+			continue
+		}
+		size := pathSize(src)
+		// Preserve the original hierarchy by saving under <dst>/<rel>.
+		targetBase := filepath.Join(dstDir, rel)
+		if policy == "rename" {
+			targetBase = nextFreeNameWithPlanned(filepath.Dir(targetBase), filepath.Base(targetBase), plannedTargets)
+		}
+		plannedTargets[targetBase] = true
+		toCopy = append(toCopy, copyTask{src: src, rel: rel, target: targetBase, name: filepath.Base(rel), size: size})
+		required += size
+	}
+	return toCopy, required
+}
+
 func (a *App) netdiskShareSave(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	if !canMutate(u) {
@@ -954,27 +983,7 @@ func (a *App) netdiskShareSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate selection and compute required space.
-	var toCopy []copyTask
-	var required int64
-	plannedTargets := make(map[string]bool)
-	for _, p := range req.Paths {
-		if !shareContains(share.Paths, p) {
-			continue
-		}
-		src, rel, err := cleanUserPath(ownerRoot, p)
-		if err != nil {
-			continue
-		}
-		size := pathSize(src)
-		// Preserve the original hierarchy by saving under <dst>/<shareName>/<rel>.
-		targetBase := filepath.Join(dstDir, share.Name, rel)
-		if policy == "rename" {
-			targetBase = nextFreeNameWithPlanned(filepath.Dir(targetBase), filepath.Base(targetBase), plannedTargets)
-		}
-		plannedTargets[targetBase] = true
-		toCopy = append(toCopy, copyTask{src: src, rel: rel, target: targetBase, name: filepath.Base(rel), size: size})
-		required += size
-	}
+	toCopy, required := planShareSave(dstDir, ownerRoot, share, req.Paths, policy)
 
 	// Quota / free-space guard.
 	if required > 0 {
