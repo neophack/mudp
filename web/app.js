@@ -131,6 +131,32 @@ export function toast(msg, ok = false) {
   setTimeout(() => el.remove(), 3400);
 }
 
+// copyText writes text to the clipboard. It prefers the modern Clipboard API
+// when available, and falls back to the legacy execCommand("copy") trick so
+// copying still works on non-secure origins (e.g. plain HTTP LAN installs).
+export async function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // fall through to execCommand fallback
+    }
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  const ok = document.execCommand("copy");
+  document.body.removeChild(ta);
+  if (!ok) throw new Error("copy failed");
+}
+
 
 
 // ---------------- Boot sequence ----------------

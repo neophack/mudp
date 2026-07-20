@@ -1,7 +1,7 @@
 // MCP (Model Context Protocol): generate per-container access tokens so AI tools
 // can connect to one container over SSE and operate inside that scoped runtime.
 
-import { $, state, api, toast, renderView, canMutate, isAdmin, displayNameForUsername } from "../app.js";
+import { $, state, api, toast, copyText, renderView, canMutate, isAdmin, displayNameForUsername } from "../app.js";
 import { showModal } from "./ui.js";
 import { escapeHtml, formatDate } from "../lib/common.js";
 
@@ -317,7 +317,7 @@ function onShowConfigRaw(token, label, placeholder = false) {
     `<div class="mcp-config-section">` +
       `<h4>Endpoint</h4>` +
       `<div class="mcp-copy-row">` +
-        `<code class="mcp-code mcp-code-inline" id="mcpEndpointLabel">SSE: ${escapeHtml(sseUrl)}</code>` +
+        `<code class="mcp-code mcp-code-inline" id="mcpEndpointLabel">${escapeHtml(sseUrl)}</code>` +
         `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(sseUrl)}" id="mcpEndpointCopy">Copy</button>` +
       `</div>` +
     `</div>` +
@@ -377,7 +377,7 @@ function onShowConfigRaw(token, label, placeholder = false) {
       }
       if (!text) return;
       try {
-        await navigator.clipboard.writeText(text);
+        await copyText(text);
         const old = btn.textContent;
         btn.textContent = "Copied";
         setTimeout(() => { btn.textContent = old; }, 1200);
