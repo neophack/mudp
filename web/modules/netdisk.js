@@ -54,6 +54,13 @@ function isBackupMode() {
   return netdiskMode === "backup";
 }
 
+function backupUnavailableMessage(errOrMsg) {
+  const msg = String(errOrMsg?.message || errOrMsg || "").trim();
+  if (!msg) return "Backup disk is unavailable or not mounted. Ask an admin to mount the configured backup device.";
+  if (msg.toLowerCase().includes("not configured")) return msg;
+  return `Backup disk is unavailable or not mounted: ${msg}`;
+}
+
 export async function renderNetdisk() {
   restoreModeState(netdiskMode);
   const tabAtEntry = state.tab;
@@ -76,13 +83,16 @@ export async function renderNetdisk() {
       isBackupMode() ? Promise.resolve([]) : api("/api/netdisk/shares").catch(() => []),
       isBackupMode() || !isAdmin() ? Promise.resolve([]) : api("/api/admin/netdisk/shares").catch(() => []),
     ]);
-    sig = JSON.stringify([netdiskMode, list.path, list.items, quota, shares, adminShares]);
+    const effectiveQuota = isBackupMode() ? (list?.quota || null) : quota;
+    const backupWarning = isBackupMode() && list?.unavailable ? backupUnavailableMessage(list.message) : "";
+    sig = JSON.stringify([netdiskMode, list.path, list.items, effectiveQuota, shares, adminShares, backupWarning]);
     state.netdisk = {
       path: list.path || "",
       items: list.items || [],
-      quota,
+      quota: effectiveQuota,
       shares,
       adminShares,
+      backupWarning,
       selected: state.netdisk?.selected || new Set(),
       sig,
     };
@@ -90,12 +100,29 @@ export async function renderNetdisk() {
     setCurrentPath(state.netdisk.path || "");
     setCurrentSelection(state.netdisk.selected || new Set());
   } catch (err) {
-    // A failed background refresh keeps the previous content; only the first
-    // load surfaces the error.
-    if (firstLoad) {
-      $("#view").innerHTML = `<div class="card"><div class="card-body"><div class="error-box">${escapeHtml(err.message)}</div></div></div>`;
+    if (isBackupMode()) {
+      const warning = backupUnavailableMessage(err);
+      sig = JSON.stringify([netdiskMode, state.netdisk?.path || "", [], null, [], [], warning]);
+      state.netdisk = {
+        path: state.netdisk?.path || "",
+        items: [],
+        quota: null,
+        shares: [],
+        adminShares: [],
+        backupWarning: warning,
+        selected: state.netdisk?.selected || new Set(),
+        sig,
+      };
+      setCurrentPath(state.netdisk.path || "");
+      setCurrentSelection(state.netdisk.selected || new Set());
+    } else {
+      // A failed background refresh keeps the previous content; only the first
+      // load surfaces the error.
+      if (firstLoad) {
+        $("#view").innerHTML = `<div class="card"><div class="card-body"><div class="error-box">${escapeHtml(err.message)}</div></div></div>`;
+      }
+      return;
     }
-    return;
   }
   // The user switched tabs mid-fetch: drop the result instead of painting
   // netdisk over the newly active view.
@@ -113,7 +140,7 @@ export async function renderNetdisk() {
     `<tr class="empty-row"><td colspan="${mutable ? 6 : 5}">No files.</td></tr>`;
   const fileCount = state.netdisk.items.filter((f) => !f.dir).length;
   const folderCount = state.netdisk.items.length - fileCount;
-  const quotaHtml = backup ? "" : quotaBar(state.netdisk.quota);
+  const quotaHtml = quotaBar(state.netdisk.quota);
   const selectionSize = [...state.netdisk.selected].length;
 
   $("#view").innerHTML =
@@ -144,6 +171,9 @@ export async function renderNetdisk() {
               : "") +
           `</div>` +
         `</div>` +
+        (backup && state.netdisk.backupWarning
+          ? `<div class="netdisk-backup-hint">${escapeHtml(state.netdisk.backupWarning)}</div>`
+          : "") +
         `<div class="netdisk-pathbar">` +
           `<div class="netdisk-crumbs">${breadcrumbs(state.netdisk.path)}</div>` +
           `<div class="netdisk-used">${quotaHtml}</div>` +
@@ -1140,14 +1170,15 @@ async function uploadFilesHandler(files, path) {
 function quotaBar(q) {
   if (!q) return `Used <strong>0 B</strong>`;
   const used = q.usedBytes || 0;
+  const estimating = q.usedEstimating ? ` <span class="hint">(estimating, updates in background)</span>` : "";
   if (q.totalBytes > 0) {
     const pct = Math.min(100, Math.round((used / q.totalBytes) * 100));
-    return `Used <strong>${fmtBytes(used)}</strong> / ${fmtBytes(q.totalBytes)} <span class="quota-bar"><span style="width:${pct}%"></span></span> ${pct}%`;
+    return `Used <strong>${fmtBytes(used)}</strong> / ${fmtBytes(q.totalBytes)} <span class="quota-bar"><span style="width:${pct}%"></span></span> ${pct}%${estimating}`;
   }
   if (q.diskFreeBytes != null) {
-    return `Used <strong>${fmtBytes(used)}</strong> · Free ${fmtBytes(q.diskFreeBytes)}`;
+    return `Used <strong>${fmtBytes(used)}</strong> · Free ${fmtBytes(q.diskFreeBytes)}${estimating}`;
   }
-  return `Used <strong>${fmtBytes(used)}</strong>`;
+  return `Used <strong>${fmtBytes(used)}</strong>${estimating}`;
 }
 
 function joinPath(a, b) {

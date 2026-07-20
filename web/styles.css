@@ -1166,6 +1166,16 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
   color: #fff;
 }
 .netdisk-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.netdisk-backup-hint {
+  margin: 0 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(232, 145, 12, 0.28);
+  border-radius: var(--radius-sm);
+  background: rgba(232, 145, 12, 0.08);
+  color: #8a5a07;
+  font-size: 12.5px;
+  font-weight: 600;
+}
 .netdisk-pathbar {
   display: flex;
   align-items: center;

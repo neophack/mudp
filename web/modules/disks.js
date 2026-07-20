@@ -22,18 +22,30 @@ export async function renderDisks() {
       state.backupSchedule = { enabled: false, hour: 2, minute: 0, lastRunAt: "" };
     }
   }
+  if (!state.diskMountConfig) {
+    try {
+      state.diskMountConfig = await api("/api/admin/disks/config");
+    } catch {
+      state.diskMountConfig = { source: "", target: "", fsType: "", backupTargetDir: "" };
+    }
+  }
   $("#view").innerHTML =
     `<div class="grid two disks-layout">` +
       `<section class="stack disks-tools-col">` +
         `<div class="card"><div class="card-head"><h2>Mount Disk</h2></div><div class="card-body"><form id="mountForm" class="compact">` +
-          `<input name="source" placeholder="Source device or share">` +
-          `<input name="target" placeholder="Target path">` +
-          `<input name="fsType" placeholder="Filesystem type (optional)">` +
-          `<button>Mount</button>` +
+          `<input name="source" placeholder="Source device or share" value="${escapeHtml(state.diskMountConfig?.source || "")}">` +
+          `<input name="target" placeholder="Target path" value="${escapeHtml(state.diskMountConfig?.target || "")}">` +
+          `<input name="fsType" placeholder="Filesystem type (optional)" value="${escapeHtml(state.diskMountConfig?.fsType || "")}">` +
+          `<div class="head-tools" style="justify-content:flex-start">` +
+            `<button type="button" class="ghost" id="saveMountConfig">Save Config</button>` +
+            `<button type="submit">Mount Now</button>` +
+          `</div>` +
+          `<p class="hint" style="margin:0">Source/Target/FSType are saved in the database and prefilled next time.</p>` +
         `</form></div></div>` +
         `<div class="card"><div class="card-head"><h2>Backup</h2></div><div class="card-body"><form id="backupForm" class="compact">` +
-          `<input name="targetDir" placeholder="Mounted disk backup directory">` +
+          `<input name="targetDir" placeholder="Mounted disk backup directory" value="${escapeHtml(state.diskMountConfig?.backupTargetDir || "")}">` +
           `<button>Backup Database</button>` +
+          `<p class="hint" style="margin:0">Backup path is saved in DB. If empty, server falls back to saved config.</p>` +
         `</form></div></div>` +
       `</section>` +
       `<section class="stack disks-schedule-col">` +
@@ -62,14 +74,49 @@ export async function renderDisks() {
     const payload = Object.fromEntries(new FormData(e.target));
     await api("/api/admin/disks/mount", { method: "POST", body: JSON.stringify(payload) });
     toast("Mount command completed", true);
+    state.diskMountConfig = {
+      ...(state.diskMountConfig || {}),
+      source: payload.source || "",
+      target: payload.target || "",
+      fsType: payload.fsType || "",
+    };
     // Force a fresh fetch so the just-mounted disk shows up immediately.
     state.disks = null;
     renderDisks();
+  };
+  $("#saveMountConfig").onclick = async () => {
+    try {
+      const fd = new FormData($("#mountForm"));
+      const payload = {
+        source: (fd.get("source") || "").toString(),
+        target: (fd.get("target") || "").toString(),
+        fsType: (fd.get("fsType") || "").toString(),
+        backupTargetDir: state.diskMountConfig?.backupTargetDir || "",
+      };
+      await api("/api/admin/disks/config", { method: "POST", body: JSON.stringify(payload) });
+      state.diskMountConfig = payload;
+      toast("Mount config saved", true);
+    } catch (err) {
+      toast(err.message);
+    }
   };
   $("#backupForm").onsubmit = async (e) => {
     e.preventDefault();
     const payload = Object.fromEntries(new FormData(e.target));
     const out = await api("/api/admin/backup", { method: "POST", body: JSON.stringify(payload) });
+    state.diskMountConfig = {
+      ...(state.diskMountConfig || {}),
+      backupTargetDir: payload.targetDir || "",
+    };
+    await api("/api/admin/disks/config", {
+      method: "POST",
+      body: JSON.stringify({
+        source: state.diskMountConfig?.source || "",
+        target: state.diskMountConfig?.target || "",
+        fsType: state.diskMountConfig?.fsType || "",
+        backupTargetDir: state.diskMountConfig?.backupTargetDir || "",
+      }),
+    }).catch(() => {});
     toast(`Backup created: ${out.path}`, true);
   };
   $("#backupScheduleForm").onsubmit = async (e) => {

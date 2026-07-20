@@ -49,6 +49,16 @@ type App struct {
 	cacheAt          time.Time
 	registryMu       sync.Mutex
 	backupJobs       *BackupJobRegistry
+	dirSizeMu        sync.Mutex
+	dirSizeCache     map[string]dirSizeEntry
+	dirSizeRunning   map[string]bool
+	dirSizeSemaphore chan struct{}
+}
+
+type dirSizeEntry struct {
+	bytes   int64
+	updated time.Time
+	err     string
 }
 
 type contextKey string
@@ -66,8 +76,11 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 	}
 	return &App{
 		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret),
-		mcpHub:     mcp.NewSSEHub(),
-		backupJobs: NewBackupJobRegistry(),
+		mcpHub:           mcp.NewSSEHub(),
+		backupJobs:       NewBackupJobRegistry(),
+		dirSizeCache:     make(map[string]dirSizeEntry),
+		dirSizeRunning:   make(map[string]bool),
+		dirSizeSemaphore: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -295,6 +308,8 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/backup/schedule", a.backupScheduleGet)
 		r.Post("/api/backup/schedule", a.backupSchedulePost)
 		r.Get("/api/admin/disks", a.disks)
+		r.Get("/api/admin/disks/config", a.diskMountConfigGet)
+		r.Post("/api/admin/disks/config", a.diskMountConfigPost)
 		r.Post("/api/admin/disks/mount", a.diskMount)
 		r.Post("/api/admin/disks/unmount", a.diskUnmount)
 		r.Post("/api/admin/backup", a.backupData)

@@ -496,8 +496,14 @@ func (a *App) netdiskQuota(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	used := dirSize(root)
+	used, stale, updatedAt := a.dirSizeCached(root)
 	q := map[string]any{"usedBytes": used}
+	if stale {
+		q["usedEstimating"] = true
+	}
+	if updatedAt != "" {
+		q["usedUpdatedAt"] = updatedAt
+	}
 	if u.NetdiskQuotaBytes > 0 {
 		q["totalBytes"] = u.NetdiskQuotaBytes
 		free := u.NetdiskQuotaBytes - used
@@ -549,12 +555,47 @@ func (a *App) netdiskUsageAdmin(w http.ResponseWriter, r *http.Request) {
 			if _, err := os.Stat(root); err != nil {
 				entry.PathMissing = true
 			} else {
-				entry.UsedBytes = dirSize(root)
+				used, _, _ := a.dirSizeCached(root)
+				entry.UsedBytes = used
 			}
 		}
 		out = append(out, entry)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// dirSizeCached returns the most recent cached size for a root and triggers an
+// async refresh when missing/stale. stale=true means the value is currently an
+// estimate from cache (or zero while first scan is pending).
+func (a *App) dirSizeCached(root string) (bytes int64, stale bool, updatedAt string) {
+	const ttl = 2 * time.Minute
+	now := time.Now()
+	a.dirSizeMu.Lock()
+	entry, ok := a.dirSizeCache[root]
+	running := a.dirSizeRunning[root]
+	needRefresh := !ok || now.Sub(entry.updated) > ttl
+	if needRefresh && !running {
+		a.dirSizeRunning[root] = true
+		go a.refreshDirSize(root)
+		running = true
+	}
+	a.dirSizeMu.Unlock()
+	if !ok {
+		return 0, true, ""
+	}
+	return entry.bytes, needRefresh || running, entry.updated.Format(time.RFC3339)
+}
+
+func (a *App) refreshDirSize(root string) {
+	// Limit heavy recursive scans to one worker so requests remain responsive
+	// even when many users/directories are queued for refresh.
+	a.dirSizeSemaphore <- struct{}{}
+	bytes := dirSize(root)
+	<-a.dirSizeSemaphore
+	a.dirSizeMu.Lock()
+	a.dirSizeCache[root] = dirSizeEntry{bytes: bytes, updated: time.Now()}
+	delete(a.dirSizeRunning, root)
+	a.dirSizeMu.Unlock()
 }
 
 func dirSize(root string) int64 {

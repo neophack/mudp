@@ -22,6 +22,56 @@ type diskInfo struct {
 	UsedPct    float64 `json:"usedPct"`
 }
 
+type diskMountConfig struct {
+	Source       string `json:"source"`
+	Target       string `json:"target"`
+	FSType       string `json:"fsType"`
+	BackupTarget string `json:"backupTargetDir"`
+}
+
+func (a *App) diskMountConfigGet(w http.ResponseWriter, r *http.Request) {
+	source, _ := a.db.Setting("disk_mount_source")
+	target, _ := a.db.Setting("disk_mount_target")
+	fsType, _ := a.db.Setting("disk_mount_fstype")
+	backupTarget, _ := a.db.Setting("disk_backup_target_dir")
+	writeJSON(w, http.StatusOK, diskMountConfig{
+		Source:       strings.TrimSpace(source),
+		Target:       strings.TrimSpace(target),
+		FSType:       strings.TrimSpace(fsType),
+		BackupTarget: strings.TrimSpace(backupTarget),
+	})
+}
+
+func (a *App) diskMountConfigPost(w http.ResponseWriter, r *http.Request) {
+	var req diskMountConfig
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.Source = strings.TrimSpace(req.Source)
+	req.Target = strings.TrimSpace(req.Target)
+	req.FSType = strings.TrimSpace(req.FSType)
+	req.BackupTarget = strings.TrimSpace(req.BackupTarget)
+	if err := a.db.SaveSetting("disk_mount_source", req.Source); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.db.SaveSetting("disk_mount_target", req.Target); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.db.SaveSetting("disk_mount_fstype", req.FSType); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.db.SaveSetting("disk_backup_target_dir", req.BackupTarget); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.record(r, "disk.config.save", req.Target)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (a *App) disks(w http.ResponseWriter, r *http.Request) {
 	if runtime.GOOS == "windows" {
 		out, err := exec.Command("powershell", "-NoProfile", "-Command", `Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,Size,FreeSpace,VolumeName | ConvertTo-Json`).Output()
@@ -69,7 +119,23 @@ func (a *App) diskMount(w http.ResponseWriter, r *http.Request) {
 		Target string `json:"target"`
 		FSType string `json:"fsType"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.Source == "" || req.Target == "" {
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	req.Source = strings.TrimSpace(req.Source)
+	req.Target = strings.TrimSpace(req.Target)
+	req.FSType = strings.TrimSpace(req.FSType)
+	if req.Source == "" {
+		req.Source, _ = a.db.Setting("disk_mount_source")
+	}
+	if req.Target == "" {
+		req.Target, _ = a.db.Setting("disk_mount_target")
+	}
+	if req.FSType == "" {
+		req.FSType, _ = a.db.Setting("disk_mount_fstype")
+	}
+	if strings.TrimSpace(req.Source) == "" || strings.TrimSpace(req.Target) == "" {
 		writeErr(w, http.StatusBadRequest, "source and target are required")
 		return
 	}
@@ -87,6 +153,9 @@ func (a *App) diskMount(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, strings.TrimSpace(string(out))+" "+err.Error())
 		return
 	}
+	_ = a.db.SaveSetting("disk_mount_source", req.Source)
+	_ = a.db.SaveSetting("disk_mount_target", req.Target)
+	_ = a.db.SaveSetting("disk_mount_fstype", req.FSType)
 	a.record(r, "disk.mount", req.Target)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -117,8 +186,16 @@ func (a *App) backupData(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TargetDir string `json:"targetDir"`
 	}
-	if err := decodeJSON(r, &req); err != nil || strings.TrimSpace(req.TargetDir) == "" {
-		writeErr(w, http.StatusBadRequest, "targetDir is required")
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	req.TargetDir = strings.TrimSpace(req.TargetDir)
+	if req.TargetDir == "" {
+		req.TargetDir, _ = a.db.Setting("disk_backup_target_dir")
+	}
+	if strings.TrimSpace(req.TargetDir) == "" {
+		writeErr(w, http.StatusBadRequest, "targetDir is required (set backup directory in Disks page)")
 		return
 	}
 	if err := os.MkdirAll(req.TargetDir, 0750); err != nil {
@@ -147,6 +224,7 @@ func (a *App) backupData(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(wr, in)
 	}
 	add(a.cfg.DBPath, filepath.Base(a.cfg.DBPath))
+	_ = a.db.SaveSetting("disk_backup_target_dir", req.TargetDir)
 	a.record(r, "backup.create", name)
 	writeJSON(w, http.StatusOK, map[string]string{"path": name})
 }

@@ -302,7 +302,9 @@ function subtitle(tab) {
 
 export function render() {
   const admin = isAdmin();
-  const tabs = ["dashboard", "netdisk", "containers", "mcp", "usage", "help", "images", "volumes", "networks", "stacks", "hardware", ...(admin ? ["users", "audit", "disks", "scripts"] : [])];
+  const tabs = admin
+    ? ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", "users", "audit", "disks", "scripts", "help"]
+    : ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", "help"];
 
   const collapsed = state.sidebarCollapsed;
   $("#app").innerHTML =

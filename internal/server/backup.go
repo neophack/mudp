@@ -610,20 +610,53 @@ func (a *App) netdiskBackupBrowse(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	reqPath := strings.TrimSpace(r.URL.Query().Get("path"))
 	// Lazily create the per-user backup dir on first browse so the view isn't
 	// stuck on a "not found" error when no backup has ever run yet.
-	_ = os.MkdirAll(root, 0750)
-	dir, rel, err := cleanUserPath(root, r.URL.Query().Get("path"))
+	if err := os.MkdirAll(root, 0750); err != nil {
+		if reqPath == "" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"path":        "",
+				"items":       []fileItem{},
+				"unavailable": true,
+				"message":     "Backup disk is unavailable or not mounted. Ask an admin to mount the configured backup device.",
+			})
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir, rel, err := cleanUserPath(root, reqPath)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if reqPath == "" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"path":        "",
+				"items":       []fileItem{},
+				"unavailable": true,
+				"message":     "Backup disk is unavailable or not mounted. Ask an admin to mount the configured backup device.",
+			})
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	items := make([]fileItem, 0, len(entries))
+	used, stale, updatedAt := a.dirSizeCached(root)
+	quota := map[string]any{"usedBytes": used}
+	if stale {
+		quota["usedEstimating"] = true
+	}
+	if updatedAt != "" {
+		quota["usedUpdatedAt"] = updatedAt
+	}
+	if free, err := diskFree(root); err == nil && free >= 0 {
+		quota["diskFreeBytes"] = free
+	}
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
@@ -640,7 +673,7 @@ func (a *App) netdiskBackupBrowse(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, fileItem{Name: entry.Name(), Path: p, Dir: entry.IsDir(), Size: info.Size(), ModTime: info.ModTime().Format(time.RFC3339)})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": filepath.ToSlash(rel), "items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"path": filepath.ToSlash(rel), "items": items, "quota": quota, "unavailable": false})
 }
 
 // netdiskBackupMkdir creates a folder on the caller's backup disk (used by the
