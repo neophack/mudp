@@ -15,6 +15,7 @@ import { renderNetworks } from "./modules/networks.js";
 import { renderStacks } from "./modules/stacks.js";
 import { renderUsers } from "./modules/users.js";
 import { renderUsage } from "./modules/usage.js";
+import { renderHelp } from "./modules/help.js";
 import { renderAudit } from "./modules/audit.js";
 import { renderSettings } from "./modules/settings.js";
 import { renderNetdisk } from "./modules/netdisk.js";
@@ -251,6 +252,7 @@ const ICONS = {
   collapse: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'),
   expand: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>'),
   hardware: svgIcon('<path d="M9 3v18"/><path d="M15 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/>'),
+  help: svgIcon('<path d="M9.09 9a3 3 0 1 1 5.83 1c0 2-3 2-3 4"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="10"/>'),
   mcp: svgIcon('<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'),
 };
 
@@ -266,6 +268,7 @@ function label(tab) {
       stacks: "Stacks",
       users: "Users & Groups",
       usage: "Usage",
+      help: "Help",
       audit: "Activity Log",
       disks: "Disks",
       scripts: "Settings",
@@ -287,6 +290,7 @@ function subtitle(tab) {
       stacks: "Deploy and manage docker-compose projects with live progress.",
       users: "Manage users, groups, roles, port prefixes, and Feishu approvals.",
       usage: "Per-user and per-container CPU, memory, disk, GPU, and process usage.",
+      help: "Quick user and admin guides, common workflows, and troubleshooting tips.",
       audit: "Recent management actions across the platform.",
       disks: "Host disk overview, mount helpers, and database backups.",
       scripts: "Configure registries, Feishu SSO, and system settings.",
@@ -298,7 +302,7 @@ function subtitle(tab) {
 
 export function render() {
   const admin = isAdmin();
-  const tabs = ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", ...(admin ? ["users", "audit", "disks", "scripts"] : [])];
+  const tabs = ["dashboard", "netdisk", "containers", "mcp", "usage", "help", "images", "volumes", "networks", "stacks", "hardware", ...(admin ? ["users", "audit", "disks", "scripts"] : [])];
 
   const collapsed = state.sidebarCollapsed;
   $("#app").innerHTML =
@@ -406,6 +410,7 @@ export function renderView() {
   if (state.tab === "stacks") return renderStacks();
   if (state.tab === "users") return renderUsers();
   if (state.tab === "usage") return renderUsage();
+  if (state.tab === "help") return renderHelp();
   if (state.tab === "audit") return renderAudit();
   if (state.tab === "disks") return renderDisks();
   if (state.tab === "scripts") return renderSettings();
