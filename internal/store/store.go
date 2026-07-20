@@ -66,21 +66,21 @@ type Group struct {
 
 // Notification is an in-app message delivered to a single user.
 type Notification struct {
-	ID        int64  `json:"id"`
-	UserID    int64  `json:"userId"`
-	Type      string `json:"type"`
-	Title     string `json:"title"`
-	Message   string `json:"message"`
+	ID        int64          `json:"id"`
+	UserID    int64          `json:"userId"`
+	Type      string         `json:"type"`
+	Title     string         `json:"title"`
+	Message   string         `json:"message"`
 	Data      map[string]any `json:"data"`
-	Read      bool   `json:"read"`
-	CreatedAt string `json:"createdAt"`
+	Read      bool           `json:"read"`
+	CreatedAt string         `json:"createdAt"`
 }
 
 const (
-	NotificationPendingUser = "pending_user"
-	NotificationUserApproved = "user_approved"
+	NotificationPendingUser     = "pending_user"
+	NotificationUserApproved    = "user_approved"
 	NotificationUserDeactivated = "user_deactivated"
-	NotificationSystemAlert = "system_alert"
+	NotificationSystemAlert     = "system_alert"
 )
 
 type Image struct {
@@ -231,7 +231,7 @@ func migrateCreateInitialTables(db executor) error {
 			comment text default '',
 			display_name text default ''
 		)`,
-	`create table if not exists groups (
+		`create table if not exists groups (
 		id integer primary key autoincrement,
 		name text not null unique,
 		netdisk_path text not null default '',
@@ -1376,6 +1376,29 @@ func (db *DB) MarkNotificationsRead(userID int64, ids []int64) error {
 // MarkAllNotificationsRead marks all notifications for a user as read.
 func (db *DB) MarkAllNotificationsRead(userID int64) error {
 	_, err := db.Exec(`update notifications set read=1 where user_id=?`, userID)
+	return err
+}
+
+// DeleteNotifications deletes selected notifications for a user.
+func (db *DB) DeleteNotifications(userID int64, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, userID)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	q := fmt.Sprintf(`delete from notifications where user_id=? and id in (%s)`, strings.Join(placeholders, ","))
+	_, err := db.Exec(q, args...)
+	return err
+}
+
+// DeleteAllNotifications deletes all notifications for a user.
+func (db *DB) DeleteAllNotifications(userID int64) error {
+	_, err := db.Exec(`delete from notifications where user_id=?`, userID)
 	return err
 }
 

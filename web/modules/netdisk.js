@@ -389,8 +389,8 @@ function openFolderPicker(move, paths) {
   folderPicker = { move, paths, path: state.netdisk.path || "", items: [], sourceDisk, targetDisk: sourceDisk };
   const action = move ? "Move" : "Copy";
   const diskLabel = sourceDisk === "backup" ? "Backup Disk" : "My Netdisk";
-  const onNetdisk = sourceDisk === "netdisk" ? "checked" : "";
-  const onBackup = sourceDisk === "backup" ? "checked" : "";
+  const netdiskActive = sourceDisk === "netdisk" ? " active" : "";
+  const backupActive = sourceDisk === "backup" ? " active" : "";
   showModalNoShell(
     "netdisk-picker",
     "wide picker-modal",
@@ -399,16 +399,15 @@ function openFolderPicker(move, paths) {
       `<button class="icon" data-close>✕</button>` +
     `</div>` +
     `<div class="picker-layout">` +
-      `<aside class="picker-tree"><div class="picker-tree-item active">${diskLabel}</div></aside>` +
+      `<aside class="picker-tree">` +
+        `<button class="picker-tree-item picker-disk${netdiskActive}" data-picker-disk="netdisk" type="button">My Netdisk</button>` +
+        `<button class="picker-tree-item picker-disk${backupActive}" data-picker-disk="backup" type="button">Backup Disk</button>` +
+      `</aside>` +
       `<section class="picker-main">` +
         `<div class="picker-toolbar">` +
           `<button class="ghost" id="pickerUp">↑ Up</button>` +
           `<div class="picker-path" id="pickerPath">/</div>` +
           `<button class="ghost" id="pickerMkdir">+ New Folder</button>` +
-        `</div>` +
-        `<div class="backup-mode-row" style="padding:0 12px 10px">` +
-          `<label class="check"><input type="radio" name="pickerTargetDisk" value="netdisk" ${onNetdisk}><span>Netdisk</span></label>` +
-          `<label class="check"><input type="radio" name="pickerTargetDisk" value="backup" ${onBackup}><span>Backup Disk</span></label>` +
         `</div>` +
         `<div class="picker-list" id="pickerList"><div class="picker-empty">Loading…</div></div>` +
       `</section>` +
@@ -426,13 +425,16 @@ function openFolderPicker(move, paths) {
     parts.pop();
     loadPickerFolder(parts.join("/"));
   };
-  document.querySelectorAll("input[name='pickerTargetDisk']").forEach((input) => {
-    input.onchange = () => {
-      if (!folderPicker || !input.checked) return;
-      folderPicker.targetDisk = input.value;
+  document.querySelectorAll("[data-picker-disk]").forEach((btn) => {
+    btn.onclick = () => {
+      if (!folderPicker) return;
+      const nextDisk = btn.dataset.pickerDisk;
+      if (!nextDisk || nextDisk === folderPicker.targetDisk) return;
+      folderPicker.targetDisk = nextDisk;
       folderPicker.path = "";
-      const tree = document.querySelector(".picker-tree-item");
-      if (tree) tree.textContent = folderPicker.targetDisk === "backup" ? "Backup Disk" : "My Netdisk";
+      document.querySelectorAll("[data-picker-disk]").forEach((node) => {
+        node.classList.toggle("active", node.dataset.pickerDisk === folderPicker.targetDisk);
+      });
       loadPickerFolder("");
     };
   });

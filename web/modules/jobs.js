@@ -240,9 +240,9 @@ function refreshJobsModal() {
 }
 
 function bindJobsModal() {
-  document.querySelectorAll("[data-job-cancel]").forEach((btn) => {
+  document.querySelectorAll("[data-job-stop]").forEach((btn) => {
     btn.onclick = () => {
-      const id = btn.dataset.jobCancel;
+      const id = btn.dataset.jobStop;
       cancelJob(id);
     };
   });
@@ -292,7 +292,7 @@ function jobRow(job) {
       : "badge-muted";
   const statusText = job.status[0].toUpperCase() + job.status.slice(1);
   const action = job.active
-    ? `<button class="icon danger" title="Cancel job" data-job-cancel="${escapeHtml(job.id)}">✕</button>`
+    ? `<button class="warn" title="Stop job" data-job-stop="${escapeHtml(job.id)}">Stop</button>`
     : `<button class="icon" title="Remove from list" data-job-remove="${escapeHtml(job.id)}">🗑</button>`;
   // Backup jobs report a 0..100 progress; render a thin bar under the message
   // so the user can watch a long backup advance without opening the row.

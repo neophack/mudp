@@ -47,6 +47,34 @@ func (a *App) notificationsRead(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// notificationsDelete removes one or more notifications for the current user.
+func (a *App) notificationsDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	var req struct {
+		IDs []int64 `json:"ids"`
+		All bool    `json:"all"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var err error
+	if req.All {
+		err = a.db.DeleteAllNotifications(u.ID)
+	} else {
+		err = a.db.DeleteNotifications(u.ID, req.IDs)
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // notifyAdminsPendingUser creates a notification for every admin when a new
 // user lands in the pending group.
 func (a *App) notifyAdminsPendingUser(u *store.User) {

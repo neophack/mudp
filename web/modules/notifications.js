@@ -63,7 +63,11 @@ export function openNotificationsModal() {
     kind: "notifications",
     title: `Notifications`,
     body,
-    foot: `<button class="ghost" data-close>Close</button>${items.length ? `<button class="ghost" id="markAllRead">Mark all read</button>` : ""}`,
+    foot:
+      `<button class="ghost" data-close>Close</button>` +
+      (items.length
+        ? `<button class="ghost" id="markAllRead">Mark all read</button><button class="ghost danger" id="clearNotifications">Clear list</button>`
+        : ""),
   });
   document.querySelectorAll("[data-notification-id]").forEach((row) => {
     row.onclick = async () => {
@@ -79,11 +83,36 @@ export function openNotificationsModal() {
       }
     };
   });
+  document.querySelectorAll("[data-notification-delete]").forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.notificationDelete);
+      try {
+        await api("/api/notifications/delete", { method: "POST", body: JSON.stringify({ ids: [id] }) });
+        await fetchNotifications();
+        openNotificationsModal();
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  });
   const markAll = $("#markAllRead");
   if (markAll) {
     markAll.onclick = async () => {
       try {
         await api("/api/notifications/read", { method: "POST", body: JSON.stringify({ all: true }) });
+        await fetchNotifications();
+        closeModal();
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+  const clearBtn = $("#clearNotifications");
+  if (clearBtn) {
+    clearBtn.onclick = async () => {
+      try {
+        await api("/api/notifications/delete", { method: "POST", body: JSON.stringify({ all: true }) });
         await fetchNotifications();
         closeModal();
       } catch (err) {
@@ -112,6 +141,7 @@ function notificationRow(n) {
         (detail ? `<div class="notification-detail hint">${detail}</div>` : "") +
         `<div class="notification-time hint">${escapeHtml(when)}</div>` +
       `</div>` +
+      `<button class="icon notification-delete" title="Delete" data-notification-delete="${n.id}">✕</button>` +
     `</div>`
   );
 }

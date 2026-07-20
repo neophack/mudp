@@ -232,6 +232,7 @@ func (a *App) Routes() http.Handler {
 		// In-app notifications for activated users.
 		r.Get("/api/notifications", a.notifications)
 		r.Post("/api/notifications/read", a.notificationsRead)
+		r.Post("/api/notifications/delete", a.notificationsDelete)
 	})
 
 	// Operator+ : image group visibility (assign images to groups). Pull/build/import are
