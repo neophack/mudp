@@ -1,4 +1,4 @@
-import { state, isAdmin, canMutate } from "../app.js";
+import { isAdmin, canMutate } from "../app.js";
 
 export function renderHelp() {
   const admin = isAdmin();
