@@ -69,11 +69,26 @@ function trendCards(history) {
     byUser.set(key, list);
   }
   return [...byUser.entries()].slice(0, 12).map(([user, list]) => {
-    const cpu = list.map((x) => x.cpuPct || 0);
-    const mem = list.map((x) => x.memMb || 0);
+    // Samples are per-container, but each snapshot round shares one timestamp.
+    // Aggregate per timestamp so the trend reflects the user's total footprint
+    // (matching the live "Resource Usage" table, which sums across containers),
+    // not just the largest single container reading.
+    const byTs = new Map();
+    for (const x of list) {
+      const ts = x.createdAt || "";
+      const agg = byTs.get(ts) || { cpu: 0, mem: 0, gpu: 0 };
+      agg.cpu += x.cpuPct || 0;
+      agg.mem += x.memMb || 0;
+      // GPU % is already a per-user average in the snapshot, so don't double-sum.
+      agg.gpu = Math.max(agg.gpu, x.gpuPct || 0);
+      byTs.set(ts, agg);
+    }
+    const series = [...byTs.values()];
+    const cpu = series.map((x) => x.cpu);
+    const mem = series.map((x) => x.mem);
+    const gpu = series.map((x) => x.gpu);
     const maxCpu = Math.max(...cpu, 0).toFixed(1);
     const maxMem = Math.max(...mem, 0).toFixed(0);
-    const gpu = list.map((x) => x.gpuPct || 0);
     const maxGpu = Math.max(...gpu, 0).toFixed(1);
     return `<div class="stat-card"><div class="stat-card-head">${escapeHtml(displayNameForUsername(user))}</div><div class="stat-card-value">${maxCpu}% CPU</div><div class="stat-card-sub">${maxMem} MB peak memory · ${maxGpu}% peak GPU</div>${spark(cpu)}</div>`;
   });

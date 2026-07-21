@@ -126,6 +126,10 @@ type NetdiskShare struct {
 	Password string `json:"password,omitempty"`
 }
 
+// defaultMaxOpenConns is the connection-pool cap Open() applies and Migrate()
+// restores after temporarily narrowing the pool to a single connection.
+const defaultMaxOpenConns = 8
+
 func Open(path string) (*DB, error) {
 	// Per-connection pragmas must go in the DSN: database/sql pools up to
 	// MaxOpenConns connections and a one-shot Exec would apply them only to
@@ -141,7 +145,7 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(8)
+	db.SetMaxOpenConns(defaultMaxOpenConns)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(0)
 	if err := db.Ping(); err != nil {
@@ -586,6 +590,53 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 	if err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
+
+	// Some migrations rebuild the users table via rename/drop. SQLite rewrites
+	// foreign-key references to follow the rename, so after the rebuild tables
+	// like mcp_tokens can end up pointing at the dropped users_old and any
+	// later FK check fails with "no such table". foreign_keys is a
+	// per-connection pragma and has no effect inside a transaction, so disable
+	// it for the whole loop and pin the pool to one connection to guarantee the
+	// pragma covers every statement a migration runs. Both are restored after.
+	// In production migrations always run in order (10 before 14), so the FK
+	// never actually dangles; this guard makes re-running older migrations safe.
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`pragma foreign_keys = off`); err != nil {
+		return fmt.Errorf("disable foreign_keys for migrations: %w", err)
+	}
+	migrateErr := db.runMigrations(current)
+	if _, ferr := db.Exec(`pragma foreign_keys = on`); ferr != nil {
+		// Re-enabling FK enforcement is best-effort; don't mask a real migrate
+		// error with it.
+		if migrateErr == nil {
+			migrateErr = fmt.Errorf("re-enable foreign_keys: %w", ferr)
+		}
+	}
+	db.SetMaxOpenConns(defaultMaxOpenConns)
+	if migrateErr != nil {
+		return migrateErr
+	}
+
+	// Only auto-create an admin when an explicit password is supplied. When the
+	// password is empty the first-run setup wizard is responsible for creating
+	// the administrator account.
+	if adminPassword != "" {
+		var n int
+		if err := db.QueryRow(`select count(*) from users where role='admin'`).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if err := db.CreateUser(adminUser, adminPassword, "admin", nil, 50, 0); err != nil {
+				return err
+			}
+		}
+	}
+	return db.EnsureDefaultGroups()
+}
+
+// runMigrations applies every migration whose version is above current, each in
+// its own transaction. The caller owns the foreign_keys pragma.
+func (db *DB) runMigrations(current int) error {
 	for _, m := range migrations {
 		if m.version <= current {
 			continue
@@ -606,22 +657,7 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			return fmt.Errorf("commit migration %d: %w", m.version, err)
 		}
 	}
-
-	// Only auto-create an admin when an explicit password is supplied. When the
-	// password is empty the first-run setup wizard is responsible for creating
-	// the administrator account.
-	if adminPassword != "" {
-		var n int
-		if err := db.QueryRow(`select count(*) from users where role='admin'`).Scan(&n); err != nil {
-			return err
-		}
-		if n == 0 {
-			if err := db.CreateUser(adminUser, adminPassword, "admin", nil, 50, 0); err != nil {
-				return err
-			}
-		}
-	}
-	return db.EnsureDefaultGroups()
+	return nil
 }
 
 // recordSchemaVersionTx records a migration version inside a transaction.
