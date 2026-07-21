@@ -59,20 +59,23 @@ export function fmtSpeed(bps) {
 
 // showUploadOverlay opens a floating progress card listing every file with
 // its own row (name · size · progress · speed) plus an aggregate header.
-// `files` is the FileList/Array being uploaded. Returns a controller:
+// `entries` is a FileList/Array being uploaded, or a list of { file, relPath }
+// objects (relPath carries the in-folder path for folder uploads). Returns a
+// controller:
 //   setLabel(text)                    — replace the header label
 //   setStatus(index, status, msg?)    — "uploading" | "done" | "error"
 //   updateFile(index, p)              — per-file progress {loaded,total,percent,speedBps}
 //   updateOverall({percent,speedBps,etaSec}) — aggregate header metrics
 //   close()                           — remove the card
 // Only one overlay exists at a time; calling show again replaces it.
-export function showUploadOverlay(files) {
-  const list = [...(files || [])];
+export function showUploadOverlay(entries) {
+  const list = [...(entries || [])];
   hideUploadOverlay();
   const el = document.createElement("div");
   el.className = "upload-overlay";
-  const rows = list.map((f, i) => {
-    const name = f.webkitRelativePath || f.name;
+  const rows = list.map((entry, i) => {
+    const f = entry?.file ?? entry; // accept both {file,relPath} and raw File
+    const name = entry?.relPath || entry?.webkitRelativePath || f.name;
     return (
       `<div class="upload-file-row" data-idx="${i}">` +
         `<div class="upload-file-head">` +
