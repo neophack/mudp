@@ -65,6 +65,9 @@ export const state = {
   mcpTokens: [],
   disks: [],
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
+  // Security policy (IP/CIDR/region gate + login brute-force toggle). Loaded
+  // lazily by the Settings page for admins only.
+  security: { loaded: false },
   notifications: [],
   unreadCount: 0,
   search: "",

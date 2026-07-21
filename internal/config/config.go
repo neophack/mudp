@@ -20,6 +20,13 @@ type Config struct {
 	// embedded filesystem. Lets you iterate on web/ without rebuilding.
 	WebDir          string
 	DefaultLanguage string
+	// TrustedProxies is a comma-separated list of CIDRs whose connections may
+	// set trusted forwarding headers (X-Forwarded-For / X-Real-IP /
+	// CF-Connecting-IP). Empty uses the built-in private-LAN default. This is
+	// essential when running behind nginx/Caddy/Cloudflare: without it the
+	// rate limiter and the geo/brute-force checks see only the proxy's IP and
+	// an attacker can forge XFF to bypass them.
+	TrustedProxies string
 }
 
 // Load reads configuration from the environment. Missing secrets are generated
@@ -31,6 +38,7 @@ func Load() Config {
 		DockerHost:      env("MUDP_DOCKER_HOST", ""),
 		WebDir:          env("MUDP_WEB_DIR", ""),
 		DefaultLanguage: env("MUDP_DEFAULT_LANGUAGE", "en_US"),
+		TrustedProxies:  os.Getenv("MUDP_TRUSTED_PROXIES"),
 	}
 
 	cfg.SessionSecret = env("MUDP_SESSION_SECRET", "")

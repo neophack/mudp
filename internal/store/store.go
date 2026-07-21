@@ -179,7 +179,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 24
+const schemaVersion = 25
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -220,6 +220,7 @@ var migrations = []migration{
 	{22, "create backup_schedule", migrateCreateBackupSchedule},
 	{23, "add users.language", migrateAddUserLanguage},
 	{24, "add groups.language", migrateAddGroupLanguage},
+	{25, "add audit_logs.ip", migrateAddAuditIP},
 }
 
 func migrateCreateInitialTables(db executor) error {
@@ -357,6 +358,14 @@ func migrateAddUserLanguage(db executor) error {
 
 func migrateAddGroupLanguage(db executor) error {
 	return execIgnoring(db, `alter table groups add column language text default ''`, sqliteDuplicateColumn)
+}
+
+// migrateAddAuditIP adds an optional client-IP column to audit_logs so login
+// success/failure and other audited actions carry the originating IP. Old rows
+// backfill to '' and remain valid; the new AuditWithIP writes the column while
+// the legacy Audit() continues to work (writing '').
+func migrateAddAuditIP(db executor) error {
+	return execIgnoring(db, `alter table audit_logs add column ip text not null default ''`, sqliteDuplicateColumn)
 }
 
 func migrateAddShareExpiresAt(db executor) error {
@@ -750,15 +759,26 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 	err := db.QueryRow(`select id,username,display_name,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where username=?`, username).
 		Scan(&u.ID, &u.Username, &u.DisplayName, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Do a dummy bcrypt compare against a fixed hash so a missing-user
+		// branch takes the same time as a wrong-password branch. Without this,
+		// an attacker can enumerate usernames by timing the response.
+		_ = bcrypt.CompareHashAndPassword(dummyUserHash, []byte(password))
 		return nil, errors.New("invalid username or password")
 	}
 	if err != nil {
 		return nil, err
 	}
-	if disabled != 0 {
-		return nil, errors.New("user is disabled")
-	}
+	// Compare the password BEFORE checking the disabled flag. The old order
+	// (disabled → bcrypt) returned faster for disabled accounts, leaking
+	// account state via timing. Now both wrong-password and disabled users
+	// pay the bcrypt cost.
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
+		return nil, errors.New("invalid username or password")
+	}
+	if disabled != 0 {
+		// Same message as wrong password — do not confirm to an attacker that
+		// the account exists and is disabled. The login handler also masks
+		// this, but keeping the store-layer message generic is defense in depth.
 		return nil, errors.New("invalid username or password")
 	}
 	now := time.Now().Format(time.RFC3339)
@@ -767,6 +787,12 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 	u.Groups = db.UserGroupNames(u.ID)
 	return &u, nil
 }
+
+// dummyUserHash is a precomputed bcrypt hash of a throwaway password, used to
+// keep the missing-user code path's timing comparable to a real password
+// check. Generated with bcrypt cost 10 (the package default) so a wrong-
+// password attempt and a no-such-user attempt take the same time.
+var dummyUserHash = []byte("$2a$10$tqkB9wM7kX/Vp.hGHUT9U.6TVwmKZYju6EpUHURIjQLKDBd7L4xUm")
 
 func (db *DB) UserByID(id int64) (*User, error) {
 	var u User
@@ -1307,6 +1333,60 @@ func (db *DB) SaveFeishuConfig(cfg FeishuConfig) error {
 	return tx.Commit()
 }
 
+// ---------------- Security policy ----------------
+
+// SecurityPolicy is the admin-configured IP-restriction and brute-force policy.
+// It is stored as a single JSON blob under the "security_policy" settings key.
+//
+// Semantics:
+//   - Enabled is the master switch for the geo/CIDR gate.
+//   - AllowedCountries are ISO 3166-1 alpha-2 codes (e.g. "CN", "HK"). When
+//     non-empty, only those countries pass the gate.
+//   - AllowedCNProvinces are Chinese province names as produced by the GeoIP
+//     DB (e.g. "广东省"); only consulted when "CN" is allowed.
+//   - AllowedCIDRs always pass (override), even from a disallowed region —
+//     this is the "don't lock myself out" safety valve.
+//   - BlockedCIDRs always fail.
+//   - LoginGuardEnabled toggles the in-memory brute-force protection.
+type SecurityPolicy struct {
+	Enabled            bool     `json:"enabled"`
+	AllowedCountries   []string `json:"allowedCountries"`
+	AllowedCNProvinces []string `json:"allowedCNProvinces"`
+	AllowedCIDRs       []string `json:"allowedCIDRs"`
+	BlockedCIDRs       []string `json:"blockedCIDRs"`
+	LoginGuardEnabled  bool     `json:"loginGuardEnabled"`
+}
+
+// SecurityPolicy returns the stored policy, or an empty (disabled) one if no
+// policy has been configured yet.
+func (db *DB) SecurityPolicy() (SecurityPolicy, error) {
+	var p SecurityPolicy
+	var raw string
+	err := db.QueryRow(`select value from settings where key='security_policy'`).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return p, nil // default: everything disabled
+		}
+		return p, err
+	}
+	if raw == "" {
+		return p, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return p, err
+	}
+	return p, nil
+}
+
+// SaveSecurityPolicy persists the policy as JSON under the security_policy key.
+func (db *DB) SaveSecurityPolicy(p SecurityPolicy) error {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return db.setSetting("security_policy", string(raw))
+}
+
 // ---------------- Audit log ----------------
 
 // AuditEntry is one recorded management action.
@@ -1316,11 +1396,20 @@ type AuditEntry struct {
 	Action    string `json:"action"`
 	Target    string `json:"target"`
 	CreatedAt string `json:"createdAt"`
+	IP        string `json:"ip,omitempty"`
 }
 
 // Audit records a management action. It never returns an error: audit logging
-// is best-effort and must not derail the request it observes.
+// is best-effort and must not derail the request it observes. The IP column is
+// left blank; use AuditWithIP to attach the originating client IP.
 func (db *DB) Audit(actor, action, target string) {
+	db.AuditWithIP(actor, action, target, "")
+}
+
+// AuditWithIP is Audit with an explicit originating client IP. The ip is
+// stored as-is (already the resolved real client IP, not the raw RemoteAddr).
+// Like Audit it is best-effort.
+func (db *DB) AuditWithIP(actor, action, target, ip string) {
 	if actor == "" {
 		actor = "system"
 	}
@@ -1330,8 +1419,8 @@ func (db *DB) Audit(actor, action, target string) {
 	if target == "" {
 		target = "-"
 	}
-	_, _ = db.Exec(`insert into audit_logs(actor, action, target, created_at) values(?,?,?,?)`,
-		actor, action, target, time.Now().Format(time.RFC3339))
+	_, _ = db.Exec(`insert into audit_logs(actor, action, target, created_at, ip) values(?,?,?,?,?)`,
+		actor, action, target, time.Now().Format(time.RFC3339), ip)
 }
 
 // PruneAuditLogs deletes audit entries older than the given time.
@@ -1489,7 +1578,7 @@ func (db *DB) AuditList(f AuditFilter) ([]AuditEntry, error) {
 	if f.Limit <= 0 || f.Limit > 1000 {
 		f.Limit = 200
 	}
-	q := `select id, actor, action, target, created_at from audit_logs`
+	q := `select id, actor, action, target, created_at, ip from audit_logs`
 	var (
 		clauses []string
 		args    []any
@@ -1519,7 +1608,7 @@ func (db *DB) AuditList(f AuditFilter) ([]AuditEntry, error) {
 	var out []AuditEntry
 	for rows.Next() {
 		var e AuditEntry
-		if err := rows.Scan(&e.ID, &e.Actor, &e.Action, &e.Target, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Actor, &e.Action, &e.Target, &e.CreatedAt, &e.IP); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

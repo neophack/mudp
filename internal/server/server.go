@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -28,8 +30,11 @@ import (
 	"mudp/internal/auth"
 	"mudp/internal/config"
 	"mudp/internal/dockerx"
+	"mudp/internal/geoip"
+	"mudp/internal/httpx"
 	"mudp/internal/mcp"
 	"mudp/internal/middleware"
+	"mudp/internal/security"
 	"mudp/internal/store"
 	"mudp/web"
 )
@@ -53,6 +58,14 @@ type App struct {
 	dirSizeCache     map[string]dirSizeEntry
 	dirSizeRunning   map[string]bool
 	dirSizeSemaphore chan struct{}
+
+	// Security: trusted-proxy CIDRs (parsed once from cfg), the GeoIP reader,
+	// the in-memory login brute-force guard, and the live security policy.
+	// policy and loginGuard are hot-reloaded by the admin settings handler.
+	trustedProxies []*net.IPNet
+	geoip          *geoip.Reader
+	loginGuard     *security.LoginGuard
+	policy         atomic.Pointer[store.SecurityPolicy]
 }
 
 type dirSizeEntry struct {
@@ -74,14 +87,43 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{
+	// Resolve trusted proxies once: explicit config wins, else default to
+	// private LAN so a co-located nginx/Caddy on the loopback/LAN is trusted
+	// out of the box.
+	trusted := httpx.ParseCIDRs(cfg.TrustedProxies)
+	if trusted == nil {
+		trusted = httpx.DefaultTrustedProxies()
+	}
+
+	// GeoIP is best-effort: if the embedded DB cannot be opened (corrupt or
+	// stripped build) we keep serving but region rules become no-ops.
+	geoReader, geoErr := geoip.Open()
+	if geoErr != nil {
+		log.Printf("WARNING: geoip database unavailable, region gating disabled: %v", geoErr)
+	}
+
+	guard := security.NewLoginGuard()
+
+	app := &App{
 		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret),
 		mcpHub:           mcp.NewSSEHub(),
 		backupJobs:       NewBackupJobRegistry(),
 		dirSizeCache:     make(map[string]dirSizeEntry),
 		dirSizeRunning:   make(map[string]bool),
 		dirSizeSemaphore: make(chan struct{}, 1),
-	}, nil
+		trustedProxies:   trusted,
+		geoip:            geoReader,
+		loginGuard:       guard,
+	}
+
+	// Load the persisted security policy and prime the guard with it so login
+	// protection is active immediately on boot (not only after the first save).
+	policy, pErr := db.SecurityPolicy()
+	if pErr != nil {
+		log.Printf("WARNING: could not load security policy: %v", pErr)
+	}
+	app.applySecurityPolicy(policy)
+	return app, nil
 }
 
 // Close releases resources held by the app, such as the Docker client.
@@ -123,9 +165,14 @@ func (a *App) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(a.recoverPanic)
 	r.Use(middleware.RequestLogger)
+	// Region/CIDR gate screens every request before auth. Mounted here (not
+	// per-group) so it covers /api/login, the SPA, and share pages alike.
+	r.Use(a.geoGate)
 
-	apiRateLimiter := middleware.DefaultAPIRateLimiter()
-	loginRateLimiter := middleware.StrictRateLimiter()
+	// Rate limiters key on the real client IP (honoring forwarding headers
+	// from trusted proxies) so they behave correctly behind nginx/Cloudflare.
+	apiRateLimiter := middleware.NewRateLimiterWithProxies(20, 40, 10*time.Minute, a.trustedProxies)
+	loginRateLimiter := middleware.NewRateLimiterWithProxies(1, 5, 10*time.Minute, a.trustedProxies)
 
 	// Observability endpoints (no auth required).
 	r.Get("/healthz", a.healthz)
@@ -303,6 +350,9 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/admin/audit", a.audit)
 		r.Get("/api/settings/feishu", a.feishuSettings)
 		r.Post("/api/settings/feishu", a.feishuSettings)
+		// Security policy: IP/CIDR/region gating + login brute-force toggle.
+		r.Get("/api/settings/security", a.securitySettings)
+		r.Post("/api/settings/security", a.securitySettings)
 		r.Post("/api/groups/netdisk", a.groupNetdisk)
 		r.Post("/api/groups/backup", a.groupBackup)
 		r.Get("/api/admin/netdisk/shares", a.netdiskSharesAdmin)
@@ -411,11 +461,41 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	u, err := a.db.Authenticate(req.Username, req.Password)
-	if err != nil {
-		writeErr(w, http.StatusUnauthorized, err.Error())
+	ip := a.clientIP(r)
+
+	// Brute-force guard: check BEFORE the credential lookup so a locked IP or
+	// account never reaches bcrypt. The message is intentionally generic and
+	// the same for both axes — it must not reveal whether the IP or the
+	// account is the bottleneck.
+	if locked, until, _ := a.loginGuard.IsLocked(ip, req.Username); locked {
+		remaining := time.Until(until)
+		if remaining < 0 {
+			remaining = 0
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(int(remaining.Seconds())+1))
+		writeErr(w, http.StatusTooManyRequests, "登录尝试过多，请稍后再试 (too many attempts, try again later)")
 		return
 	}
+
+	u, err := a.db.Authenticate(req.Username, req.Password)
+	if err != nil {
+		// Count the failure against both the IP and the account, then audit.
+		// Audit IP is the resolved client IP; actor/target follow the existing
+		// "actor=target user, action=login.failed" convention.
+		a.loginGuard.RecordFailure(ip, req.Username)
+		actor := req.Username
+		if actor == "" {
+			actor = "anonymous"
+		}
+		a.db.AuditWithIP(actor, "login.failed", req.Username, ip)
+		// Don't forward the raw DB error: it can distinguish "user is disabled"
+		// from "wrong password" (an enumeration oracle). Return one message.
+		writeErr(w, http.StatusUnauthorized, "用户名或密码错误 (invalid username or password)")
+		return
+	}
+	a.loginGuard.RecordSuccess(ip, req.Username)
+	a.db.AuditWithIP(u.Username, "login.success", u.Username, ip)
+
 	a.auth.Set(w, r, u.ID)
 	if netdiskPath, err := a.db.NetdiskPathForUser(u.ID); err == nil && netdiskPath != "" {
 		_ = EnsureUserNetdiskDir(netdiskPath, u.Username, fmt.Sprintf("%d", u.ID), u.DisplayName)

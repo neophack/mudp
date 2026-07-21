@@ -58,6 +58,40 @@ Open <http://127.0.0.1:9000>. On the first start without `MUDP_ADMIN_PASSWORD`, 
 | `MUDP_ADMIN_PASSWORD` | _empty_ | Bootstrap admin password. When empty, the first-run setup wizard is required.
 | `MUDP_DOCKER_HOST` | _empty_ (uses `DOCKER_HOST`) | Override the Docker Engine endpoint. |
 | `MUDP_WEB_DIR` | _empty_ | Serve UI from disk (dev mode) instead of the embed. |
+| `MUDP_TRUSTED_PROXIES` | _empty_ (uses private-LAN default) | Comma-separated CIDRs whose forwarded headers (`X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP`) are trusted. **Must be set correctly when running behind nginx/Caddy/Cloudflare**, otherwise rate limiting, the geo/CIDR gate, and brute-force protection key on the proxy's IP and can be bypassed by forging `X-Forwarded-For`. |
+
+## Security
+
+MUDP ships with two layers of access control an admin can toggle from **Settings → Security**:
+
+- **IP / region gate.** Restrict the whole site to one or more countries, or to specific Chinese provinces (e.g. "only Guangdong"). Disallowed origins get a flat `404` — nothing to fingerprint. CIDR allow/block lists override the geo check: the allowlist is the safety valve that prevents you from locking yourself out.
+- **Login brute-force protection.** After 5 failed attempts from one IP within 15 minutes, that IP is locked for 30 minutes; after 10 failures against one account, that account is soft-locked for 15 minutes. Lockouts are in-memory and clear automatically; an admin can view active lockouts on the same settings page.
+
+GeoIP data is the MIT-licensed [ip2region](https://github.com/lionsoul2014/ip2region) v4 database, embedded into the binary (~11 MiB) — no download, no external service, China province/city accurate.
+
+### Critical: configure `MUDP_TRUSTED_PROXIES` behind a reverse proxy
+
+If you run MUDP behind nginx, Caddy, or Cloudflare (the common case), the direct connection always comes from the proxy. The forwarding headers (`X-Forwarded-For`, …) carry the *real* client IP — but a client can forge them too. MUDP therefore only honors those headers when the direct peer is in the trusted-proxy list. Default trusts private LAN ranges, which covers a co-located proxy on the same host.
+
+For a public proxy add its egress explicitly, e.g.:
+
+```bash
+# Trust only the loopback (nginx on the same box)
+MUDP_TRUSTED_PROXIES=127.0.0.0/8
+
+# Trust a specific upstream
+MUDP_TRUSTED_PROXIES=10.0.0.5/32
+
+# Cloudflare — trust their published ranges
+MUDP_TRUSTED_PROXIES=173.245.48.0/20,103.21.244.0/22,...
+```
+
+Without this, an attacker can spoof `X-Forwarded-For` to appear from Guangdong and bypass the region gate.
+
+### Lockout recovery
+
+The region gate always passes `/api/setup/*`, `/healthz`, `/readyz`, and `/metrics`, so a misconfigured policy can be recovered via the first-run setup flow on the box. The settings page also refuses to save a policy that would block the saving admin's own current IP unless that IP is in the CIDR allowlist.
+
 
 ## Architecture
 

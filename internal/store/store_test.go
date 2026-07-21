@@ -66,6 +66,76 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 }
 
+// TestSecurityPolicyRoundTrip covers the JSON-blob persistence of the security
+// policy: SaveSecurityPolicy stores it, SecurityPolicy reads it back, and an
+// unconfigured DB returns an empty (disabled) policy without error.
+func TestSecurityPolicyRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+
+	// No policy configured yet → empty, no error.
+	got, err := db.SecurityPolicy()
+	if err != nil {
+		t.Fatalf("initial SecurityPolicy: %v", err)
+	}
+	if got.Enabled || len(got.AllowedCountries) != 0 {
+		t.Fatalf("expected empty default policy, got %+v", got)
+	}
+
+	in := SecurityPolicy{
+		Enabled:            true,
+		AllowedCountries:   []string{"CN", "HK"},
+		AllowedCNProvinces: []string{"广东省"},
+		AllowedCIDRs:       []string{"10.0.0.0/8"},
+		BlockedCIDRs:       []string{"203.0.113.0/24"},
+		LoginGuardEnabled:  true,
+	}
+	if err := db.SaveSecurityPolicy(in); err != nil {
+		t.Fatalf("SaveSecurityPolicy: %v", err)
+	}
+	got, err = db.SecurityPolicy()
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !got.Enabled || len(got.AllowedCountries) != 2 || got.AllowedCountries[0] != "CN" {
+		t.Fatalf("policy mismatch: %+v", got)
+	}
+	if len(got.AllowedCNProvinces) != 1 || got.AllowedCNProvinces[0] != "广东省" {
+		t.Fatalf("province mismatch: %+v", got)
+	}
+}
+
+// TestAuditWithIP verifies the new ip column is written and read back.
+func TestAuditWithIP(t *testing.T) {
+	db := newTestDB(t)
+	db.AuditWithIP("alice", "login.failed", "root", "203.0.113.7")
+	// Legacy Audit writes "" — must still work after the migration.
+	db.Audit("bob", "login.success", "-")
+
+	entries, err := db.AuditList(AuditFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("AuditList: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	// AuditList orders by id desc, so the most recent (bob) comes first.
+	var ipAlice, ipBob string
+	for _, e := range entries {
+		if e.Actor == "alice" {
+			ipAlice = e.IP
+		}
+		if e.Actor == "bob" {
+			ipBob = e.IP
+		}
+	}
+	if ipAlice != "203.0.113.7" {
+		t.Errorf("alice IP = %q, want 203.0.113.7", ipAlice)
+	}
+	if ipBob != "" {
+		t.Errorf("bob IP = %q, want empty (legacy Audit)", ipBob)
+	}
+}
+
 // TestImagePresetRoundTrip covers the admin preset lifecycle: a preset set via
 // SetImagePreset is persisted, surfaced through ImagesForUser, and cleared when
 // set to nil. It also confirms the preset_json migration column is added.

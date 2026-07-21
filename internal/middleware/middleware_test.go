@@ -55,6 +55,45 @@ func TestRateLimiter(t *testing.T) {
 	}
 }
 
+// TestRateLimiterKeysByClientIP verifies that when a trusted proxy is
+// configured, two distinct X-Forwarded-For clients behind the same proxy get
+// separate buckets (the pre-fix bug had them sharing one).
+func TestRateLimiterKeysByClientIP(t *testing.T) {
+	trusted := httpx.DefaultTrustedProxies()
+	limiter := NewRateLimiterWithProxies(1, 1, 0, trusted)
+	defer limiter.Close()
+	handler := limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Client A via the trusted proxy.
+	rA := httptest.NewRequest(http.MethodGet, "/", nil)
+	rA.RemoteAddr = "127.0.0.1:1234"
+	rA.Header.Set("X-Forwarded-For", "203.0.113.10")
+	recA := httptest.NewRecorder()
+	handler.ServeHTTP(recA, rA)
+	if recA.Code != http.StatusOK {
+		t.Fatalf("client A first: %d", recA.Code)
+	}
+
+	// Client B via the same proxy must NOT be blocked by A's bucket.
+	rB := httptest.NewRequest(http.MethodGet, "/", nil)
+	rB.RemoteAddr = "127.0.0.1:1234"
+	rB.Header.Set("X-Forwarded-For", "203.0.113.11")
+	recB := httptest.NewRecorder()
+	handler.ServeHTTP(recB, rB)
+	if recB.Code != http.StatusOK {
+		t.Fatalf("client B should have its own bucket: got %d, want 200", recB.Code)
+	}
+
+	// Client A's second immediate request must be blocked.
+	recA2 := httptest.NewRecorder()
+	handler.ServeHTTP(recA2, rA)
+	if recA2.Code != http.StatusTooManyRequests {
+		t.Fatalf("client A second: got %d, want 429", recA2.Code)
+	}
+}
+
 func TestCSRFProtectSafeMethods(t *testing.T) {
 	handler := CSRFProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
