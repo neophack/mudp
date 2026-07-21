@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"mudp/internal/geoip"
 	"mudp/internal/store"
 )
 
@@ -53,7 +54,7 @@ func (a *App) securitySettings(w http.ResponseWriter, r *http.Request) {
 		}
 		// Self-check: where does the calling admin appear to come from?
 		resp.MyIP = a.clientIP(r)
-		resp.MyRegion, resp.MyAllowed = a.selfCheck(resp.MyIP, policy)
+		resp.MyRegion, resp.MyAllowed = a.selfCheck(r, resp.MyIP, policy)
 		writeJSON(w, http.StatusOK, resp)
 
 	case http.MethodPost:
@@ -83,7 +84,7 @@ func (a *App) securitySettings(w http.ResponseWriter, r *http.Request) {
 		// their proxy presents a HK egress IP and lose access.
 		if req.Enabled {
 			myIP := a.clientIP(r)
-			_, allowed := a.selfCheck(myIP, req)
+			_, allowed := a.selfCheck(r, myIP, req)
 			if !allowed && !matchAnyCIDR(myIP, req.AllowedCIDRs) {
 				writeErr(w, http.StatusBadRequest, "拒绝保存：该配置会将你当前的 IP 排除在外。请先把你当前的 IP ("+myIP+") 加入 CIDR 白名单，再开启地区限制。(This policy would block your current IP — add it to the CIDR allowlist first.)")
 				return
@@ -105,33 +106,48 @@ func (a *App) securitySettings(w http.ResponseWriter, r *http.Request) {
 
 // selfCheck reports the region label and allow verdict for ip under policy, as
 // the live geoGate would compute it. Used by the GET response so the UI shows
-// "your region: 广东省 / allowed" without the admin having to test-save.
-func (a *App) selfCheck(ip string, p store.SecurityPolicy) (region string, allowed bool) {
+// "your region: 广东省 / allowed" without the admin having to test-save. It takes
+// the request so Cloudflare edge headers (CF-IPCountry) are honored for admins
+// viewing the settings page through a Tunnel — their geo from the edge is what
+// the live gate will actually use.
+func (a *App) selfCheck(r *http.Request, ip string, p store.SecurityPolicy) (region string, allowed bool) {
 	if matchAnyCIDR(ip, p.BlockedCIDRs) {
 		return "blocked-CIDR", false
 	}
 	if matchAnyCIDR(ip, p.AllowedCIDRs) {
 		return "allowed-CIDR", true
 	}
-	if a.geoip == nil {
-		return "geoip-unavailable", true
-	}
-	loc, err := a.geoip.Lookup(ip)
-	if err != nil || loc.IsPrivate() {
-		if loc.IsPrivate() {
-			return "private-network", true
+	loc, located, noSource := a.lookupLocation(r, ip)
+	if !located {
+		// Mirrors geoGate: missing source = fail open; un-locatable IP (typically
+		// a global IPv6) = fail closed when a region rule is active, unless the
+		// admin opted into IPv6FailOpen.
+		if noSource || !regionPolicyActive(&p) {
+			return "geoip-unavailable", true
 		}
-		return "unknown", true
+		if p.IPv6FailOpen {
+			return "ipv6-fail-open", true
+		}
+		return "ipv6-unresolvable", false
 	}
-	region = loc.Country
-	if loc.Province != "" {
-		region += " / " + loc.Province
+	if loc.IsPrivate() {
+		return "private-network", true
 	}
-	if loc.City != "" {
-		region += " / " + loc.City
-	}
+	region = displayLocation(loc)
 	allowed = countryAllowed(loc, &p) && provinceAllowed(loc, &p)
 	return region, allowed
+}
+
+// displayLocation formats a Lookup as "country / province / city" for the UI,
+// skipping empty segments.
+func displayLocation(loc geoip.Lookup) string {
+	var parts []string
+	for _, p := range []string{loc.Country, loc.Province, loc.City} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return strings.Join(parts, " / ")
 }
 
 // isValidCIDROrIP accepts either "1.2.3.0/24" or a bare "1.2.3.4" (promoted to

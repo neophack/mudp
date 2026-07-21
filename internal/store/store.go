@@ -1348,6 +1348,12 @@ func (db *DB) SaveFeishuConfig(cfg FeishuConfig) error {
 //     this is the "don't lock myself out" safety valve.
 //   - BlockedCIDRs always fail.
 //   - LoginGuardEnabled toggles the in-memory brute-force protection.
+//   - IPv6FailOpen, when true, lets an IPv6 address through even though the
+//     bundled IPv4-only GeoIP DB cannot resolve it (so the region gate cannot
+//     decide). Defaults to false: the safer behavior is to block an
+//     un-locatable client when a region rule is active, otherwise enabling
+//     "only Guangdong" would be bypassable just by connecting over IPv6. Set
+//     to true only if your users genuinely need IPv6 and you accept the gap.
 type SecurityPolicy struct {
 	Enabled            bool     `json:"enabled"`
 	AllowedCountries   []string `json:"allowedCountries"`
@@ -1355,6 +1361,7 @@ type SecurityPolicy struct {
 	AllowedCIDRs       []string `json:"allowedCIDRs"`
 	BlockedCIDRs       []string `json:"blockedCIDRs"`
 	LoginGuardEnabled  bool     `json:"loginGuardEnabled"`
+	IPv6FailOpen       bool     `json:"ipv6FailOpen"`
 }
 
 // SecurityPolicy returns the stored policy, or an empty (disabled) one if no

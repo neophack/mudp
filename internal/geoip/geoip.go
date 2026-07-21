@@ -81,20 +81,30 @@ func Open() (*Reader, error) {
 	return r, nil
 }
 
-// Lookup resolves an IPv4 address to its region. IPv6 and malformed inputs
-// return an error (the bundled DB is IPv4-only). Private/loopback/link-local
-// addresses return a Lookup with Country=="private" so callers can treat LAN
-// traffic (typically ourselves or the reverse proxy) as trusted.
+// Lookup resolves an IPv4 address to its region. The bundled DB is IPv4-only,
+// so a global IPv6 address returns ErrIPv6Unsupported — callers should treat
+// that as "we cannot geo-locate this client" and decide fail-open vs fail-closed
+// based on whether a region rule is active. Private/loopback/link-local
+// addresses (both families) return a Lookup with Country=="private" so callers
+// can treat LAN traffic (typically ourselves or the reverse proxy) as trusted.
 func (r *Reader) Lookup(ipStr string) (Lookup, error) {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
 		return Lookup{}, errors.New("geoip: invalid ip")
 	}
-	if ip4 := ip.To4(); ip4 == nil {
-		return Lookup{}, errors.New("geoip: ipv6 not supported")
-	} else {
-		ip = ip4
+	// Identify the family BEFORE collapsing mapped addresses: ip.To4() returns
+	// non-nil for IPv4-mapped IPv6 (::ffff:1.2.3.4), which we still want to geo.
+	v4 := ip.To4()
+	if v4 == nil {
+		// True IPv6. The bundled DB has no data for it; but local/private IPv6
+		// ranges (loopback, unique-local fc00::/7, link-local fe80::/10) still
+		// map to "private" so LAN traffic is treated consistently.
+		if isLocalAddress(ip) {
+			return Lookup{Country: "private"}, nil
+		}
+		return Lookup{}, ErrIPv6Unsupported
 	}
+	ip = v4
 	if isLocalAddress(ip) {
 		return Lookup{Country: "private"}, nil
 	}
@@ -106,6 +116,25 @@ func (r *Reader) Lookup(ipStr string) (Lookup, error) {
 		return Lookup{Country: "unknown"}, nil
 	}
 	return parseRegion(region), nil
+}
+
+// ErrIPv6Unsupported is returned by Lookup for a non-private global IPv6
+// address. The bundled xdb is IPv4-only; the server layer uses this sentinel
+// to decide between fail-open (no region rule configured) and fail-closed
+// (a region rule IS active and the IP cannot be located).
+var ErrIPv6Unsupported = errors.New("geoip: ipv6 not supported")
+
+// IsIPv6 reports whether ipStr is a genuine IPv6 address that has no IPv4
+// representation — i.e. it is NOT IPv4 and NOT IPv4-mapped IPv6
+// ("::ffff:1.2.3.4", which Go collapses to an IPv4). Such mapped addresses
+// can be geo-located as IPv4, so they report false here. Returns false for any
+// non-parseable input.
+func IsIPv6(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	return ip.To4() == nil
 }
 
 // isLocalAddress reports whether ip should be treated as local/trusted: it

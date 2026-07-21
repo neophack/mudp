@@ -92,6 +92,53 @@ Without this, an attacker can spoof `X-Forwarded-For` to appear from Guangdong a
 
 The region gate always passes `/api/setup/*`, `/healthz`, `/readyz`, and `/metrics`, so a misconfigured policy can be recovered via the first-run setup flow on the box. The settings page also refuses to save a policy that would block the saving admin's own current IP unless that IP is in the CIDR allowlist.
 
+### Deploying behind Cloudflare Tunnels (cloudflared)
+
+Cloudflare Tunnels are a first-class deployment target — in fact they're the *easiest* way to get both HTTPS and accurate geo data. `cloudflared` runs as a process next to MUDP and opens an outbound tunnel to Cloudflare's edge, so Cloudflare connects to your MUDP from `127.0.0.1`. That means **the default `MUDP_TRUSTED_PROXIES` (private LAN) already trusts it** — no extra config needed for the IP/gate/brute-force logic to work.
+
+Quick start:
+
+```bash
+# 1. Install and authenticate cloudflared once.
+cloudflared tunnel login
+cloudflared tunnel create mudp
+cloudflared tunnel route dns mudp mudp.example.com
+
+# 2. Point the tunnel at MUDP. ~/.cloudflared/config.yml:
+#    tunnel: <tunnel-id>
+#    credentials-file: /root/.cloudflared/<tunnel-id>.json
+#    ingress:
+#      - hostname: mudp.example.com
+#        service: http://127.0.0.1:9000
+#      - service: http_status:404
+
+# 3. Run MUDP, then cloudflared.
+./mudp &
+cloudflared tunnel run mudp
+```
+
+Cloudflare injects geo headers at the edge, and MUDP prefers them over the embedded DB when present — so for Tunnel deployments you get Cloudflare's global accuracy for free:
+
+- `CF-Connecting-IP` — the real client IP (already used for rate-limit / region / brute-force keys).
+- `CF-IPCountry` — ISO country code (e.g. `CN`, `US`); used by the region gate.
+- `CF-IPRegion` / `CF-IPCity` — subdivision/city; for `CF-IPCountry=CN` MUDP translates the ISO 3166-2:CN subdivision code to the Chinese province name (e.g. `44` → `广东省`) so the province allowlist keeps working.
+
+**Why not set `MUDP_TRUSTED_PROXIES` to Cloudflare's IP ranges for a Tunnel?** You don't need to: with a Tunnel, the connection to MUDP always originates from `127.0.0.1` (the local `cloudflared` process), which is in the default trusted set. Setting it to Cloudflare's public ranges is only relevant if you expose MUDP directly to Cloudflare's proxy IPs (orange-cloud DNS), not for a Tunnel. Either way the rule is the same: MUDP trusts forwarding headers only when the *direct peer* is in the trusted list, so a public client cannot forge `CF-IPCountry` to bypass the gate.
+
+Geo data sources priority (highest wins):
+1. `CF-IPCountry` / `CF-IPRegion` (when the request came via Cloudflare)
+2. Embedded ip2region DB (always available, China-focused)
+
+### IPv6 clients and the region gate
+
+The embedded ip2region database is **IPv4-only**. A genuine IPv6 client cannot be geo-located, so the region gate treats it specially:
+
+- **Private IPv6** (`::1`, `fc00::/7`, `fe80::/10`) is recognized as private and admitted, just like private IPv4 — so your own LAN/proxy over IPv6 stays trusted.
+- **Global IPv6 + an active region rule** (country or province allowlist set) is **blocked by default**. Without this, "only Guangdong" would be trivially bypassable by connecting over IPv6 — the original bug behind "region restriction doesn't work". Put your IPv6 clients in the **CIDR allowlist**, or if all your users are on IPv6 and you accept the geo gap, tick **"IPv6 放行 / Admit un-locatable IPv6"** in Settings → Security to switch IPv6 to fail-open.
+- **Global IPv6 + no region rule** (CIDR-only policy, or just the login guard) is admitted as usual — there's nothing to geo-check against.
+
+IPv4-mapped IPv6 (`::ffff:1.2.3.4`) still resolves as IPv4 and is not affected. Behind Cloudflare, `CF-IPCountry` covers IPv6 clients regardless of the embedded DB.
+
 
 ## Architecture
 

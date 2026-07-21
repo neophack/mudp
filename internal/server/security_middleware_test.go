@@ -181,3 +181,284 @@ func TestGeoGateCIDRBlock(t *testing.T) {
 		t.Errorf("blocked CIDR: got %d, want 404", rec.Code)
 	}
 }
+
+// ---- Cloudflare Tunnel support ----
+
+// TestCFLocationParsesCountry verifies the Cloudflare edge header parser
+// extracts the ISO country code and translates CN subdivision codes into the
+// Chinese province names the allowlist uses.
+func TestCFLocationParsesCountry(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("CF-IPCountry", "US")
+	loc, ok := cfLocation(r, "1.2.3.4")
+	if !ok || loc.Country != "US" {
+		t.Fatalf("US: ok=%v loc=%+v", ok, loc)
+	}
+
+	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r2.Header.Set("CF-IPCountry", "CN")
+	r2.Header.Set("CF-IPRegion", "44") // Guangdong
+	r2.Header.Set("CF-IPCity", "Shenzhen")
+	loc2, ok := cfLocation(r2, "1.2.3.4")
+	if !ok {
+		t.Fatal("CN: expected ok")
+	}
+	if loc2.Province != "广东省" {
+		t.Errorf("CF-IPRegion 44 -> province %q, want 广东省", loc2.Province)
+	}
+	if loc2.City != "Shenzhen" {
+		t.Errorf("CF-IPCity -> %q, want Shenzhen", loc2.City)
+	}
+}
+
+func TestCFLocationAbsentOrUnknown(t *testing.T) {
+	// No CF headers → not a CF request.
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	if _, ok := cfLocation(r, "1.2.3.4"); ok {
+		t.Error("absent CF-IPCountry should report not-ok")
+	}
+	// CF uses "XX" for unknown origin; treat as no info.
+	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r2.Header.Set("CF-IPCountry", "XX")
+	if _, ok := cfLocation(r2, "1.2.3.4"); ok {
+		t.Error("CF-IPCountry=XX should report not-ok")
+	}
+}
+
+// TestLookupLocationPrefersCF ensures CF headers win over the local GeoIP DB,
+// which is the whole point of honoring them (global accuracy vs CN-focused DB).
+func TestLookupLocationPrefersCF(t *testing.T) {
+	// Build an App with a real embedded GeoIP reader; a CN IP would resolve to
+	// 中国 via the DB, but CF-IPCountry=US must override it.
+	reader, err := geoip.Open()
+	if err != nil {
+		t.Fatalf("geoip.Open: %v", err)
+	}
+	a := &App{geoip: reader}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("CF-IPCountry", "US")
+	// 114.114.114.114 is a known CN IP — DB alone would say CN.
+	loc, located, noSource := a.lookupLocation(r, "114.114.114.114")
+	if !located {
+		t.Fatalf("expected lookup ok (noSource=%v)", noSource)
+	}
+	if loc.Country != "US" {
+		t.Errorf("CF override: country=%q, want US", loc.Country)
+	}
+}
+
+// TestLookupLocationFallsBackToDB verifies that without CF headers, the local
+// DB is consulted.
+func TestLookupLocationFallsBackToDB(t *testing.T) {
+	reader, err := geoip.Open()
+	if err != nil {
+		t.Fatalf("geoip.Open: %v", err)
+	}
+	a := &App{geoip: reader}
+	r := httptest.NewRequest(http.MethodGet, "/", nil) // no CF headers
+	loc, located, _ := a.lookupLocation(r, "114.114.114.114")
+	if !located {
+		t.Fatal("expected fallback to DB to succeed")
+	}
+	if loc.Country == "" {
+		t.Error("expected non-empty country from DB fallback")
+	}
+}
+
+// TestLookupLocationNoSourceFailOpen verifies that when NO geo source is
+// available (no reader, no CF headers) lookupLocation reports located=false
+// with noSource=true — the box is misconfigured, callers fail open.
+func TestLookupLocationNoSourceFailOpen(t *testing.T) {
+	a := &App{geoip: nil} // no reader
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	_, located, noSource := a.lookupLocation(r, "203.0.113.1")
+	if located {
+		t.Error("expected located=false when no geo source available")
+	}
+	if !noSource {
+		t.Error("expected noSource=true when reader is absent")
+	}
+}
+
+// TestLookupLocationIPv6Unresolvable verifies that a global IPv6 address is
+// reported as located=false but noSource=false (we HAVE a reader, it just
+// cannot resolve this address) — so a region gate can fail closed instead of
+// being bypassable over IPv6.
+func TestLookupLocationIPv6Unresolvable(t *testing.T) {
+	reader, err := geoip.Open()
+	if err != nil {
+		t.Fatalf("geoip.Open: %v", err)
+	}
+	a := &App{geoip: reader}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	_, located, noSource := a.lookupLocation(r, "2001:4860:4860::8888")
+	if located {
+		t.Error("expected located=false for global IPv6 (IPv4-only DB)")
+	}
+	if noSource {
+		t.Error("expected noSource=false: reader IS present, just cannot resolve IPv6")
+	}
+}
+
+// TestGeoGateIPv6FailClosedRegionRule is the regression test for the original
+// bug: with a region rule active and a global IPv6 client (which the IPv4-only
+// DB cannot locate), the gate MUST block — otherwise "only Guangdong" is
+// bypassable just by connecting over IPv6.
+func TestGeoGateIPv6FailClosedRegionRule(t *testing.T) {
+	reader, err := geoip.Open()
+	if err != nil {
+		t.Fatalf("geoip.Open: %v", err)
+	}
+	a := &App{loginGuard: nil, geoip: reader}
+	a.policy.Store(&store.SecurityPolicy{
+		Enabled:          true,
+		AllowedCountries: []string{"CN"},
+	})
+	handler := a.geoGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("global IPv6 with active region rule should be blocked")
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	req.RemoteAddr = "[2001:4860:4860:0:0:0:0:8888]:54321"
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("IPv6 + active region rule: got %d, want 404", rec.Code)
+	}
+}
+
+// TestGeoGateIPv6FailOpenWhenNoRegionRule verifies that a global IPv6 is still
+// admitted when NO region rule is active (admin uses only CIDR rules or the
+// login guard). Blocking it would lock out IPv6 users for no benefit.
+func TestGeoGateIPv6FailOpenWhenNoRegionRule(t *testing.T) {
+	reader, err := geoip.Open()
+	if err != nil {
+		t.Fatalf("geoip.Open: %v", err)
+	}
+	a := &App{loginGuard: nil, geoip: reader}
+	a.policy.Store(&store.SecurityPolicy{
+		Enabled:           true,
+		AllowedCIDRs:      []string{"10.0.0.0/8"},
+		LoginGuardEnabled: true,
+		// no AllowedCountries / AllowedCNProvinces → regionPolicyActive=false
+	})
+	called := false
+	handler := a.geoGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	req.RemoteAddr = "[2001:4860:4860:0:0:0:0:8888]:54321"
+	handler.ServeHTTP(rec, req)
+	if !called {
+		t.Error("IPv6 with no region rule should pass through")
+	}
+}
+
+// TestGeoGateIPv6FailOpenOptIn verifies the IPv6FailOpen escape hatch: even
+// with an active region rule, an admin who opts in admits un-locatable IPv6.
+func TestGeoGateIPv6FailOpenOptIn(t *testing.T) {
+	reader, err := geoip.Open()
+	if err != nil {
+		t.Fatalf("geoip.Open: %v", err)
+	}
+	a := &App{loginGuard: nil, geoip: reader}
+	a.policy.Store(&store.SecurityPolicy{
+		Enabled:          true,
+		AllowedCountries: []string{"CN"},
+		IPv6FailOpen:     true,
+	})
+	called := false
+	handler := a.geoGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	req.RemoteAddr = "[2001:4860:4860:0:0:0:0:8888]:54321"
+	handler.ServeHTTP(rec, req)
+	if !called {
+		t.Error("IPv6FailOpen=true should admit global IPv6 even under a region rule")
+	}
+}
+
+// TestGeoGateIPv6PrivateAdmitted verifies loopback/ULA IPv6 are treated as
+// private (trusted), so the admin's own IPv6 LAN connection is not blocked.
+func TestGeoGateIPv6PrivateAdmitted(t *testing.T) {
+	reader, err := geoip.Open()
+	if err != nil {
+		t.Fatalf("geoip.Open: %v", err)
+	}
+	a := &App{loginGuard: nil, geoip: reader}
+	a.policy.Store(&store.SecurityPolicy{
+		Enabled:          true,
+		AllowedCountries: []string{"CN"},
+	})
+	called := false
+	handler := a.geoGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	req.RemoteAddr = "[::1]:54321" // loopback IPv6
+	handler.ServeHTTP(rec, req)
+	if !called {
+		t.Error("loopback IPv6 should be treated as private and admitted")
+	}
+}
+
+// TestSelfCheckIPv6 verifies selfCheck surfaces the ipv6-unresolvable verdict
+// under an active region rule, so the save-time lockout guard fires and tells
+// the admin to add their IPv6 to the allowlist.
+func TestSelfCheckIPv6(t *testing.T) {
+	reader, err := geoip.Open()
+	if err != nil {
+		t.Fatalf("geoip.Open: %v", err)
+	}
+	a := &App{geoip: reader}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	// Region rule active + IPv6 → blocked, with the ipv6-unresolvable label.
+	region, allowed := a.selfCheck(r, "2001:4860:4860::8888",
+		store.SecurityPolicy{Enabled: true, AllowedCountries: []string{"CN"}})
+	if allowed {
+		t.Error("expected selfCheck to block IPv6 under active region rule")
+	}
+	if region != "ipv6-unresolvable" {
+		t.Errorf("region = %q, want ipv6-unresolvable", region)
+	}
+
+	// Same rule but opt-in → admitted with ipv6-fail-open label.
+	region, allowed = a.selfCheck(r, "2001:4860:4860::8888",
+		store.SecurityPolicy{Enabled: true, AllowedCountries: []string{"CN"}, IPv6FailOpen: true})
+	if !allowed {
+		t.Error("IPv6FailOpen should admit IPv6 in selfCheck")
+	}
+	if region != "ipv6-fail-open" {
+		t.Errorf("region = %q, want ipv6-fail-open", region)
+	}
+
+	// No region rule → IPv6 passes as geoip-unavailable (no restriction to apply).
+	region, allowed = a.selfCheck(r, "2001:4860:4860::8888",
+		store.SecurityPolicy{Enabled: true})
+	if !allowed {
+		t.Error("IPv6 with no region rule should be allowed")
+	}
+}
+
+func TestRegionPolicyActive(t *testing.T) {
+	if regionPolicyActive(&store.SecurityPolicy{}) {
+		t.Error("empty policy should not be region-active")
+	}
+	if !regionPolicyActive(&store.SecurityPolicy{AllowedCountries: []string{"CN"}}) {
+		t.Error("AllowedCountries set should be region-active")
+	}
+	if !regionPolicyActive(&store.SecurityPolicy{AllowedCNProvinces: []string{"广东省"}}) {
+		t.Error("AllowedCNProvinces set should be region-active")
+	}
+	// CIDR-only policy is NOT region-active: IPv6 unresolvable IPs pass.
+	if regionPolicyActive(&store.SecurityPolicy{BlockedCIDRs: []string{"1.2.3.0/24"}}) {
+		t.Error("CIDR-only policy should not be region-active")
+	}
+}

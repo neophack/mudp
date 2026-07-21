@@ -156,10 +156,15 @@ function securitySettingsPanel(s) {
   // originate and whether the current policy would let them in. The server
   // refuses to save a policy that would block the saver, but surfacing it
   // inline avoids the round-trip.
+  const isIPv6 = s.myIP && s.myIP.includes(":");
+  const ipv6Note = (isIPv6 && (s.myRegion === "ipv6-unresolvable" || s.myRegion === "ipv6-fail-open"))
+    ? `<div class="hint">⚠️ 你的 IP 是 IPv6，内置 GeoIP 数据库（仅支持 IPv4）无法识别其地区。当前策略下${s.myAllowed ? "已开启 IPv6 放行" : "会被拦截"}。可在下方勾选「IPv6 放行」或把该 IP 加入 CIDR 白名单。</div>`
+    : "";
   const selfChip = s.myIP
     ? `<div class="hint security-self-check">Your IP: <strong class="mono">${escapeHtml(s.myIP)}</strong>` +
       ` · Region: <strong>${escapeHtml(s.myRegion || "unknown")}</strong>` +
-      ` · <span class="badge ${s.myAllowed ? "badge-accent" : "badge-danger"}">${s.myAllowed ? "allowed" : "BLOCKED"}</span></div>`
+      ` · <span class="badge ${s.myAllowed ? "badge-accent" : "badge-danger"}">${s.myAllowed ? "allowed" : "BLOCKED"}</span></div>` +
+      ipv6Note
     : "";
 
   const lockedRows = (s.locked || []).map((l) =>
@@ -178,6 +183,8 @@ function securitySettingsPanel(s) {
       `<form id="securityForm" class="compact">` +
         `<label class="check"><input type="checkbox" name="enabled" ${s.enabled ? "checked" : ""}> <strong>启用 IP 地区限制</strong> (Enable region/CIDR gate)</label>` +
         `<p class="hint">开启后，不在白名单的地区访问整站会返回 404。CIDR 白名单优先级最高（避免把自己锁在门外）。</p>` +
+        `<label class="check"><input type="checkbox" name="ipv6FailOpen" ${s.ipv6FailOpen ? "checked" : ""}> <strong>IPv6 放行</strong> (Admit un-locatable IPv6 clients)</label>` +
+        `<p class="hint">内置 GeoIP 数据库仅支持 IPv4。纯 IPv6 客户端无法识别地区——默认会被地区规则拦截（否则限制可被 IPv6 绕过）。若你的用户确需 IPv6 访问且接受这一缺口，可勾选此项放行 IPv6。</p>` +
         `<label class="check"><input type="checkbox" name="loginGuardEnabled" ${s.loginGuardEnabled ? "checked" : ""}> 启用登录防爆破 (Enable login brute-force protection — 5 fails/15 min per IP → 30 min lock)</label>` +
 
         `<div class="security-field">` +
@@ -225,6 +232,7 @@ function bindSecurityForm() {
     const payload = {
       enabled: fd.has("enabled"),
       loginGuardEnabled: fd.has("loginGuardEnabled"),
+      ipv6FailOpen: fd.has("ipv6FailOpen"),
       allowedCountries: splitList(fd.get("allowedCountries")),
       allowedCNProvinces: splitList(fd.get("allowedCNProvinces")),
       allowedCIDRs: splitList(fd.get("allowedCIDRs")),
@@ -252,6 +260,7 @@ export async function loadSecurity() {
       loaded: true,
       enabled: !!data.enabled,
       loginGuardEnabled: !!data.loginGuardEnabled,
+      ipv6FailOpen: !!data.ipv6FailOpen,
       allowedCountries: data.allowedCountries || [],
       allowedCNProvinces: data.allowedCNProvinces || [],
       allowedCIDRs: data.allowedCIDRs || [],

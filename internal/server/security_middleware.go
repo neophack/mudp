@@ -56,20 +56,27 @@ func (a *App) geoGate(next http.Handler) http.Handler {
 			return
 		}
 
-		// No GeoIP reader → fail closed for region rules would lock everyone
-		// out on a misconfigured box; instead we fail open here and rely on the
-		// explicit CIDR rules above for protection. The admin sees the boot
-		// warning that GeoIP is disabled.
-		if a.geoip == nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-		loc, err := a.geoip.Lookup(ip)
-		if err != nil {
-			// Unresolvable (private/loopback already mapped to "private", but
-			// malformed upstream IPs land here): allow through, since the
-			// trusted-proxy chain has already been validated by clientIP.
-			next.ServeHTTP(w, r)
+		// No GeoIP reader and no CF headers → fail closed for region rules
+		// would lock everyone out on a misconfigured box; instead we fail open
+		// here and rely on the explicit CIDR rules above for protection. The
+		// admin sees the boot warning that GeoIP is disabled. A genuine IPv6
+		// address that no source could resolve is different: if a region rule
+		// is active we MUST fail closed, or the whole gate is bypassable by
+		// connecting over IPv6 (the bundled DB is IPv4-only).
+		loc, located, noSource := a.lookupLocation(r, ip)
+		if !located {
+			if noSource || !regionPolicyActive(p) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// A region rule is active but this IP can't be geo-located
+			// (typically a global IPv6 address the IPv4-only DB can't resolve).
+			// Block unless the admin has explicitly switched IPv6 to fail-open.
+			if p.IPv6FailOpen {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.NotFound(w, r)
 			return
 		}
 		if loc.IsPrivate() {
@@ -82,6 +89,88 @@ func (a *App) geoGate(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// regionPolicyActive reports whether the policy restricts by region at all —
+// i.e. whether the gate's outcome depends on knowing where the client is. When
+// no country/province list is set the admin is using only CIDR rules (already
+// evaluated above) or just the login guard, so an unresolvable IP (e.g. a
+// global IPv6 the IPv4-only DB cannot locate) must NOT be blocked.
+func regionPolicyActive(p *store.SecurityPolicy) bool {
+	return len(p.AllowedCountries) > 0 || len(p.AllowedCNProvinces) > 0
+}
+
+// lookupLocation resolves the geo location of ip for the request, preferring
+// Cloudflare edge headers when the request arrived via Cloudflare (CF-IPCountry
+// is globally accurate and free, unlike the bundled China-focused xdb). Falls
+// back to the embedded GeoIP DB.
+//
+// Three outcomes:
+//   - (loc, located=true):  a region was resolved (including Country=="private"
+//     for LAN/loopback). Caller applies the geo rules.
+//   - (loc, located=false, noSource=true):  NO geo source is configured at all
+//     (no CF headers AND no GeoIP reader). The box is misconfigured, so the
+//     caller FAILS OPEN — we never lock out everyone because the DB failed to
+//     load at boot. The admin sees the boot warning.
+//   - (loc, located=false, noSource=false):  a source IS available but could
+//     not locate THIS ip — most importantly a global IPv6 address, which the
+//     bundled IPv4-only xdb cannot resolve. Caller FAILS CLOSED when a region
+//     rule is active, otherwise a non-allowlisted region could trivially bypass
+//     the gate by connecting over IPv6.
+//
+// CF headers are only honored when the direct peer is a trusted proxy (already
+// enforced by clientIP's caller contract), so an attacker cannot spoof them by
+// connecting directly — a forged CF-IPCountry from a public peer is ignored.
+func (a *App) lookupLocation(r *http.Request, ip string) (loc geoip.Lookup, located, noSource bool) {
+	if l, ok := cfLocation(r, ip); ok {
+		return l, true, false
+	}
+	if a.geoip == nil {
+		return geoip.Lookup{}, false, true
+	}
+	l, err := a.geoip.Lookup(ip)
+	if err != nil {
+		return geoip.Lookup{}, false, false
+	}
+	return l, true, false
+}
+
+// cfLocation builds a Lookup from Cloudflare edge headers when CF-IPCountry is
+// present. CF-IPRegion is a subdivision code (e.g. "44" for Guangdong) on the
+// CF-IPContinent=AS line — we translate the common CN subdivision codes so the
+// province allowlist keeps working for Tunnel deployments.
+func cfLocation(r *http.Request, ip string) (geoip.Lookup, bool) {
+	country := strings.TrimSpace(r.Header.Get("CF-IPCountry"))
+	if country == "" || strings.EqualFold(country, "XX") {
+		return geoip.Lookup{}, false
+	}
+	loc := geoip.Lookup{Country: country}
+	// CF gives ISO country codes (CN/HK/US...), which countryAllowed handles
+	// directly. For CN province matching we need the Chinese province name that
+	// provinceAllowed/normalizeProvince expect, so translate CF subdivision codes.
+	if strings.EqualFold(country, "CN") {
+		sub := strings.TrimSpace(r.Header.Get("CF-IPRegion"))
+		if name, ok := cfCNSubdivision[sub]; ok {
+			loc.Province = name
+		}
+		if city := strings.TrimSpace(r.Header.Get("CF-IPCity")); city != "" {
+			loc.City = city
+		}
+	}
+	return loc, true
+}
+
+// cfCNSubdivision maps ISO 3166-2:CN subdivision codes (as emitted by
+// Cloudflare in CF-IPRegion) to the Chinese province names the bundled xdb and
+// the province allowlist use. Source: ISO 3166-2:CN.
+var cfCNSubdivision = map[string]string{
+	"11": "北京市", "12": "天津市", "13": "河北省", "14": "山西省", "15": "内蒙古自治区",
+	"21": "辽宁省", "22": "吉林省", "23": "黑龙江省", "31": "上海市", "32": "江苏省",
+	"33": "浙江省", "34": "安徽省", "35": "福建省", "36": "江西省", "37": "山东省",
+	"41": "河南省", "42": "湖北省", "43": "湖南省", "44": "广东省", "45": "广西壮族自治区",
+	"46": "海南省", "50": "重庆市", "51": "四川省", "52": "贵州省", "53": "云南省",
+	"54": "西藏自治区", "61": "陕西省", "62": "甘肃省", "63": "青海省", "64": "宁夏回族自治区",
+	"65": "新疆维吾尔自治区", "71": "台湾省", "81": "香港特别行政区", "91": "澳门特别行政区",
 }
 
 // isExemptPath lists paths that bypass the geo gate. Keep this small — every

@@ -1,6 +1,7 @@
 package geoip
 
 import (
+	"errors"
 	"sync"
 	"testing"
 )
@@ -59,9 +60,70 @@ func TestLookupBadIP(t *testing.T) {
 	if _, err := r.Lookup("not-an-ip"); err == nil {
 		t.Error("expected error for malformed IP")
 	}
-	// IPv6 is not supported by the bundled DB.
-	if _, err := r.Lookup("2001:4860:4860::8888"); err == nil {
-		t.Error("expected error for IPv6")
+	// Global IPv6 is not resolvable by the bundled IPv4-only DB: it returns
+	// the sentinel so the server layer can choose fail-open vs fail-closed.
+	_, err = r.Lookup("2001:4860:4860::8888")
+	if err == nil {
+		t.Error("expected error for global IPv6")
+	}
+	if !errors.Is(err, ErrIPv6Unsupported) {
+		t.Errorf("global IPv6 error = %v, want ErrIPv6Unsupported", err)
+	}
+}
+
+func TestLookupIPv6Private(t *testing.T) {
+	r, err := Open()
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// Private IPv6 (loopback / unique-local / link-local) must still map to
+	// "private", matching the IPv4 behavior, so LAN clients are trusted.
+	for _, ip := range []string{"::1", "fc00::1", "fd00::1", "fe80::1"} {
+		loc, err := r.Lookup(ip)
+		if err != nil {
+			t.Errorf("Lookup(%s): %v", ip, err)
+			continue
+		}
+		if !loc.IsPrivate() {
+			t.Errorf("Lookup(%s): expected private, got Country=%q", ip, loc.Country)
+		}
+	}
+}
+
+func TestLookupIPv4MappedIPv6(t *testing.T) {
+	r, err := Open()
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// IPv4-mapped IPv6 (::ffff:1.2.3.4) still has an IPv4 representation and
+	// must be geo-located, not rejected as IPv6.
+	loc, err := r.Lookup("::ffff:114.114.114.114")
+	if err != nil {
+		t.Fatalf("Lookup(::ffff:114.114.114.114): %v", err)
+	}
+	if loc.Country == "" || loc.Country == "private" {
+		t.Errorf("expected a real region for IPv4-mapped IPv6, got %+v", loc)
+	}
+}
+
+func TestIsIPv6(t *testing.T) {
+	if IsIPv6("114.114.114.114") {
+		t.Error("114.114.114.114 should not be IPv6")
+	}
+	if !IsIPv6("2001:4860:4860::8888") {
+		t.Error("2001:4860:4860::8888 should be IPv6")
+	}
+	if !IsIPv6("::1") {
+		t.Error("::1 should be IPv6")
+	}
+	// IPv4-mapped IPv6 (::ffff:1.2.3.4) has an IPv4 representation (To4() is
+	// non-nil), so IsIPv6 reports false — it can be geo-located as IPv4 and
+	// should NOT trigger the IPv6 fail-closed path.
+	if IsIPv6("::ffff:1.2.3.4") {
+		t.Error("::ffff:1.2.3.4 (IPv4-mapped) should report as IPv4 family (not IPv6)")
+	}
+	if IsIPv6("not-an-ip") {
+		t.Error("garbage should not be IPv6")
 	}
 }
 
