@@ -1732,17 +1732,17 @@ func (db *DB) DeleteUser(id int64) error {
 	return err
 }
 
-// DeactivateUser disables an account and moves it to the pending group.
-// Existing resources (containers, stacks, shares) are preserved.
+// DeactivateUser returns an account to the pending group. Existing resources
+// (containers, stacks, shares) are preserved. The user can still log in so the
+// UI can show the "waiting for admin approval" page; access to business
+// endpoints is gated by activatedMiddleware / isPending, not by the disabled
+// flag. Use UpdateUser(..., disabled=true) for a hard admin lockout.
 func (db *DB) DeactivateUser(id int64) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`update users set disabled=1 where id=?`, id); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(`delete from user_groups where user_id=?`, id); err != nil {
 		return err
 	}

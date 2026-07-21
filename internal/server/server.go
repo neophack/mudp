@@ -1467,6 +1467,11 @@ func (a *App) setUserGroups(w http.ResponseWriter, r *http.Request) {
 		a.record(r, "user.groups", targetName(after))
 		if wasPending && !isPending(after) {
 			a.notifyUserApproved(after.ID, after.Groups)
+			// Clear the hard-disable flag so an approved user is fully restored.
+			// See approveUser for the rationale (legacy data may carry disabled=1).
+			disabledOff := false
+			_ = a.db.UpdateUser(req.UserID, "", "", 0, nil, &disabledOff)
+			after, _ = a.db.UserByID(req.UserID)
 		}
 		// Ensure user netdisk directories and shortcuts/symlinks are created
 		if netdiskPath, err := a.db.NetdiskPathForUser(after.ID); err == nil && netdiskPath != "" {

@@ -847,7 +847,10 @@ func TestCreateUserAssignsDefaultGroup(t *testing.T) {
 	}
 }
 
-// TestDeactivateUser moves an account to the pending group and disables it.
+// TestDeactivateUser moves an account back to the pending group. The user is
+// NOT hard-disabled: they can still authenticate so the UI can show the
+// "waiting for admin approval" page. Business endpoints are gated by the
+// pending group check, not by the disabled flag.
 func TestDeactivateUser(t *testing.T) {
 	db := newTestDB(t)
 	if err := db.CreateUser("active", "pw", RoleUser, nil, 5, 0); err != nil {
@@ -861,14 +864,61 @@ func TestDeactivateUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !u2.Disabled {
-		t.Error("expected user to be disabled")
+	if u2.Disabled {
+		t.Error("deactivate must not set the disabled flag; use UpdateUser for a hard lockout")
 	}
 	if len(u2.Groups) != 1 || u2.Groups[0] != PendingGroup {
 		t.Fatalf("expected groups [%s], got %v", PendingGroup, u2.Groups)
 	}
-	if _, err := db.Authenticate("active", "pw"); err == nil {
-		t.Fatal("deactivated user should not authenticate")
+	// The user can still log in — the pending waiting page requires a session.
+	if _, err := db.Authenticate("active", "pw"); err != nil {
+		t.Fatalf("deactivated user should still authenticate, got: %v", err)
+	}
+}
+
+// TestApproveClearsDisabled verifies that approval clears a stale disabled
+// flag, so users deactivated under the old (disabled-coupled) semantics are
+// fully restored once an admin approves them.
+func TestApproveClearsDisabled(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateUser("legacy", "pw", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := db.Authenticate("legacy", "pw")
+	// Simulate historical data: disabled=1 while still in the pending group.
+	if err := db.DeactivateUser(u.ID); err != nil {
+		t.Fatalf("DeactivateUser: %v", err)
+	}
+	hardDisable := true
+	if err := db.UpdateUser(u.ID, "", "", 0, nil, &hardDisable); err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+	// Mirror the server-side approve flow: move to the default group, then
+	// clear the disabled flag.
+	gid, err := db.DefaultUserGroupID()
+	if err != nil {
+		t.Fatalf("DefaultUserGroupID: %v", err)
+	}
+	if err := db.SetUserGroups(u.ID, []int64{gid}); err != nil {
+		t.Fatalf("SetUserGroups: %v", err)
+	}
+	disabledOff := false
+	if err := db.UpdateUser(u.ID, "", "", 0, nil, &disabledOff); err != nil {
+		t.Fatalf("UpdateUser clear: %v", err)
+	}
+	got, err := db.UserByID(u.ID)
+	if err != nil {
+		t.Fatalf("UserByID: %v", err)
+	}
+	if got.Disabled {
+		t.Error("approve must clear the disabled flag")
+	}
+	if len(got.Groups) != 1 || got.Groups[0] != DefaultUserGroup {
+		t.Fatalf("expected groups [%s], got %v", DefaultUserGroup, got.Groups)
+	}
+	// And the user must now be able to authenticate.
+	if _, err := db.Authenticate("legacy", "pw"); err != nil {
+		t.Fatalf("approved user should authenticate, got: %v", err)
 	}
 }
 

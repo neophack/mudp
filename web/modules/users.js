@@ -359,7 +359,7 @@ async function deactivateUser(userId, userName) {
     toast("You cannot deactivate your own account.");
     return;
   }
-  if (!confirm(`Deactivate user “${userName}”? Their account will be disabled and returned to the pending group.`)) return;
+  if (!confirm(`Deactivate user “${userName}”? They will be returned to the pending group and need to be re-approved before they can use the platform.`)) return;
   try {
     await api("/api/users/deactivate", { method: "POST", body: JSON.stringify({ id: userId }) });
     await refreshSection("users", "groups");

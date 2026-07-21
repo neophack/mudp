@@ -113,6 +113,14 @@ func (a *App) approveUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Clear the hard-disable flag. Older versions coupled DeactivateUser with
+	// disabled=1, so historical rows may carry a stale flag; clearing it on
+	// approval guarantees the user can actually use the platform afterwards.
+	disabledOff := false
+	if err := a.db.UpdateUser(req.UserID, "", "", 0, nil, &disabledOff); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	// Ensure user netdisk directories and shortcuts/symlinks are created
 	if netdiskPath, err := a.db.NetdiskPathForUser(req.UserID); err == nil && netdiskPath != "" {
 		_ = EnsureUserNetdiskDir(netdiskPath, u.Username, fmt.Sprintf("%d", u.ID), u.DisplayName)
