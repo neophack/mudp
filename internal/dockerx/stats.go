@@ -47,9 +47,7 @@ type rawStats struct {
 	MemoryStats struct {
 		Usage uint64 `json:"usage"`
 		Limit uint64 `json:"limit"`
-		Stats struct {
-			Cache uint64 `json:"cache"`
-		} `json:"stats"`
+		Stats memoryStatsDetail `json:"stats"`
 	} `json:"memory_stats"`
 	Networks map[string]struct {
 		RxBytes uint64 `json:"rx_bytes"`
@@ -64,6 +62,18 @@ type rawStats struct {
 	PidsStats struct {
 		Current uint64 `json:"current"`
 	} `json:"pids_stats"`
+}
+
+// memoryStatsDetail mirrors the memory_stats.stats object Docker reports.
+// Field names are the raw cgroup keys (cgroup v1 or v2 translated by the
+// Docker daemon). Every field is optional; absent keys decode to zero.
+type memoryStatsDetail struct {
+	Cache             uint64 `json:"cache"`
+	RSS               uint64 `json:"rss"`                     // resident anonymous memory (v1)
+	Rss               uint64 `json:"Rss"`                     // cgroup v2 capitalised variant
+	ActiveAnon        uint64 `json:"active_anon"`             // v1: active anonymous pages
+	InactiveFile      uint64 `json:"inactive_file"`           // v1: reclaimable file pages
+	TotalInactiveFile uint64 `json:"total_inactive_file"`     // v2 unified key
 }
 
 // SampleStats takes a single one-shot stats reading for a container.
@@ -142,14 +152,18 @@ func parseStats(body []byte) StatsSample {
 		s.CPUPercent = round2((cpuDelta / sysDelta) * float64(cpus) * 100)
 	}
 
-	// Memory: usage minus cache (page cache) for the working set. Guard against
-	// Docker reporting more cache than total usage, which would underflow uint64.
-	usage := r.MemoryStats.Usage
-	if r.MemoryStats.Stats.Cache > usage {
-		usage = 0
-	} else {
-		usage -= r.MemoryStats.Stats.Cache
-	}
+	// Memory working set. Docker's raw `usage` includes page cache (file-backed
+	// memory the kernel can reclaim under pressure), so subtracting it gives a
+	// value that matches `docker stats`. The exact subtrahend depends on the
+	// cgroup driver:
+	//
+	//   cgroup v1: usage - total_inactive_file (or inactive_file)
+	//   cgroup v2: usage - inactive_file  (the unified-hierarchy key)
+	//
+	// Older code subtracted the whole `cache` field, which (a) is usually 0 on
+	// v2 so memory was reported far too high, and (b) on v1 still included the
+	// *active* file pages that can't be reclaimed. See workingSet for details.
+	usage := workingSet(r.MemoryStats.Usage, r.MemoryStats.Stats)
 	s.MemoryMB = round2(float64(usage) / 1024 / 1024)
 	s.MemoryLimitMB = round2(float64(r.MemoryStats.Limit) / 1024 / 1024)
 	if s.MemoryLimitMB > 0 {
@@ -176,4 +190,28 @@ func parseStats(body []byte) StatsSample {
 	}
 	s.PIDs = r.PidsStats.Current
 	return s
+}
+
+// workingSet derives the container's resident memory (what `docker stats` shows)
+// from raw usage minus reclaimable file cache. The kernel can drop inactive file
+// pages under memory pressure, so those don't count against the working set.
+//
+// We prefer the unified `total_inactive_file`/`inactive_file` cgroup keys (this
+// is what cAdvisor uses); on older v1 setups we fall back to those same keys
+// and finally to plain `cache` so behaviour never regresses worse than before.
+// If the daemon reports a subtrahend larger than usage (seen transiently during
+// cgroup accounting), we clamp to zero rather than underflow.
+func workingSet(usage uint64, d memoryStatsDetail) uint64 {
+	sub := d.TotalInactiveFile
+	if sub == 0 {
+		sub = d.InactiveFile
+	}
+	if sub == 0 {
+		// Legacy fallback only: cache is a coarse v1-era approximation.
+		sub = d.Cache
+	}
+	if sub >= usage {
+		return 0
+	}
+	return usage - sub
 }

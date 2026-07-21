@@ -93,6 +93,55 @@ func TestParseStatsZeroDelta(t *testing.T) {
 	}
 }
 
+func TestParseStatsMemoryCgroupV2(t *testing.T) {
+	// cgroup v2: `cache` is absent/0 and only `inactive_file` is reported.
+	// usage 209715200 - inactive_file 52428800 = 157286400 bytes = 150 MiB.
+	raw := `{
+		"memory_stats": {
+			"usage": 209715200,
+			"limit": 1073741824,
+			"stats": {"inactive_file": 52428800}
+		}
+	}`
+	s := parseStats([]byte(raw))
+	if s.MemoryMB != 150 {
+		t.Errorf("MemoryMB = %v, want 150", s.MemoryMB)
+	}
+	if s.MemoryPct != round2(150.0/1024*100) {
+		t.Errorf("MemoryPct = %v, want %v", s.MemoryPct, round2(150.0/1024*100))
+	}
+}
+
+func TestParseStatsMemoryCacheFallback(t *testing.T) {
+	// Legacy cgroup v1: no inactive_file/total_inactive_file, only `cache`.
+	// usage 209715200 - cache 104857600 = 104857600 bytes = 100 MiB.
+	raw := `{
+		"memory_stats": {
+			"usage": 209715200,
+			"stats": {"cache": 104857600}
+		}
+	}`
+	s := parseStats([]byte(raw))
+	if s.MemoryMB != 100 {
+		t.Errorf("MemoryMB = %v, want 100", s.MemoryMB)
+	}
+}
+
+func TestParseStatsMemorySubtrahendLargerThanUsage(t *testing.T) {
+	// Docker can transiently report inactive_file > usage during accounting.
+	// Working set must clamp to 0 instead of underflowing uint64.
+	raw := `{
+		"memory_stats": {
+			"usage": 1000,
+			"stats": {"inactive_file": 2000}
+		}
+	}`
+	s := parseStats([]byte(raw))
+	if s.MemoryMB != 0 {
+		t.Errorf("MemoryMB = %v, want 0 (no underflow)", s.MemoryMB)
+	}
+}
+
 func TestEncodeAuthRoundTrip(t *testing.T) {
 	auth := encodeAuth("alice", "secret")
 	if auth == "" {

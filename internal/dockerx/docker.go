@@ -917,23 +917,16 @@ func (d *Client) memoryMB(ctx context.Context, id string) (float64, error) {
 	var s struct {
 		MemoryStats struct {
 			Usage uint64 `json:"usage"`
-			Stats struct {
-				Cache uint64 `json:"cache"`
-			} `json:"stats"`
+			Stats memoryStatsDetail `json:"stats"`
 		} `json:"memory_stats"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
 		return 0, err
 	}
-	// Report the working set (usage minus page cache) so the listing matches the
-	// value shown in the live stats stream. Guard against Docker reporting more
-	// cache than total usage, which would underflow uint64.
-	usage := s.MemoryStats.Usage
-	if s.MemoryStats.Stats.Cache > usage {
-		usage = 0
-	} else {
-		usage -= s.MemoryStats.Stats.Cache
-	}
+	// Report the working set (usage minus reclaimable file cache) so the listing
+	// matches the value shown in the live stats stream. See workingSet for the
+	// rationale behind the subtrahend choice across cgroup v1/v2.
+	usage := workingSet(s.MemoryStats.Usage, s.MemoryStats.Stats)
 	return float64(usage) / 1024 / 1024, nil
 }
 
