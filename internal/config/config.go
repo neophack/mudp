@@ -27,6 +27,12 @@ type Config struct {
 	// rate limiter and the geo/brute-force checks see only the proxy's IP and
 	// an attacker can forge XFF to bypass them.
 	TrustedProxies string
+	// MCPPort overrides the dedicated SSE/MCP listener port. Empty = a random
+	// port in 50000-59999 is generated once and persisted in the DB, so the
+	// port is stable across restarts (Cloudflare Tunnel configs don't need to
+	// change on every boot). Set to a fixed port like "54321" to pin it. The
+	// admin can also change this at runtime via the MCP settings panel.
+	MCPPort string
 }
 
 // Load reads configuration from the environment. Missing secrets are generated
@@ -39,6 +45,7 @@ func Load() Config {
 		WebDir:          env("MUDP_WEB_DIR", ""),
 		DefaultLanguage: env("MUDP_DEFAULT_LANGUAGE", "en_US"),
 		TrustedProxies:  os.Getenv("MUDP_TRUSTED_PROXIES"),
+		MCPPort:         os.Getenv("MUDP_MCP_PORT"),
 	}
 
 	cfg.SessionSecret = env("MUDP_SESSION_SECRET", "")

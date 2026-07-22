@@ -66,6 +66,24 @@ type App struct {
 	geoip          *geoip.Reader
 	loginGuard     *security.LoginGuard
 	policy         atomic.Pointer[store.SecurityPolicy]
+
+	// MCP / SSE: the dedicated SSE listener is split from the main web port so
+	// MCP can be published via Cloudflare Tunnel under its own domain while the
+	// management UI stays hidden. mcpPolicy + mcpAllowNets are hot-reloaded by
+	// the admin settings handler; the listener is restarted when the port or
+	// enabled flag changes. mcpLimiter is a stricter, independent rate limiter
+	// so token brute-force can't exhaust the main API's budget.
+	mcpPolicy    atomic.Pointer[store.MCPPolicy]
+	mcpAllowNets atomic.Value // []*net.IPNet
+	mcpListener  atomic.Pointer[net.Listener]
+	mcpServer    atomic.Pointer[http.Server]
+	mcpLimiter   *middleware.RateLimiter
+	mcpMu        sync.Mutex // serializes listener restarts
+
+	// Egress isolation policy: image + LAN/WAN addressing for the ImmortalWrt
+	// gateway. Hot-reloaded by the admin egress-settings handler; read at boot
+	// to bring up the mesh/egress networks + gateway container.
+	wrtPolicy atomic.Pointer[store.WRTPolicy]
 }
 
 type dirSizeEntry struct {
@@ -114,6 +132,10 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 		trustedProxies:   trusted,
 		geoip:            geoReader,
 		loginGuard:       guard,
+		// Stricter, independent limiter for the MCP/SSE listener: token-auth
+		// endpoints are an attractive brute-force target, so they get a much
+		// smaller budget than the main API.
+		mcpLimiter: middleware.NewRateLimiterWithProxies(5, 10, 10*time.Minute, trusted),
 	}
 
 	// Load the persisted security policy and prime the guard with it so login
@@ -123,11 +145,30 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 		log.Printf("WARNING: could not load security policy: %v", pErr)
 	}
 	app.applySecurityPolicy(policy)
+
+	// WRT gateway isolation: bring up the mesh + WAN networks and the ImmortalWrt
+	// gateway container. Non-fatal on every error path. The gateway image is
+	// auto-pulled if missing (it's platform infrastructure, unlike user images),
+	// which can take a few minutes on first boot — that's fine because this runs
+	// against context.Background() with no deadline. If the pull fails or Docker
+	// is unreachable, the server still starts; containers just won't have outbound
+	// Internet until the gateway is ready (LAN/host isolation still applies via
+	// the internal mesh network).
+	app.ensureWRTIsolation(context.Background())
+
+	// Load the MCP/SSE listener policy. First boot with the feature enabled but
+	// no port persisted: generate a random one in 50000-59999 and save it so the
+	// port is stable across restarts (Cloudflare Tunnel config doesn't drift).
+	if err := app.loadAndApplyMCPPolicy(context.Background()); err != nil {
+		log.Printf("WARNING: mcp listener not started: %v", err)
+	}
 	return app, nil
 }
 
-// Close releases resources held by the app, such as the Docker client.
+// Close releases resources held by the app: the dedicated SSE/MCP listener
+// (if running) and the Docker client.
 func (a *App) Close() error {
+	a.stopMcpListener()
 	if a.docker == nil {
 		return nil
 	}
@@ -195,12 +236,12 @@ func (a *App) Routes() http.Handler {
 	r.Get("/pan/{token}", a.netdiskSharePage)
 	r.Handle("/api/dashboard", a.requireRole(rankUser, a.dashboard))
 
-	// MCP Streamable HTTP endpoint (bearer-token authenticated, independent of
-	// the browser session — registered outside the CSRF group on purpose).
-	r.Post("/mcp/{token}", a.mcpStreamableHTTP)
-	// MCP SSE transport: GET opens the event stream, POST sends JSON-RPC.
-	r.Get("/mcp/{token}/sse", a.mcpSSE)
-	r.Post("/mcp/{token}/messages", a.mcpMessages)
+	// NOTE: MCP transport endpoints (/mcp/{token}, /sse, /messages) are NOT
+	// registered on the main web port. They live on a dedicated SSE listener
+	// (see McpRoutes) so MCP can be exposed via Cloudflare Tunnel under its own
+	// domain while the management UI stays completely hidden. The management
+	// endpoints for MCP tokens (/api/mcp/tokens) remain below inside the
+	// authenticated, CSRF-protected group.
 
 	// Activated-user business endpoints (any non-pending role).
 	r.Group(func(r chi.Router) {
@@ -288,6 +329,9 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/mcp/tokens", a.mcpTokenList)
 		r.Post("/api/mcp/tokens", a.mcpTokenCreate)
 		r.Delete("/api/mcp/tokens/{id}", a.mcpTokenDelete)
+		// MCP public config (just the public base URL) so the token page can
+		// show clients the right SSE-port domain without admin privileges.
+		r.Get("/api/mcp/config", a.mcpPublicConfig)
 
 		// In-app notifications for activated users.
 		r.Get("/api/notifications", a.notifications)
@@ -353,6 +397,14 @@ func (a *App) Routes() http.Handler {
 		// Security policy: IP/CIDR/region gating + login brute-force toggle.
 		r.Get("/api/settings/security", a.securitySettings)
 		r.Post("/api/settings/security", a.securitySettings)
+	// MCP/SSE listener policy: dedicated SSE port + source allowlist +
+	// public base URL shown to MCP clients. Hot-reloads the listener.
+	r.Get("/api/settings/mcp", a.mcpSettings)
+	r.Post("/api/settings/mcp", a.mcpSettings)
+	// WRT gateway policy: ImmortalWrt image + LAN/WAN addressing. Hot-reloads
+	// the mesh/WAN networks and gateway container. Surfaced on the Networks page.
+	r.Get("/api/wrt", a.wrtSettings)
+	r.Post("/api/wrt", a.wrtSettings)
 		r.Post("/api/groups/netdisk", a.groupNetdisk)
 		r.Post("/api/groups/backup", a.groupBackup)
 		r.Get("/api/admin/netdisk/shares", a.netdiskSharesAdmin)
@@ -374,6 +426,34 @@ func (a *App) Routes() http.Handler {
 
 	// Static UI: embedded FS in production, or disk in dev (MUDP_WEB_DIR).
 	r.Handle("/*", a.staticHandler())
+	return r
+}
+
+// McpRoutes builds the router for the dedicated SSE/MCP listener. Only the
+// three MCP transport endpoints live here — no UI, no management API, no
+// session-bearing routes — so the attack surface of this port is exactly the
+// MCP token-authenticated surface. Layers applied in order:
+//
+//  1. recoverPanic + RequestLogger — operational parity with the main port.
+//  2. geoGate — the same region/CIDR policy as the main site, so an admin who
+//     restricts the UI to e.g. "CN only" gets the same gate on MCP.
+//  3. mcpSourceGate — the "only allow cloudflared" layer: flat 404 for any
+//     source not in the admin-configured AllowCIDRs (default loopback).
+//  4. mcpLimiter — a strict, independent rate limit so token brute-force
+//     against this port can't exhaust anything.
+//
+// The MCP handlers themselves authenticate with the {token} URL param (SHA-256
+// lookup) and don't rely on sessions or CSRF.
+func (a *App) McpRoutes() http.Handler {
+	r := chi.NewRouter()
+	r.Use(a.recoverPanic)
+	r.Use(middleware.RequestLogger)
+	r.Use(a.geoGate)
+	r.Use(a.mcpSourceGate)
+	r.Use(a.mcpLimiter.Middleware)
+	r.Post("/mcp/{token}", a.mcpStreamableHTTP)
+	r.Get("/mcp/{token}/sse", a.mcpSSE)
+	r.Post("/mcp/{token}/messages", a.mcpMessages)
 	return r
 }
 
@@ -930,6 +1010,33 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 			netdiskPath = path
 		}
 	}
+	// Egress isolation: the create form renders mudp-mesh (the gateway LAN) as a
+	// checkbox that defaults to checked. If the user left it checked it's already
+	// in req.Networks and gets attached via the resolved list. If they unchecked
+	// it (mesh absent from req.Networks) and the policy is enabled, we still
+	// auto-inject it so isolation stays the default unless they also pick another
+	// network — i.e. unchecking mesh only opts out when the user named a
+	// replacement. When the policy is disabled, mesh is never auto-injected.
+	pol, _ := a.db.WRTPolicy()
+	attachLAN := false
+	if pol.Enabled {
+		meshRequested := false
+		anyOther := false
+		for _, n := range req.Networks {
+			tn := strings.TrimSpace(n)
+			if tn == "" {
+				continue
+			}
+			if tn == dockerx.MeshNetworkName {
+				meshRequested = true
+			} else {
+				anyOther = true
+			}
+		}
+		// Auto-inject mesh unless the user both unchecked it AND named another
+		// network (an explicit "put me elsewhere" gesture).
+		attachLAN = meshRequested || !anyOther
+	}
 	return dockerx.CreateOptions{
 		Username: u.Username, Name: req.Name, ImageRef: img.DockerRef, ImageName: img.DisplayName,
 		Env: normalizeEnv(req.Env), GPUs: req.GPUs,
@@ -937,7 +1044,8 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
 		Devices: req.Devices, CDIDevices: req.CDIDevices,
-		RestartPolicy: req.RestartPolicy,
+		RestartPolicy:    req.RestartPolicy,
+		AttachDefaultLAN: attachLAN,
 		// Advanced fields. Command/Entrypoint accept a shell-style string (split
 		// into argv) for ergonomics in the wizard; empty means "use image default".
 		Command:    shellSplit(req.Command),
@@ -1071,6 +1179,14 @@ func (a *App) containerAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "read-only role cannot modify containers")
 		return
 	}
+	// Platform-owned containers (the WRT gateway) are managed infrastructure:
+	// an admin may start/stop/restart them for maintenance, but they can't be
+	// removed from the container list — rebuild/reprovision goes through the WRT
+	// settings so the isolation topology stays consistent.
+	if req.Action == "remove" && a.containerIsSystem(r.Context(), req.ID) {
+		writeErr(w, http.StatusForbidden, "this is a system container (the WRT gateway); rebuild it via Networks → WRT settings, not the container list")
+		return
+	}
 	// Resolve the audit target before the action: after a remove the container
 	// (and its name/owner labels) no longer exists.
 	target := a.containerAuditTarget(r.Context(), req.ID)
@@ -1119,6 +1235,20 @@ func (a *App) containerOwnedBy(ctx context.Context, u *store.User, id string) bo
 		}
 	}
 	return false
+}
+
+// containerIsSystem reports whether the container is a mudp platform-owned
+// container (carries the mudp.system label), e.g. the WRT gateway. Such
+// containers are read-only managed: start/stop/restart/logs/inspect are
+// allowed for admins, but remove is refused (rebuild via WRT settings).
+// Best-effort: on any inspect error returns false so the action proceeds and
+// the underlying Docker error surfaces normally.
+func (a *App) containerIsSystem(ctx context.Context, id string) bool {
+	info, err := a.docker.ContainerInspectByID(ctx, id)
+	if err != nil {
+		return false
+	}
+	return info.Config != nil && info.Config.Labels[dockerx.SystemLabel] == "true"
 }
 
 // ownedContainerIDs returns the set of container IDs the user owns, with one
@@ -1204,6 +1334,12 @@ func (a *App) containerBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		if !idOwnedBy(owned, id) {
 			failures = append(failures, batchFailure{ID: id, Error: "container is not yours"})
+			failed = append(failed, id)
+			continue
+		}
+		// System containers (the WRT gateway) can't be batch-removed either.
+		if req.Action == "remove" && a.containerIsSystem(r.Context(), id) {
+			failures = append(failures, batchFailure{ID: id, Error: "system container — rebuild via WRT settings"})
 			failed = append(failed, id)
 			continue
 		}

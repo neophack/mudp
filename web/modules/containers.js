@@ -191,6 +191,10 @@ function containerRow(c) {
   const paused = c.state === "paused";
   const name = c.name || c.fullName;
   const pending = (act) => state.pending.has(c.id + ":" + act);
+  // System containers (the WRT gateway) are platform infrastructure: admins
+  // can start/stop/restart them and read logs/inspect, but not remove them or
+  // open files/terminal (rebuild goes through Networks → WRT settings).
+  const sys = !!c.system;
   const statusBadge = running
     ? `<span class="badge badge-ok"><span class="dot"></span>${escapeHtml(c.status || "Up")}</span>`
     : paused
@@ -214,11 +218,16 @@ function containerRow(c) {
     return `<button class="${cls}${loading}" title="${title}" data-id="${escapeHtml(c.id)}" data-name="${escapeHtml(name)}" data-act="${act}" ${dis}>${glyph}</button>`;
   };
   const checked = state.containerSelection.has(c.id) ? "checked" : "";
+  const ownerCell = isAdmin()
+    ? (sys
+      ? `<td><div class="secondary-line"><span class="badge badge-muted">system</span></div></td>`
+      : `<td><div class="secondary-line">${escapeHtml(displayNameForUsername(c.owner) || "—")}</div></td>`)
+    : "";
   return (
     `<tr>` +
       (canMutate() ? `<td class="chk-col"><input type="checkbox" data-cid="${escapeHtml(c.id)}" ${checked}></td>` : "") +
-      `<td><div class="primary-line">${escapeHtml(name)}</div><div class="secondary-line">${conn.length ? conn.join(" <span class='sep'>·</span> ") : escapeHtml(ports)}</div></td>` +
-      (isAdmin() ? `<td><div class="secondary-line">${escapeHtml(displayNameForUsername(c.owner) || "—")}</div></td>` : "") +
+      `<td><div class="primary-line">${escapeHtml(name)}${sys ? ' <span class="badge badge-accent">wrt</span>' : ""}</div><div class="secondary-line">${conn.length ? conn.join(" <span class='sep'>·</span> ") : escapeHtml(ports)}</div></td>` +
+      ownerCell +
       `<td>${statusBadge}</td>` +
       `<td><div class="secondary-line">${escapeHtml(c.image || c.Image || "—")}</div></td>` +
       `<td><div class="secondary-line">${num(c.memoryMb).toFixed(0)} MB mem · ${num(c.diskMb).toFixed(0)} MB disk</div>` +
@@ -228,13 +237,13 @@ function containerRow(c) {
         iconBtn("start", "▶", "Start", "icon ok", !running) +
         iconBtn("stop", "■", "Stop", "icon warn", running || paused) +
         iconBtn("restart", "⟳", "Restart", "icon", running || paused) +
-        (running ? iconBtn("pause", "⏸", "Pause") : "") +
-        (paused ? iconBtn("unpause", "⏵", "Unpause", "icon ok") : "") +
-        iconBtn("files", "📁", "Files") +
-        (running ? iconBtn("terminal", "🖥", "Console") : "") +
+        (running && !sys ? iconBtn("pause", "⏸", "Pause") : "") +
+        (paused && !sys ? iconBtn("unpause", "⏵", "Unpause", "icon ok") : "") +
+        (!sys ? iconBtn("files", "📁", "Files") : "") +
+        (running && !sys ? iconBtn("terminal", "🖥", "Console") : "") +
         (running ? iconBtn("stats", "📊", "Stats") : "") +
         iconBtn("inspect", "ℹ", "Details") +
-        iconBtn("remove", "✕", "Delete", "icon danger") +
+        (!sys ? iconBtn("remove", "✕", "Delete", "icon danger") : "") +
       `</td>` +
     `</tr>`
   );

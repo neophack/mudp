@@ -26,12 +26,22 @@ export function openCreateModal() {
       return `<option value="${escapeHtml(img.name)}">${escapeHtml(img.name)}${hasPreset ? " ⚙" : ""}</option>`;
     })
     .join("");
-  // System networks (host/none) are shown read-only on the Networks view but
-  // cannot be attached to — validateNetworkAttachment rejects anything lacking
-  // the mudp-managed label, except "bridge" which is a safe pass-through.
+  // Networks the user can attach to. mudp-mesh is the WRT gateway's LAN and
+  // is the default gateway network — it's surfaced as a checkbox that defaults
+  // to checked, so a fresh container is isolated behind the router unless the
+  // user explicitly opts out (and typically picks another network). Docker
+  // built-ins like host/none are filtered out (validateNetworkAttachment rejects
+  // them); bridge is kept as a cosmetic pass-through.
   const myNetworks = (state.networks || [])
-    .filter((n) => !n.system || n.name === "bridge")
-    .map((n) => `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}"> ${escapeHtml(n.name)}${n.system ? ' <span class="hint">(system)</span>' : ""}</label>`)
+    .filter((n) => !n.system || n.name === "bridge" || n.name === "mudp-mesh")
+    .map((n) => {
+      const isLAN = n.name === "mudp-mesh";
+      const label = isLAN
+        ? `${escapeHtml(n.name)} <span class="hint">(默认网关 / default gateway)</span>`
+        : `${escapeHtml(n.name)}${n.system ? ' <span class="hint">(system)</span>' : ""}`;
+      const checked = isLAN ? "checked" : "";
+      return `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}" ${checked}> ${label}</label>`;
+    })
     .join("");
   const myVolumes = (state.volumes || []).map((v) => v.name);
   const prefix = Number(state.me?.portPrefix || 0);

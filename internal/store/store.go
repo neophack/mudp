@@ -1394,6 +1394,162 @@ func (db *DB) SaveSecurityPolicy(p SecurityPolicy) error {
 	return db.setSetting("security_policy", string(raw))
 }
 
+// ---------------- MCP / SSE listener policy ----------------
+
+// MCPPolicy is the admin-configured MCP/SSE listener policy. It governs the
+// dedicated SSE port that exposes only the MCP transport endpoints (separated
+// from the main web port so MCP can be published via Cloudflare Tunnel under
+// its own domain while the management UI stays hidden). Stored as a JSON blob
+// under the "mcp_policy" settings key.
+//
+// Semantics:
+//   - Enabled is the master switch for the SSE listener. When false the second
+//     listener is not started at all.
+//   - Port is the TCP port (50000-59999). Zero means "not initialized yet";
+//     on first boot a random port in range is generated and persisted so it
+//     stays stable across restarts.
+//   - AllowCIDRs restricts which source IPs may even reach the SSE listener.
+//     Defaults to loopback (cloudflared co-located on the host). This is the
+//     "only allow cloudflared" layer on top of token auth.
+//   - PublicBaseURL is the external URL users should paste into their MCP
+//     client (e.g. https://mcp.example.com). Purely presentational.
+type MCPPolicy struct {
+	Enabled       bool     `json:"enabled"`
+	Port          int      `json:"port"`
+	AllowCIDRs    []string `json:"allowCIDRs"`
+	PublicBaseURL string   `json:"publicBaseUrl"`
+}
+
+// MCPPolicy returns the stored policy, or an empty (disabled) one if no policy
+// has been configured yet.
+func (db *DB) MCPPolicy() (MCPPolicy, error) {
+	var p MCPPolicy
+	var raw string
+	err := db.QueryRow(`select value from settings where key='mcp_policy'`).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return p, nil // default: SSE listener disabled
+		}
+		return p, err
+	}
+	if raw == "" {
+		return p, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return p, err
+	}
+	return p, nil
+}
+
+// SaveMCPPolicy persists the policy as JSON under the mcp_policy key.
+func (db *DB) SaveMCPPolicy(p MCPPolicy) error {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return db.setSetting("mcp_policy", string(raw))
+}
+
+// WRTPolicy describes the ImmortalWrt (wrt) gateway: which image to run,
+// whether the isolation model is enabled, and the LAN/WAN addressing. mudp
+// reads this at boot to create the mudp-mesh (LAN) and mudp-wrt-wan (WAN)
+// networks and to push UCI config into the gateway container. Defaults reflect
+// the original hardcoded topology so a fresh install behaves identically to
+// before the policy was introduced.
+type WRTPolicy struct {
+	// Enabled gates the whole WRT-isolation model. When false, mudp does not
+	// create the mesh/WAN networks nor the gateway container, and user
+	// containers are no longer force-attached to the mesh (they'll attach to
+	// whatever the user picks, like Docker's default bridge — isolation off).
+	Enabled bool `json:"enabled"`
+	// Image is the ImmortalWrt router image the gateway runs. The admin must
+	// load it via the Images page; mudp never auto-pulls.
+	Image string `json:"image"`
+	// LAN side = the mudp-mesh bridge user containers attach to.
+	LANSubnet  string `json:"lanSubnet"`
+	LANGateway string `json:"lanGateway"` // the gateway's IP on the LAN (its br-lan)
+	// WAN side = the mudp-wrt-wan bridge the gateway NATs out through.
+	WANSubnet  string `json:"wanSubnet"`
+	WANGateway string `json:"wanGateway"` // the mudp-wrt-wan bridge gateway (next hop)
+	WANIP      string `json:"wanIp"`      // the gateway's IP on the WAN
+}
+
+// DefaultWRTPolicy returns the policy used when nothing is stored yet (a fresh
+// install) — it matches the previously hardcoded values so behavior is
+// unchanged on upgrade.
+func DefaultWRTPolicy() WRTPolicy {
+	return WRTPolicy{
+		Enabled:    true,
+		Image:      "hkbase/immortalwrt:latest",
+		LANSubnet:  "172.31.252.0/22",
+		LANGateway: "172.31.252.2",
+		WANSubnet:  "172.31.248.0/22",
+		WANGateway: "172.31.248.1",
+		WANIP:      "172.31.248.2",
+	}
+}
+
+// WRTPolicy returns the stored policy, or DefaultWRTPolicy() if none has been
+// configured yet (so a fresh install keeps isolation ON by default).
+//
+// Backward-compat: the key was renamed from "egress_policy" to "wrt_policy".
+// We read the new key first; if it's absent we fall back to the legacy key so a
+// pre-rename install keeps its configuration. The first SaveWRTPolicy after
+// upgrade writes the new key, leaving the old one as harmless dead data.
+func (db *DB) WRTPolicy() (WRTPolicy, error) {
+	var raw string
+	err := db.QueryRow(`select value from settings where key='wrt_policy'`).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Fall back to the legacy key (pre-rename installs). If that's also
+			// missing, return defaults — a fresh install keeps isolation ON.
+			if lerr := db.QueryRow(`select value from settings where key='egress_policy'`).Scan(&raw); lerr != nil {
+				return DefaultWRTPolicy(), nil
+			}
+			// raw is populated; fall through to unmarshal.
+		} else {
+			return DefaultWRTPolicy(), err
+		}
+	}
+	if raw == "" {
+		return DefaultWRTPolicy(), nil
+	}
+	var p WRTPolicy
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return DefaultWRTPolicy(), err
+	}
+	// Backfill any blank field with its default so old/partial records stay sane.
+	def := DefaultWRTPolicy()
+	if p.Image == "" {
+		p.Image = def.Image
+	}
+	if p.LANSubnet == "" {
+		p.LANSubnet = def.LANSubnet
+	}
+	if p.LANGateway == "" {
+		p.LANGateway = def.LANGateway
+	}
+	if p.WANSubnet == "" {
+		p.WANSubnet = def.WANSubnet
+	}
+	if p.WANGateway == "" {
+		p.WANGateway = def.WANGateway
+	}
+	if p.WANIP == "" {
+		p.WANIP = def.WANIP
+	}
+	return p, nil
+}
+
+// SaveWRTPolicy persists the policy as JSON under the wrt_policy key.
+func (db *DB) SaveWRTPolicy(p WRTPolicy) error {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return db.setSetting("wrt_policy", string(raw))
+}
+
 // ---------------- Audit log ----------------
 
 // AuditEntry is one recorded management action.

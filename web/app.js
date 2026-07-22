@@ -68,6 +68,12 @@ export const state = {
   // Security policy (IP/CIDR/region gate + login brute-force toggle). Loaded
   // lazily by the Settings page for admins only.
   security: { loaded: false },
+  // MCP / SSE listener policy (dedicated SSE port + source allowlist + public
+  // base URL). Loaded lazily by the Settings page for admins only.
+  mcp: { loaded: false },
+  // WRT gateway policy (ImmortalWrt image + LAN/WAN addressing). Loaded lazily
+  // by the Networks page for admins only.
+  wrt: { loaded: false },
   notifications: [],
   unreadCount: 0,
   search: "",

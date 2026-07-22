@@ -58,8 +58,12 @@ type Container struct {
 	GPUMemoryTotalMB float64           `json:"gpuMemTotalMb"`
 	GPUMemoryPct     float64           `json:"gpuMemPct"`
 	HTTP8080URL      string            `json:"http8080Url,omitempty"`
-	HTTP80URL        string            `json:"http80Url,omitempty"`
+	HTTP80URL        string            `json:"httpUrl,omitempty"`
 	CreatedAt        int64             `json:"createdAt"`
+	// System marks platform-owned containers (e.g. the WRT gateway) that show in
+	// the admin container list as read-only managed rows: Owner="system", no
+	// remove/files/terminal. They're never returned to non-admin callers.
+	System bool `json:"system,omitempty"`
 }
 
 type CreateOptions struct {
@@ -83,6 +87,12 @@ type CreateOptions struct {
 	MountShm bool
 	// Networks are mudp network names to attach the container to.
 	Networks []string
+	// AttachDefaultLAN controls whether mudp-mesh (the WRT gateway's LAN) is
+	// auto-attached as the primary network when the user didn't explicitly
+	// include it. True (the default from validateCreate) keeps the historical
+	// "every container is isolated behind the gateway" behavior; false lets a
+	// container live only on the user-selected network(s).
+	AttachDefaultLAN bool
 	// Devices are generic --device specs (host[:container[:rwm]]) to pass through,
 	// e.g. /dev/nvidia0. Used by admins to keep NVIDIA GPUs connected to GPU
 	// containers and to expose other host devices.
@@ -475,8 +485,11 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		PortBindings:  portMap,
 		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyMode(normalizeRestartPolicy(opts.RestartPolicy))},
 		CapAdd:        opts.CapAdd,
-		CapDrop:       opts.CapDrop,
-		Sysctls:       opts.Sysctls,
+		// Force-drop NET_ADMIN/NET_RAW so a tenant cannot rewrite iptables inside
+		// their container to bypass the egress isolation enforced by the gateway.
+		// Applied on top of whatever the user requested (we append, never grant).
+		CapDrop:  appendUniqueCap(opts.CapDrop, "NET_ADMIN", "NET_RAW"),
+		Sysctls:  opts.Sysctls,
 	}
 	// Resource limits. NanoCPUs/Memory are only set when positive so a zero
 	// value keeps the image/host default (no cgroup limit).
@@ -565,7 +578,7 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		containerCfg.User = opts.RunUser
 	}
 	emit("create", "Creating container")
-	resp, err := d.c.ContainerCreate(ctx, containerCfg, hostCfg, networkingConfig(resolvedNetworks), &v1.Platform{}, name)
+	resp, err := d.c.ContainerCreate(ctx, containerCfg, hostCfg, networkingConfigForUser(resolvedNetworks, opts.AttachDefaultLAN), &v1.Platform{}, name)
 	if err != nil {
 		return "", err
 	}
@@ -856,6 +869,26 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 		if display == "" && !admin {
 			display = strings.TrimPrefix("/"+full, UserContainerPrefix(username))
 		}
+		// Platform-owned containers (the WRT gateway) carry mudp.system=true.
+		// They appear in the admin list as read-only managed rows: Owner="system",
+		// Image pulled from the container's actual image (they have no
+		// mudp.image label since they weren't created via CreateContainer). Non-
+		// admin callers never reach here — the UserContainerPrefix filter above
+		// already skipped them.
+		isSystem := c.Labels[SystemLabel] == "true"
+		owner := c.Labels[UserLabel]
+		image := c.Labels["mudp.image"]
+		if isSystem {
+			if display == "" {
+				display = strings.TrimPrefix(full, Prefix) // e.g. "wrt"
+			}
+			if owner == "" {
+				owner = "system"
+			}
+			if image == "" {
+				image = c.Image // the actual image the gateway runs
+			}
+		}
 		ports := make([]string, 0, len(c.Ports))
 		seenPorts := map[string]bool{}
 		for _, p := range c.Ports {
@@ -871,9 +904,9 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 			}
 		}
 		out = append(out, Container{
-			ID: c.ID, Name: display, FullName: full, Owner: c.Labels[UserLabel], Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
+			ID: c.ID, Name: display, FullName: full, Owner: owner, Image: image, State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
-			HTTP8080URL: httpURL(c.Ports, 8080), HTTP80URL: httpURL(c.Ports, 80),
+			HTTP8080URL: httpURL(c.Ports, 8080), HTTP80URL: httpURL(c.Ports, 80), System: isSystem,
 		})
 	}
 	for i := range out {
@@ -994,14 +1027,41 @@ func (d *Client) UpdateContainerSettings(ctx context.Context, id string, restart
 		if err != nil {
 			return fmt.Errorf("inspect before network change: %w", err)
 		}
-		// Disconnect every currently-attached network, then (re)connect the
-		// requested set. The Docker API does not support a wholesale replace.
+		// Build the requested set (trimmed, de-duplicated) for membership checks.
+		// mudp-mesh is now a user-selectable network (the gateway LAN), so if the
+		// caller includes it we keep it attached, and if they omit it we disconnect
+		// it — that's how a user lifts a container off the egress-controlled path
+		// via a post-create edit. (The create form still defaults to attaching it.)
+		requested := map[string]bool{}
+		for _, name := range networks {
+			n := strings.TrimSpace(name)
+			if n != "" {
+				requested[n] = true
+			}
+		}
+		// Disconnect every currently-attached network that isn't in the requested
+		// set. The Docker API does not support a wholesale replace.
 		for name := range inspect.NetworkSettings.Networks {
+			if requested[name] {
+				continue
+			}
 			_ = d.c.NetworkDisconnect(ctx, name, id, true)
 		}
 		for _, name := range networks {
 			n := strings.TrimSpace(name)
 			if n == "" {
+				continue
+			}
+			// Already attached (either it was kept above, or Docker will no-op).
+			if inspect.NetworkSettings != nil && inspect.NetworkSettings.Networks != nil {
+				if _, ok := inspect.NetworkSettings.Networks[n]; ok {
+					continue
+				}
+			}
+			// Defense in depth: reject Docker built-ins and mudp-wrt-wan (the WAN
+			// side) here too, even though the handler validated already. mudp-mesh
+			// (the LAN side) is allowed — it's the user-facing gateway network.
+			if isSystemNetworkName(n) || (IsSystemNetworkName(n) && n != MeshNetworkName) {
 				continue
 			}
 			if err := d.c.NetworkConnect(ctx, n, id, nil); err != nil {
@@ -1039,6 +1099,13 @@ func (d *Client) managedGuard(ctx context.Context, id string) error {
 }
 
 // Inspect returns a Portainer-style detail snapshot.
+// ContainerInspectByID returns Docker's raw container inspect result. Used by
+// the server layer to read labels (e.g. mudp.system) for authorization checks
+// without going through the mudp-managed InspectInfo projection.
+func (d *Client) ContainerInspectByID(ctx context.Context, id string) (types.ContainerJSON, error) {
+	return d.c.ContainerInspect(ctx, id)
+}
+
 func (d *Client) Inspect(ctx context.Context, id string) (InspectInfo, error) {
 	inspect, err := d.c.ContainerInspect(ctx, id)
 	if err != nil {
@@ -1140,14 +1207,16 @@ func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username s
 		}
 	}
 	// Translate networks back to display names where possible (strip the
-	// mudp-<user>-net- prefix). "bridge" is passed through as-is.
+	// mudp-<user>-net- prefix). Built-in system networks (bridge/host/none) and
+	// platform networks (mudp-mesh/mudp-wrt-wan) are dropped: the duplicate will
+	// be re-attached to mudp-mesh automatically by networkingConfigForUser, and
+	// built-ins are no longer attachable (they'd bypass egress isolation).
 	var networks []string
 	for _, n := range info.Networks {
 		if n.Name == "" {
 			continue
 		}
-		if n.Name == "bridge" {
-			networks = append(networks, "bridge")
+		if isSystemNetworkName(n.Name) || IsSystemNetworkName(n.Name) {
 			continue
 		}
 		display := dequalifyNetworkName(n.Name, username)
@@ -1472,6 +1541,72 @@ func networkingConfig(names []string) *network.NetworkingConfig {
 	return cfg
 }
 
+// networkingConfigForUser builds the networking config for a user container. It
+// ALWAYS attaches the container to mudp-mesh (the internal isolation network)
+// so the container has no direct route to the LAN/host — outbound traffic must
+// transit the WRT gateway, which enforces "public Internet only". Any
+// additional mudp-managed networks the user requested are attached too, but
+// bridge/host/none were already stripped by validateNetworkAttachment.
+//
+// attachDefaultLAN controls whether mudp-mesh is auto-injected when the user
+// didn't explicitly include it. The default (true, set by validateCreate) keeps
+// the historical isolation behavior; the create form lets a user uncheck the
+// LAN to opt a container out of the gateway path.
+func networkingConfigForUser(names []string, attachDefaultLAN bool) *network.NetworkingConfig {
+	cfg := &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{}}
+	meshRequested := false
+	for _, name := range names {
+		n := strings.TrimSpace(name)
+		if n == "" {
+			continue
+		}
+		if n == MeshNetworkName {
+			meshRequested = true
+		}
+		cfg.EndpointsConfig[n] = &network.EndpointSettings{}
+	}
+	// Inject mesh as the primary gateway-facing endpoint when the user didn't
+	// explicitly opt out. The gateway lives at WRTMeshIP and is the mesh's
+	// default gateway.
+	if attachDefaultLAN && !meshRequested {
+		// Map insertion order in Go is randomized, but Docker treats the first
+		// endpoint inserted as primary for default-route purposes; insert mesh
+		// first by rebuilding the map.
+		updated := map[string]*network.EndpointSettings{
+			MeshNetworkName: {},
+		}
+		for k, v := range cfg.EndpointsConfig {
+			updated[k] = v
+		}
+		cfg.EndpointsConfig = updated
+	}
+	return cfg
+}
+
+// appendUniqueCap appends caps to base, skipping any already present. Used to
+// force-drop NET_ADMIN/NET_RAW on top of whatever the user requested.
+func appendUniqueCap(base []string, caps ...string) []string {
+	seen := make(map[string]bool, len(base)+len(caps))
+	out := make([]string, 0, len(base)+len(caps))
+	for _, c := range base {
+		up := strings.ToUpper(strings.TrimSpace(c))
+		if up == "" || seen[up] {
+			continue
+		}
+		seen[up] = true
+		out = append(out, up)
+	}
+	for _, c := range caps {
+		up := strings.ToUpper(strings.TrimSpace(c))
+		if up == "" || seen[up] {
+			continue
+		}
+		seen[up] = true
+		out = append(out, up)
+	}
+	return out
+}
+
 // validateMountSource ensures a mount source is either the user's own managed
 // volume or an allowed bind. Bind mounts are rejected outright except for the
 // netdisk path, which is handled separately via MountNetdisk. Named volumes are
@@ -1501,16 +1636,31 @@ func (d *Client) validateMountSource(ctx context.Context, username string, m *mo
 // validateNetworkAttachment resolves a network name to its full Docker name and
 // verifies it is managed by mudp and owned by the user. This prevents users from
 // attaching to another user's network or to unmanaged system networks.
+//
+// All Docker built-in networks (bridge / host / none) are rejected: the default
+// bridge gives containers a NAT path straight to the LAN and the host, which
+// defeats the egress-isolation model. Containers instead live on the mudp-mesh
+// internal network and reach the public Internet only via the WRT gateway.
 func (d *Client) validateNetworkAttachment(ctx context.Context, username, name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", fmt.Errorf("network name is empty")
 	}
-	// Docker's default bridge network is a safe pass-through (no host network
-	// access, unlike "host"/"none"), so it's the one system network users may
-	// attach alongside their own mudp-managed networks.
-	if name == "bridge" {
-		return "bridge", nil
+	// Reject Docker's built-in networks — they bypass egress isolation. The
+	// default bridge in particular would let a container reach docker0/172.17.0.1
+	// and the host LAN directly.
+	if isSystemNetworkName(name) {
+		return "", fmt.Errorf("system network %q is blocked; containers use mudp-managed networks (egress isolation enforces no LAN/host access)", name)
+	}
+	// mudp-mesh (the WRT gateway's LAN) is the one platform network a user
+	// MAY explicitly attach to — it's how a container opts into the gateway.
+	// The create form surfaces it as "mudp-mesh (default gateway)"; we accept
+	// the full name as-is. mudp-wrt-wan (the WAN side) stays off-limits.
+	if name == MeshNetworkName {
+		return name, nil
+	}
+	if IsSystemNetworkName(name) {
+		return "", fmt.Errorf("network %q is a platform network and cannot be attached directly", name)
 	}
 	full := NetworkFullName(username, name)
 	info, err := d.c.NetworkInspect(ctx, full, types.NetworkInspectOptions{})

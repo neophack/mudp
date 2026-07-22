@@ -246,3 +246,20 @@ func (a *App) mcpTokenDelete(w http.ResponseWriter, r *http.Request) {
 	a.record(r, "mcp.token.delete", target)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+// mcpPublicConfig returns just the public base URL for the MCP endpoints, so the
+// MCP token page (visible to any activated user) can show clients the right
+// domain even though the user isn't an admin and can't read the full policy.
+// No sensitive fields (allowCIDRs, myIP, gateway status) are exposed.
+//
+// GET /api/mcp/config
+func (a *App) mcpPublicConfig(w http.ResponseWriter, r *http.Request) {
+	pol, err := a.db.MCPPolicy()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"publicBaseUrl": pol.PublicBaseURL,
+	})
+}

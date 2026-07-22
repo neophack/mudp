@@ -15,6 +15,9 @@ export function renderSettings() {
   if (isAdmin() && !state.security.loaded) {
     loadSecurity();
   }
+  if (isAdmin() && !state.mcp.loaded) {
+    loadMcp();
+  }
 
   const currentLanguage = getCurrentLanguage();
   const defaultLanguage = state.me?.defaultLanguage || "en_US";
@@ -42,6 +45,7 @@ export function renderSettings() {
       `</div>`
     : "";
   const securityPanel = isAdmin() ? securitySettingsPanel(state.security) : "";
+  const mcpPanel = isAdmin() ? mcpSettingsPanel(state.mcp) : "";
 
   $("#view").innerHTML =
     `<div class="stack">` +
@@ -50,6 +54,7 @@ export function renderSettings() {
       registriesPanel +
       feishuSettingsPanel +
       securityPanel +
+      mcpPanel +
     `</div>`;
 
   // Handle user language settings
@@ -125,6 +130,7 @@ export function renderSettings() {
   });
 
   bindSecurityForm();
+  bindMcpForm();
 }
 
 // ---- Security policy card (IP/region gate + login brute-force) ----
@@ -272,6 +278,110 @@ export async function loadSecurity() {
     };
   } catch {
     state.security = { loaded: true };
+  }
+  if (state.tab === "settings") renderView();
+}
+
+// ---- MCP / SSE listener card (dedicated SSE port for MCP) ----
+//
+// MCP transport endpoints live on a separate port from the main UI so MCP can
+// be published via Cloudflare Tunnel under its own domain while the management
+// console stays hidden. This card configures that port, the source allowlist
+// (default loopback = co-located cloudflared), and the public base URL shown
+// to users in the MCP client config dialog.
+
+function mcpSettingsPanel(s) {
+  if (!s.loaded) {
+    return `<div class="card"><div class="card-head"><h2>MCP / SSE</h2></div><div class="card-body"><p class="hint">Loading…</p></div></div>`;
+  }
+  const allowCIDR = (s.allowCIDRs || []).join("\n");
+  // Self-check chip: would the admin's current source reach the SSE port?
+  const selfChip = s.myIP
+    ? `<div class="hint security-self-check">Your IP: <strong class="mono">${escapeHtml(s.myIP)}</strong>` +
+      ` · <span class="badge ${s.myAllowed ? "badge-accent" : "badge-danger"}">${s.myAllowed ? "allowed" : "BLOCKED"}</span></div>`
+    : "";
+  const gatewayChip = s.wrtRunning
+    ? `<p class="hint">✅ WRT gateway running — container outbound isolation active.</p>`
+    : `<p class="hint">⚠️ WRT gateway not running — containers will be LAN-isolated but have no outbound Internet. mudp auto-pulls the image on boot; if it's still missing, check the server logs / configure it on the <strong>Networks</strong> page.</p>`;
+  const portValue = s.port > 0 ? String(s.port) : "";
+
+  return `<div class="card"><div class="card-head"><h2>MCP / SSE · 独立端口</h2></div>` +
+    `<div class="card-body">` +
+      selfChip +
+      gatewayChip +
+      `<form id="mcpForm" class="compact">` +
+        `<label class="check"><input type="checkbox" name="enabled" ${s.enabled ? "checked" : ""}> <strong>启用独立 SSE 端口</strong> (Enable dedicated MCP/SSE listener)</label>` +
+        `<p class="hint">开启后，MCP 端点 (<code>/mcp/{token}</code>、<code>/sse</code>、<code>/messages</code>) 只从这个端口提供，不再出现在主站端口上。用 Cloudflare Tunnel 只绑这个端口，即可用对应域名访问 MCP 而主站完全不暴露。</p>` +
+        `<div class="security-field">` +
+          `<label>SSE 端口 / Port (50000-59999, 留空 = 随机并持久化)</label>` +
+          `<input name="port" type="number" min="50000" max="59999" placeholder="random 50000-59999" value="${escapeHtml(portValue)}">` +
+          `<p class="hint">首次启用会随机生成并写入数据库，重启后保持不变（Cloudflare Tunnel 配置不会漂移）。设固定值如 54321 可锁定。</p>` +
+        `</div>` +
+        `<div class="security-field">` +
+          `<label>来源白名单 / Allowed source CIDRs (只允许 cloudflared 来源)</label>` +
+          `<textarea name="allowCIDRs" rows="3" placeholder="127.0.0.0/8&#10;::1/128">${escapeHtml(allowCIDR)}</textarea>` +
+          `<p class="hint">每行一个 CIDR 或 IP。只有这里放行的来源才能连 SSE 端口，其余一律 404。默认回环——即与本机同部署的 cloudflared。cloudflared 跨机时填它的出口 IP/网段。</p>` +
+        `</div>` +
+        `<div class="security-field">` +
+          `<label>对外访问地址 / Public base URL (显示给用户的 MCP 域名)</label>` +
+          `<input name="publicBaseUrl" placeholder="https://mcp.example.com" value="${escapeHtml(s.publicBaseUrl || "")}">` +
+          `<p class="hint">Cloudflare Tunnel 绑定到 MCP 域名后填这里，MCP 配置对话框会把该域名显示给用户。留空则回退到当前页面 origin。</p>` +
+        `</div>` +
+        `<button>Save MCP Settings</button>` +
+      `</form>` +
+    `</div>` +
+  `</div>`;
+}
+
+function bindMcpForm() {
+  const form = $("#mcpForm");
+  if (!form) return;
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const splitList = (val) =>
+      String(val || "")
+        .split(/[\n,]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    const portRaw = String(fd.get("port") || "").trim();
+    const port = portRaw === "" ? 0 : parseInt(portRaw, 10);
+    const payload = {
+      enabled: fd.has("enabled"),
+      port: Number.isFinite(port) ? port : 0,
+      allowCIDRs: splitList(fd.get("allowCIDRs")),
+      publicBaseUrl: String(fd.get("publicBaseUrl") || "").trim(),
+    };
+    try {
+      await api("/api/settings/mcp", { method: "POST", body: JSON.stringify(payload) });
+      state.mcp.loaded = false;
+      await loadMcp();
+      toast(t("settings.saved"), true);
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+
+export async function loadMcp() {
+  if (!isAdmin()) {
+    state.mcp = { loaded: true };
+    return;
+  }
+  try {
+    const data = await api("/api/settings/mcp");
+    state.mcp = {
+      loaded: true,
+      enabled: !!data.enabled,
+      port: data.port || 0,
+      allowCIDRs: data.allowCIDRs || [],
+      publicBaseUrl: data.publicBaseUrl || "",
+      myIP: data.myIp || "",
+      myAllowed: !!data.myAllowed,
+      wrtRunning: !!data.wrtRunning,
+    };
+  } catch {
+    state.mcp = { loaded: true };
   }
   if (state.tab === "settings") renderView();
 }

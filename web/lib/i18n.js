@@ -64,6 +64,11 @@ const translations = {
     "settings.languageChanged": "语言已切换",
     "settings.selectLanguage": "选择语言",
     "settings.admin": "管理员设置",
+    "settings.mcp.title": "MCP / SSE · 独立端口",
+    "settings.mcp.enabled": "启用独立 SSE 端口",
+    "settings.mcp.port": "SSE 端口 (50000-59999，留空=随机并持久化)",
+    "settings.mcp.allowCidrs": "来源白名单 (只允许 cloudflared 来源)",
+    "settings.mcp.publicBaseUrl": "对外访问地址 (显示给用户的 MCP 域名)",
 
     // Languages
     "lang.chinese": "中文",
@@ -174,6 +179,11 @@ const translations = {
     "settings.languageChanged": "Language switched",
     "settings.selectLanguage": "Select Language",
     "settings.admin": "Administrator Settings",
+    "settings.mcp.title": "MCP / SSE · dedicated port",
+    "settings.mcp.enabled": "Enable dedicated SSE listener",
+    "settings.mcp.port": "SSE port (50000-59999, blank = random & persisted)",
+    "settings.mcp.allowCidrs": "Allowed source CIDRs (cloudflared only)",
+    "settings.mcp.publicBaseUrl": "Public base URL (MCP domain shown to clients)",
 
     // Languages
     "lang.chinese": "中文",

@@ -47,6 +47,13 @@ export async function renderMCP() {
     await refreshMCPTokens();
   }
 
+  // Make sure the MCP/SSE policy (esp. publicBaseUrl) is loaded so the config
+  // dialog shows the correct dedicated-SSE-port domain. Non-admins get a
+  // stubbed "loaded" state from loadMcp, so the dialog falls back to origin.
+  if (!state.mcp || !state.mcp.loaded) {
+    await loadMcpPublic();
+  }
+
   if (!state.mcpTokens) state.mcpTokens = [];
   const mutable = canMutate();
   const admin = isAdmin();
@@ -243,7 +250,13 @@ function onShowConfig(token, name, label) {
 }
 
 function onShowConfigRaw(token, label, placeholder = false) {
-  const host = window.location.origin;
+  // Prefer the admin-configured public base URL (the Cloudflare Tunnel domain
+  // bound to the dedicated SSE port). Fall back to the current page origin when
+  // no MCP policy is loaded yet or the admin hasn't set one. The MCP endpoints
+  // are reachable on both, but the public URL is the intended client-facing
+  // entry point.
+  const configuredBase = state.mcp && state.mcp.loaded ? (state.mcp.publicBaseUrl || "").trim() : "";
+  const host = configuredBase || window.location.origin;
   const labelSlug = label ? label.replace(/[^a-zA-Z0-9_-]/g, "-") || "mudp-container" : "mudp-container";
   const sseUrl = `${host}/mcp/${token}/sse`;
   const httpUrl = `${host}/mcp/${token}`;
@@ -394,5 +407,21 @@ export async function refreshMCPTokens() {
     state.mcpTokens = (await api("/api/mcp/tokens")) || [];
   } catch {
     state.mcpTokens = [];
+  }
+}
+
+// loadMcpPublic fetches just the public base URL for MCP endpoints (no admin
+// privileges needed) so the config dialog shows the dedicated-SSE-port domain.
+// Caches into state.mcp without clobbering admin-only fields when present.
+export async function loadMcpPublic() {
+  try {
+    const data = await api("/api/mcp/config");
+    state.mcp = {
+      ...(state.mcp || {}),
+      loaded: true,
+      publicBaseUrl: data.publicBaseUrl || "",
+    };
+  } catch {
+    state.mcp = { ...(state.mcp || {}), loaded: true };
   }
 }

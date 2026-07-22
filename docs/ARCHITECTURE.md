@@ -39,7 +39,7 @@ mudp/
 ## 2. 各层职责划分
 
 ### cmd/mudp
-仅做启动装配：`config.Load()` → `store.Open+Migrate` → `server.New` → `app.Routes()` 在 `cfg.Addr`（默认 `127.0.0.1:9000`）上 serve；监听 SIGINT/SIGTERM 做 10s 超时的优雅关闭。干净，无问题。
+仅做启动装配：`config.Load()` → `store.Open+Migrate` → `server.New` → `app.Routes()` 在 `cfg.Addr`（默认 `0.0.0.0:9000`）上 serve；监听 SIGINT/SIGTERM 做 10s 超时的优雅关闭。**端口模型**：主端口（管理 UI + 业务 API）由 main.go 的 `http.Server` 监听；MCP/SSE 独立端口由 `server.New` 在内部启动（监听端口、来源白名单、对外域名由 DB 中的 `mcp_policy` 决定，管理员可热重载），随 `App.Close()` 一并关闭。两个 listener 共享 `App` 但路由独立——MCP 端点（`/mcp/{token}`、`/sse`、`/messages`）只注册在 SSE listener 的 `McpRoutes()` 上，主端口完全不暴露 MCP 攻击面。
 
 ### internal/auth
 - `auth.go`：基于 HMAC-SHA256 签名的 cookie 会话，无服务端会话存储（无状态）。
@@ -53,6 +53,8 @@ SQLite + modernc.org/sqlite（纯 Go 驱动，无 CGO）。连接池 8 开 4 闲
 
 ### internal/dockerx
 Docker SDK 封装。见 §3。
+
+**容器网络隔离模型（WRT 网关）**：mudp 创建的每个容器默认挂到 internal bridge `mudp-mesh`（`Internal:true`，本身无 NAT 出口），并 `cap-drop NET_ADMIN,NET_RAW`；出站流量经特权网关容器 `mudp-wrt`（挂 `mudp-mesh` + 普通 bridge `mudp-wrt-wan`）做 NAT——网关为 ImmortalWrt 路由器，mudp 通过 `docker exec` 注入 UCI 配置：LAN 侧（mesh）`172.31.252.2/22`、WAN 侧 `172.31.248.2/22` 默认网关 `172.31.248.1`，firewall 规则 DROP 目的为 RFC1918/docker 网桥/回环的流量、WAN masquerade 出站。最终效果：容器可访问公网，但访问不了局域网、宿主机、Docker daemon。Docker 内置网络（`bridge`/`host`/`none`）在创建和事后编辑时都被拒。`mudp-mesh`（LAN 侧）在网络页以 system 只读条目出现、用户可 inspect 看到自己容器挂在哪里；`mudp-wrt-wan`（WAN 侧）仍隐藏。整个隔离模型由 **Networks → WRT 网关** 卡片的 `wrt_policy`（store kv）驱动：启用开关、镜像名、LAN/WAN 子网与网关，保存后热重载 mesh/WAN 网络与网关容器。注意 Docker 网络 IPAM 子网创建后不可变——改子网需在宿主机 `docker network rm mudp-mesh mudp-wrt-wan` 后重启 mudp。创建容器表单里 `mudp-mesh` 默认勾选，用户可取消改挂别的网络。网关容器 `mudp-wrt` 在**管理员**容器列表中以只读 system 行显示（Owner=system，显示镜像与端口映射，可 start/stop/restart/logs/inspect，但不能 remove——重建走 WRT 卡片）；普通用户看不到。网关镜像 `hkbase/immortalwrt:latest`（特权运行、headless、mudp 用 UCI 配置 LAN/WAN/firewall）缺失时 **mudp 自动拉取**（平台基础设施，区别于用户镜像从不自动拉取）；首次启动可能耗时几分钟。拉取失败（无 registry 连通性 / 私有 registry 未配凭据）时降级为"无外网但 LAN/本机仍隔离"。store key 兼容：`WRTPolicy()` 先读 `wrt_policy`，miss 回退老的 `egress_policy`，平滑迁移不丢配置。注：compose/stack 路径不经 `CreateContainer`，不受此隔离覆盖。
 
 ### internal/server
 HTTP 层，chi 路由。见 §4。

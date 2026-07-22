@@ -66,6 +66,7 @@ MUDP ships with two layers of access control an admin can toggle from **Settings
 
 - **IP / region gate.** Restrict the whole site to one or more countries, or to specific Chinese provinces (e.g. "only Guangdong"). Disallowed origins get a flat `404` — nothing to fingerprint. CIDR allow/block lists override the geo check: the allowlist is the safety valve that prevents you from locking yourself out.
 - **Login brute-force protection.** After 5 failed attempts from one IP within 15 minutes, that IP is locked for 30 minutes; after 10 failures against one account, that account is soft-locked for 15 minutes. Lockouts are in-memory and clear automatically; an admin can view active lockouts on the same settings page.
+- **Container egress isolation (WRT gateway).** Every container MUDP creates is attached by default to an internal bridge network (`mudp-mesh`, the LAN side of an ImmortalWrt gateway) with `NET_ADMIN` / `NET_RAW` capabilities dropped, and reaches the public Internet only through a managed gateway container (`mudp-wrt`) running a real ImmortalWrt router. mudp configures the router via UCI so it MASQUERADEs outbound traffic while DROPping anything destined for RFC1918 ranges, the Docker bridge, or loopback. The result: **containers can reach the public Internet but not your LAN, the host, or the Docker daemon.** Docker's built-in `bridge` / `host` / `none` networks are refused on create and on post-create edits, so the isolation can't be lifted by reconnecting a container. The whole model is policy-driven from **Networks → WRT 网关** (a card at the top of the Networks page): toggle it on/off, set the gateway image, and configure the LAN/WAN subnets and gateways. `mudp-mesh` (the LAN) also shows up read-only on the **Networks** page so users can see which containers share the isolation network, and the create-container form defaults to attaching it (a user can uncheck it to opt out). The gateway container itself (`mudp-wrt`) appears in the **admin** container list as a read-only managed row (Owner = system, with its image and port mappings shown) — admins can start/stop/restart it and read its logs, but can't remove it from the list (rebuild it via the WRT card). Normal users never see it. The gateway runs `hkbase/immortalwrt:latest` (the ImmortalWrt router image, privileged, headless); unlike user images, mudp **auto-pulls** it on boot when missing (it's platform infrastructure), so first start may take a few minutes while the image downloads. If the pull fails (e.g. no registry connectivity, or the admin pointed the policy at a private registry without configuring creds on the Images page), containers stay LAN/host-isolated but have no outbound Internet until the image is available. Note: Docker network IPAM subnets are immutable after creation, so changing the LAN/WAN subnets requires removing the old networks (`docker network rm mudp-mesh mudp-wrt-wan`) and restarting MUDP. compose/stack-launched containers bypass `CreateContainer` and are **not** covered by this isolation.
 
 GeoIP data is the MIT-licensed [ip2region](https://github.com/lionsoul2014/ip2region) v4 database, embedded into the binary (~11 MiB) — no download, no external service, China province/city accurate.
 
@@ -124,6 +125,38 @@ Cloudflare injects geo headers at the edge, and MUDP prefers them over the embed
 - `CF-IPRegion` / `CF-IPCity` — subdivision/city; for `CF-IPCountry=CN` MUDP translates the ISO 3166-2:CN subdivision code to the Chinese province name (e.g. `44` → `广东省`) so the province allowlist keeps working.
 
 **Why not set `MUDP_TRUSTED_PROXIES` to Cloudflare's IP ranges for a Tunnel?** You don't need to: with a Tunnel, the connection to MUDP always originates from `127.0.0.1` (the local `cloudflared` process), which is in the default trusted set. Setting it to Cloudflare's public ranges is only relevant if you expose MUDP directly to Cloudflare's proxy IPs (orange-cloud DNS), not for a Tunnel. Either way the rule is the same: MUDP trusts forwarding headers only when the *direct peer* is in the trusted list, so a public client cannot forge `CF-IPCountry` to bypass the gate.
+
+#### Exposing MCP on its own port (recommended for AI tool access)
+
+MCP transport endpoints (`POST /mcp/{token}`, `GET /mcp/{token}/sse`, `POST /mcp/{token}/messages`) live on a **dedicated listener, separate from the main web port**. This lets you publish MCP to AI tools (Claude Code, Codex, Kimi, Cursor) under its own hostname via Cloudflare Tunnels while the management UI stays completely unexposed. Configure it under **Settings → MCP / SSE**:
+
+- **Enable** the dedicated SSE listener.
+- **Port** — `50000-59999`. On first enable a random port in range is generated and persisted, so it stays stable across restarts (your Tunnel config won't drift). Pin it by typing a specific value.
+- **Allowed source CIDRs** — only these sources may even reach the port; everything else gets a flat 404. Defaults to loopback (`127.0.0.0/8`, `::1/128`) since `cloudflared` typically runs on the same host. If `cloudflared` runs on another machine, add its egress IP/range here.
+- **Public base URL** — the hostname you'll bind the Tunnel to (e.g. `https://mcp.example.com`). Shown to users in the MCP client config dialog.
+
+Then point a second ingress in `cloudflared` at the SSE port — note the port is the one MUDP logged at boot (e.g. `50xyz`), **not** 9000:
+
+```yaml
+# ~/.cloudflared/config.yml
+tunnel: <tunnel-id>
+credentials-file: /root/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: mudp.example.com      # management UI (optional — can omit entirely)
+    service: http://127.0.0.1:9000
+  - hostname: mcp.example.com       # MCP only
+    service: http://127.0.0.1:50xyz # the dedicated SSE port
+  - service: http_status:404
+```
+
+Now MCP clients use `https://mcp.example.com/mcp/{token}/sse` (or the streamable HTTP variant). The management UI is reachable only via its own hostname (or not at all, if you omit it from ingress). Multiple independent security layers stack on the SSE port:
+
+1. **Source allowlist** (above) — `cloudflared`-only by default.
+2. **Region/CIDR gate** — the same policy as the main site (`Settings → Security`), so an admin who restricts the UI to e.g. "CN only" gets the same gate on MCP.
+3. **Strict, independent rate limit** — 5 req/s, burst 10, separate from the main API budget, to resist token brute-force.
+4. **Token auth** — the 32-byte `{token}` in the URL (SHA-256 hashed at rest); without it the endpoint returns 401.
+
+Set `MUDP_MCP_PORT` to override the port from the environment (e.g. `MUDP_MCP_PORT=54321 ./mudp`). When unset, the persisted DB value wins.
 
 Geo data sources priority (highest wins):
 1. `CF-IPCountry` / `CF-IPRegion` (when the request came via Cloudflare)
