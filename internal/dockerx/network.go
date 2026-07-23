@@ -3,6 +3,8 @@ package dockerx
 import (
 	"context"
 	"fmt"
+	"log"
+	"net"
 	"strings"
 	"time"
 
@@ -402,13 +404,13 @@ func netLabelToDisplay(full string) string {
 // EnsureSystemNetworks idempotently creates the platform isolation networks:
 //
 //   - mudp-mesh:    an Internal bridge. Every user container is forced onto it.
-//                   Internal networks have no NAT/forwarding rules, so by itself
-//                   it gives "no LAN, no host, no Internet". The WRT gateway
-//                   provides the controlled outbound path.
+//     Internal networks have no NAT/forwarding rules, so by itself
+//     it gives "no LAN, no host, no Internet". The WRT gateway
+//     provides the controlled outbound path.
 //   - mudp-wrt-wan: a normal bridge attached to the WRT gateway. The gateway
-//                   MASQUERADEs mesh → WAN traffic so containers can reach the
-//                   public Internet, while DROPping RFC1918/docker/loopback
-//                   destinations.
+//     MASQUERADEs mesh → WAN traffic so containers can reach the
+//     public Internet, while DROPping RFC1918/docker/loopback
+//     destinations.
 //
 // Both networks carry the mudp.system label so mudp-wrt-wan stays hidden from
 // user views and rejected by the ownership guards. (mudp-mesh is surfaced
@@ -425,50 +427,106 @@ func (d *Client) EnsureSystemNetworks(ctx context.Context) error {
 // EnsureSystemNetworksWithPolicy is the policy-driven form: the mesh/WAN
 // subnets and gateways come from pol instead of the hardcoded constants.
 func (d *Client) EnsureSystemNetworksWithPolicy(ctx context.Context, pol WRTPolicy) error {
+	// First, sweep away legacy platform networks left over from earlier mudp
+	// versions (e.g. the pre-rename "mudp-egress" WAN network). These carry the
+	// mudp.system label but use names we no longer create, and because Docker
+	// IPAM subnets can't overlap, a stale network squatting on the WAN subnet
+	// would otherwise make the NetworkCreate below fail with "Pool overlaps with
+	// other one on this address space". We only remove networks with no live
+	// containers attached — a still-connected one is left alone and logged so
+	// the admin can drain and remove it manually.
+	if err := d.removeLegacySystemNetworks(ctx); err != nil {
+		// Best-effort: a failure here shouldn't block the whole ensure. The
+		// NetworkCreate below will surface a real conflict if one remains.
+		log.Printf("wrt: legacy system network cleanup failed (continuing): %v", err)
+	}
 	lanGateway := pol.LANGateway
 	if lanGateway == "" {
 		lanGateway = MeshGatewayIP
 	}
+	// The IPAM gateway (meshBridgeGW) is set to pol.LANGateway (.2 = WRT’s LAN
+	// IP) so Docker automatically injects .2 as the default route for every
+	// container on mudp-mesh. No manual `ip route replace` is needed.
+	// Docker assigns the gateway IP to the host bridge interface (br-mudp-mesh),
+	// but WRT’s netifd also claims .2 on br-lan inside the container. WRT sends
+	// a gratuitous ARP for .2 when br-lan comes up, updating containers’ ARP
+	// caches so that “default via .2” resolves to WRT’s MAC and traffic transits
+	// the gateway. For any container that misses the gratuitous ARP, mudp runs a
+	// privileged `ip route replace default via .2` post-start (see CreateContainer).
+	meshBridgeGW := lanGateway // pol.LANGateway = WRTMeshIP = 172.31.252.2
 	wanGateway := pol.WANGateway
 	if wanGateway == "" {
 		wanGateway = WANBridgeGW
 	}
 	sysLabels := map[string]string{
-		SystemLabel:     "true",
-		ManagedLabel:    "true",
+		SystemLabel:      "true",
+		ManagedLabel:     "true",
 		"mudp.createdAt": time.Now().Format(time.RFC3339),
 	}
-	// mesh: internal bridge (the gateway's LAN side). The bridge's own gateway
-	// field is informational here — the real next hop for tenant containers is
-	// the gateway container at pol.LANGateway.
+	// mesh: the WRT gateway’s LAN side.
+	//
+	// Internal: false — Docker injects meshBridgeGW (= pol.LANGateway = WRT’s LAN
+	// IP) as the default route into every container on this network. With
+	// Internal: true the default route is suppressed and containers get
+	// “Gateway: ”” — they cannot reach WRT or the Internet at all.
+	//
+	// AuxAddress reserves low addresses. Exclude the bridge gateway (.2 = lanGateway)
+	// because Docker auto-reserves it and rejects a duplicate AuxAddress entry.
+	// We do NOT request .2 for WRT via IPAMConfig.IPv4Address; WRT gets an
+	// auto-allocated IP from the pool and netifd re-assigns br-lan to .2 via UCI.
+	meshAux := auxAddrsExcluding(lanReservedAddrs(pol.LANSubnet), meshBridgeGW)
 	meshCreate := types.NetworkCreate{
 		Driver:     "bridge",
-		Internal:   true,
+		Internal:   false,
 		Attachable: true,
 		Labels:     sysLabels,
 		IPAM: &network.IPAM{
 			Config: []network.IPAMConfig{
-				{Subnet: pol.LANSubnet, Gateway: lanGateway},
+				{
+					Subnet:     pol.LANSubnet,
+					Gateway:    meshBridgeGW,
+					AuxAddress: meshAux,
+				},
 			},
 		},
 	}
 	if _, err := d.c.NetworkCreate(ctx, MeshNetworkName, meshCreate); err != nil {
-		// Already exists is fine — its config is immutable on create; trust it.
 		if !isAlreadyExistsErr(err) {
 			return fmt.Errorf("create mesh network: %w", err)
 		}
+		// Network already exists — check whether its subnet still matches the
+		// policy. If not (e.g. admin changed LANSubnet), remove and recreate.
+		if err2 := d.reconcileNetworkIPAM(ctx, MeshNetworkName, pol.LANSubnet, meshCreate); err2 != nil {
+			return fmt.Errorf("reconcile mesh network: %w", err2)
+		}
 	}
-	// WAN: ordinary bridge (gets the daemon's default NAT path to the host NIC,
+	// WAN: ordinary bridge (gets the daemon’s default NAT path to the host NIC,
 	// which is what makes real outbound Internet work once the gateway
-	// MASQUERADEs into it). The bridge gateway is the gateway container's WAN
-	// next hop (pol.WANGateway).
+	// MASQUERADEs into it). The bridge gateway is the gateway container’s WAN
+	// next hop (pol.WANGateway). AuxAddress keeps the gateway’s fixed WAN
+	// address (pol.WANIP) out of the auto-allocation pool, with the gateway IP
+	// itself excluded to avoid the "Address already in use" IPAM error.
+	// Also exclude pol.WANIP (.2) from WAN AuxAddress for the same reason:
+	// AuxAddress entries are configured on the bridge interface; if .2 is in
+	// AuxAddress, the bridge owns that IP and WRT's veth can't claim it.
+	wanWRTIP := pol.WANIP
+	if wanWRTIP == "" {
+		wanWRTIP = WRTWANIP
+	}
 	wanCreate := types.NetworkCreate{
 		Driver:     "bridge",
 		Attachable: true,
 		Labels:     sysLabels,
 		IPAM: &network.IPAM{
 			Config: []network.IPAMConfig{
-				{Subnet: pol.WANSubnet, Gateway: wanGateway},
+				{
+					Subnet:  pol.WANSubnet,
+					Gateway: wanGateway,
+					AuxAddress: auxAddrsExcluding(
+						auxAddrsExcluding(wanReservedAddrs(pol.WANSubnet), wanGateway),
+						wanWRTIP,
+					),
+				},
 			},
 		},
 	}
@@ -476,6 +534,41 @@ func (d *Client) EnsureSystemNetworksWithPolicy(ctx context.Context, pol WRTPoli
 		if !isAlreadyExistsErr(err) {
 			return fmt.Errorf("create wrt-wan network: %w", err)
 		}
+		if err2 := d.reconcileNetworkIPAM(ctx, WANNetworkName, pol.WANSubnet, wanCreate); err2 != nil {
+			return fmt.Errorf("reconcile wrt-wan network: %w", err2)
+		}
+	}
+	return nil
+}
+
+// reconcileNetworkIPAM checks whether an existing Docker network’s IPAM subnet
+// matches wantSubnet. If it does, it’s a no-op. If it doesn’t (the policy
+// changed), the network is removed and recreated — provided no containers are
+// currently attached. A non-empty network returns an actionable error so the
+// admin knows to drain it manually before the change can land.
+func (d *Client) reconcileNetworkIPAM(ctx context.Context, name, wantSubnet string, create types.NetworkCreate) error {
+	info, err := d.c.NetworkInspect(ctx, name, types.NetworkInspectOptions{})
+	if err != nil {
+		return err
+	}
+	for _, cfg := range info.IPAM.Config {
+		if cfg.Subnet == wantSubnet {
+			return nil // subnet already matches — nothing to do
+		}
+	}
+	// Subnet mismatch. Refuse to remove a network that still has containers.
+	if len(info.Containers) > 0 {
+		return fmt.Errorf(
+			"network %q has subnet %v but policy wants %s; %d container(s) still attached — "+
+				"drain them first: docker network disconnect %s <container>, then redeploy",
+			name, info.IPAM.Config, wantSubnet, len(info.Containers), name)
+	}
+	log.Printf("wrt: network %q has stale subnet — removing and recreating with %s", name, wantSubnet)
+	if err := d.c.NetworkRemove(ctx, info.ID); err != nil {
+		return fmt.Errorf("remove stale network %q: %w", name, err)
+	}
+	if _, err := d.c.NetworkCreate(ctx, name, create); err != nil {
+		return fmt.Errorf("recreate network %q: %w", name, err)
 	}
 	return nil
 }
@@ -495,4 +588,85 @@ func isAlreadyExistsErr(err error) bool {
 // user requests that try to attach to them directly.
 func IsSystemNetworkName(name string) bool {
 	return name == MeshNetworkName || name == WANNetworkName
+}
+
+// auxAddrsExcluding returns a copy of addrs with any entry whose value equals
+// excludeIP removed. Used to prevent the IPAM gateway IP from appearing in the
+// AuxAddress map — Docker pre-reserves the gateway and returns
+// "Address already in use" if the same IP also appears as an AuxAddress.
+func auxAddrsExcluding(addrs map[string]string, excludeIP string) map[string]string {
+	out := make(map[string]string, len(addrs))
+	for k, v := range addrs {
+		if v != excludeIP {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// subnetFirstHost returns the first usable host IP in a CIDR, i.e. the network
+// address incremented by one. Example: "172.31.252.0/22" → "172.31.252.1".
+// Returns "" on any parse error or if the result falls outside the subnet.
+func subnetFirstHost(cidr string) string {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil || ipnet == nil {
+		return ""
+	}
+	b := ipnet.IP.To4()
+	if b == nil {
+		return ""
+	}
+	ip := make(net.IP, 4)
+	copy(ip, b)
+	for i := 3; i >= 0; i-- {
+		ip[i]++
+		if ip[i] != 0 {
+			break
+		}
+	}
+	if !ipnet.Contains(ip) {
+		return ""
+	}
+	return ip.String()
+}
+
+// removeLegacySystemNetworks deletes platform-labelled networks whose names
+// are no longer the current mesh/WAN names. These are leftovers from earlier
+// mudp versions (pre-rename "mudp-egress", etc.). Because Docker IPAM forbids
+// overlapping subnets, a stale network squatting on the WAN subnet blocks
+// creation of mudp-wrt-wan with "Pool overlaps with other one on this address
+// space" — so we proactively sweep them before creating the current pair.
+//
+// Only networks with no attached containers are removed; a still-connected one
+// is left in place and logged, so the admin can drain and remove it manually
+// rather than us yanking networking out from under a live container.
+func (d *Client) removeLegacySystemNetworks(ctx context.Context) error {
+	nets, err := d.c.NetworkList(ctx, types.NetworkListOptions{})
+	if err != nil {
+		return fmt.Errorf("list networks: %w", err)
+	}
+	for _, n := range nets {
+		// Only touch networks mudp itself owns as platform infrastructure.
+		if n.Labels[SystemLabel] != "true" || n.Labels[ManagedLabel] != "true" {
+			continue
+		}
+		// Skip the current canonical platform networks.
+		if n.Name == MeshNetworkName || n.Name == WANNetworkName {
+			continue
+		}
+		// Never auto-remove a network that still has live containers attached —
+		// that would sever a running container's networking. Log + skip.
+		if len(n.Containers) > 0 {
+			log.Printf("wrt: legacy system network %q still has %d container(s) attached; leaving it in place — remove it manually after draining (docker network rm %s)",
+				n.Name, len(n.Containers), n.Name)
+			continue
+		}
+		if err := d.c.NetworkRemove(ctx, n.ID); err != nil {
+			// Best-effort per-network: log and continue rather than aborting the sweep.
+			log.Printf("wrt: could not remove legacy system network %q: %v", n.Name, err)
+			continue
+		}
+		log.Printf("wrt: removed legacy system network %q (no longer used by this mudp version)", n.Name)
+	}
+	return nil
 }

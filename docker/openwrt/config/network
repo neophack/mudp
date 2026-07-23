@@ -1,0 +1,63 @@
+# /etc/config/network —— 为 mudp docker-compose 双臂路由拓扑定制
+#
+# 拓扑(对应 docker-compose.yml):
+#   openwrt 挂两张独立 docker network,物理上彻底分离,无 VLAN、无 tag:
+#     wan_net (10.210.2.0/24, 普通 bridge, 能出公网) → openwrt 的 WAN 口
+#     lan_net (10.210.1.0/24, Internal:true, 不 NAT/出不了公网) → openwrt 的 LAN 口
+#
+#   业务容器只挂 lan_net,docker 自动把默认网关设为 br-lan=10.210.1.2(openwrt)。
+#
+# ★ ifname 在这里写死:eth0=lan, eth1=wan。
+#   为什么敢写死(实测确认):docker compose 按 services.<svc>.networks 的声明顺序
+#   挂接 veth,本 compose 里 lan_net 在 wan_net 之前声明,故 eth0=lan_net、eth1=wan_net。
+#   MAC 虽每次重建随机,但 eth0/eth1 的命名顺序稳定对应声明序。
+#
+#   为什么不写死会出问题(实测踩坑):若 lan/wan interface 不设 ifname,netifd 启动时
+#   仍会按 sulinggg 镜像默认逻辑去"管理"物理口(把 eth0 拉进默认 br-lan / down 掉),
+#   直接破坏 docker 已配好的 eth0 IP,导致 LAN 网卡 carrier=down、探测脚本读不到 IP。
+#   写死 ifname 后 netifd 按明确归属建 br-lan(只桥 eth0)和起 wan(eth1),互不干扰。
+#
+#   接反的兜底:/etc/uci-defaults/10-mudp-detect-wanlan 用 MAC 做一次校验,
+#   若发现 eth0/eth1 与声明序不一致(未来改 compose 顺序时),自动纠正 uci 并 reload。
+#
+# ★ 语法仍用 18.06 旧语法(不用 config device 块)。
+#   原因:本镜像 LuCI(luci-mod-admin-full git-22.312)不认匿名的 config device
+#   section,会在"接口总览"页面把它当成"未知协议的 interface"渲染。
+#   旧语法直接在 interface section 上用 option type=bridge + option ifname=...,
+#   netifd 自动桥接,LuCI 也能正常显示。
+#
+# 关键技术点:
+#   1. lan 用 type=bridge —— 探测脚本填入 ifname 后,netifd 把它桥成 br-lan 并配 10.210.1.2。
+#   2. LAN 绝不设 gateway —— 默认路由只应由 WAN 提供,否则会和 WAN 抢默认路由。
+#   3. WAN 设 gateway=10.210.2.1(wan_net 的 docker gateway)→ 经宿主出公网。
+
+config interface 'loopback'
+	option ifname 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config globals 'globals'
+
+# ─── LAN = mesh 侧 ──────────────────────────────────────────────────────────
+# br-lan 桥接(物理口由探测脚本在 ifname 填入)。netifd 负责:
+#   1) 建 bridge br-lan,把探测到的 LAN 网卡桥进去
+#   2) 给 br-lan 配 10.210.1.2/24
+# 不设 gateway —— 默认路由只由 WAN 提供。
+config interface 'lan'
+	option type 'bridge'
+	option ifname 'eth0'
+	option proto 'static'
+	option ipaddr '10.210.1.2'
+	option netmask '255.255.255.0'
+
+# ─── WAN = 普通侧 ────────────────────────────────────────────────────────────
+# 物理口 eth1(wan_net)。经 wan_net 的 docker gateway(10.210.2.1)
+# 出公网,firewall zone 做 MASQUERADE NAT。
+config interface 'wan'
+	option ifname 'eth1'
+	option proto 'static'
+	option ipaddr '10.210.2.2'
+	option netmask '255.255.255.0'
+	option gateway '10.210.2.1'
+	option dns '10.210.2.1'

@@ -1,0 +1,64 @@
+#!/bin/sh
+# /etc/uci-defaults/15-mudp-firewall-workarounds
+#
+# procd 首次启动时执行一次,成功后 procd 会自动删除本文件。
+# 编号 > 10,保证在 10-mudp-detect-interfaces(它可能触发 network restart)
+# 之后执行 —— 这样规则插入的是 network 重启后重建的 iptables 规则。
+#
+# 重要:sulinggg/openwrt 镜像基于 OpenWrt 18.06,防火墙是 fw3 + iptables,
+# 没有 nft/fw4!所以这里用 iptables,不能用 nft 命令。
+#
+# 两个修复:
+#
+# 修复 1:LuCI 从 wan 侧访问的兜底放行
+#   Docker 发布端口 18080→80 的流量从 WAN 口进来,经过 zone 分发。
+#   虽然 uci 里配了 allow_luci(rule src=wan tcp dport 80),fw3 会据此生成
+#   zone_wan_input 的放行规则。但若 fw3 reload 时机问题导致规则没生成,
+#   这里直接插一条 iptables ACCEPT 作为兜底。
+#
+# 修复 2:lan→wan 转发兜底
+#   fw3 的 forward 链按 zone 分发,但容器环境下 zone_wan_forward/zone_lan_forward
+#   的匹配有时不可靠(接口名变化)。直接插一条 ACCEPT 保证 LAN 子网能转发到
+#   WAN 口,保证 myapp 能经 openwrt 出网。
+#
+# 修复 3:删除 dnsmasq DNS 劫持(iptables nat 表的 redirect 53 规则)
+
+LAN_SUBNET='10.210.1.0/24'
+# 双臂拓扑:WAN 物理口由 10-mudp-detect-wanlan 按子网探测后写入 network.wan.ifname。
+# 本脚本在 10 号之后执行(procd 按编号顺序),读到的 ifname 已是探测结果。
+# fallback eth0 仅为防御性兜底(探测失败时)。
+WAN_IF=$(uci -q get network.wan.ifname 2>/dev/null)
+[ -z "$WAN_IF" ] && WAN_IF=$(uci -q get network.wan.device 2>/dev/null)
+[ -z "$WAN_IF" ] && WAN_IF='eth0'
+
+# 等 fw3 把 iptables 规则生成好(boot 时由 procd 触发 /etc/init.d/firewall)。
+for i in $(seq 1 15); do
+	iptables -L zone_wan_input >/dev/null 2>&1 && break
+	sleep 1
+done
+
+# 修复 1:LuCI 放行兜底 —— 放行进 WAN 口的 tcp/80(幂等:先删后插)。
+iptables -t filter -D INPUT -i "$WAN_IF" -p tcp --dport 80 -j ACCEPT 2>/dev/null
+iptables -t filter -I INPUT 1 -i "$WAN_IF" -p tcp --dport 80 -j ACCEPT -m comment --comment "mudp-allow-luci"
+
+# 修复 2:lan→wan 转发兜底 —— 来自 LAN 子网、去往 WAN 口的包一律放行。
+iptables -t filter -D FORWARD -s "$LAN_SUBNET" -o "$WAN_IF" -j ACCEPT 2>/dev/null
+iptables -t filter -I FORWARD 1 -s "$LAN_SUBNET" -o "$WAN_IF" -j ACCEPT -m comment --comment "mudp-lan-to-wan"
+iptables -t filter -D FORWARD -d "$LAN_SUBNET" -i "$WAN_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
+iptables -t filter -I FORWARD 2 -d "$LAN_SUBNET" -i "$WAN_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT -m comment --comment "mudp-wan-to-lan-est"
+
+# 修复 3:删 dnsmasq 的 53 端口劫持(nat 表 redirect 规则)。
+# fw3/18.06 的 dnsmasq 可能装了 "重定向所有 53 到本地" 的规则,会导致 DNS 异常。
+DNS_HIJACK_HND=$(iptables -t nat -L PREROUTING --line-numbers -n 2>/dev/null \
+                 | grep -iE 'dpt:53.*REDIRECT|udp dpt:53' | head -1 | awk '{print $1}')
+if [ -n "$DNS_HIJACK_HND" ]; then
+	iptables -t nat -D PREROUTING "$DNS_HIJACK_HND" 2>/dev/null
+fi
+
+# 修复 4:确保 MASQUERADE 作用在正确的 WAN 口(uci 的 wan.masq=1 应已生成,
+# 但若 ifname 被改过,fw3 可能没跟上。兜底插一条)。
+# 先删旧的 mudp masq(幂等),再按当前 WAN_IF 插。
+iptables -t nat -D POSTROUTING -o "$WAN_IF" -j MASQUERADE -m comment --comment "mudp-masq" 2>/dev/null
+iptables -t nat -A POSTROUTING -o "$WAN_IF" -j MASQUERADE -m comment --comment "mudp-masq"
+
+exit 0

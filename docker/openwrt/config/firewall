@@ -1,0 +1,98 @@
+# /etc/config/firewall —— 为容器化网关定制(双臂路由)
+#
+# 拓扑对应 docker-compose.yml:openwrt 挂两张独立 docker network。
+#   wan_net  (10.210.2.0/24, 普通 bridge) → WAN 口(物理口由探测脚本绑定)
+#   lan_net  (10.210.1.0/24, Internal)    → br-lan/LAN(物理口由探测脚本绑定)
+# 下面的 zone/forwarding/rule 都按 network 名(lan/wan)匹配,与具体物理口解耦。
+#
+# 关键修改(vs sulinggg 默认):
+#   1. 关掉 fullcone(容器内核不支持,否则 fw4 reload 失败导致整个 fw4 表不生成)
+#   2. 关掉 flow_offloading/flow_offloading_hw(同上,容器无硬件 offload)
+#   3. 删掉 IPv6 相关规则(容器内不需要 IPv6,且 wan6 接口不存在)
+#   4. 加 lan→wan forwarding(唯一允许的出网路径)
+#   5. 加 LuCI 放行:宿主 18080 → 容器 80,流量从 WAN 口进,需显式放行
+
+config defaults
+	option syn_flood '1'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	# 关掉容器内核不支持的 offload —— 否则 fw4 reload 会 abort,
+	# 整个 inet fw4 表都无法生成,后续 nft insert 规则也会失败。
+	option flow_offloading '0'
+	option flow_offloading_hw '0'
+
+config zone
+	option name 'lan'
+	list   network 'lan'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'ACCEPT'
+
+config zone
+	option name 'wan'
+	list   network 'wan'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	# ★ MASQUERADE 开关:LAN 流量(源 10.210.1.x)NAT 成 WAN 口地址
+	#   (10.210.2.2)后再出 wan_net,否则宿主 docker bridge 因源 IP 陌生而拒收。
+	option masq '1'
+	option mtu_fix '1'
+
+# 允许 lan -> wan 转发(VLAN10 LAN 上容器的唯一出网路径)
+config forwarding
+	option src 'lan'
+	option dest 'wan'
+
+# DROP lan -> RFC1918 / loopback,防止 LAN 容器探测宿主/物理网/其它 docker bridge。
+# 注意:这些 dest IP 与 wan_net(10.210.2.0/24)的网关路径不冲突 —— wan_net 的
+# 网关 10.210.2.1 在 10.0.0.0/8 内,但本规则只匹配 lan→wan 的目的 IP,
+# 而出网流量经 NAT 后目的 IP 是公网,不会被这些规则命中。
+config rule
+	option name 'Drop-LAN-to-RFC1918-10'
+	option src 'lan'
+	option dest 'wan'
+	option dest_ip '10.0.0.0/8'
+	option target 'DROP'
+
+config rule
+	option name 'Drop-LAN-to-RFC1918-172'
+	option src 'lan'
+	option dest 'wan'
+	option dest_ip '172.16.0.0/12'
+	option target 'DROP'
+
+config rule
+	option name 'Drop-LAN-to-RFC1918-192'
+	option src 'lan'
+	option dest 'wan'
+	option dest_ip '192.168.0.0/16'
+	option target 'DROP'
+
+config rule
+	option name 'Drop-LAN-to-linklocal'
+	option src 'lan'
+	option dest 'wan'
+	option dest_ip '169.254.0.0/16'
+	option target 'DROP'
+
+config rule
+	option name 'Drop-LAN-to-loopback'
+	option src 'lan'
+	option dest 'wan'
+	option dest_ip '127.0.0.0/8'
+	option target 'DROP'
+
+# 放行 LuCI:宿主 18080 → 容器 80。Docker 发布端口的流量从 WAN 口进,
+# wan zone 默认 input=REJECT,必须显式放行 tcp/80 否则 LuCI 不可达。
+config rule
+	option name 'Allow-LuCI'
+	option src 'wan'
+	option proto 'tcp'
+	option dest_port '80'
+	option target 'ACCEPT'
+
+# 用户自定义 iptables/nftables 规则的 include 文件
+config include
+	option path '/etc/firewall.user'

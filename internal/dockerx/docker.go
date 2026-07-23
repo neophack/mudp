@@ -488,8 +488,8 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		// Force-drop NET_ADMIN/NET_RAW so a tenant cannot rewrite iptables inside
 		// their container to bypass the egress isolation enforced by the gateway.
 		// Applied on top of whatever the user requested (we append, never grant).
-		CapDrop:  appendUniqueCap(opts.CapDrop, "NET_ADMIN", "NET_RAW"),
-		Sysctls:  opts.Sysctls,
+		CapDrop: appendUniqueCap(opts.CapDrop, "NET_ADMIN", "NET_RAW"),
+		Sysctls: opts.Sysctls,
 	}
 	// Resource limits. NanoCPUs/Memory are only set when positive so a zero
 	// value keeps the image/host default (no cgroup limit).
@@ -586,6 +586,18 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	if err := d.c.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		_ = d.c.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return "", err
+	}
+	// Auto-route mesh containers through WRT: if the container is on mudp-mesh,
+	// replace its default gateway from the bridge (.1) to WRT (.2) so all traffic
+	// transits the WRT gateway. This is a privileged exec — best-effort, silent on
+	// failure (the container still has internet via the bridge masquerade).
+	if opts.AttachDefaultLAN {
+		for _, n := range resolvedNetworks {
+			if n == MeshNetworkName {
+				_, _ = d.execPrivileged(ctx, resp.ID, []string{"ip", "route", "replace", "default", "via", WRTMeshIP})
+				break
+			}
+		}
 	}
 	emit("done", "Container created")
 	return resp.ID, nil
@@ -949,7 +961,7 @@ func (d *Client) memoryMB(ctx context.Context, id string) (float64, error) {
 	defer resp.Body.Close()
 	var s struct {
 		MemoryStats struct {
-			Usage uint64 `json:"usage"`
+			Usage uint64            `json:"usage"`
 			Stats memoryStatsDetail `json:"stats"`
 		} `json:"memory_stats"`
 	}
@@ -1236,6 +1248,13 @@ func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username s
 		Mounts:        mounts,
 		Networks:      networks,
 		RestartPolicy: info.RestartPolicy,
+		// mudp-mesh was dropped from `networks` above (it's a platform network),
+		// so re-inject it as the primary endpoint and run the post-start WRT
+		// auto-route fallback — matching the normal create flow, where
+		// server.validateCreate defaults AttachDefaultLAN=true (every container is
+		// isolated behind the gateway unless the user explicitly opts out). Without
+		// this the duplicate would have no default route through the gateway.
+		AttachDefaultLAN: true,
 	}
 	// Duplicate does not auto-start; CreateContainer always starts, so create
 	// the container then stop it immediately to match Portainer's behavior.
@@ -1357,6 +1376,10 @@ func pickShell(ctx context.Context, c client.APIClient, id string) string {
 		{"/usr/bin/bash", "/usr/bin/bash"},
 		{"/bin/zsh", "/bin/zsh"},
 		{"/usr/bin/zsh", "/usr/bin/zsh"},
+		// /bin/ash: busybox's shell, native to OpenWrt/ImmortalWrt and Alpine.
+		// Detected explicitly so those images get their real shell rather than
+		// falling through to /bin/sh (which is usually an ash symlink anyway).
+		{"/bin/ash", "/bin/ash"},
 	} {
 		check, err := c.ContainerExecCreate(ctx, id, types.ExecConfig{
 			AttachStdout: true,

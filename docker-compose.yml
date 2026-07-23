@@ -1,0 +1,90 @@
+# 双臂路由拓扑:openwrt 挂两张 docker network,物理上彻底分离 WAN/LAN:
+#   wan_net  = 普通 bridge(10.210.2.0/24,能经宿主出公网)→ openwrt 的 WAN 口
+#   lan_net  = Internal bridge(10.210.1.0/24,docker 不给它做 NAT、也连不通宿主)→ openwrt 的 LAN 口
+#
+# 与单臂相比,关键好处:
+#   - 不需要 802.1Q VLAN、不需要 vlan_filtering、不需要每次 compose up 后跑 patch 脚本。
+#   - 业务容器只需挂 lan_net,默认网关自动经 openwrt 出网,不再需要容器内
+#     `ip link add eth0.10 / 改路由 / 改 DNS` —— 业务侧零配置。
+#   - WAN/LAN 由独立网络隔离,不存在 tag 配反的风险。
+#
+# WAN/LAN 接反怎么办(docker 不保证网卡顺序):
+#   openwrt 镜像内置 /etc/uci-defaults/10-mudp-detect-wanlan 探测脚本,procd 首次启动时
+#   按子网判定:能拿到 10.210.2.x 的网卡即 WAN,10.210.1.x 即 LAN,再动态写 UCI。
+#   判据鲁棒:只看"哪张网卡在哪个网段",与 eth0/eth1 命名顺序无关。
+#
+# ★ IP 约定(避免 IP 冲突 —— 关键!):
+#   docker 给每个 bridge 网络的 IPAM gateway(占 .1)配在宿主侧 bridge 接口上。
+#   所以 openwrt 容器不能在容器里占用 .1。做法与 mudp 平台 wrt.go 一致:
+#     - lan_net gateway = 10.210.1.1(docker bridge 占,宿主侧)
+#     - openwrt 容器在 lan_net 上让 docker 自动分配一个 pool IP(此处不写 ipv4_address),
+#       容器内 netifd 再用 UCI 把 br-lan 配成 10.210.1.2(见 config/network)。
+#     - 探测脚本靠 10.210.1.x 前缀认 LAN,pool IP 必在此前缀内,判定有效。
+#   WAN 侧同理:wan_net gateway = 10.210.2.1,openwrt WAN 口用 10.210.2.2。
+#
+# 前置条件:无需任何外部网络,两个 bridge 都由 compose 自动创建。
+# openwrt 镜像用本地构建(烧入了双臂配置 + 探测脚本),首次需 `docker compose build openwrt`。
+
+services:
+  openwrt:
+    build:
+      context: ./docker/openwrt
+    image: mudp/openwrt:dual-arm
+    container_name: openwrt
+
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    restart: unless-stopped
+
+    ports:
+      - "18080:80"
+
+    networks:
+      wan_net:
+        ipv4_address: 10.210.2.2     # WAN:固定,经宿主 docker bridge 出公网
+      lan_net: {}                    # LAN:docker 自动分配 pool IP;容器内 br-lan=10.210.1.2
+
+  myapp:
+    image: nicolaka/netshoot
+    container_name: myapp
+
+    depends_on:
+      - openwrt
+
+    # 双臂拓扑下,业务容器不需要 NET_ADMIN(不再 ip link/改路由)。
+    networks:
+      lan_net:
+        ipv4_address: 10.210.1.10    # 只挂 LAN,默认网关自动 = 10.210.1.2(openwrt)
+
+    command: >
+      sh -c "
+      echo '=== myapp on LAN (双臂, 自动经 openwrt 出网) ===' &&
+      ip route show default &&
+      echo '=== DNS + ping domain (DNS 由 openwrt dnsmasq 提供) ===' &&
+      nslookup www.baidu.com 10.210.1.2 &&
+      ping -c 3 www.baidu.com &&
+      echo '=== ALL TESTS PASSED ===' && sleep 3600
+      "
+
+networks:
+  wan_net:
+    # 普通 bridge:docker 会给它做 NAT/出公网,作为 openwrt 的 WAN 侧。
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.210.2.0/24
+          gateway: 10.210.2.1
+
+  lan_net:
+    # ★ Internal:true —— docker 不给此网络做 NAT,也没有通往宿主/其它 bridge 的路径。
+    #   唯一的出口是 openwrt(WAN 侧经 NAT 出公网,firewall DROP 到私网网段)。
+    #   这就是"业务容器出公网但访问不到内网/宿主"隔离效果的本质。
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.210.1.0/24
+          gateway: 10.210.1.1     # docker bridge 占此 IP(宿主侧);openwrt br-lan 用 10.210.1.2

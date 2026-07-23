@@ -2,8 +2,9 @@
 // namespaced per user; the WRT (ImmortalWrt) gateway is the platform router
 // that NATs user containers on mudp-mesh out to the public Internet.
 
-import { state, api, toast, refreshSection, renderView, canMutate, isAdmin, t } from "../app.js";
-import { showModal, closeModal } from "./ui.js";
+import { state, api, toast, refreshSection, renderView, canMutate, isAdmin, t, readCSRFCookie } from "../app.js";
+import { showModal, closeModal, readSSE } from "./ui.js";
+import { registerJob } from "./jobs.js";
 import { openNetworkDetail } from "./network_details.js";
 
 export function renderNetworks() {
@@ -31,6 +32,8 @@ export function renderNetworks() {
   if (nb) nb.onclick = openCreateNetwork;
   const cfg = $("#wrtConfigBtn");
   if (cfg) cfg.onclick = openWrtConfig;
+  const dep = $("#wrtDeployBtn");
+  if (dep) dep.onclick = deployWrt;
   document.querySelectorAll("[data-net-inspect]").forEach((btn) => {
     btn.onclick = () => openNetworkDetail(btn.dataset.netFullname, btn.dataset.netName);
   });
@@ -46,6 +49,22 @@ export function renderNetworks() {
 // a modal with the full LAN/WAN/image/enabled form (POST /api/wrt). The gateway
 // container itself also shows up read-only in the admin container list.
 
+// luciLine renders the LuCI web-admin row for the WRT status card. When a host
+// port is configured and the gateway is up, it links to the live LuCI URL;
+// otherwise it shows the configured port or "—" when publishing is off.
+function luciLine(s) {
+  const port = Number(s.luciHostPort || 0);
+  if (!port) {
+    return `<div><div class="secondary-line">LuCI Web 管理面板</div><div class="primary-line">未发布 / not published</div></div>`;
+  }
+  const label = `:${port}`;
+  if (s.gatewayRunning) {
+    const url = `${location.protocol}//${location.hostname}:${port}`;
+    return `<div><div class="secondary-line">LuCI Web 管理面板</div><div class="primary-line"><a href="${escapeHtml(url)}" target="_blank" rel="noopener">打开 LuCI ${escapeHtml(label)}</a></div></div>`;
+  }
+  return `<div><div class="secondary-line">LuCI Web 管理面板</div><div class="primary-line mono">${escapeHtml(label)} <span class="hint">(网关未运行)</span></div></div>`;
+}
+
 function wrtGatewayCard(s) {
   if (!s.loaded) {
     return `<div class="card"><div class="card-head"><h2>WRT 网关 / ImmortalWrt Gateway</h2></div><div class="card-body"><p class="hint">Loading…</p></div></div>`;
@@ -57,7 +76,8 @@ function wrtGatewayCard(s) {
     ? `<p class="hint">用户容器经此网关出公网，DROP 目的为 RFC1918/回环/docker 网桥的流量。镜像缺失时 mudp 会自动拉取（首次启动可能耗时几分钟）。</p>`
     : `<p class="hint">⚠️ 网关未运行 — mudp-mesh 上的容器会被 LAN 隔离但无外网。请先 pull <code>hkbase/immortalwrt:latest</code> 再点配置启用。</p>`;
   return `<div class="card"><div class="card-head"><h2>WRT 网关 / ImmortalWrt Gateway</h2>` +
-      `<button class="primary" id="wrtConfigBtn">配置 WRT 网关 / Configure</button>` +
+      `<button class="primary" id="wrtDeployBtn">一键部署 / Deploy</button>` +
+      `<button class="ghost" id="wrtConfigBtn">配置 / Configure</button>` +
     `</div>` +
     `<div class="card-body">` +
       `<div class="kv">` +
@@ -65,6 +85,7 @@ function wrtGatewayCard(s) {
         `<div><div class="secondary-line">Image</div><div class="primary-line mono">${escapeHtml(s.gatewayImage || s.image || "—")}</div></div>` +
         `<div><div class="secondary-line">LAN (mudp-mesh)</div><div class="primary-line mono">${escapeHtml(s.lanSubnet || "—")} · gw ${escapeHtml(s.lanGateway || "—")}</div></div>` +
         `<div><div class="secondary-line">WAN (mudp-wrt-wan)</div><div class="primary-line mono">${escapeHtml(s.wanSubnet || "—")} · gw ${escapeHtml(s.wanGateway || "—")}</div></div>` +
+        luciLine(s) +
         `<div><div class="secondary-line">Containers on LAN</div><div class="primary-line">${s.meshContainers || 0}</div></div>` +
       `</div>` +
       hint +
@@ -92,11 +113,14 @@ function openWrtConfig() {
         `<label>LAN 网关 IP / Gateway IP (wrt 的 LAN 地址)</label>` +
         `<input name="lanGateway" placeholder="172.31.252.2" value="${escapeHtml(s.lanGateway || "")}">` +
         `<label>WAN (mudp-wrt-wan) 子网 / Subnet</label>` +
-        `<input name="wanSubnet" placeholder="172.31.248.0/22" value="${escapeHtml(s.wanSubnet || "")}">` +
+        `<input name="wanSubnet" placeholder="172.31.240.0/22" value="${escapeHtml(s.wanSubnet || "")}">` +
         `<label>WAN 网关 / WAN next hop (mudp-wrt-wan 桥网关)</label>` +
-        `<input name="wanGateway" placeholder="172.31.248.1" value="${escapeHtml(s.wanGateway || "")}">` +
+        `<input name="wanGateway" placeholder="172.31.240.1" value="${escapeHtml(s.wanGateway || "")}">` +
         `<label>WAN IP (wrt 的 WAN 地址)</label>` +
-        `<input name="wanIp" placeholder="172.31.248.2" value="${escapeHtml(s.wanIp || "")}">` +
+        `<input name="wanIp" placeholder="172.31.240.2" value="${escapeHtml(s.wanIp || "")}">` +
+        `<label>LuCI 网页管理端口 / Web admin host port</label>` +
+        `<input name="luciHostPort" type="number" min="0" max="65535" placeholder="18080（0=不发布）" value="${escapeHtml(String(s.luciHostPort ?? 18080))}">` +
+        `<p class="hint">把网关内置的 LuCI 网页管理（容器内 80 端口）映射到宿主机端口，访问 <code>http://宿主机IP:端口</code>。填 <code>0</code> 关闭。改端口需重建网关（点一键部署）。</p>` +
         `<p class="hint">⚠️ 子网变更不会立即生效：Docker 网络 IPAM 创建后不可变。改子网/网关后需在宿主机执行 <code>docker network rm mudp-mesh mudp-wrt-wan</code> 再重启 mudp。</p>` +
       `</form>`,
     foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="wrtSubmit">Save</button>`,
@@ -112,6 +136,7 @@ function openWrtConfig() {
       wanSubnet: String(fd.get("wanSubnet") || "").trim(),
       wanGateway: String(fd.get("wanGateway") || "").trim(),
       wanIp: String(fd.get("wanIp") || "").trim(),
+      luciHostPort: Number(fd.get("luciHostPort") || 0),
     };
     try {
       await api("/api/wrt", { method: "POST", body: JSON.stringify(payload) });
@@ -123,6 +148,106 @@ function openWrtConfig() {
       toast(err.message);
     }
   };
+}
+
+// deployWrt opens a one-click deploy modal and streams the force-rebuild
+// progress over SSE: remove existing mudp-wrt → pull image → create + start →
+// apply UCI config. Uses the current policy; change it via "配置 / Configure"
+// first. Mirrors the image-pull progress modal (registerJob + readSSE).
+function deployWrt() {
+  const s = state.wrt || {};
+  if (!confirm("一键部署将强制重建 mudp-wrt 容器（停+删旧容器、重新拉取镜像、新建、重配 UCI）。部署期间网关会短暂中断（mudp-mesh 上的容器暂时无外网）。继续？")) {
+    return;
+  }
+  state.wrtDeploy = { active: true, logs: `One-click deploy (${s.image || "hkbase/immortalwrt:latest"})...\n`, error: "" };
+  showModal({
+    kind: "wrt-deploy",
+    title: "一键部署 WRT 网关 / Deploy",
+    body:
+      `<p class="hint">强制重建 <code>mudp-wrt</code>：拉镜像 → 建容器 → 注入 UCI。镜像缺失时自动拉取，可能耗时几分钟。</p>` +
+      `<pre class="log-output" style="max-height:340px;overflow:auto;background:var(--bg-elevated,#111);padding:.6rem;border-radius:6px;white-space:pre-wrap;">${escapeHtml(state.wrtDeploy.logs)}</pre>`,
+    foot: `<button class="ghost" data-close>Close</button>`,
+  });
+  streamWrtDeploy();
+}
+
+function renderWrtDeployProgress() {
+  const log = document.querySelector(".modal-body .log-output");
+  if (log) {
+    log.textContent = state.wrtDeploy.logs;
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+// streamWrtDeploy POSTs /api/wrt/deploy with Accept: text/event-stream and
+// consumes the progress/error/done events. Registers as a background job so the
+// admin can navigate away and still see status in the jobs panel.
+async function streamWrtDeploy() {
+  const job = registerJob({ kind: "wrt.deploy", name: "mudp-wrt" });
+  try {
+    const res = await fetch("/api/wrt/deploy", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": readCSRFCookie() || state.csrfToken || "" },
+      signal: job.signal,
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      state.wrtDeploy.error = data.error || `Request failed (${res.status})`;
+      state.wrtDeploy.active = false;
+      state.wrtDeploy.logs += `[error] ${state.wrtDeploy.error}\n`;
+      job.error(state.wrtDeploy.error);
+      renderWrtDeployProgress();
+      toast(state.wrtDeploy.error);
+      return;
+    }
+    await readSSE(res, (event, data) => {
+      if (event === "progress") {
+        const line = data.message || "";
+        state.wrtDeploy.logs += line + "\n";
+        job.log(line);
+        renderWrtDeployProgress();
+      } else if (event === "error") {
+        state.wrtDeploy.error = data.message || "Deploy failed";
+        state.wrtDeploy.logs += `[error] ${state.wrtDeploy.error}\n`;
+        state.wrtDeploy.active = false;
+        job.error(state.wrtDeploy.error);
+        renderWrtDeployProgress();
+        toast(state.wrtDeploy.error);
+      } else if (event === "done") {
+        state.wrtDeploy.active = false;
+        state.wrtDeploy.logs += `[done] Gateway deployed (${data.image || ""}).\n`;
+        job.done("WRT gateway deployed");
+        renderWrtDeployProgress();
+        toast("WRT gateway deployed", true);
+        // Refresh the card + the admin container list so the new wrt row shows.
+        state.wrt.loaded = false;
+        loadWrt();
+        refreshSection("containers").then(() => renderView());
+        // Auto-open LuCI Web 管理面板 after deploy.
+        const luciPort = Number((state.wrt || {}).luciHostPort || 18080);
+        if (luciPort > 0) {
+          const luciUrl = `${location.protocol}//${location.hostname}:${luciPort}`;
+          state.wrtDeploy.logs += `[info] Opening LuCI at ${luciUrl}\n`;
+          renderWrtDeployProgress();
+          setTimeout(() => { window.open(luciUrl, "_blank", "noopener"); }, 1500);
+        }
+        setTimeout(() => closeModal(), 1200);
+      }
+    });
+  } catch (err) {
+    state.wrtDeploy.active = false;
+    if (job.signal.aborted) {
+      state.wrtDeploy.logs += "[cancelled]\n";
+      job.cancel();
+    } else {
+      state.wrtDeploy.error = err.message || String(err);
+      state.wrtDeploy.logs += `[error] ${state.wrtDeploy.error}\n`;
+      job.error(state.wrtDeploy.error);
+      toast(state.wrtDeploy.error);
+    }
+    renderWrtDeployProgress();
+  }
 }
 
 // loadWrt fetches the WRT gateway policy + live status into state.wrt.
@@ -142,6 +267,7 @@ export async function loadWrt() {
       wanSubnet: data.wanSubnet || "",
       wanGateway: data.wanGateway || "",
       wanIp: data.wanIp || "",
+      luciHostPort: Number(data.luciHostPort || 0),
       gatewayRunning: !!data.gatewayRunning,
       gatewayImage: data.gatewayImage || "",
       gatewayContainer: data.gatewayContainer || "",

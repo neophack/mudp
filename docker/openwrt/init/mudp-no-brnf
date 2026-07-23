@@ -1,0 +1,46 @@
+#!/bin/sh /etc/rc.common
+# /etc/init.d/mudp-no-brnf
+#
+# 每次 boot 时卸载 br_netfilter 内核模块。
+#
+# 为什么不用 uci-defaults(只执行一次):uci-defaults 在首次 boot 后会被 procd
+# 自动删除,后续 docker restart 不会重新执行。而 br_netfilter 会在每次网络栈
+# 初始化时随 bridge 模块重新加载,必须每次启动都卸载。故用 procd init 脚本。
+#
+# 为什么需要它(根因):见 /etc/modprobe.d/mudp-blacklist-br_netfilter.conf。
+# br_netfilter(bridge-nf-call-iptables=1)把容器内 br-lan 桥的二层帧拉进
+# iptables,导致经 openwrt 三层转发的包因 iifname 不匹配(mudp 的包物理上从
+# eth0.10 进桥,而 fw3 zone 规则匹配 br-lan)而进不了 FORWARD 链 → VLAN10 LAN
+# 上的容器 ping 网关通,但 ping 公网全部超时。卸载后转发恢复正常。
+#
+# 启动顺序:START=99,排在所有服务之后,确保 netifd/fw3/bridge 都就绪后再卸载。
+# USE_PROCD=1:走 procd 标准服务框架,boot 时由 procd 自动调用 start_service。
+
+START=99
+USE_PROCD=1
+
+# procd 服务:一次性任务,启动后立即"退出"。
+# boot 时 procd 调用本函数。它负责卸载 br_netfilter。
+start_service() {
+	# 等待 br-lan 就绪(说明 bridge 模块已加载、网络栈已初始化)。
+	for i in $(seq 1 15); do
+		[ -d /sys/class/net/br-lan ] && break
+		sleep 1
+	done
+
+	# 先关掉 bridge-nf 调用开关(降低卸载瞬间的影响),再卸载模块。
+	# 这些 sysctl 文件由 br_netfilter 模块创建,模块卸载后自动消失。
+	echo 0 > /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null
+	echo 0 > /proc/sys/net/bridge/bridge-nf-call-arptables 2>/dev/null
+	echo 0 > /proc/sys/net/bridge/bridge-nf-call-ip6tables 2>/dev/null
+
+	# 卸载 br_netfilter。bridge 对它是弱依赖(rmmod br_netfilter 不影响 bridge)。
+	# 失败通常因引用计数 > 0,稍等重试一次。
+	if rmmod br_netfilter 2>/dev/null; then
+		logger -t mudp-no-brnf "br_netfilter unloaded"
+	else
+		sleep 2
+		rmmod br_netfilter 2>/dev/null && logger -t mudp-no-brnf "br_netfilter unloaded (retry)" \
+			|| logger -t mudp-no-brnf "WARN: br_netfilter still loaded"
+	fi
+}

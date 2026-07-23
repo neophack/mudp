@@ -2,6 +2,7 @@ package dockerx
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -26,22 +27,41 @@ var ErrWRTImageMissing = fmt.Errorf(
 // then keeps that image available on every boot. Pull failures degrade to "no
 // outbound Internet" (LAN/host isolation still holds) — they never block boot.
 //
-// imageRef is policy-driven (default DefaultWRTImage).
+// imageRef is policy-driven (default DefaultWRTImage). Boot path — no progress.
 func (d *Client) ensureWRTImage(ctx context.Context, imageRef string) error {
+	return d.ensureWRTImageWithProgress(ctx, imageRef, nil)
+}
+
+// ensureWRTImageWithProgress is the progress-reporting form used by the one-click
+// deploy handler: each pull status line is formatted and forwarded to progress
+// (nil progress = silent, used at boot). Returns ErrWRTImageMissing on pull
+// failure so callers can distinguish "image not pullable" from other errors.
+func (d *Client) ensureWRTImageWithProgress(ctx context.Context, imageRef string, progress func(line string)) error {
 	if imageRef == "" {
 		imageRef = DefaultWRTImage
 	}
 	if d.imageExistsLocally(ctx, imageRef) {
+		if progress != nil {
+			progress(fmt.Sprintf("Image %s already present locally.", imageRef))
+		}
 		return nil
 	}
 	// Auto-pull the gateway image. This is a public ImmortalWrt image by default;
 	// if the admin pointed policy.Image at a private registry they should configure
 	// registry creds via the Images page first (we pull anonymously here).
-	log.Printf("wrt: image %q not present locally; auto-pulling from registry", imageRef)
-	if err := d.pullImageLogged(ctx, imageRef); err != nil {
+	if progress == nil {
+		log.Printf("wrt: image %q not present locally; auto-pulling from registry", imageRef)
+	} else {
+		progress(fmt.Sprintf("Pulling image %s from registry...", imageRef))
+	}
+	if err := d.pullImageStream(ctx, imageRef, progress); err != nil {
 		return fmt.Errorf("%w (image: %s, pull error: %v)", ErrWRTImageMissing, imageRef, err)
 	}
-	log.Printf("wrt: image %q pulled successfully", imageRef)
+	if progress == nil {
+		log.Printf("wrt: image %q pulled successfully", imageRef)
+	} else {
+		progress(fmt.Sprintf("Image %s pulled successfully.", imageRef))
+	}
 	return nil
 }
 
@@ -64,21 +84,43 @@ func (d *Client) imageExistsLocally(ctx context.Context, imageRef string) bool {
 	return false
 }
 
-// pullImageLogged pulls imageRef, draining the JSON-stream response the Docker
-// API emits (required even when you don't care about progress — otherwise the
-// pull can hang). Errors are surfaced to the caller; per-layer progress lines
-// are logged at debug-equivalent verbosity (one summary line).
-func (d *Client) pullImageLogged(ctx context.Context, imageRef string) error {
+// pullImageStream pulls imageRef, parsing the JSON-stream response the Docker
+// API emits. Each status line is formatted via formatPullLine and forwarded to
+// progress (when non-nil); the stream is always drained to EOF so the pull
+// completes. Used by both the silent boot path and the progress-reporting
+// one-click deploy.
+func (d *Client) pullImageStream(ctx context.Context, imageRef string, progress func(line string)) error {
 	rc, err := d.c.ImagePull(ctx, imageRef, types.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("image pull start: %w", err)
 	}
 	defer rc.Close()
-	// Drain the stream. We don't parse every status line, but we must read to
-	// EOF so the pull completes; the Docker daemon only finishes the pull once
-	// the response stream is fully consumed.
-	if _, err := io.Copy(io.Discard, rc); err != nil {
-		return fmt.Errorf("image pull stream: %w", err)
+	dec := json.NewDecoder(rc)
+	for {
+		var msg struct {
+			Status         string `json:"status"`
+			ID             string `json:"id"`
+			Progress       string `json:"progress"`
+			ProgressDetail struct {
+				Current int64 `json:"current"`
+				Total   int64 `json:"total"`
+			} `json:"progressDetail"`
+			Error string `json:"error"`
+		}
+		if err := dec.Decode(&msg); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			if err == context.Canceled {
+				return err
+			}
+			return fmt.Errorf("image pull stream: %w", err)
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("pull error: %s", msg.Error)
+		}
+		if progress != nil {
+			progress(formatPullLine(msg.Status, msg.ID, msg.Progress, msg.ProgressDetail.Current, msg.ProgressDetail.Total))
+		}
 	}
-	return nil
 }

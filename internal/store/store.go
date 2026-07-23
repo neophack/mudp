@@ -362,8 +362,8 @@ func migrateAddGroupLanguage(db executor) error {
 
 // migrateAddAuditIP adds an optional client-IP column to audit_logs so login
 // success/failure and other audited actions carry the originating IP. Old rows
-// backfill to '' and remain valid; the new AuditWithIP writes the column while
-// the legacy Audit() continues to work (writing '').
+// backfill to ” and remain valid; the new AuditWithIP writes the column while
+// the legacy Audit() continues to work (writing ”).
 func migrateAddAuditIP(db executor) error {
 	return execIgnoring(db, `alter table audit_logs add column ip text not null default ''`, sqliteDuplicateColumn)
 }
@@ -1472,6 +1472,11 @@ type WRTPolicy struct {
 	WANSubnet  string `json:"wanSubnet"`
 	WANGateway string `json:"wanGateway"` // the mudp-wrt-wan bridge gateway (next hop)
 	WANIP      string `json:"wanIp"`      // the gateway's IP on the WAN
+	// LuCIHostPort is the host port the gateway's web admin (LuCI, container
+	// port 80) is published on, so the admin can reach the ImmortalWrt UI at
+	// http://<host>:<LuCIHostPort>. 0 = do not publish LuCI. The gateway is a
+	// system container, so this is a fixed host port (not the per-user range).
+	LuCIHostPort int `json:"luciHostPort"`
 }
 
 // DefaultWRTPolicy returns the policy used when nothing is stored yet (a fresh
@@ -1479,13 +1484,14 @@ type WRTPolicy struct {
 // unchanged on upgrade.
 func DefaultWRTPolicy() WRTPolicy {
 	return WRTPolicy{
-		Enabled:    true,
-		Image:      "hkbase/immortalwrt:latest",
-		LANSubnet:  "172.31.252.0/22",
-		LANGateway: "172.31.252.2",
-		WANSubnet:  "172.31.248.0/22",
-		WANGateway: "172.31.248.1",
-		WANIP:      "172.31.248.2",
+		Enabled:      true,
+		Image:        "hkbase/immortalwrt:latest",
+		LANSubnet:    "172.31.252.0/22",
+		LANGateway:   "172.31.252.2",
+		WANSubnet:    "172.31.240.0/22",
+		WANGateway:   "172.31.240.1",
+		WANIP:        "172.31.240.2",
+		LuCIHostPort: 18080,
 	}
 }
 
@@ -1537,6 +1543,9 @@ func (db *DB) WRTPolicy() (WRTPolicy, error) {
 	}
 	if p.WANIP == "" {
 		p.WANIP = def.WANIP
+	}
+	if p.LuCIHostPort == 0 {
+		p.LuCIHostPort = def.LuCIHostPort
 	}
 	return p, nil
 }

@@ -1,0 +1,80 @@
+#!/bin/sh
+# /etc/uci-defaults/10-mudp-detect-wanlan
+#
+# 双臂路由:校验/纠正 WAN/LAN 物理口绑定。procd 首次启动跑一次,成功后自动删除。
+#
+# 设计前提:
+#   /etc/config/network 里已写死 lan.ifname=eth0、wan.ifname=eth1(对齐 compose 里
+#   lan_net 先于 wan_net 声明的顺序 —— docker 按声明序挂 veth,eth0=lan_net、eth1=wan_net)。
+#   本脚本只做"校验 + 兜底纠正":万一未来有人调了 compose 的 networks 顺序导致 eth0/eth1
+#   与网络归属不一致,这里按"哪张网卡的 IP 在哪个子网"重新指认并写回 uci、reload。
+#
+# 为什么用子网判据(而非固定写死就完事):
+#   固定写死在当前 compose 下成立,但不具备自愈能力。本脚本让"接反了"也能被自动修正,
+#   而正常情况下它是 no-op(校验通过,不改任何东西)。
+#
+# 健壮性要点(踩坑总结):
+#   - 不用 set -eu:uci-defaults 脚本里任何一条非 0 返回都会让 procd 当作失败/提前退出,
+#     而探测中很多命令(读不存在的网卡、uci -q miss)本就会返回非 0。全程显式判空。
+#   - 不依赖 netifd 配好后的网卡 IP:netifd 启动时序与 uci-defaults 有竞争,读到的 IP 可能
+#     还没就绪。本脚本在每个判定点都做"读到才算,读不到就跳过",最终以"校验通过即 no-op"
+#     为正常路径。
+#   - ifreload 在本镜像不存在,用 ifup lan/ifup wan 兜底;若都已正确则无需 reload。
+
+# 子网前缀(与 docker-compose.yml 的 ipam 一致)
+LAN_PREFIX='10.210.1.'
+WAN_PREFIX='10.210.2.'
+
+log() { logger -t mudp-detect "$*"; }
+
+# 取一张网卡的 IPv4 地址(无则空串)。多重兜底:ip 命令 / /proc 自行解析。
+get_ipv4() {
+	iface="$1"
+	addr=$(ip -4 -o addr show dev "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+	[ -n "$addr" ] && { echo "$addr"; return; }
+	# fallback: 从 /sys 读不到 IP,返回空
+	echo ""
+}
+
+log "start: WAN/LAN iface verification"
+
+# 等两张物理网卡出现(容器进程启动时 docker 已挂好,通常立即可见)。
+lan_if=''; wan_if=''
+for i in 1 2 3 4 5; do
+	for iface in $(ls /sys/class/net/ 2>/dev/null | grep -E '^eth[0-9]+$'); do
+		ipaddr=$(get_ipv4 "$iface")
+		[ -z "$ipaddr" ] && continue
+		case "$ipaddr" in
+			"$LAN_PREFIX"*) lan_if="$iface"; log "  $iface ($ipaddr) -> LAN";;
+			"$WAN_PREFIX"*) wan_if="$iface"; log "  $iface ($ipaddr) -> WAN";;
+		esac
+	done
+	[ -n "$lan_if" ] && [ -n "$wan_if" ] && break
+	sleep 1
+done
+
+# 若此刻读不到 IP(netifd 尚未配好),不纠正 —— 相信写死的 ifname(netifd 会按它配)。
+if [ -z "$lan_if" ] || [ -z "$wan_if" ]; then
+	log "IP 未就绪(lan=$lan_if wan=$wan_if),信任写死 ifname(eth0/eth1),不纠正"
+	exit 0
+fi
+
+# 校验:写死的是 eth0=lan、eth1=wan。若探测结果一致,no-op。
+cur_lan=$(uci -q get network.lan.ifname)
+cur_wan=$(uci -q get network.wan.ifname)
+log "uci 现值: lan.ifname=$cur_lan wan.ifname=$cur_wan | 探测: lan=$lan_if wan=$wan_if"
+
+if [ "$cur_lan" = "$lan_if" ] && [ "$cur_wan" = "$wan_if" ]; then
+	log "校验通过,无需纠正"
+	exit 0
+fi
+
+# 纠正:写回探测结果并 reload。
+log "检测到不一致,纠正: lan=$lan_if wan=$wan_if"
+uci set network.lan.ifname="$lan_if"
+uci set network.wan.ifname="$wan_if"
+uci commit network
+ifup lan 2>/dev/null || true
+ifup wan 2>/dev/null || true
+log "纠正完成"
+exit 0

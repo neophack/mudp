@@ -405,6 +405,9 @@ func (a *App) Routes() http.Handler {
 	// the mesh/WAN networks and gateway container. Surfaced on the Networks page.
 	r.Get("/api/wrt", a.wrtSettings)
 	r.Post("/api/wrt", a.wrtSettings)
+	// WRT one-click deploy: force-rebuild the gateway (pull + create + UCI) with
+	// SSE progress streaming. Uses the current policy; change it via POST /api/wrt.
+	r.Post("/api/wrt/deploy", a.wrtDeploy)
 		r.Post("/api/groups/netdisk", a.groupNetdisk)
 		r.Post("/api/groups/backup", a.groupBackup)
 		r.Get("/api/admin/netdisk/shares", a.netdiskSharesAdmin)

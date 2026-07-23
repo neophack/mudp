@@ -1,0 +1,13 @@
+# 强制脚本/配置用 LF 行尾 —— 容器内 sh/uci 脚本若被 git 转成 CRLF,
+# 会报 "bad interpreter: /bin/sh^M" 导致 openwrt 探测/防火墙脚本静默失败。
+* text=auto eol=lf
+
+# 显式指定常见容器脚本类型为 LF
+*.sh        text eol=lf
+*.conf      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+docker/openwrt/uci-defaults/*  text eol=lf
+docker/openwrt/init/*          text eol=lf
+docker/openwrt/config/*        text eol=lf
+docker/openwrt/modprobe/*      text eol=lf

@@ -1,0 +1,37 @@
+# /etc/config/uhttpd —— 为容器化网关定制
+#
+# 关键修改(vs sulinggg 默认):
+#   1. 关掉 rfc1918_filter —— 这是最隐蔽的 LuCI 访问杀手!
+#      默认 rfc1918_filter=1 会"拒绝所有来自 RFC1918 私网地址、且目的指向
+#      服务器公网 IP 的请求"。Docker 发布端口时,容器内 uhttpd 看到的源 IP
+#      是 Docker 网桥地址(如 10.210.2.1,属 RFC1918),于是被拒。
+#      关掉它后,所有来源都能访问 LuCI。
+#   其余保留 sulinggg 默认(listen 0.0.0.0:80、CGI/Lua 前缀等)。
+
+config uhttpd main
+	list listen_http	'0.0.0.0:80'
+	list listen_http	'[::]:80'
+	list listen_https	'0.0.0.0:443'
+	list listen_https	'[::]:443'
+	option redirect_https	'0'
+	option home		'/www'
+	# ★ 关掉 RFC1918 过滤 —— Docker 发布端口的源 IP 是私网,会被拒。
+	option rfc1918_filter	'0'
+	option max_requests	'3'
+	option max_connections	'100'
+	option cert		'/etc/uhttpd.crt'
+	option key		'/etc/uhttpd.key'
+	option cgi_prefix	'/cgi-bin'
+	list lua_prefix		'/cgi-bin/luci=/usr/lib/lua/luci/sgi/uhttpd.lua'
+	option script_timeout	'60'
+	option network_timeout	'30'
+	option http_keepalive	'20'
+	option tcp_keepalive	'1'
+
+config cert defaults
+	option days		'730'
+	option bits		'2048'
+	option country		'ZZ'
+	option state		'Somewhere'
+	option location		'Unknown'
+	option commonname	'ImmortalWrt'

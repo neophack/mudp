@@ -208,13 +208,14 @@ func (a *App) applyWRTPolicy(ctx context.Context, pol store.WRTPolicy) {
 		return
 	}
 	dxPol := dockerx.WRTPolicy{
-		Enabled:    pol.Enabled,
-		Image:      pol.Image,
-		LANSubnet:  pol.LANSubnet,
-		LANGateway: pol.LANGateway,
-		WANSubnet:  pol.WANSubnet,
-		WANGateway: pol.WANGateway,
-		WANIP:      pol.WANIP,
+		Enabled:      pol.Enabled,
+		Image:        pol.Image,
+		LANSubnet:    pol.LANSubnet,
+		LANGateway:   pol.LANGateway,
+		WANSubnet:    pol.WANSubnet,
+		WANGateway:   pol.WANGateway,
+		WANIP:        pol.WANIP,
+		LuCIHostPort: pol.LuCIHostPort,
 	}
 	if err := a.docker.EnsureSystemNetworksWithPolicy(ctx, dxPol); err != nil {
 		log.Printf("WARNING: wrt isolation networks unavailable: %v (container outbound isolation disabled — user containers will reach the LAN/host)", err)

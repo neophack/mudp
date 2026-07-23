@@ -1,0 +1,53 @@
+# /etc/config/dhcp —— 为容器化网关定制
+#
+# 关键修改(vs sulinggg 默认):
+#   1. 给 dnsmasq 配显式上游 DNS(8.8.8.8/1.1.1.1)—— 镜像默认靠
+#      resolvfile=/tmp/resolv.conf.d/resolv.conf.auto,但 Docker 容器里该文件
+#      常为空 → DNS 查询全部 REFUSED。显式配上游解决。
+#   2. 关掉 rebind_protection —— 部分上游返回私网地址,会被 dnsmasq 丢弃。
+#   3. lan DHCP 保持 ignore(VLAN10 LAN 用静态 IP,容器自行配 eth0.10 地址)。
+
+config dnsmasq
+	option domainneeded '1'
+	option boguspriv '1'
+	option filterwin2k '0'
+	option localise_queries '1'
+	# ★ 关 rebind 保护:部分上游(尤其国内的)返回私网空间答案,
+	#   dnsmasq 默认会丢弃,导致解析失败。
+	option rebind_protection '0'
+	option rebind_localhost '1'
+	option local '/lan/'
+	option domain 'lan'
+	option expandhosts '1'
+	option nonegcache '0'
+	option authoritative '1'
+	option readethers '1'
+	option leasefile '/tmp/dhcp.leases'
+	option nonwildcard '1'
+	option localservice '0'
+	option filter_aaaa '1'
+	option port '53'
+	# ★ 显式上游 DNS。镜像默认 noresolv=0 + resolvfile 指向 auto 文件,
+	#   容器里该文件为空 → 全部 REFUSED。改成显式 server,与 noresolv 无关。
+	#   114 在前(国内解析快),8.8.8.8/1.1.1.1 兜底。
+	list    server '114.114.114.114'
+	list    server '8.8.8.8'
+	list    server '1.1.1.1'
+
+# LAN DHCP 关闭 —— VLAN10 LAN 容器用静态 IP,不需要 openwrt 分配地址。
+config dhcp 'lan'
+	option interface 'lan'
+	option ignore '1'
+
+# WAN 无 DHCP 服务。
+config dhcp 'wan'
+	option interface 'wan'
+	option ignore '1'
+
+# KMS 占位(镜像自带,保留以免 uci 报缺 section)
+config srvhost
+	option srv '_vlmcs._tcp'
+	option target 'OpenWrt'
+	option port '1688'
+	option class '0'
+	option weight '100'

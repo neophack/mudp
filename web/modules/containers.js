@@ -192,8 +192,9 @@ function containerRow(c) {
   const name = c.name || c.fullName;
   const pending = (act) => state.pending.has(c.id + ":" + act);
   // System containers (the WRT gateway) are platform infrastructure: admins
-  // can start/stop/restart them and read logs/inspect, but not remove them or
-  // open files/terminal (rebuild goes through Networks → WRT settings).
+  // can start/stop/restart them, read logs/inspect, AND open a console (shell
+  // access is needed for router debugging). They cannot be removed or have
+  // their files browsed (rebuild goes through Networks → WRT settings).
   const sys = !!c.system;
   const statusBadge = running
     ? `<span class="badge badge-ok"><span class="dot"></span>${escapeHtml(c.status || "Up")}</span>`
@@ -240,7 +241,11 @@ function containerRow(c) {
         (running && !sys ? iconBtn("pause", "⏸", "Pause") : "") +
         (paused && !sys ? iconBtn("unpause", "⏵", "Unpause", "icon ok") : "") +
         (!sys ? iconBtn("files", "📁", "Files") : "") +
-        (running && !sys ? iconBtn("terminal", "🖥", "Console") : "") +
+        // Console is allowed on system containers (the WRT gateway) too: admins
+        // need shell access to the router for debugging, and the backend already
+        // permits it (containerTerminal only checks ownership). Files/Delete stay
+        // hidden for sys containers.
+        (running ? iconBtn("terminal", "🖥", "Console") : "") +
         (running ? iconBtn("stats", "📊", "Stats") : "") +
         iconBtn("inspect", "ℹ", "Details") +
         (!sys ? iconBtn("remove", "✕", "Delete", "icon danger") : "") +

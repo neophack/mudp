@@ -2,13 +2,20 @@ package server
 
 import (
 	"context"
+	"log"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"mudp/internal/dockerx"
 	"mudp/internal/store"
 )
+
+// wrtDeployMu serialises one-click WRT deploys so two concurrent clicks can't
+// race the remove/create swap and leave the gateway half-built.
+var wrtDeployMu sync.Mutex
 
 // wrtPolicyResponse is what GET /api/wrt returns. It bundles the durable
 // policy with a real-time read of the gateway container, so the UI can show
@@ -88,6 +95,15 @@ func (a *App) wrtSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// LuCI host port: 0 disables publishing; otherwise it must be a valid
+		// TCP port. We avoid the per-user reserved range (<10000) since the
+		// gateway is a system container, but we don't reject it outright — the
+		// admin may legitimately want a low port (though binding <1024 typically
+		// needs root, which the daemon usually has).
+		if req.LuCIHostPort < 0 || req.LuCIHostPort > 65535 {
+			writeErr(w, http.StatusBadRequest, "invalid luciHostPort (must be 0-65535)")
+			return
+		}
 
 		if err := a.db.SaveWRTPolicy(req); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
@@ -121,4 +137,79 @@ func (a *App) meshContainerCount(ctx context.Context) int {
 		}
 	}
 	return 0
+}
+
+// wrtDeploy is the admin one-click "deploy / re-deploy" handler. It streams
+// progress over SSE while it force-rebuilds the WRT gateway: remove any
+// existing container → (re)pull the image → create + start → apply UCI config.
+// Uses the CURRENT stored policy (no body needed); to change the image or
+// addressing first POST /api/wrt, then deploy. Mirrors the image build/import
+// SSE pattern (sseSender + sseKeepalive + 15min timeout).
+func (a *App) wrtDeploy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	if u == nil || roleRank(u.Role) < rankAdmin {
+		writeErr(w, http.StatusForbidden, "insufficient privileges")
+		return
+	}
+
+	pol, err := a.db.WRTPolicy()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Persist so wrt_policy is the source of truth (also migrates legacy
+	// egress_policy forward on first deploy).
+	_ = a.db.SaveWRTPolicy(pol)
+
+	dxPol := dockerx.WRTPolicy{
+		Enabled:      pol.Enabled,
+		Image:        pol.Image,
+		LANSubnet:    pol.LANSubnet,
+		LANGateway:   pol.LANGateway,
+		WANSubnet:    pol.WANSubnet,
+		WANGateway:   pol.WANGateway,
+		WANIP:        pol.WANIP,
+		LuCIHostPort: pol.LuCIHostPort,
+	}
+
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if flusher != nil {
+		flusher.Flush()
+	}
+	send := sseSender(w, flusher)
+	send("progress", map[string]string{
+		"message": "One-click deploy started — force-rebuilding mudp-wrt (image " + pol.Image + "). This will briefly interrupt the gateway.",
+	})
+
+	// 15min covers a few-hundred-MB image pull on a slow link; the client can
+	// cancel earlier via the job's abort signal (request context cancels).
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+	defer cancel()
+	go func() {
+		<-r.Context().Done()
+		cancel()
+	}()
+	sseKeepalive(ctx, send)
+
+	wrtDeployMu.Lock()
+	defer wrtDeployMu.Unlock()
+	err = a.docker.RecreateWRT(ctx, dxPol, func(line string) {
+		send("progress", map[string]string{"message": line})
+	})
+	if err != nil {
+		log.Printf("wrt deploy failed: %v", err)
+		send("error", map[string]string{"message": err.Error()})
+		return
+	}
+	a.record(r, "wrt.deploy", "wrt")
+	send("done", map[string]string{"image": pol.Image})
 }
