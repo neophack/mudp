@@ -40,6 +40,13 @@ func (a *App) setupNeeded() (bool, error) {
 // setupInit creates the first administrator account and default groups. It may
 // only be called once; afterwards setupNeeded() returns false.
 func (a *App) setupInit(w http.ResponseWriter, r *http.Request) {
+	// setupInit is intentionally public (no session yet exists), so the
+	// check-then-act below (see setupNeeded) must be serialized: without this
+	// lock, two concurrent requests can both observe "needed" and each create
+	// their own admin account before either commits.
+	a.setupMu.Lock()
+	defer a.setupMu.Unlock()
+
 	needed, err := a.setupNeeded()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

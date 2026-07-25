@@ -16,6 +16,13 @@ func CreateSymlink(parentDir, targetPath, displayName string) error {
 	if displayName == "" {
 		return fmt.Errorf("displayName cannot be empty")
 	}
+	// displayName can come from an untrusted source (a Feishu OAuth profile
+	// name). It becomes a filename joined under parentDir and, on Windows, is
+	// embedded in a PowerShell script — reject path separators and traversal
+	// so it can neither escape parentDir nor break out of that script.
+	if strings.ContainsAny(displayName, `/\`) || displayName == "." || displayName == ".." {
+		return fmt.Errorf("displayName contains invalid characters")
+	}
 
 	targetPath = filepath.Clean(targetPath)
 	info, err := os.Stat(targetPath)
@@ -82,11 +89,18 @@ func createWindowsShortcut(parentDir, targetPath, displayName string) error {
 
 	// PowerShell script to create a shortcut
 	// This creates a .lnk file that points to the target directory
+	//
+	// linkPathEscaped/targetPathEscaped are already single-quoted PowerShell
+	// string literals (see escapePathForPowerShell) — they must be embedded
+	// as-is, NOT re-wrapped in double quotes. A double-quoted PS string still
+	// interpolates $(...), backticks, and embedded ", so wrapping an
+	// attacker-influenced value in "%s" would let it break out of the string
+	// and inject arbitrary PowerShell.
 	psScript := fmt.Sprintf(`
 $WshShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut("%s")
-$Shortcut.TargetPath = "%s"
-$Shortcut.WorkingDirectory = "%s"
+$Shortcut = $WshShell.CreateShortcut(%s)
+$Shortcut.TargetPath = %s
+$Shortcut.WorkingDirectory = %s
 $Shortcut.Save()
 `, linkPathEscaped, targetPathEscaped, targetPathEscaped)
 

@@ -57,6 +57,17 @@ type Server struct {
 	version      string
 	tools        []Tool
 	instructions string
+	// onCall, when set, is invoked synchronously before each tools/call
+	// dispatch. Callers use it to write an audit trail (which tool, on whose
+	// behalf) since the transport otherwise has no visibility into individual
+	// tool invocations — only that "some request" reached the token.
+	onCall func(toolName string, args json.RawMessage)
+}
+
+// SetAuditHook registers a callback fired on every tools/call before the tool
+// handler runs. fn must be safe to call from concurrent requests.
+func (s *Server) SetAuditHook(fn func(toolName string, args json.RawMessage)) {
+	s.onCall = fn
 }
 
 // NewServer builds a server with the given identity and tool set.
@@ -205,6 +216,9 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (*
 	}
 	for _, t := range s.tools {
 		if t.Name == p.Name {
+			if s.onCall != nil {
+				s.onCall(t.Name, p.Arguments)
+			}
 			res, err := t.Handler(ctx, p.Arguments)
 			if err != nil {
 				// Tool execution failure: surface it as an MCP error result

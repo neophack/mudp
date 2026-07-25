@@ -28,6 +28,7 @@ import (
 	"mudp/internal/auth"
 	"mudp/internal/config"
 	"mudp/internal/dockerx"
+	"mudp/internal/httpx"
 	"mudp/internal/mcp"
 	"mudp/internal/middleware"
 	"mudp/internal/store"
@@ -48,6 +49,7 @@ type App struct {
 	cachedContainers []dockerx.Container
 	cacheAt          time.Time
 	registryMu       sync.Mutex
+	setupMu          sync.Mutex
 	backupJobs       *BackupJobRegistry
 	dirSizeMu        sync.Mutex
 	dirSizeCache     map[string]dirSizeEntry
@@ -142,18 +144,23 @@ func (a *App) Routes() http.Handler {
 	r.Get("/api/feishu/config", a.feishuConfigPublic)
 	r.Get("/api/feishu/login", a.feishuLogin)
 	r.Get("/api/feishu/callback", a.feishuCallback)
-	r.Get("/api/netdisk/share/public", a.netdiskSharePublic)
-	r.Get("/api/netdisk/share/download", a.netdiskShareDownload)
-	r.Get("/api/netdisk/share/raw", a.netdiskShareRaw)
-	r.Get("/pan/{token}", a.netdiskSharePage)
+	// Public share links are unauthenticated by design, so they get the same
+	// per-IP throttle as login to blunt share-password brute forcing and
+	// unmetered zip-download DoS.
+	r.With(loginRateLimiter.Middleware).Get("/api/netdisk/share/public", a.netdiskSharePublic)
+	r.With(loginRateLimiter.Middleware).Get("/api/netdisk/share/download", a.netdiskShareDownload)
+	r.With(loginRateLimiter.Middleware).Get("/api/netdisk/share/raw", a.netdiskShareRaw)
+	r.With(loginRateLimiter.Middleware).Get("/pan/{token}", a.netdiskSharePage)
 	r.Handle("/api/dashboard", a.requireRole(rankUser, a.dashboard))
 
 	// MCP Streamable HTTP endpoint (bearer-token authenticated, independent of
 	// the browser session — registered outside the CSRF group on purpose).
-	r.Post("/mcp/{token}", a.mcpStreamableHTTP)
+	// Still per-IP rate limited: a stolen/guessed token would otherwise allow
+	// unlimited-rate exec_command/file calls against the target container.
+	r.With(apiRateLimiter.Middleware).Post("/mcp/{token}", a.mcpStreamableHTTP)
 	// MCP SSE transport: GET opens the event stream, POST sends JSON-RPC.
-	r.Get("/mcp/{token}/sse", a.mcpSSE)
-	r.Post("/mcp/{token}/messages", a.mcpMessages)
+	r.With(apiRateLimiter.Middleware).Get("/mcp/{token}/sse", a.mcpSSE)
+	r.With(apiRateLimiter.Middleware).Post("/mcp/{token}/messages", a.mcpMessages)
 
 	// Activated-user business endpoints (any non-pending role).
 	r.Group(func(r chi.Router) {
@@ -828,6 +835,14 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	if err != nil {
 		return dockerx.CreateOptions{}, errForbiddenImage
 	}
+	// Capabilities, host devices, and sysctls can reach outside the container
+	// (e.g. CapAdd:["SYS_ADMIN"] or a raw block device) and are host-wide,
+	// security-sensitive knobs — restrict them to admins, same as the rest of
+	// the privileged image/host lifecycle surface. Non-admin fields are simply
+	// ignored below by never populating them from req.
+	if u.Role != "admin" && (len(req.CapAdd) > 0 || len(req.Devices) > 0 || len(req.CDIDevices) > 0 || len(req.Sysctls) > 0) {
+		return dockerx.CreateOptions{}, errors.New("capabilities, devices, and sysctls require admin privileges")
+	}
 	mountNetdisk := true
 	if req.MountNetdisk != nil {
 		mountNetdisk = *req.MountNetdisk
@@ -1324,7 +1339,7 @@ func (a *App) feishuLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirect := feishuRedirectURL(r)
-	state, err := a.feishuState(w)
+	state, err := a.feishuState(w, r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1401,7 +1416,7 @@ func feishuRedirectURL(r *http.Request) string {
 
 const feishuStateCookie = "mudp_feishu_state"
 
-func (a *App) feishuState(w http.ResponseWriter) (string, error) {
+func (a *App) feishuState(w http.ResponseWriter, r *http.Request) (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -1411,7 +1426,7 @@ func (a *App) feishuState(w http.ResponseWriter) (string, error) {
 	value := raw + "." + sig
 	http.SetCookie(w, &http.Cookie{
 		Name: feishuStateCookie, Value: value, Path: "/",
-		MaxAge: 600, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		MaxAge: 600, HttpOnly: true, Secure: httpx.IsSecureRequest(r), SameSite: http.SameSiteLaxMode,
 	})
 	return raw, nil
 }

@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +32,7 @@ func (a *App) mcpStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srv := mcp.NewContainerServer(r.Context(), a.docker, tok.ContainerID, tok.ContainerName)
+	srv.SetAuditHook(a.mcpAuditHook(tok))
 	srv.ServeHTTP(w, r)
 }
 
@@ -44,6 +47,7 @@ func (a *App) mcpSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srv := mcp.NewContainerServer(r.Context(), a.docker, tok.ContainerID, tok.ContainerName)
+	srv.SetAuditHook(a.mcpAuditHook(tok))
 	session := a.mcpHub.OpenSession(srv, r.Context())
 	defer a.mcpHub.Close(session)
 	base := "/mcp/" + chi.URLParam(r, "token") + "/messages"
@@ -100,13 +104,35 @@ func (a *App) resolveMCPToken(r *http.Request, cleartext string) (mcpTokenResolv
 	if tok.Expired() {
 		return mcpTokenResolved{}, errors.New("token expired")
 	}
-	return mcpTokenResolved{ID: tok.ID, ContainerID: tok.ContainerID, ContainerName: tok.ContainerName}, nil
+	return mcpTokenResolved{ID: tok.ID, ContainerID: tok.ContainerID, ContainerName: tok.ContainerName, OwnerID: tok.OwnerID, Label: tok.Label}, nil
 }
 
 type mcpTokenResolved struct {
 	ID            int64
 	ContainerID   string
 	ContainerName string
+	OwnerID       int64
+	Label         string
+}
+
+// mcpAuditHook returns a callback that writes one audit entry per MCP tool
+// invocation, attributing it to the token's owning user. MCP requests carry
+// no browser session, so this is the only record of who (via which token) ran
+// what tool against a container — without it a leaked/expired-soon token's
+// actions are invisible beyond a last-used-at timestamp.
+func (a *App) mcpAuditHook(tok mcpTokenResolved) func(toolName string, args json.RawMessage) {
+	actor := "mcp-token#" + strconv.FormatInt(tok.ID, 10)
+	if u, err := a.db.UserByID(tok.OwnerID); err == nil && u != nil {
+		actor = targetName(u) + " (mcp:" + tok.Label + ")"
+	}
+	target := tok.ContainerName
+	return func(toolName string, args json.RawMessage) {
+		preview := string(args)
+		if len(preview) > 300 {
+			preview = preview[:300] + "…"
+		}
+		a.db.Audit(actor, "mcp.tool."+toolName, target+" "+preview)
+	}
 }
 
 // bearerTokenFromHeader extracts the token from an Authorization: Bearer <t>

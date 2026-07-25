@@ -743,6 +743,20 @@ func (db *DB) createUserTx(username, passwordHash, role string, groupIDs []int64
 	return tx.Commit()
 }
 
+// dummyPasswordHash is compared against on every login path that doesn't
+// reach a real bcrypt check (unknown username, disabled account), so the
+// response time for those cases matches a genuine wrong-password attempt.
+// Without it, an attacker can enumerate valid usernames by timing logins:
+// bcrypt costs tens of milliseconds, an early sql.ErrNoRows return costs
+// microseconds.
+var dummyPasswordHash = func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("mudp-constant-time-auth-placeholder"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}()
+
 func (db *DB) Authenticate(username, password string) (*User, error) {
 	var u User
 	var hash string
@@ -750,12 +764,14 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 	err := db.QueryRow(`select id,username,display_name,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where username=?`, username).
 		Scan(&u.ID, &u.Username, &u.DisplayName, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
 	if errors.Is(err, sql.ErrNoRows) {
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(password))
 		return nil, errors.New("invalid username or password")
 	}
 	if err != nil {
 		return nil, err
 	}
 	if disabled != 0 {
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(password))
 		return nil, errors.New("user is disabled")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {

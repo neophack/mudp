@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"strings"
 	"time"
 
 	"mudp/internal/httpx"
@@ -18,7 +19,7 @@ func RequestLogger(next http.Handler) http.Handler {
 			id = randomID(16)
 		}
 		r = httpx.WithRequestID(r, id)
-		logger := httpx.DefaultLogger().With("request_id", id, "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
+		logger := httpx.DefaultLogger().With("request_id", id, "method", r.Method, "path", redactPath(r.URL.Path), "remote", r.RemoteAddr)
 		r = httpx.WithLogger(r, logger)
 		w.Header().Set("X-Request-ID", id)
 
@@ -27,6 +28,22 @@ func RequestLogger(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		logger.Info("request completed", "duration_ms", time.Since(start).Milliseconds())
 	})
+}
+
+// redactPath masks the bearer token embedded in MCP URLs (/mcp/{token}...)
+// before it's written to mudp's own logs. The token authenticates a
+// container-scoped session, so leaking it into logs is equivalent to leaking
+// a password.
+func redactPath(path string) string {
+	const prefix = "/mcp/"
+	if !strings.HasPrefix(path, prefix) {
+		return path
+	}
+	rest := path[len(prefix):]
+	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		return prefix + "[redacted]" + rest[slash:]
+	}
+	return prefix + "[redacted]"
 }
 
 func randomID(n int) string {
