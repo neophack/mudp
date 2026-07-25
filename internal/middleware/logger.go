@@ -30,20 +30,25 @@ func RequestLogger(next http.Handler) http.Handler {
 	})
 }
 
-// redactPath masks the bearer token embedded in MCP URLs (/mcp/{token}...)
-// before it's written to mudp's own logs. The token authenticates a
-// container-scoped session, so leaking it into logs is equivalent to leaking
-// a password.
+// redactPath masks the capability tokens that appear in URL paths before they
+// are written to mudp's own logs: /mcp/{token} authenticates a container-scoped
+// session, and /pan/{token} grants access to a netdisk share. Either one in a
+// log file is equivalent to a password in a log file.
 func redactPath(path string) string {
-	const prefix = "/mcp/"
-	if !strings.HasPrefix(path, prefix) {
-		return path
+	for _, prefix := range []string{"/mcp/", "/pan/"} {
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		rest := path[len(prefix):]
+		if rest == "" {
+			return path
+		}
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			return prefix + "[redacted]" + rest[slash:]
+		}
+		return prefix + "[redacted]"
 	}
-	rest := path[len(prefix):]
-	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
-		return prefix + "[redacted]" + rest[slash:]
-	}
-	return prefix + "[redacted]"
+	return path
 }
 
 func randomID(n int) string {

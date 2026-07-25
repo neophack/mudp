@@ -85,6 +85,16 @@ func (a *App) resolveMcpContainer(w http.ResponseWriter, r *http.Request) (mcpTo
 		writeErr(w, http.StatusNotFound, "container no longer managed")
 		return mcpTokenResolved{}, false
 	}
+	// A token must not outlive its owner's access. Disabling or de-activating an
+	// account revokes the browser session immediately (authMiddleware re-reads
+	// the user on every request), but an MCP token carries no session, so
+	// without this check a departed user's token would keep running commands in
+	// the container indefinitely.
+	owner, err := a.db.UserByID(tok.OwnerID)
+	if err != nil || owner == nil || owner.Disabled || isPending(owner) || !canMutate(owner) {
+		writeErr(w, http.StatusUnauthorized, "invalid or expired token")
+		return mcpTokenResolved{}, false
+	}
 	_ = a.db.MCPTokenTouch(tok.ID)
 	return tok, true
 }

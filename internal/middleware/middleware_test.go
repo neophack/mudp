@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"time"
 	"testing"
 
 	"mudp/internal/httpx"
@@ -103,5 +104,99 @@ func TestCSRFTokenRoundTrip(t *testing.T) {
 	handler.ServeHTTP(rec2, req)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("code = %d", rec2.Code)
+	}
+}
+
+// TestClientIPIgnoresUntrustedForwardedFor is the anti-bypass case: if the
+// forwarding header were believed unconditionally, an attacker could send a
+// different X-Forwarded-For on every login attempt and get a fresh rate-limit
+// bucket each time.
+func TestClientIPIgnoresUntrustedForwardedFor(t *testing.T) {
+	tp, err := ParseTrustedProxies("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:5555"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	if got := tp.ClientIP(req); got != "203.0.113.9" {
+		t.Errorf("ClientIP = %q, want the socket peer 203.0.113.9", got)
+	}
+}
+
+func TestClientIPUsesForwardedForFromTrustedProxy(t *testing.T) {
+	tp, err := ParseTrustedProxies("10.0.0.0/8, 127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, remote, xff, want string
+	}{
+		{"single hop", "10.0.0.1:9000", "198.51.100.7", "198.51.100.7"},
+		{"chain ends at proxy", "10.0.0.1:9000", "198.51.100.7, 10.0.0.5", "198.51.100.7"},
+		{"spoofed prefix ignored", "10.0.0.1:9000", "1.1.1.1, 198.51.100.7", "198.51.100.7"},
+		{"loopback proxy", "127.0.0.1:9000", "198.51.100.7", "198.51.100.7"},
+		{"no header falls back to peer", "10.0.0.1:9000", "", "10.0.0.1"},
+		{"garbage header falls back", "10.0.0.1:9000", "not-an-ip", "10.0.0.1"},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = c.remote
+		if c.xff != "" {
+			req.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if got := tp.ClientIP(req); got != c.want {
+			t.Errorf("%s: ClientIP = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// Separate clients must get separate buckets, or one noisy source locks out
+// everyone behind the same proxy.
+func TestRateLimiterIsPerClient(t *testing.T) {
+	tp, _ := ParseTrustedProxies("10.0.0.0/8")
+	limiter := NewRateLimiter(1, 1, 0).TrustProxies(tp)
+	handler := limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	call := func(client string) int {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "10.0.0.1:9000"
+		req.Header.Set("X-Forwarded-For", client)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := call("198.51.100.1"); code != http.StatusOK {
+		t.Fatalf("first client = %d, want 200", code)
+	}
+	if code := call("198.51.100.2"); code != http.StatusOK {
+		t.Fatalf("second client = %d, want 200 (separate bucket)", code)
+	}
+	if code := call("198.51.100.1"); code != http.StatusTooManyRequests {
+		t.Fatalf("first client repeat = %d, want 429", code)
+	}
+}
+
+// Idle buckets must be reclaimed; the map used to grow without bound.
+func TestRateLimiterEvictsIdleEntries(t *testing.T) {
+	limiter := NewRateLimiter(1, 1, 10*time.Millisecond)
+	limiter.getLimiter("1.1.1.1")
+	if n := len(limiter.limiters); n != 1 {
+		t.Fatalf("entries = %d, want 1", n)
+	}
+	time.Sleep(20 * time.Millisecond)
+	limiter.getLimiter("2.2.2.2") // triggers the sweep
+	if _, stale := limiter.limiters["1.1.1.1"]; stale {
+		t.Error("idle entry was not evicted")
+	}
+	if _, fresh := limiter.limiters["2.2.2.2"]; !fresh {
+		t.Error("current entry should be retained")
+	}
+}
+
+func TestParseTrustedProxiesRejectsGarbage(t *testing.T) {
+	if _, err := ParseTrustedProxies("not-an-ip"); err == nil {
+		t.Error("expected an error for an unparsable entry")
 	}
 }

@@ -3,7 +3,6 @@ package server
 import (
 	"archive/zip"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -141,7 +140,7 @@ func (a *App) diskMount(w http.ResponseWriter, r *http.Request) {
 	}
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("powershell", "-NoProfile", "-Command", fmt.Sprintf("New-Item -ItemType Directory -Force -Path %q | Out-Null", req.Target))
+		cmd = exec.Command("powershell", "-NoProfile", "-Command", "New-Item -ItemType Directory -Force -Path "+escapePathForPowerShell(req.Target)+" | Out-Null")
 	} else {
 		args := []string{req.Source, req.Target}
 		if req.FSType != "" {
@@ -170,7 +169,11 @@ func (a *App) diskUnmount(w http.ResponseWriter, r *http.Request) {
 	}
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("powershell", "-NoProfile", "-Command", fmt.Sprintf("Remove-Item -Force %q", req.Target))
+		// Single-quote the path: %q produces a PowerShell *double*-quoted string,
+		// which still interpolates $(...) and backticks, so a target like
+		// "$(calc)" would execute. escapePathForPowerShell emits a single-quoted
+		// literal instead, where no interpolation happens.
+		cmd = exec.Command("powershell", "-NoProfile", "-Command", "Remove-Item -Force "+escapePathForPowerShell(req.Target))
 	} else {
 		cmd = exec.Command("umount", req.Target)
 	}

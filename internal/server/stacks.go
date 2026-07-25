@@ -71,6 +71,13 @@ func (a *App) stacks(w http.ResponseWriter, r *http.Request) {
 		}
 		env := dockerx.SplitEnvLines(req.EnvRaw)
 		envJSON, _ := json.Marshal(env)
+		// Reject a privilege-escalating stack at save time so the author gets the
+		// error in the editor. The authoritative check runs again in runStackSSE
+		// against the env-substituted body that is actually handed to compose.
+		if err := dockerx.ValidateCompose(dockerx.SubstituteEnv(req.ComposeYAML, env), a.composeLimits(u)); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 
 		if req.ID != 0 {
 			// Update existing: ownership check.
@@ -242,12 +249,37 @@ func (a *App) stackDownStream(w http.ResponseWriter, r *http.Request) {
 	a.runStackSSE(w, r, s, "down", "tearing down")
 }
 
+// composeLimits builds the per-user restrictions applied to a stack: the host
+// port block assigned to the account, and an admin bypass.
+func (a *App) composeLimits(u *store.User) dockerx.ComposeLimits {
+	if u == nil {
+		return dockerx.ComposeLimits{}
+	}
+	return dockerx.ComposeLimits{PortPrefix: u.PortPrefix, Admin: u.Role == store.RoleAdmin}
+}
+
 // runStackSSE is the shared up/down runner that emits progress over SSE and
 // cancels on client disconnect.
 func (a *App) runStackSSE(w http.ResponseWriter, r *http.Request, s store.Stack, verb, action string) {
 	var env map[string]string
 	_ = json.Unmarshal([]byte(s.EnvJSON), &env)
 	composeBody := dockerx.SubstituteEnv(s.ComposeYAML, env)
+	// Authoritative privilege check, on the exact body compose will consume.
+	// Deploy-time (not just save-time) because a stack's stored YAML or env can
+	// predate this validation, and because "down" must be able to tear down a
+	// legacy stack even if "up" would now refuse it.
+	if verb == "up" {
+		// Limits follow the stack's owner, not the caller: an admin deploying a
+		// user's stack must not launder that stack past the user's restrictions.
+		limits := a.composeLimits(currentUser(r))
+		if owner, err := a.db.UserByID(s.OwnerID); err == nil && owner != nil {
+			limits = a.composeLimits(owner)
+		}
+		if err := dockerx.ValidateCompose(composeBody, limits); err != nil {
+			writeErr(w, http.StatusForbidden, err.Error())
+			return
+		}
+	}
 	project, err := dockerx.NewComposeProject(s.ProjectName, composeBody, env)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

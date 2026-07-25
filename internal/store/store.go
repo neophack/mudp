@@ -42,6 +42,22 @@ func ValidRole(r string) bool {
 	return false
 }
 
+// MinPasswordLength is the floor for any password the server hashes. The login
+// endpoint is rate limited per client address, but that only slows an online
+// attack — it does nothing for a credential that is guessable in a handful of
+// tries. Raising this floor is safe; lowering it weakens every account.
+const MinPasswordLength = 10
+
+// ValidatePassword rejects a password that is too weak to sit on an
+// internet-facing login form. It is enforced in the store rather than in each
+// handler so no future call site can bypass it.
+func ValidatePassword(password string) error {
+	if len([]rune(password)) < MinPasswordLength {
+		return fmt.Errorf("password must be at least %d characters", MinPasswordLength)
+	}
+	return nil
+}
+
 const (
 	RoleAdmin    = "admin"
 	RoleOperator = "operator"
@@ -179,7 +195,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 24
+const schemaVersion = 25
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -220,6 +236,52 @@ var migrations = []migration{
 	{22, "create backup_schedule", migrateCreateBackupSchedule},
 	{23, "add users.language", migrateAddUserLanguage},
 	{24, "add groups.language", migrateAddGroupLanguage},
+	{25, "revoke derivable feishu passwords", migrateRevokeFeishuDerivedPasswords},
+}
+
+// migrateRevokeFeishuDerivedPasswords clears password hashes that were derived
+// from a user's Feishu open ID. Those accounts could be taken over through the
+// ordinary password form by anyone who knew the open ID — which is recoverable
+// from the username, since the username is the open ID with its separators
+// stripped. Each row is checked against its own open ID rather than blanket
+// cleared, so a password an administrator deliberately set for an SSO user is
+// left alone.
+func migrateRevokeFeishuDerivedPasswords(db executor) error {
+	rows, err := db.Query(`select id, feishu_open_id, password_hash from users
+		where feishu_open_id is not null and feishu_open_id != '' and password_hash != ''`)
+	if err != nil {
+		return err
+	}
+	type row struct {
+		id     int64
+		openID string
+		hash   string
+	}
+	var affected []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.openID, &r.hash); err != nil {
+			rows.Close()
+			return err
+		}
+		affected = append(affected, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, r := range affected {
+		if !isUsablePasswordHash(r.hash) {
+			continue
+		}
+		if bcrypt.CompareHashAndPassword([]byte(r.hash), []byte(r.openID)) != nil {
+			continue // a real, administrator-set password: keep it
+		}
+		if _, err := db.Exec(`update users set password_hash=? where id=?`, NoPasswordSentinel, r.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateCreateInitialTables(db executor) error {
@@ -627,7 +689,10 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 		}
 		if n == 0 {
 			if err := db.CreateUser(adminUser, adminPassword, "admin", nil, 50, 0); err != nil {
-				return err
+				// Only reachable on a fresh install (an existing database already
+				// has an admin and skips this branch), so naming the variable is
+				// the fastest route to a fix.
+				return fmt.Errorf("create bootstrap admin from MUDP_ADMIN_PASSWORD: %w", err)
 			}
 		}
 	}
@@ -691,6 +756,9 @@ func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap 
 	if quotaBytes < 0 {
 		quotaBytes = 0
 	}
+	if err := ValidatePassword(password); err != nil {
+		return err
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return err
@@ -743,6 +811,12 @@ func (db *DB) createUserTx(username, passwordHash, role string, groupIDs []int64
 	return tx.Commit()
 }
 
+// NoPasswordSentinel marks an account that has no password and may only
+// authenticate through SSO. It is deliberately not a valid bcrypt hash, so a
+// comparison against it can never succeed by accident; Authenticate also
+// rejects it explicitly rather than relying on that.
+const NoPasswordSentinel = "!"
+
 // dummyPasswordHash is compared against on every login path that doesn't
 // reach a real bcrypt check (unknown username, disabled account), so the
 // response time for those cases matches a genuine wrong-password attempt.
@@ -756,6 +830,13 @@ var dummyPasswordHash = func() []byte {
 	}
 	return h
 }()
+
+// isUsablePasswordHash reports whether a stored hash can authenticate a
+// password login. Anything that is not a bcrypt digest — the sentinel, an empty
+// column, legacy junk — fails closed.
+func isUsablePasswordHash(hash string) bool {
+	return strings.HasPrefix(hash, "$2a$") || strings.HasPrefix(hash, "$2b$") || strings.HasPrefix(hash, "$2y$")
+}
 
 func (db *DB) Authenticate(username, password string) (*User, error) {
 	var u User
@@ -773,6 +854,12 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 	if disabled != 0 {
 		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(password))
 		return nil, errors.New("user is disabled")
+	}
+	// SSO-only accounts carry no usable password. Burn the same bcrypt time as a
+	// real attempt so the response does not reveal which accounts these are.
+	if !isUsablePasswordHash(hash) {
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(password))
+		return nil, errors.New("invalid username or password")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
 		return nil, errors.New("invalid username or password")
@@ -1168,10 +1255,14 @@ func (db *DB) CreateFeishuUser(openID, username, displayName string) (*User, err
 }
 
 func (db *DB) createFeishuUserTx(openID, username, displayName string) (*User, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(openID), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, err
-	}
+	// SSO accounts get no password at all. Hashing the open ID (as this once
+	// did) made the password derivable from the username: Username() is the
+	// open ID with its non-alphanumerics stripped, so "ou_a1b2" becomes the
+	// account "oua1b2" whose password is "ou_a1b2". An open ID is an
+	// identifier, not a secret — every app in the tenant sees it — so anyone
+	// who knew one could log in through the ordinary password form and bypass
+	// OAuth entirely.
+	hash := NoPasswordSentinel
 	tx, err := db.Begin()
 	if err != nil {
 		return nil, err
@@ -1189,7 +1280,7 @@ func (db *DB) createFeishuUserTx(openID, username, displayName string) (*User, e
 		return nil, err
 	}
 	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,port_prefix,created_at,feishu_open_id,comment,display_name) values(?,?,?,?,?,?,?,?,?)`,
-		username, string(hash), "user", 10, prefix, time.Now().Format(time.RFC3339), openID, displayName, displayName)
+		username, hash, "user", 10, prefix, time.Now().Format(time.RFC3339), openID, displayName, displayName)
 	if err != nil {
 		return nil, err
 	}
@@ -1554,6 +1645,11 @@ func (db *DB) UpdateUser(id int64, password, role string, containerCap int, netd
 	}
 	defer tx.Rollback()
 	if password != "" {
+		// An empty password means "leave unchanged"; anything else is a real
+		// credential and must clear the same bar as a new account.
+		if err := ValidatePassword(password); err != nil {
+			return err
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
 			return err

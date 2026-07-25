@@ -3,7 +3,9 @@ package server
 import (
 	"mime/multipart"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"mudp/internal/store"
@@ -82,6 +84,14 @@ func TestNetdiskCopyOneIntoDirectory(t *testing.T) {
 // from the parallel "paths" field or the whole tree lands flat in one folder.
 func TestUploadDestPath(t *testing.T) {
 	dir := t.TempDir()
+	// cleanUserPath returns symlink-resolved paths, so compare against the
+	// canonical form of the temp dir. On Windows t.TempDir() hands back an 8.3
+	// short name ("PENGHO~1") that resolves to its long form; on macOS /var
+	// resolves to /private/var.
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Part filenames as Go delivers them: already reduced to a base name.
 	files := []*multipart.FileHeader{
 		{Filename: "b.txt"},
@@ -105,7 +115,7 @@ func TestUploadDestPath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("uploadDestPath(%d): %v", c.i, err)
 		}
-		want := filepath.Join(dir, c.want)
+		want := filepath.Join(resolvedDir, c.want)
 		if got != want {
 			t.Errorf("uploadDestPath(%d) = %q, want %q", c.i, got, want)
 		}
@@ -333,5 +343,105 @@ func TestPlanShareSaveNoDoubleFolder(t *testing.T) {
 	}
 	if got[filepath.Join(dstRoot, "My Share")] {
 		t.Errorf("unexpected share-name folder created")
+	}
+}
+
+// TestCleanUserPathRejectsSymlinkEscape covers the container-to-host escalation:
+// a user's netdisk is bind-mounted into their own containers, where they are
+// root and can create symlinks. A lexical containment check alone passes such a
+// path, because only the final component is ever tested for being a link.
+func TestCleanUserPathRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "shadow")
+	if err := os.WriteFile(secret, []byte("root:x:0:0"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The link a user would create from inside their container.
+	link := filepath.Join(root, "pwn")
+	linkDir(t, outside, link)
+
+	// Read through the link: the leaf ("shadow") is a regular file, so a
+	// leaf-only symlink test would let this through.
+	if _, _, err := cleanUserPath(root, "pwn/shadow"); err == nil {
+		t.Error("reading through a symlinked directory should be rejected")
+	}
+	// Write through the link: the target need not exist yet.
+	if _, _, err := cleanUserPath(root, "pwn/authorized_keys"); err == nil {
+		t.Error("writing through a symlinked directory should be rejected")
+	}
+	// The link itself is still out of bounds.
+	if _, _, err := cleanUserPath(root, "pwn"); err == nil {
+		t.Error("resolving the symlink itself should be rejected")
+	}
+	// Deeper nesting must not slip past either.
+	if _, _, err := cleanUserPath(root, "pwn/a/b/c.txt"); err == nil {
+		t.Error("deep path through a symlink should be rejected")
+	}
+}
+
+// Ordinary paths must keep working, including targets that do not exist yet
+// (mkdir/upload/rename destinations are all validated before creation).
+func TestCleanUserPathAllowsNormalPaths(t *testing.T) {
+	root := t.TempDir()
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ in, wantRel string }{
+		{"", ""},
+		{"docs", "docs"},
+		{"docs/report.pdf", filepath.Join("docs", "report.pdf")},
+		{"does/not/exist/yet.txt", filepath.Join("does", "not", "exist", "yet.txt")},
+		{"../escape.txt", "escape.txt"}, // clamped, not rejected
+	}
+	for _, c := range cases {
+		full, rel, err := cleanUserPath(root, c.in)
+		if err != nil {
+			t.Errorf("cleanUserPath(%q): unexpected error %v", c.in, err)
+			continue
+		}
+		if rel != c.wantRel {
+			t.Errorf("cleanUserPath(%q) rel = %q, want %q", c.in, rel, c.wantRel)
+		}
+		if !pathWithin(resolvedRoot, full) {
+			t.Errorf("cleanUserPath(%q) = %q, escaped root %q", c.in, full, resolvedRoot)
+		}
+	}
+}
+
+// A netdisk root that is itself reached through a symlink (a path pointing at a
+// mounted disk) must still work — both sides are resolved before comparison.
+func TestCleanUserPathAllowsSymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(real, "sub"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(t.TempDir(), "netdisk")
+	linkDir(t, real, linkRoot)
+	if _, _, err := cleanUserPath(linkRoot, "sub/file.txt"); err != nil {
+		t.Errorf("symlinked root should be usable: %v", err)
+	}
+}
+
+// linkDir creates a directory link at linkPath pointing at target. It prefers a
+// real symlink and falls back to a Windows directory junction, which an
+// unprivileged account can create while os.Symlink cannot. Both are traversed
+// by the OS the same way, which is exactly what the path guard must survive —
+// a container user can create either one inside their own netdisk.
+func linkDir(t *testing.T, target, linkPath string) {
+	t.Helper()
+	if err := os.Symlink(target, linkPath); err == nil {
+		return
+	}
+	if runtime.GOOS != "windows" {
+		t.Fatalf("symlink %s -> %s: unavailable", linkPath, target)
+	}
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", linkPath, target)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cannot create a directory link on this host: %v (%s)", err, out)
 	}
 }

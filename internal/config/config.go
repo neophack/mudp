@@ -20,6 +20,12 @@ type Config struct {
 	// embedded filesystem. Lets you iterate on web/ without rebuilding.
 	WebDir          string
 	DefaultLanguage string
+	// TrustedProxies lists the peers (IPs or CIDRs, comma separated) whose
+	// X-Forwarded-For header may be believed when attributing a request to a
+	// client. Leave empty unless a reverse proxy is actually in front of the
+	// server: trusting the header from any peer lets a client forge a new
+	// identity per request and slip past the login rate limit.
+	TrustedProxies string
 }
 
 // Load reads configuration from the environment. Missing secrets are generated
@@ -31,6 +37,7 @@ func Load() Config {
 		DockerHost:      env("MUDP_DOCKER_HOST", ""),
 		WebDir:          env("MUDP_WEB_DIR", ""),
 		DefaultLanguage: env("MUDP_DEFAULT_LANGUAGE", "en_US"),
+		TrustedProxies:  env("MUDP_TRUSTED_PROXIES", ""),
 	}
 
 	cfg.SessionSecret = env("MUDP_SESSION_SECRET", "")

@@ -77,6 +77,19 @@ func sanitizePathPart(s string) string {
 	}, s)
 }
 
+// cleanUserPath resolves a user-supplied relative path against root and refuses
+// anything that escapes it. Two checks are needed, not one:
+//
+//   - lexically, so "../.." cannot climb out; and
+//   - after symlink resolution, because a lexical check alone only inspects the
+//     final component. Every user's netdisk is bind-mounted into their own
+//     containers (as /workspace), where they are root and can create links
+//     freely: `ln -s / pwn` then "pwn/etc/shadow" passes a lexical check and an
+//     isSymlink() test on the leaf, while the open still follows the link out to
+//     the host filesystem. The same applies to managed volumes.
+//
+// It returns the symlink-resolved absolute path, so callers act on the location
+// that was actually validated.
 func cleanUserPath(root, rel string) (string, string, error) {
 	rel = strings.TrimPrefix(filepath.Clean("/"+rel), string(filepath.Separator))
 	full := filepath.Join(root, rel)
@@ -88,10 +101,59 @@ func cleanUserPath(root, rel string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	if fullAbs != rootAbs && !strings.HasPrefix(fullAbs, rootAbs+string(filepath.Separator)) {
+	if !pathWithin(rootAbs, fullAbs) {
 		return "", "", fmt.Errorf("invalid path")
 	}
-	return fullAbs, rel, nil
+	// The root itself may legitimately sit behind a symlink (e.g. a netdisk path
+	// pointing at a mounted disk), so resolve both sides before comparing.
+	resolvedRoot, err := resolveExistingPath(rootAbs)
+	if err != nil {
+		return "", "", err
+	}
+	resolvedFull, err := resolveExistingPath(fullAbs)
+	if err != nil {
+		return "", "", err
+	}
+	if !pathWithin(resolvedRoot, resolvedFull) {
+		return "", "", fmt.Errorf("invalid path")
+	}
+	return resolvedFull, rel, nil
+}
+
+// pathWithin reports whether p is root itself or lives underneath it.
+func pathWithin(root, p string) bool {
+	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
+}
+
+// resolveExistingPath returns p with every symlink component resolved. Paths
+// that do not exist yet are normal here — mkdir, rename and upload targets are
+// all created after validation — so when EvalSymlinks fails the deepest
+// existing ancestor is resolved and the remaining components are appended
+// verbatim. Those trailing components cannot themselves be links: they do not
+// exist.
+//
+// A resolved-then-open sequence is still theoretically racy (a component could
+// be swapped for a symlink in between), but the window requires the attacker to
+// win a race inside their own directory, and closing it fully needs
+// per-component openat(O_NOFOLLOW), which has no portable Windows equivalent.
+func resolveExistingPath(p string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(p)
+	if err == nil {
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	parent := filepath.Dir(p)
+	if parent == p {
+		// Reached the filesystem root without finding anything that exists.
+		return p, nil
+	}
+	resolvedParent, err := resolveExistingPath(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(p)), nil
 }
 
 func (a *App) netdiskList(w http.ResponseWriter, r *http.Request) {
@@ -849,10 +911,10 @@ func (a *App) netdiskSharePage(w http.ResponseWriter, r *http.Request) {
 		raw, err = fs.ReadFile(web.Files, "share.html")
 	}
 	if err == nil && len(raw) > 0 {
-		html := string(raw)
-		// Inject the token into a meta tag and a global constant for the page JS.
-		html = strings.Replace(html, `<meta name="share-token" content=""`, fmt.Sprintf(`<meta name="share-token" content="%s"`, escapeHTMLAttr(token)), 1)
-		html = strings.Replace(html, "window.__SHARE_TOKEN__ = \"\"", fmt.Sprintf("window.__SHARE_TOKEN__ = %q", token), 1)
+		// Inject the token into the meta tag share.js reads. It used to also be
+		// written into an inline <script>, which would have forced 'unsafe-inline'
+		// into the page CSP for no benefit.
+		html := strings.Replace(string(raw), `<meta name="share-token" content=""`, fmt.Sprintf(`<meta name="share-token" content="%s"`, escapeHTMLAttr(token)), 1)
 		_, _ = w.Write([]byte(html))
 		return
 	}
@@ -1118,6 +1180,29 @@ func (a *App) netdiskSharesDeleteAdmin(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]bool{"ok": true}, a.db.DeleteNetdiskShares(req.Tokens, 0, true))
 }
 
+// isExecutableContentType reports whether a Content-Type would let the response
+// body run as code in the panel's origin if a browser rendered it directly.
+// Such a body is always sent as a download, never inline.
+func isExecutableContentType(ct string) bool {
+	base := strings.TrimSpace(strings.ToLower(ct))
+	if i := strings.IndexByte(base, ';'); i >= 0 {
+		base = strings.TrimSpace(base[:i])
+	}
+	switch base {
+	case "text/html", "application/xhtml+xml", "application/xml", "text/xml",
+		"application/javascript", "text/javascript", "application/x-javascript":
+		return true
+	}
+	return false
+}
+
+// needsSandbox reports whether an inline body must be isolated into an opaque
+// origin. SVG is the case that matters: it displays fine sandboxed but can
+// otherwise carry script.
+func needsSandbox(ct string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "image/svg")
+}
+
 func serveFileDownload(w http.ResponseWriter, r *http.Request, full, name string) {
 	// Refuse symlinks so a user cannot download arbitrary host files.
 	if isSymlink(full) {
@@ -1137,6 +1222,10 @@ func serveFileDownload(w http.ResponseWriter, r *http.Request, full, name string
 	}
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	w.Header().Set("Content-Disposition", contentDisposition(name))
+	// An attachment is not rendered, but nosniff plus a neutral type removes any
+	// remaining chance of the browser deciding otherwise.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
@@ -1163,8 +1252,28 @@ func serveFileInline(w http.ResponseWriter, r *http.Request, full, name string) 
 	// Browsers fall back to download when the type is unknown; sniff a friendly
 	// Content-Type for previewable extensions so <video>/<img>/pdf.js work.
 	ct := sniffContentType(full, name)
+	if isExecutableContentType(ct) {
+		// Never hand the browser a live document on this origin. Anything that
+		// could execute is downloaded instead of rendered.
+		serveFileDownload(w, r, full, name)
+		return
+	}
 	if ct != "" {
 		w.Header().Set("Content-Type", ct)
+	}
+	// nosniff keeps the browser from upgrading a text/plain body to text/html by
+	// content sniffing, which would reopen the XSS path the type map closes.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if needsSandbox(ct) {
+		// SVG renders fine without scripting; the sandbox drops it into an opaque
+		// origin so an embedded <script> cannot touch the panel's session.
+		w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:")
+	} else {
+		// Set an explicit policy so the app-wide CSP (which forbids objects, to
+		// harden the console itself) is not applied to a media body and does not
+		// interfere with the browser's PDF/video rendering. The type here is
+		// already guaranteed non-executable, so no script directive is needed.
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'")
 	}
 	w.Header().Set("Cache-Control", "private, max-age=0")
 	// "inline" with an ASCII fallback filename so the browser tab title is sane
@@ -1186,7 +1295,9 @@ var previewableContentType = map[string]string{
 	".gif":  "image/gif",
 	".webp": "image/webp",
 	".bmp":  "image/bmp",
-	".svg":  "image/svg+xml",
+	// SVG is XML and can carry <script>. It is still previewable, but only
+	// because serveFileInline sandboxes it — see executableContentType.
+	".svg": "image/svg+xml",
 	// Audio
 	".mp3":  "audio/mpeg",
 	".wav":  "audio/wav",
@@ -1216,12 +1327,19 @@ var textishContentType = map[string]string{
 	".yml":       "text/plain; charset=utf-8",
 	".yaml":      "text/plain; charset=utf-8",
 	".toml":      "text/plain; charset=utf-8",
-	".xml":       "text/xml; charset=utf-8",
-	".html":      "text/html; charset=utf-8",
-	".htm":       "text/html; charset=utf-8",
-	".css":       "text/css; charset=utf-8",
-	".js":        "text/javascript; charset=utf-8",
-	".mjs":       "text/javascript; charset=utf-8",
+	// Markup and script sources are shown as plain text, never as a live
+	// document. Serving user-uploaded HTML as text/html on this origin is a
+	// stored-XSS primitive: /api/netdisk/share/raw is public, so anyone could
+	// upload a page, share the link, and run script in the panel's origin
+	// against whoever opens it — reading the (deliberately non-HttpOnly) CSRF
+	// cookie and acting as that user.
+	".xml":       "text/plain; charset=utf-8",
+	".html":      "text/plain; charset=utf-8",
+	".htm":       "text/plain; charset=utf-8",
+	".xhtml":     "text/plain; charset=utf-8",
+	".css":       "text/plain; charset=utf-8",
+	".js":        "text/plain; charset=utf-8",
+	".mjs":       "text/plain; charset=utf-8",
 	".ts":        "text/plain; charset=utf-8",
 	".go":        "text/plain; charset=utf-8",
 	".py":        "text/plain; charset=utf-8",
@@ -1259,6 +1377,13 @@ func sniffContentType(full, name string) string {
 			buf := make([]byte, 512)
 			n, _ := head.Read(buf)
 			ct := http.DetectContentType(buf[:n])
+			// DetectContentType reports text/html for an extensionless file whose
+			// body looks like markup, so the text/* branch must not pass that
+			// through — an upload named "readme" holding <script> would otherwise
+			// be rendered as a document.
+			if isExecutableContentType(ct) {
+				return "text/plain; charset=utf-8"
+			}
 			if strings.HasPrefix(ct, "image/") ||
 				strings.HasPrefix(ct, "audio/") ||
 				strings.HasPrefix(ct, "video/") ||
@@ -1380,6 +1505,16 @@ func renderShareUnavailable(w http.ResponseWriter, expired bool) {
 
 func renderFallbackSharePage(w http.ResponseWriter, token string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// This page carries its own inline script, so it needs a nonce-based policy
+	// rather than the app-wide 'script-src self'. The nonce is per-response, so
+	// only this exact block runs — an injected one would not carry it.
+	nonce, err := randomToken()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "failed to render share page")
+		return
+	}
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 	_, _ = fmt.Fprintf(w, `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MUDP Netdisk Share</title><style>
@@ -1389,7 +1524,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",s
 button,a.btn{display:inline-flex;align-items:center;min-height:32px;padding:0 12px;border-radius:7px;border:1px solid #e6e8f0;background:#fff;color:#1f2330;text-decoration:none;cursor:pointer}
 button.primary{background:#3370ff;color:#fff;border-color:#3370ff}table{width:100%%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #eef0f6;text-align:left}.hint{color:#8a90a0}
 </style></head><body><div class="wrap"><div class="card"><div class="head"><h2 id="title">Netdisk Share</h2><button class="primary" id="saveAll">Save to my netdisk</button></div><div class="body" id="body">Loading...</div></div></div>
-<script>
+<script nonce="%s">
 const token=%q;
 const ts=()=>Date.now();
 function esc(s){return String(s||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]))}
@@ -1397,7 +1532,7 @@ async function api(p,o){const r=await fetch(p,Object.assign({credentials:"same-o
 async function load(){try{const d=await api("/api/netdisk/share/public?token="+encodeURIComponent(token));document.getElementById("title").textContent=d.share.name+" (read only)";document.getElementById("body").innerHTML="<table><thead><tr><th>Name</th><th>Type</th><th>Size</th><th></th></tr></thead><tbody>"+d.items.map(f=>'<tr><td>'+esc(f.name)+'</td><td>'+(f.dir?'Folder':'File')+'</td><td>'+(f.dir?'-':f.size)+'</td><td><a class=\"btn\" href=\"/api/netdisk/share/download?token='+encodeURIComponent(token)+'&path='+encodeURIComponent(f.path)+'&ts='+ts()+'\">Download</a></td></tr>').join("")+"</tbody></table>";}catch(e){document.getElementById("body").innerHTML='<p class="hint">'+esc(e.message)+'</p>'}}
 document.getElementById("saveAll").onclick=async()=>{try{const d=await api("/api/netdisk/share/save",{method:"POST",body:JSON.stringify({token})});alert("Saved "+d.count+" item(s)");}catch(e){alert(e.message+"。请先登录 MUDP 后再保存。")}}
 load();
-</script></body></html>`, token)
+</script></body></html>`, nonce, token)
 }
 
 // escapeHTMLAttr escapes a string so it can be safely placed inside a double-quoted HTML attribute.

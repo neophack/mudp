@@ -14,8 +14,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
@@ -125,14 +127,27 @@ func (a *App) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(a.recoverPanic)
 	r.Use(middleware.RequestLogger)
+	r.Use(middleware.SecurityHeaders)
 
-	apiRateLimiter := middleware.DefaultAPIRateLimiter()
-	loginRateLimiter := middleware.StrictRateLimiter()
+	// Rate limiting keys on the client address. Behind a reverse proxy every
+	// request would otherwise share the proxy's address and one busy client
+	// could 429 everyone else — so the forwarding header is honoured, but only
+	// from peers the operator explicitly declared as proxies.
+	trusted, err := middleware.ParseTrustedProxies(a.cfg.TrustedProxies)
+	if err != nil {
+		log.Printf("WARNING: ignoring MUDP_TRUSTED_PROXIES: %v", err)
+		trusted, _ = middleware.ParseTrustedProxies("")
+	}
+	apiRateLimiter := middleware.DefaultAPIRateLimiter().TrustProxies(trusted)
+	loginRateLimiter := middleware.StrictRateLimiter().TrustProxies(trusted)
 
-	// Observability endpoints (no auth required).
+	// Liveness/readiness stay open so a load balancer can poll them; they reveal
+	// nothing beyond up/down. Metrics expose process internals, so they require
+	// an admin session rather than being world-readable on an internet-facing
+	// listener.
 	r.Get("/healthz", a.healthz)
 	r.Get("/readyz", a.readyz)
-	r.Get("/metrics", a.metrics)
+	r.Handle("/metrics", a.requireRole(rankAdmin, a.metrics))
 
 	// Public auth surface (no session required).
 	r.With(loginRateLimiter.Middleware).Get("/api/login", a.login) // POST also handled below
@@ -1532,6 +1547,16 @@ func (a *App) containerTerminal(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "container is not yours")
 		return
 	}
+	// A WebSocket handshake is a GET, so the CSRF middleware exempts it, and the
+	// same-origin policy does not apply to WebSocket connections. Without an
+	// Origin check the only thing standing between a hostile page and a shell in
+	// the visitor's container is the session cookie's SameSite=Lax attribute —
+	// an implicit dependency that would break the moment the cookie is relaxed
+	// to SameSite=None for a cross-subdomain or reverse-proxy deployment.
+	if !sameOriginWS(r) {
+		writeErr(w, http.StatusForbidden, "cross-origin websocket rejected")
+		return
+	}
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -1720,6 +1745,23 @@ const (
 )
 
 var wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+// sameOriginWS reports whether a WebSocket upgrade came from the page the
+// server itself serves. A browser always sends Origin on a WebSocket handshake,
+// so a present-but-different value is a cross-site attempt and is refused. An
+// absent header means a non-browser client (CLI tooling, health checks), which
+// carries no ambient cookie authority and is allowed through.
+func sameOriginWS(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
+}
 
 // wsHandshake completes the RFC 6455 server opening handshake on a hijacked conn.
 func wsHandshake(bufRW *bufio.ReadWriter, key string) error {
