@@ -175,6 +175,31 @@ test("containers: state filters, select-all, batch toolbar and every row action"
   h.assertClean("the containers page");
 });
 
+test("containers: the terminal is a real pty, not just a modal that opens", async ({ page }) => {
+  test.setTimeout(60000);
+  test.skip(!fixture.hasAdminContainer, "Docker did not provide a container to open a terminal on");
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "containers");
+
+  const adminRow = page.locator("#view tbody tr", { hasText: `e2e-admin-${fixture.runId}` });
+  await adminRow.locator('button[data-act="terminal"]').click();
+  await expect(page.locator(".modal-backdrop.terminal-modal")).toBeVisible({ timeout: 20000 });
+  await expect(page.locator("#termConnStat")).toContainText("Connected", { timeout: 20000 });
+
+  // Type a command a fresh shell could never have printed on its own and check
+  // it round-trips through the WebSocket bridge into the container's real pty
+  // and back — proving the terminal actually executes commands, not merely
+  // that the modal renders.
+  await page.click("#termBox");
+  await page.keyboard.type("echo MUDP_E2E_TERMINAL_OK");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#termBox")).toContainText("MUDP_E2E_TERMINAL_OK", { timeout: 15000 });
+
+  await closeModals(page);
+  h.assertClean("the container terminal");
+});
+
 test("containers: the New Container wizard opens, exposes its fields and closes", async ({ page }) => {
   const h = installPage(page);
   await login(page, server.adminUser, server.adminPassword);

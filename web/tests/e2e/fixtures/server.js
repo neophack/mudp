@@ -36,10 +36,13 @@ async function waitForPort(port, timeout = 30000) {
 
 // startServer boots a throwaway mudp instance against a fresh SQLite database.
 // Options let a spec pick its own port so two spec files never fight over one.
+// Passing an explicit adminPassword of "" (rather than just omitting it) skips
+// the bootstrap admin entirely, leaving the server in its first-run state so a
+// spec can drive the setup wizard.
 export async function startServer(opts = {}) {
   const port = opts.port || 19000;
   const adminUser = opts.adminUser || "admin";
-  const adminPassword = opts.adminPassword || "e2e-secret";
+  const adminPassword = "adminPassword" in opts ? opts.adminPassword : "e2e-secret";
 
   // Ensure the binary exists.
   if (!fs.existsSync(binaryPath)) {

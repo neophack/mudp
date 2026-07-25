@@ -3,11 +3,12 @@ setlocal enabledelayedexpansion
 
 :: mudp web UI click-through test runner
 :: Builds the binary, then drives a real browser through every sidebar tab and
-:: every page-level button as both an admin and a plain "user" account.
+:: every page-level button as both an admin and a plain "user" account, plus
+:: the first-run setup wizard.
 :: Usage: test-ui.bat [admin|user]
-::   admin - run only the admin console click-through
+::   admin - run the admin console click-through plus the setup wizard
 ::   user  - run only the user console click-through
-::   (none) - run both
+::   (none) - run everything
 
 set "SCOPE=%~1"
 
@@ -32,8 +33,8 @@ if errorlevel 1 (
 
 :: Forward slashes only: Playwright matches spec arguments as regexes against
 :: POSIX-style paths, so a backslash here silently matches zero tests.
-set "SPECS=tests/e2e/admin-console.spec.js tests/e2e/user-console.spec.js"
-if /I "%SCOPE%"=="admin" set "SPECS=tests/e2e/admin-console.spec.js"
+set "SPECS=tests/e2e/admin-console.spec.js tests/e2e/user-console.spec.js tests/e2e/setup-wizard.spec.js"
+if /I "%SCOPE%"=="admin" set "SPECS=tests/e2e/admin-console.spec.js tests/e2e/setup-wizard.spec.js"
 if /I "%SCOPE%"=="user" set "SPECS=tests/e2e/user-console.spec.js"
 
 pushd web
