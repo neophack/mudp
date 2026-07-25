@@ -40,8 +40,8 @@ function networkRow(n) {
       `<td>${n.containers || 0}</td>` +
       `<td><div class="secondary-line">${escapeHtml(n.owner || "system")}</div></td>` +
       `<td class="actions">` +
-        `<button class="icon" title="Details" data-net-name="${escapeHtml(n.name)}" data-net-fullname="${escapeHtml(n.fullName || n.name)}">ℹ</button>` +
-        (canMutate() && !sys ? `<button class="icon danger" title="Delete" data-net-name="${escapeHtml(n.name)}" data-net-fullname="${escapeHtml(n.fullName || n.name)}">✕</button>` : "") +
+        `<button class="icon" title="Details" data-net-inspect data-net-name="${escapeHtml(n.name)}" data-net-fullname="${escapeHtml(n.fullName || n.name)}">ℹ</button>` +
+        (canMutate() && !sys ? `<button class="icon danger" title="Delete" data-net-delete data-net-name="${escapeHtml(n.name)}" data-net-fullname="${escapeHtml(n.fullName || n.name)}">✕</button>` : "") +
       `</td>` +
     `</tr>`
   );

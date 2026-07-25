@@ -171,7 +171,7 @@ func (d *Client) gatherSystemInfo(ctx context.Context, username string) SystemIn
 	if nets, err := d.c.NetworkList(ctx, types.NetworkListOptions{}); err == nil {
 		count := 0
 		for _, n := range nets {
-			if isSystemNetworkName(n.Name) {
+			if IsSystemNetworkName(n.Name) {
 				count++
 				continue
 			}

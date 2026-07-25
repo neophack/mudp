@@ -103,13 +103,17 @@ func (a *App) networkDelete(w http.ResponseWriter, r *http.Request) {
 
 // resolveNetworkName normalizes a network identifier: if it lacks the mudp-
 // prefix it's treated as a display name owned by username (matching the
-// create/delete endpoints' backward-compat behavior).
+// create/delete endpoints' backward-compat behavior). Docker's own built-in
+// networks (bridge/host/none) are passed through unchanged — every user can
+// see these rows in the Networks list and open their (read-only) details, so
+// rewriting "bridge" into "mudp-<user>-bridge" would look up a network that
+// never exists and turn a routine detail view into a server error.
 func resolveNetworkName(raw, username string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
-	if strings.HasPrefix(raw, dockerx.Prefix) {
+	if strings.HasPrefix(raw, dockerx.Prefix) || dockerx.IsSystemNetworkName(raw) {
 		return raw
 	}
 	return dockerx.NetworkFullName(username, raw)

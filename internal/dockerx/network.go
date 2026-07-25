@@ -130,13 +130,14 @@ func (d *Client) ListNetworks(ctx context.Context, username string, admin bool) 
 // isSystemNetwork reports whether a network is one of Docker's built-in
 // defaults worth surfacing in the UI. These cannot be deleted via mudp.
 func isSystemNetwork(name, driver string) bool {
-	return isSystemNetworkName(name)
+	return IsSystemNetworkName(name)
 }
 
-// isSystemNetworkName reports whether a network name is one of Docker's
-// built-in defaults (bridge, host, none). Shared by the Networks view and the
-// dashboard tile so the two counts agree.
-func isSystemNetworkName(name string) bool {
+// IsSystemNetworkName reports whether a network name is one of Docker's
+// built-in defaults (bridge, host, none). Shared by the Networks view, the
+// dashboard tile, and the server package's inspect-name resolution so all
+// three agree on what counts as a system network.
+func IsSystemNetworkName(name string) bool {
 	switch name {
 	case "bridge", "host", "none":
 		return true
