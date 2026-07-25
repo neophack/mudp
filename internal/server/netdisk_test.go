@@ -1,6 +1,7 @@
 package server
 
 import (
+	"mime/multipart"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,6 +74,49 @@ func TestNetdiskCopyOneIntoDirectory(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(dstDir, "b.txt")); err != nil || string(got) != "world" {
 		t.Fatalf("move into dir result = %q, %v", got, err)
+	}
+}
+
+// TestUploadDestPath covers the folder-upload regression: Go strips directory
+// information from a multipart part's filename, so the nested path has to come
+// from the parallel "paths" field or the whole tree lands flat in one folder.
+func TestUploadDestPath(t *testing.T) {
+	dir := t.TempDir()
+	// Part filenames as Go delivers them: already reduced to a base name.
+	files := []*multipart.FileHeader{
+		{Filename: "b.txt"},
+		{Filename: "c.txt"},
+		{Filename: "d.txt"},
+		{Filename: "e.txt"},
+	}
+	relPaths := []string{"top/sub/b.txt", "", "../../escape.txt"}
+
+	cases := []struct {
+		i    int
+		want string // relative to dir
+	}{
+		{0, filepath.Join("top", "sub", "b.txt")}, // nested path preserved
+		{1, "c.txt"},                              // empty entry: fall back to the part filename
+		{2, "escape.txt"},                         // traversal is clamped inside dir
+		{3, "e.txt"},                              // no entry at all: fall back to the filename
+	}
+	for _, c := range cases {
+		got, err := uploadDestPath(dir, relPaths, c.i, files[c.i])
+		if err != nil {
+			t.Fatalf("uploadDestPath(%d): %v", c.i, err)
+		}
+		want := filepath.Join(dir, c.want)
+		if got != want {
+			t.Errorf("uploadDestPath(%d) = %q, want %q", c.i, got, want)
+		}
+	}
+
+	// A value naming no file must be rejected rather than written over the
+	// destination directory itself.
+	for _, bad := range []string{".", "/", "../.."} {
+		if _, err := uploadDestPath(dir, []string{bad}, 0, &multipart.FileHeader{Filename: ""}); err == nil {
+			t.Errorf("uploadDestPath(%q) = nil error, want rejection", bad)
+		}
 	}
 }
 

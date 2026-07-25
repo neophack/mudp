@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -324,6 +325,37 @@ func netdiskCopyOne(from, to string, move bool, policy string) error {
 	return copyPathWithPolicy(from, to, policy)
 }
 
+// uploadDestPath resolves where the i-th uploaded file part lands under dir.
+// relPaths holds the client-sent relative paths ("sub/dir/file.txt") for a
+// folder upload, one per part in part order; a missing or empty entry falls
+// back to the part's own filename, which Go has already stripped to a base
+// name. The result is confined to dir by cleanUserPath, so a hostile "paths"
+// value cannot escape the netdisk root, and must name a file inside it — a
+// value that resolves to dir itself (empty, ".", "sub/") is rejected rather
+// than turned into a write over the directory.
+func uploadDestPath(dir string, relPaths []string, i int, fh *multipart.FileHeader) (string, error) {
+	name := fh.Filename
+	if i < len(relPaths) {
+		if p := strings.TrimSpace(relPaths[i]); p != "" {
+			name = p
+		}
+	}
+	dstPath, _, err := cleanUserPath(dir, name)
+	if err != nil {
+		return "", err
+	}
+	// Compare against the canonical form of dir (not the raw string) so a value
+	// that normalizes back to the directory — "", ".", "/", "../.." — is caught.
+	dirPath, _, err := cleanUserPath(dir, "")
+	if err != nil {
+		return "", err
+	}
+	if dstPath == dirPath {
+		return "", fmt.Errorf("invalid file name")
+	}
+	return dstPath, nil
+}
+
 func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	if !canMutate(u) {
@@ -354,14 +386,20 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "no files uploaded")
 		return
 	}
+	// Folder uploads carry their in-folder path in a parallel "paths" field,
+	// one value per file part in the same order. It cannot ride on the part's
+	// filename: RFC 7578 §4.2 forbids directory information there and Go's
+	// multipart parser enforces it by reducing Filename to its base name, which
+	// would flatten "docs/a/b.txt" into "b.txt".
+	relPaths := r.MultipartForm.Value["paths"]
 
 	// Pre-compute how much additional space is required, accounting for
 	// partially-uploaded files that may be resumed.
 	used := dirSize(root)
 	var additional int64
 	projected := used
-	for _, fh := range files {
-		dstPath, _, err := cleanUserPath(dir, fh.Filename)
+	for i, fh := range files {
+		dstPath, err := uploadDestPath(dir, relPaths, i, fh)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -389,13 +427,13 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for _, fh := range files {
+	for i, fh := range files {
 		src, err := fh.Open()
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		dstPath, _, err := cleanUserPath(dir, fh.Filename)
+		dstPath, err := uploadDestPath(dir, relPaths, i, fh)
 		if err != nil {
 			_ = src.Close()
 			writeErr(w, http.StatusBadRequest, err.Error())

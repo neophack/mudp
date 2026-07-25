@@ -618,12 +618,17 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 .upload-bar { margin: 8px 0 6px; }
 .upload-bar .bar-fill { background: var(--accent); }
 .upload-meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+/* Flex column so rows can be regrouped with the CSS order property (uploading
+   first, then queued, then finished) without touching the DOM. The list scrolls
+   on its own so a large folder cannot push the active rows past the viewport. */
 .upload-file-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
   border-top: 1px solid var(--line-soft);
   padding-top: 8px;
+  max-height: 44vh;
+  overflow-y: auto;
 }
 .upload-file-row { display: flex; flex-direction: column; gap: 3px; }
 .upload-file-head {

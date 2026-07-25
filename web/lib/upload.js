@@ -68,6 +68,12 @@ export function fmtSpeed(bps) {
 //   updateOverall({percent,speedBps,etaSec}) — aggregate header metrics
 //   close()                           — remove the card
 // Only one overlay exists at a time; calling show again replaces it.
+// Row ordering inside the file list, which is a flex column: files currently on
+// the wire float to the top, the queue keeps its pick order below them, and
+// settled files sink to the bottom. This uses the CSS order property rather
+// than moving DOM nodes so a bar in flight never restarts its width transition.
+const ROW_ORDER = { uploading: 0, pending: 1, done: 2, error: 2 };
+
 export function showUploadOverlay(entries) {
   const list = [...(entries || [])];
   hideUploadOverlay();
@@ -77,7 +83,7 @@ export function showUploadOverlay(entries) {
     const f = entry?.file ?? entry; // accept both {file,relPath} and raw File
     const name = entry?.relPath || entry?.webkitRelativePath || f.name;
     return (
-      `<div class="upload-file-row" data-idx="${i}">` +
+      `<div class="upload-file-row" data-idx="${i}" style="order:${ROW_ORDER.pending}">` +
         `<div class="upload-file-head">` +
           `<span class="upload-file-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>` +
           `<span class="upload-file-size">${fmtBytes(f.size)}</span>` +
@@ -95,6 +101,7 @@ export function showUploadOverlay(entries) {
   document.body.appendChild(el);
 
   const rowEls = el.querySelectorAll(".upload-file-row");
+  const listEl = el.querySelector(".upload-file-list");
   const fill = el.querySelector(".upload-bar > .bar-fill");
   const meta = el.querySelector(".upload-meta");
   const title = el.querySelector(".upload-title");
@@ -104,8 +111,14 @@ export function showUploadOverlay(entries) {
     setStatus(index, status, msg) {
       const row = rowEls[index];
       if (!row) return;
+      // setStatus("uploading") repeats on every progress tick; only react to an
+      // actual transition so the list is not yanked back to the top while the
+      // user is scrolling through a long queue.
+      const wasUploading = row.classList.contains("is-uploading");
       row.classList.remove("is-uploading", "is-done", "is-error");
       row.classList.add(`is-${status}`);
+      row.style.order = ROW_ORDER[status] ?? ROW_ORDER.pending;
+      if (status === "uploading" && !wasUploading) listEl.scrollTop = 0;
       const s = row.querySelector(".upload-file-status");
       if (status === "done") s.textContent = "Done";
       else if (status === "error") s.textContent = msg || "Failed";

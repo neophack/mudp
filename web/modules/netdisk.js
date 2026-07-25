@@ -871,11 +871,14 @@ async function submitShare() {
 // while one is running would race it.
 let uploading = false;
 
-// Per-batch limits so a single multipart POST stays well under the 2 GiB
-// ParseMultipartForm cap (and any reverse-proxy body limit) and parses fast.
-// A large folder upload is split across several requests of <= this size.
+// Per-batch limits. At most UPLOAD_BATCH_FILES files are in flight at once and
+// the next batch only starts after the current one finishes, so a big folder
+// uploads as a queue rather than one giant request. The byte cap keeps a batch
+// of large files well under the 2 GiB ParseMultipartForm cap (and any reverse
+// proxy body limit); it can make a batch smaller than the file cap, never
+// larger.
 const UPLOAD_BATCH_BYTES = 256 << 20; // 256 MiB
-const UPLOAD_BATCH_FILES = 500;
+const UPLOAD_BATCH_FILES = 5;
 
 // relPathFromWebkit maps a File produced by <input webkitdirectory> onto its
 // in-netdisk relative path. Browsers set webkitRelativePath as
@@ -956,10 +959,11 @@ function walkEntry(entry, prefix, out) {
 // inside the current dir keeps its folder). Renamed from uploadFiles so the
 // bindEvents scope can use a local `uploadFiles` DOM handle without colliding.
 //
-// Files are sent in batches of <= UPLOAD_BATCH_BYTES / UPLOAD_BATCH_FILES so a
-// whole folder uploads as a handful of multipart requests — not one per file.
-// This avoids "too many requests" on large folders while the backend still
-// reconstructs nested directories from each part's filename.
+// Files are sent in batches of <= UPLOAD_BATCH_FILES (and <= UPLOAD_BATCH_BYTES)
+// and the batches run strictly one after another: a batch is only started once
+// the previous one has been answered, so at most a handful of files are ever in
+// flight no matter how large the picked folder is. The backend reconstructs the
+// nested directories from the "paths" field of each request.
 async function uploadFilesHandler(entries, path) {
   if (!entries || !entries.length) return;
   if (!canMutate()) return toast("Read-only account cannot upload");
@@ -1001,11 +1005,24 @@ async function uploadFilesHandler(entries, path) {
   if (cur.length) batches.push(cur);
 
   for (const idxs of batches) {
+    // Every previous batch has settled by now (the loop awaits), so ok+failed
+    // is exactly how many files are behind this one in the queue.
+    const first = ok + failed + 1;
+    overlay.setLabel(`Uploading ${first}-${first + idxs.length - 1} of ${list.length} file(s)…`);
+    // Flag the batch as active before the request goes out so its rows move to
+    // the top of the card immediately, rather than on the first progress tick
+    // (which never fires for very small files).
+    for (const i of idxs) overlay.setStatus(i, "uploading");
+
     const fd = new FormData();
     fd.append("path", path);
     for (const i of idxs) {
-      // The filename on the part carries the relative path; the backend's
-      // filepath.Dir reconstructs any needed subdirectories.
+      // The relative path travels in its own "paths" field, one value per file
+      // part in the same order: a part's filename cannot carry directories
+      // (RFC 7578 §4.2), and the backend's multipart parser strips them, so
+      // relying on the filename alone would flatten "sub/f.txt" to "f.txt".
+      // The filename is still set so it stays a sensible fallback.
+      fd.append("paths", list[i].relPath);
       fd.append("files", list[i].file, list[i].relPath);
     }
     try {
