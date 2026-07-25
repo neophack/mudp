@@ -55,9 +55,31 @@ if [ -n "$DNS_HIJACK_HND" ]; then
 	iptables -t nat -D PREROUTING "$DNS_HIJACK_HND" 2>/dev/null
 fi
 
-# 修复 4:确保 MASQUERADE 作用在正确的 WAN 口(uci 的 wan.masq=1 应已生成,
-# 但若 ifname 被改过,fw3 可能没跟上。兜底插一条)。
-# 先删旧的 mudp masq(幂等),再按当前 WAN_IF 插。
+# 修复 4:确保 MASQUERADE 作用在正确的 WAN 口。
+#   sulinggg 基础镜像自带一条 MASQUERADE 作用在 eth0(镜像默认 WAN=eth0),但双臂拓扑下
+#   eth0 是 LAN 口!这条错误的 MASQUERADE 会把 LAN 容器的包 NAT 到 eth0(LAN 侧),导致
+#   出公网时通时断、源地址错乱。必须删掉它,只保留 WAN 口(eth1)上的 MASQUERADE。
+#
+#   做法:遍历 POSTROUTING 链,删掉所有"出接口非 WAN_IF"的 MASQUERADE(清掉镜像默认的
+#   eth0 那条);再确保 WAN_IF 上有一条。
+echo "--- 清理非 WAN 口的 MASQUERADE(镜像默认 eth0 那条)---"
+for i in $(seq 1 10); do
+	# 取一条 MASQUERADE 的行号 + 出接口
+	line=$(iptables -t nat -L POSTROUTING -n --line-numbers 2>/dev/null \
+		| awk '$2=="MASQUERADE"{print $1, $7; exit}')
+	[ -z "$line" ] && break
+	num=$(echo "$line" | awk '{print $1}')
+	outif=$(echo "$line" | awk '{print $2}')
+	if [ "$outif" != "$WAN_IF" ]; then
+		iptables -t nat -D POSTROUTING "$num" 2>/dev/null \
+			&& echo "  deleted MASQUERADE on $outif (非WAN口)" \
+			|| break
+	else
+		break   # 第一条已在 WAN_IF 上,后续不重复删
+	fi
+done
+
+# 兜底:确保 WAN_IF 上有 MASQUERADE(幂等:先删后插)。
 iptables -t nat -D POSTROUTING -o "$WAN_IF" -j MASQUERADE -m comment --comment "mudp-masq" 2>/dev/null
 iptables -t nat -A POSTROUTING -o "$WAN_IF" -j MASQUERADE -m comment --comment "mudp-masq"
 
