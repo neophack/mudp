@@ -7,6 +7,9 @@
 // destroying anything. Tests that mean to mutate opt in via withConfirm().
 
 import { test, expect } from "@playwright/test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { startServer, seed } from "./fixtures/server.js";
 import {
   ADMIN_TABS, ADMIN_ONLY_TABS, CRAWLER_SKIP_BUTTONS, installPage, login, logout,
@@ -334,6 +337,32 @@ test("stacks: the compose editor opens with a sample project and closes without 
   h.assertClean("the stacks page");
 });
 
+test("stacks: a non-admin cannot save a compose file with privileged:true", async ({ page }) => {
+  const h = installPage(page);
+  // Admins bypass ValidateCompose entirely — they can already reach the same
+  // power through the image/host lifecycle endpoints — so this has to run as
+  // the seeded plain "user" account to actually exercise the guardrail e15d292
+  // added (stacks run via `docker compose up`, which never goes through
+  // CreateContainer's own restrictions).
+  await login(page, fixture.user.username, fixture.user.password);
+  await openTab(page, "stacks");
+
+  await page.click("#newStackBtn");
+  const form = page.locator("#stackForm");
+  await expect(form).toBeVisible();
+  await form.locator("[name='name']").fill(`ui-stack-priv-${fixture.runId}`);
+  await form.locator("[name='composeYaml']").fill("services:\n  web:\n    image: nginx:alpine\n    privileged: true\n");
+  await page.click("#saveStack");
+
+  // Rejected server-side before any container is ever created; the editor
+  // stays open with the bad YAML still in it rather than silently closing.
+  await expect(page.locator(".toast").last()).toContainText("privileged containers are not allowed", { timeout: 15000 });
+  await expect(form).toBeVisible();
+  await closeModals(page);
+
+  h.assertClean("the privileged-compose rejection");
+});
+
 test("netdisk: folder create, navigation, selection, copy/move pickers, share and delete", async ({ page }) => {
   test.setTimeout(180000);
   const h = installPage(page);
@@ -392,6 +421,198 @@ test("netdisk: folder create, navigation, selection, copy/move pickers, share an
   });
 
   h.assertClean("the netdisk page");
+});
+
+test("netdisk: an uploaded file round-trips its real bytes through download", async ({ page }) => {
+  test.setTimeout(60000);
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "netdisk");
+
+  const fileName = `ui-upload-${fixture.runId}.txt`;
+  const content = `hello from the e2e suite — ${fixture.runId}\n`;
+  const tmpPath = path.join(os.tmpdir(), fileName);
+  fs.writeFileSync(tmpPath, content);
+
+  try {
+    await page.setInputFiles("#uploadFiles", tmpPath);
+    const row = page.locator("table.netdisk-table tbody tr", { hasText: fileName });
+    await expect(row).toBeVisible({ timeout: 20000 });
+
+    // Select just this file and download it back — the same round trip a real
+    // user relies on — then diff the bytes against what was uploaded, rather
+    // than only checking that a row with the right name showed up.
+    await row.locator(".netdisk-row-check").check();
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 20000 }),
+      page.click("#batchDownload"),
+    ]);
+    expect(fs.readFileSync(await download.path(), "utf8")).toBe(content);
+    await row.locator(".netdisk-row-check").uncheck();
+
+    await h.withConfirm(async () => {
+      await page.locator(`button[data-del$="${fileName}"]`).click();
+      await expect(row).toHaveCount(0, { timeout: 20000 });
+    });
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
+  }
+
+  h.assertClean("uploading and downloading a file");
+});
+
+test("netdisk: an uploaded folder keeps its nested structure intact", async ({ page }) => {
+  test.setTimeout(60000);
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "netdisk");
+
+  const topName = `ui-folder-upload-${fixture.runId}`;
+  const tmpRoot = path.join(os.tmpdir(), topName);
+  fs.mkdirSync(path.join(tmpRoot, "sub"), { recursive: true });
+  fs.writeFileSync(path.join(tmpRoot, "top.txt"), "top-level file\n");
+  fs.writeFileSync(path.join(tmpRoot, "sub", "nested.txt"), "nested file\n");
+
+  try {
+    await page.setInputFiles("#uploadFolder", tmpRoot);
+    const topRow = page.locator("table.netdisk-table tbody tr", { hasText: topName });
+    await expect(topRow).toBeVisible({ timeout: 20000 });
+
+    // Descend into the uploaded tree: the top-level file and the nested
+    // subfolder must both have survived in their original place, proving the
+    // upload preserved structure instead of flattening everything into one dir.
+    await page.locator(`button[data-open$="${topName}"]`).click();
+    await expect(page.locator("table.netdisk-table tbody tr", { hasText: "top.txt" })).toBeVisible({ timeout: 20000 });
+    await expect(page.locator("table.netdisk-table tbody tr", { hasText: "sub" })).toBeVisible();
+    await page.locator('button[data-open$="sub"]').click();
+    await expect(page.locator("table.netdisk-table tbody tr", { hasText: "nested.txt" })).toBeVisible({ timeout: 20000 });
+
+    await page.click("#upDir");
+    await page.click("#upDir");
+    await h.withConfirm(async () => {
+      await page.locator(`button[data-del$="${topName}"]`).click();
+      await expect(topRow).toHaveCount(0, { timeout: 20000 });
+    });
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+
+  h.assertClean("uploading a folder");
+});
+
+test("netdisk: sharing a file makes a code-gated public link that serves the real bytes", async ({ page, browser }) => {
+  test.setTimeout(60000);
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "netdisk");
+
+  const fileName = `ui-share-${fixture.runId}.txt`;
+  const content = `shared content — ${fixture.runId}\n`;
+  const tmpPath = path.join(os.tmpdir(), fileName);
+  fs.writeFileSync(tmpPath, content);
+
+  try {
+    await page.setInputFiles("#uploadFiles", tmpPath);
+    const row = page.locator("table.netdisk-table tbody tr", { hasText: fileName });
+    await expect(row).toBeVisible({ timeout: 20000 });
+
+    await row.locator('button[title="Share"]').click();
+    await expect(page.locator(".modal-backdrop.netdisk-share")).toBeVisible();
+    // Leave the default "protect with an extraction code" on and create it.
+    await page.click("#shareCreate");
+    await expect(page.locator(".share-copy-chip code").nth(1)).toBeVisible({ timeout: 20000 });
+    const link = (await page.locator(".share-copy-chip code").nth(0).textContent()).trim();
+    const code = (await page.locator(".share-copy-chip code").nth(1).textContent()).trim();
+    await closeModals(page);
+
+    // A second, unauthenticated browser context stands in for a random visitor
+    // who was only ever handed the link — it has no mudp session or cookies.
+    const guestCtx = await browser.newContext();
+    const guestPage = await guestCtx.newPage();
+    try {
+      await guestPage.goto(link);
+      await expect(guestPage.locator("#sharePasswordInput")).toBeVisible({ timeout: 15000 });
+      await guestPage.fill("#sharePasswordInput", code);
+      await guestPage.click("#submitPassword");
+      await expect(guestPage.locator("#shareBody")).toContainText(fileName, { timeout: 15000 });
+
+      const [guestDownload] = await Promise.all([
+        guestPage.waitForEvent("download", { timeout: 15000 }),
+        guestPage.locator("a.ghost-link").first().click(),
+      ]);
+      expect(fs.readFileSync(await guestDownload.path(), "utf8")).toBe(content);
+    } finally {
+      await guestCtx.close();
+    }
+
+    await h.withConfirm(async () => {
+      await page.locator(`button[data-del$="${fileName}"]`).click();
+      await expect(row).toHaveCount(0, { timeout: 20000 });
+    });
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
+  }
+
+  h.assertClean("sharing a file");
+});
+
+test("netdisk: a folder name containing path-traversal segments is clamped inside the user's own directory", async ({ page }) => {
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "netdisk");
+
+  // cleanUserPath lexically cleans the requested path before creating
+  // anything, so "../../etc" collapses to a folder literally named "etc"
+  // inside the current directory rather than escaping the netdisk root.
+  await h.withConfirm(() => page.click("#mkdirBtn"), "../../etc");
+  const row = page.locator("#view tbody tr", { hasText: "etc" });
+  await expect(row).toBeVisible({ timeout: 20000 });
+  await expect(page.locator('button[data-open="etc"]')).toHaveText("etc");
+
+  await h.withConfirm(async () => {
+    await page.locator('button[data-del="etc"]').click();
+    await expect(row).toHaveCount(0, { timeout: 20000 });
+  });
+
+  h.assertClean("the path-traversal mkdir attempt");
+});
+
+test("netdisk: an uploaded .html file is served back as text, never as live markup", async ({ page }) => {
+  test.setTimeout(30000);
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "netdisk");
+
+  const fileName = `ui-xss-${fixture.runId}.html`;
+  const content = "<script>document.title='XSS'</script>";
+  const tmpPath = path.join(os.tmpdir(), fileName);
+  fs.writeFileSync(tmpPath, content);
+
+  try {
+    await page.setInputFiles("#uploadFiles", tmpPath);
+    const row = page.locator("table.netdisk-table tbody tr", { hasText: fileName });
+    await expect(row).toBeVisible({ timeout: 20000 });
+
+    // /api/netdisk/raw and the public /api/netdisk/share/raw endpoint both
+    // serve through the same serveFileInline(); forcing markup to text/plain
+    // here is the actual fix for the stored-XSS path e15d292 closed (serving a
+    // shared .html upload as text/html on this origin let it read the
+    // deliberately non-HttpOnly CSRF cookie and act as whoever opened the
+    // link).
+    const resp = await page.request.get(`/api/netdisk/raw?path=${encodeURIComponent(fileName)}`);
+    expect(resp.status()).toBe(200);
+    expect(resp.headers()["content-type"]).toContain("text/plain");
+    expect(await resp.text()).toBe(content);
+
+    await h.withConfirm(async () => {
+      await page.locator(`button[data-del$="${fileName}"]`).click();
+      await expect(row).toHaveCount(0, { timeout: 20000 });
+    });
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
+  }
+
+  h.assertClean("uploading an html file");
 });
 
 test("mcp: create a token, view its config, copy it and delete it", async ({ page }) => {
@@ -491,6 +712,42 @@ test("users & groups: create a group and a user, then open every row dialog", as
   });
 
   h.assertClean("the users page");
+});
+
+test("users: creating a user with an already-taken username is rejected", async ({ page }) => {
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "users");
+
+  // The username the seed step already created — the store has no pre-check,
+  // it relies on SQLite's UNIQUE constraint, so this also proves that
+  // violation is surfaced as a normal 400 instead of a 500.
+  await page.fill("#newUser [name='username']", fixture.user.username);
+  await page.fill("#newUser [name='password']", "some-long-enough-password");
+  await page.selectOption("#newUser [name='role']", "user");
+  await page.click("#newUser button");
+
+  await expect(page.locator(".toast").last()).toContainText("UNIQUE constraint failed", { timeout: 15000 });
+  await expect(page.locator(`#view tbody tr:has(button[data-user-name="${fixture.user.username}"])`)).toHaveCount(1);
+
+  h.assertClean("the duplicate-username rejection");
+});
+
+test("users: a password under 10 characters is rejected", async ({ page }) => {
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "users");
+
+  const userName = `uishort${fixture.runId}`;
+  await page.fill("#newUser [name='username']", userName);
+  await page.fill("#newUser [name='password']", "short1");
+  await page.selectOption("#newUser [name='role']", "user");
+  await page.click("#newUser button");
+
+  await expect(page.locator(".toast").last()).toContainText("password must be at least 10 characters", { timeout: 15000 });
+  await expect(page.locator(`#view tbody tr:has(button[data-user-name="${userName}"])`)).toHaveCount(0);
+
+  h.assertClean("the short-password rejection");
 });
 
 test("activity log: filters narrow the table and Export CSV downloads a file", async ({ page }) => {
