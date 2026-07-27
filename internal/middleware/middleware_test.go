@@ -3,9 +3,10 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
-	"time"
 	"testing"
+	"time"
 
+	"mudp/internal/auth"
 	"mudp/internal/httpx"
 )
 
@@ -104,6 +105,28 @@ func TestCSRFTokenRoundTrip(t *testing.T) {
 	handler.ServeHTTP(rec2, req)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("code = %d", rec2.Code)
+	}
+}
+
+// TestCSRFCookieOutlivesTheBrowserSession guards the regression where the CSRF
+// cookie had no expiry: it was dropped when the browser closed while the 24h
+// session cookie survived, so the user returned still logged in and every
+// state-changing request was rejected for a missing CSRF token.
+func TestCSRFCookieOutlivesTheBrowserSession(t *testing.T) {
+	rec := httptest.NewRecorder()
+	if _, err := CSRFToken(rec, httptest.NewRequest(http.MethodGet, "/", nil)); err != nil {
+		t.Fatalf("CSRFToken: %v", err)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("no cookie set")
+	}
+	c := cookies[0]
+	if c.MaxAge <= 0 && c.Expires.IsZero() {
+		t.Fatal("CSRF cookie has no expiry, so it dies with the browser session")
+	}
+	if want := int(auth.SessionTTL / time.Second); c.MaxAge != want {
+		t.Errorf("MaxAge = %d, want %d (the session cookie's lifetime)", c.MaxAge, want)
 	}
 }
 

@@ -15,6 +15,12 @@ import (
 
 const CookieName = "mudp_session"
 
+// SessionTTL is how long a login lasts. The CSRF cookie is pinned to the same
+// lifetime (see middleware.CSRFToken): if it expired first, a still-valid
+// session would keep authenticating while every state-changing request was
+// rejected for a missing CSRF token.
+const SessionTTL = 24 * time.Hour
+
 // Signer issues and verifies HMAC-signed session cookies.
 type Signer struct {
 	secret []byte
@@ -26,7 +32,7 @@ func New(secret string) Signer {
 }
 
 func (s Signer) Set(w http.ResponseWriter, r *http.Request, userID int64) {
-	exp := time.Now().Add(24 * time.Hour).Unix()
+	exp := time.Now().Add(SessionTTL).Unix()
 	body := fmt.Sprintf("%d:%d", userID, exp)
 	sig := s.sign(body)
 	http.SetCookie(w, &http.Cookie{

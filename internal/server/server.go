@@ -514,7 +514,18 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 		DefaultLanguage string `json:"defaultLanguage"`
 		GroupLanguage   string `json:"groupLanguage,omitempty"`
 	}
-	writeJSON(w, http.StatusOK, meUser{User: u, Pending: isPending(u), CSRFToken: middleware.CSRFTokenFromRequest(r), DefaultLanguage: a.cfg.DefaultLanguage, GroupLanguage: groupLanguage})
+	// A session can outlive its CSRF cookie (cleared by the browser, or issued
+	// before the cookie had an explicit expiry). The session is still valid, so
+	// re-issue rather than hand back an empty token: otherwise the console loads
+	// normally and every state-changing request 403s "CSRF token missing" until
+	// the user happens to log out and back in.
+	csrfToken := middleware.CSRFTokenFromRequest(r)
+	if csrfToken == "" {
+		if fresh, err := middleware.CSRFToken(w, r); err == nil {
+			csrfToken = fresh
+		}
+	}
+	writeJSON(w, http.StatusOK, meUser{User: u, Pending: isPending(u), CSRFToken: csrfToken, DefaultLanguage: a.cfg.DefaultLanguage, GroupLanguage: groupLanguage})
 }
 
 // isPending reports whether a user is still awaiting admin approval: a non-admin

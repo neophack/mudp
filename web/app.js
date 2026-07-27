@@ -101,7 +101,7 @@ export function canMutate() {
 
 export const $ = (selector) => document.querySelector(selector);
 
-export async function api(path, opts = {}) {
+export async function api(path, opts = {}, retryCSRF = true) {
   // Pull headers out of opts so the merged Content-Type below is not clobbered
   // by a trailing ...opts spread re-applying the caller's original headers.
   const { headers, ...rest } = opts;
@@ -122,11 +122,34 @@ export async function api(path, opts = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // The session can outlive the CSRF cookie (browser cleared it, or the tab
+    // sat open past its expiry). GET /api/me re-issues one against the still
+    // valid session, so recover in place rather than making the user reload the
+    // page — otherwise every button on a long-lived tab fails until they do.
+    if (res.status === 403 && retryCSRF && /csrf/i.test(data.error || "")) {
+      const me = await refreshCSRFToken();
+      if (me) return api(path, opts, false);
+    }
     const err = new Error(data.error || res.statusText);
     err.pending = data.pending === true;
     throw err;
   }
   return data;
+}
+
+// refreshCSRFToken asks /api/me for a fresh token (the handler mints one when
+// the request arrives without a CSRF cookie). Returns the token, or "" if the
+// session is gone too — in which case the caller should surface the original
+// error rather than retry.
+async function refreshCSRFToken() {
+  try {
+    const me = await api("/api/me", {}, false);
+    if (!me || me.authenticated === false) return "";
+    state.csrfToken = me.csrfToken || readCSRFCookie() || "";
+    return state.csrfToken;
+  } catch {
+    return "";
+  }
 }
 
 export function toast(msg, ok = false) {

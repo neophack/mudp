@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strings"
+	"time"
 
+	"mudp/internal/auth"
 	"mudp/internal/httpx"
 )
 
@@ -55,9 +57,16 @@ func CSRFToken(w http.ResponseWriter, r *http.Request) (string, error) {
 		return "", err
 	}
 	cookie := &http.Cookie{
-		Name:     csrfCookieName,
-		Value:    token,
-		Path:     "/",
+		Name:  csrfCookieName,
+		Value: token,
+		Path:  "/",
+		// Pinned to the session cookie's lifetime. Without an explicit expiry
+		// this is a browser-session cookie, so closing the browser dropped it
+		// while the 24h session cookie survived — the user came back still
+		// logged in, but every POST/DELETE failed with "CSRF token missing"
+		// and nothing short of logging out and back in restored it.
+		Expires:  time.Now().Add(auth.SessionTTL),
+		MaxAge:   int(auth.SessionTTL / time.Second),
 		HttpOnly: false,
 		Secure:   httpx.IsSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
