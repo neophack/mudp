@@ -26,12 +26,14 @@ export function openCreateModal() {
       return `<option value="${escapeHtml(img.name)}">${escapeHtml(img.name)}${hasPreset ? " ⚙" : ""}</option>`;
     })
     .join("");
-  // System networks (host/none) are shown read-only on the Networks view but
-  // cannot be attached to — validateNetworkAttachment rejects anything lacking
-  // the mudp-managed label, except "bridge" which is a safe pass-through.
+  // The server marks each network attachable or not (own networks, anything an
+  // admin granted to one of your groups, and "bridge" unless it was restricted
+  // to other groups). host/none are listed read-only on the Networks view but
+  // can't be joined, so they're filtered out here rather than producing an
+  // "attach failed" error on submit.
   const myNetworks = (state.networks || [])
-    .filter((n) => !n.system || n.name === "bridge")
-    .map((n) => `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}"> ${escapeHtml(n.name)}${n.system ? ' <span class="hint">(system)</span>' : ""}</label>`)
+    .filter((n) => n.attachable)
+    .map((n) => `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}"> ${escapeHtml(n.name)}${networkHint(n)}</label>`)
     .join("");
   const myVolumes = (state.volumes || []).map((v) => v.name);
   const prefix = Number(state.me?.portPrefix || 0);
@@ -125,6 +127,14 @@ export function openCreateModal() {
     lastPayload = payload;
     await streamCreate(payload);
   };
+}
+
+// networkHint labels a network that isn't one the user created themselves.
+function networkHint(n) {
+  if (n.system) return ' <span class="hint">(system)</span>';
+  if (n.external) return ' <span class="hint">(host)</span>';
+  if (n.shared) return ' <span class="hint">(shared)</span>';
+  return "";
 }
 
 // gpuSelectHtml renders the GPU dropdown based on the host's actual GPU count.

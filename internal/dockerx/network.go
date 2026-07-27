@@ -28,6 +28,25 @@ type Network struct {
 	// System marks Docker's built-in networks (bridge, host, none, etc.) which
 	// are shown read-only alongside the user's mudp-managed networks.
 	System bool `json:"system,omitempty"`
+	// Managed marks a network mudp created (and therefore knows the owner of).
+	Managed bool `json:"managed,omitempty"`
+	// External marks a network that already exists on the host but was not
+	// created by mudp — e.g. one an operator made with `docker network create`
+	// or that came with a third-party compose project. Admins always see these;
+	// other users see one only when it has been granted to them.
+	External bool `json:"external,omitempty"`
+	// Shared marks a network the caller can see only because an administrator
+	// granted it to them, rather than because they own it.
+	Shared bool `json:"shared,omitempty"`
+	// Attachable reports whether the caller may attach a container to this
+	// network. host/none are never attachable; "bridge" always is.
+	Attachable bool `json:"attachable,omitempty"`
+	// CanDelete reports whether the caller may delete this network. Only the
+	// mudp-managed networks they created (any managed network, for an admin).
+	CanDelete bool `json:"canDelete,omitempty"`
+	// Groups lists the user groups an administrator has granted this network to.
+	// Filled in by the server for admins only; empty for everyone else.
+	Groups []string `json:"groups,omitempty"`
 }
 
 // NetworkContainer is a container endpoint attached to a network, for the
@@ -66,16 +85,49 @@ func NetworkFullName(username, name string) string {
 	return Prefix + Slug(username) + "-net-" + Slug(name)
 }
 
-// ListNetworks returns mudp-managed networks visible to the caller, followed by
-// Docker's built-in/system networks (bridge, host, none, …) shown read-only so
-// the Networks view is never empty on a fresh host.
-func (d *Client) ListNetworks(ctx context.Context, username string, admin bool) ([]Network, error) {
-	// Fetch every network once, then partition into managed vs. system.
+// NetworkAccess carries the group-grant picture for one caller. Granted holds
+// the full Docker names granted to a group the caller belongs to; Restricted
+// holds every name that carries at least one grant, for anybody.
+//
+// The two are needed together because a grant means different things depending
+// on the network. For a network mudp did not hand out by default — another
+// user's, or one already on the host — Granted alone decides. For Docker's
+// "bridge", which every user could always attach to, the first grant is what
+// turns it from open-to-everyone into restricted: with no grants at all it stays
+// open (Restricted says so), and once an admin picks groups only those groups
+// keep it.
+type NetworkAccess struct {
+	Granted    map[string]bool
+	Restricted map[string]bool
+}
+
+// MayUseSystem reports whether the caller may attach to one of Docker's
+// built-in networks. Only "bridge" is ever attachable: "host" would hand the
+// container every host interface and "none" cannot be joined at all.
+func (a NetworkAccess) MayUseSystem(name string, admin bool) bool {
+	if !IsShareableSystemNetwork(name) {
+		return false
+	}
+	return admin || a.Granted[name] || !a.Restricted[name]
+}
+
+// ListNetworks returns the networks visible to the caller: the mudp-managed
+// ones they own, any network granted to one of their groups, and Docker's
+// built-in networks (bridge, host, none) shown read-only so the Networks view is
+// never empty on a fresh host. Admins additionally see every mudp-managed
+// network and every pre-existing host network, which is what makes those
+// grantable in the first place.
+//
+// access holds the caller's group grants (see NetworkAccess); the zero value
+// means "no grants anywhere", which leaves bridge open to everyone.
+func (d *Client) ListNetworks(ctx context.Context, username string, admin bool, access NetworkAccess) ([]Network, error) {
+	granted := access.Granted
+	// Fetch every network once, then partition into managed / external / system.
 	nets, err := d.c.NetworkList(ctx, types.NetworkListOptions{})
 	if err != nil {
 		return nil, err
 	}
-	var managed, system []Network
+	var managed, external, system []Network
 	for _, n := range nets {
 		isManaged := n.Labels[ManagedLabel] == "true"
 		owner := n.Labels[UserLabel]
@@ -105,32 +157,53 @@ func (d *Client) ListNetworks(ctx context.Context, username string, admin bool) 
 				break
 			}
 		}
-		if isManaged {
+		switch {
+		case isManaged:
 			if owner == "" {
 				continue
 			}
-			if !admin && owner != username {
+			isOwner := owner == username
+			if !admin && !isOwner && !granted[n.Name] {
 				continue
 			}
+			net.Managed = true
+			net.Attachable = true
+			// Deletion follows ownership, not visibility: a network shared with
+			// your group is yours to use, not to remove. RemoveNetwork enforces
+			// the same rule server-side.
+			net.CanDelete = isOwner || admin
+			net.Shared = !isOwner && !admin
 			net.Name = netLabelToDisplay(n.Name)
 			if c, ok := n.Labels["mudp.createdAt"]; ok {
 				net.CreatedAt = c
 			}
 			managed = append(managed, net)
-		} else if isSystemNetwork(n.Name, n.Driver) {
-			// Surface Docker's built-in networks read-only.
+		case IsSystemNetworkName(n.Name):
+			// Docker's built-ins are read-only: mudp neither created nor removes
+			// them. Everyone still sees the rows — hiding "bridge" from a user
+			// who may not join it would leave a fresh host's Networks view empty
+			// and say nothing about why. Whether they can attach is the grant
+			// question, answered by MayUseSystem.
 			net.System = true
+			net.Attachable = access.MayUseSystem(n.Name, admin)
 			system = append(system, net)
+		case admin || granted[n.Name]:
+			// A network that already exists on the host but that mudp did not
+			// create — an operator's `docker network create`, or one a
+			// third-party compose project left behind. Admins see every such
+			// network so they can grant it; everyone else sees only the granted
+			// ones.
+			net.External = true
+			net.Attachable = true
+			net.Shared = !admin
+			if net.Owner == "" {
+				net.Owner = "host"
+			}
+			external = append(external, net)
 		}
 	}
-	// Managed networks first (the user's own), then system defaults.
-	return append(managed, system...), nil
-}
-
-// isSystemNetwork reports whether a network is one of Docker's built-in
-// defaults worth surfacing in the UI. These cannot be deleted via mudp.
-func isSystemNetwork(name, driver string) bool {
-	return IsSystemNetworkName(name)
+	// Managed networks first (the user's own), then host networks, then defaults.
+	return append(append(managed, external...), system...), nil
 }
 
 // IsSystemNetworkName reports whether a network name is one of Docker's
@@ -143,6 +216,14 @@ func IsSystemNetworkName(name string) bool {
 		return true
 	}
 	return false
+}
+
+// IsShareableSystemNetwork reports whether a built-in network can be restricted
+// to user groups. Only "bridge" can: it is the one built-in a container may join
+// without gaining the host's interfaces, so it is also the only one where
+// choosing who gets to join means anything.
+func IsShareableSystemNetwork(name string) bool {
+	return name == "bridge"
 }
 
 // CreateNetwork creates a mudp-managed network owned by username.
@@ -200,9 +281,11 @@ func (d *Client) CreateNetwork(ctx context.Context, opts CreateNetworkOptions) (
 }
 
 // InspectNetwork returns a network's summary plus its attached containers.
-// Ownership is enforced: non-admin callers may only inspect their own
-// mudp-managed networks; system networks are readable by all.
-func (d *Client) InspectNetwork(ctx context.Context, full, username string, admin bool) (NetworkDetail, error) {
+// Visibility mirrors ListNetworks: a non-admin caller may inspect the
+// mudp-managed networks they own, anything granted to one of their groups, and
+// Docker's built-in networks. access may be the zero value.
+func (d *Client) InspectNetwork(ctx context.Context, full, username string, admin bool, access NetworkAccess) (NetworkDetail, error) {
+	granted := access.Granted
 	info, err := d.c.NetworkInspect(ctx, full, types.NetworkInspectOptions{})
 	if err != nil {
 		return NetworkDetail{}, err
@@ -217,22 +300,28 @@ func (d *Client) InspectNetwork(ctx context.Context, full, username string, admi
 		Owner:      info.Labels[UserLabel],
 		Containers: len(info.Containers),
 	}}
-	isManaged := info.Labels[ManagedLabel] == "true"
-	if isManaged {
+	switch {
+	case info.Labels[ManagedLabel] == "true":
 		if info.Labels[UserLabel] == "" {
 			return NetworkDetail{}, fmt.Errorf("network %q is not managed by mudp", full)
 		}
-		if !admin && info.Labels[UserLabel] != username {
+		if !admin && info.Labels[UserLabel] != username && !granted[info.Name] {
 			return NetworkDetail{}, fmt.Errorf("network %q is not yours", full)
 		}
+		nd.Managed = true
 		nd.Name = netLabelToDisplay(info.Name)
 		if c, ok := info.Labels["mudp.createdAt"]; ok {
 			nd.CreatedAt = c
 		}
-	} else if isSystemNetwork(info.Name, info.Driver) {
+	case IsSystemNetworkName(info.Name):
 		nd.System = true
-	} else {
-		// Non-managed, non-system network: refuse (don't leak arbitrary host nets).
+		nd.Attachable = access.MayUseSystem(info.Name, admin)
+	case admin || granted[info.Name]:
+		// A pre-existing host network the admin has shared (or any host network,
+		// for an admin). Read-only: mudp did not create it and won't remove it.
+		nd.External = true
+	default:
+		// Non-managed, non-granted network: refuse (don't leak arbitrary host nets).
 		return NetworkDetail{}, fmt.Errorf("network %q is not managed by mudp", full)
 	}
 	for _, cfg := range info.IPAM.Config {
@@ -263,34 +352,48 @@ func (d *Client) InspectNetwork(ctx context.Context, full, username string, admi
 	return nd, nil
 }
 
-// NetworkConnectContainer attaches a container to a mudp-managed network with
-// an ownership guard on both the network and the container.
-func (d *Client) NetworkConnectContainer(ctx context.Context, full, containerID, username string, admin bool) error {
-	if err := d.guardManagedNetwork(ctx, full, username, admin); err != nil {
+// NetworkConnectContainer attaches a container to a network the user may use,
+// with a guard on both the network and the container.
+func (d *Client) NetworkConnectContainer(ctx context.Context, full, containerID, username string, admin bool, access NetworkAccess) error {
+	if err := d.guardUsableNetwork(ctx, full, username, admin, access); err != nil {
 		return err
 	}
 	return d.c.NetworkConnect(ctx, full, containerID, nil)
 }
 
-// NetworkDisconnectContainer detaches a container from a mudp-managed network.
-func (d *Client) NetworkDisconnectContainer(ctx context.Context, full, containerID, username string, admin bool, force bool) error {
-	if err := d.guardManagedNetwork(ctx, full, username, admin); err != nil {
+// NetworkDisconnectContainer detaches a container from a network.
+func (d *Client) NetworkDisconnectContainer(ctx context.Context, full, containerID, username string, admin bool, access NetworkAccess, force bool) error {
+	if err := d.guardUsableNetwork(ctx, full, username, admin, access); err != nil {
 		return err
 	}
 	return d.c.NetworkDisconnect(ctx, full, containerID, force)
 }
 
-// guardManagedNetwork verifies a network is mudp-managed and owned by username
-// (unless admin), so connect/disconnect can't touch another user's network.
-func (d *Client) guardManagedNetwork(ctx context.Context, full, username string, admin bool) error {
+// guardUsableNetwork verifies the caller may attach to a network: it is
+// mudp-managed and theirs, it was granted to one of their groups (Granted holds
+// full Docker names, so a shared host network qualifies), or it is a built-in
+// they may join. This is what keeps connect/disconnect off a network nobody
+// shared with them.
+func (d *Client) guardUsableNetwork(ctx context.Context, full, username string, admin bool, access NetworkAccess) error {
 	info, err := d.c.NetworkInspect(ctx, full, types.NetworkInspectOptions{})
 	if err != nil {
 		return err
 	}
+	if IsSystemNetworkName(info.Name) {
+		// Built-ins carry no mudp labels, so the ownership checks below would
+		// reject even "bridge". Grants decide instead.
+		if access.MayUseSystem(info.Name, admin) {
+			return nil
+		}
+		return fmt.Errorf("network %q is not available to you", info.Name)
+	}
+	if access.Granted[full] || admin {
+		return nil
+	}
 	if info.Labels[ManagedLabel] != "true" {
 		return fmt.Errorf("network %q is not managed by mudp", full)
 	}
-	if !admin && info.Labels[UserLabel] != username {
+	if info.Labels[UserLabel] != username {
 		return fmt.Errorf("network %q is not yours", full)
 	}
 	return nil

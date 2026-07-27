@@ -211,6 +211,7 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/networks", a.networks)
 		r.Post("/api/networks", a.networks)
 		r.Post("/api/networks/delete", a.networkDelete)
+		r.Post("/api/networks/access", a.networkAccess)
 		r.Get("/api/networks/inspect", a.networkInspect)
 		r.Post("/api/networks/connect", a.networkConnect)
 		r.Post("/api/networks/disconnect", a.networkDisconnect)
@@ -882,6 +883,7 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	}
 	return dockerx.CreateOptions{
 		Username: u.Username, Name: req.Name, ImageRef: img.DockerRef, ImageName: img.DisplayName,
+		AllowedNetworks: a.attachableNetworks(ctx, u),
 		Env: normalizeEnv(req.Env), GPUs: req.GPUs,
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
@@ -1231,7 +1233,7 @@ func (a *App) containerDuplicate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "container is not yours")
 		return
 	}
-	id, err := a.docker.DuplicateContainer(r.Context(), req.ID, strings.TrimSpace(req.Name), u.Username, u.PortPrefix)
+	id, err := a.docker.DuplicateContainer(r.Context(), req.ID, strings.TrimSpace(req.Name), u.Username, u.PortPrefix, a.attachableNetworks(r.Context(), u))
 	if err == nil {
 		a.record(r, "container.duplicate", req.Name)
 	}
@@ -1623,7 +1625,15 @@ func (a *App) containerUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "container is not yours")
 		return
 	}
-	if err := a.docker.UpdateContainerSettings(r.Context(), req.ID, req.RestartPolicy, req.Networks); err != nil {
+	// UpdateContainerSettings connects the requested networks as given, so the
+	// permission check has to happen here: without it this endpoint would be a
+	// way around every grant the create path enforces.
+	networks, err := a.resolveAttachableNetworks(r.Context(), u, req.Networks)
+	if err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if err := a.docker.UpdateContainerSettings(r.Context(), req.ID, req.RestartPolicy, networks); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

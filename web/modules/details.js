@@ -94,18 +94,20 @@ function rawJsonCard() {
 function settingsCard(i) {
   const policy = (i.restartPolicy || "unless-stopped").toLowerCase();
   const currentNets = new Set((i.networks || []).map((n) => n.name));
-  // Exclude system networks (host/none): the backend (validateNetworkAttachment)
-  // rejects any network lacking the mudp-managed label, so surfacing them here
-  // as checkable would only produce confusing "attach failed" errors on save.
-  // "bridge" is the one exception — a safe pass-through the backend allows.
-  const avail = (state.networks || []).filter((n) => !n.system || n.name === "bridge");
+  // Only the networks the server marked attachable: the user's own, anything an
+  // admin granted to one of their groups, and "bridge" unless it has been
+  // restricted to other groups. host/none are listed read-only on the Networks
+  // view but can't be joined, so surfacing them here as checkable would only
+  // produce confusing "attach failed" errors on save.
+  const avail = (state.networks || []).filter((n) => n.attachable);
   const editable = canMutate();
   const netChecks = avail.length
     ? avail.map((n) => {
         const key = n.fullName || n.name;
         const checked = currentNets.has(n.name) || currentNets.has(key) ? "checked" : "";
         const disabled = editable ? "" : "disabled";
-        return `<label class="check"><input type="checkbox" name="editNetworks" value="${escapeHtml(key)}" ${checked} ${disabled}> ${escapeHtml(n.name)}${n.system ? ' <span class="hint">(system)</span>' : ""}</label>`;
+        const origin = n.system ? "system" : n.external ? "host" : n.shared ? "shared" : "";
+        return `<label class="check"><input type="checkbox" name="editNetworks" value="${escapeHtml(key)}" ${checked} ${disabled}> ${escapeHtml(n.name)}${origin ? ` <span class="hint">(${origin})</span>` : ""}</label>`;
       }).join("")
     : `<p class="hint">No custom networks yet — create one from the Networks tab to attach this container.</p>`;
   const policySelect = editable

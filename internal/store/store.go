@@ -195,7 +195,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 25
+const schemaVersion = 26
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -237,6 +237,7 @@ var migrations = []migration{
 	{23, "add users.language", migrateAddUserLanguage},
 	{24, "add groups.language", migrateAddGroupLanguage},
 	{25, "revoke derivable feishu passwords", migrateRevokeFeishuDerivedPasswords},
+	{26, "create group_networks", migrateCreateGroupNetworks},
 }
 
 // migrateRevokeFeishuDerivedPasswords clears password hashes that were derived

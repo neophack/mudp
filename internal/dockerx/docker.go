@@ -83,6 +83,10 @@ type CreateOptions struct {
 	MountShm bool
 	// Networks are mudp network names to attach the container to.
 	Networks []string
+	// AllowedNetworks are full Docker names the user may attach to beyond their
+	// own mudp-managed networks: the host/shared networks an admin granted to
+	// one of their groups. Server-supplied — never taken from the request.
+	AllowedNetworks []string
 	// Devices are generic --device specs (host[:container[:rwm]]) to pass through,
 	// e.g. /dev/nvidia0. Used by admins to keep NVIDIA GPUs connected to GPU
 	// containers and to expose other host devices.
@@ -507,9 +511,13 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		}
 		hostCfg.Mounts = append(hostCfg.Mounts, mount)
 	}
+	allowedNetworks := make(map[string]bool, len(opts.AllowedNetworks))
+	for _, n := range opts.AllowedNetworks {
+		allowedNetworks[n] = true
+	}
 	resolvedNetworks := make([]string, 0, len(opts.Networks))
 	for _, n := range opts.Networks {
-		full, err := d.validateNetworkAttachment(ctx, opts.Username, n)
+		full, err := d.validateNetworkAttachment(ctx, opts.Username, n, allowedNetworks)
 		if err != nil {
 			return "", err
 		}
@@ -1108,8 +1116,12 @@ func (d *Client) InspectRaw(ctx context.Context, id string) (json.RawMessage, er
 // without starting it. The original container is left untouched. The new
 // container inherits the same owner (username) so the ownership prefix is
 // preserved. portPrefix is required to re-publish host ports; pass the owner's
-// assigned prefix.
-func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username string, portPrefix int) (string, error) {
+// assigned prefix. allowedNetworks is the caller's attachable set (see
+// CreateOptions.AllowedNetworks): the copy is created through the same
+// validation as a fresh container, so a network the owner may no longer join —
+// a "bridge" since restricted to other groups, say — fails the duplicate rather
+// than being reproduced.
+func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username string, portPrefix int, allowedNetworks []string) (string, error) {
 	if err := d.managedGuard(ctx, id); err != nil {
 		return "", err
 	}
@@ -1140,14 +1152,15 @@ func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username s
 		}
 	}
 	// Translate networks back to display names where possible (strip the
-	// mudp-<user>-net- prefix). "bridge" is passed through as-is.
+	// mudp-<user>-net- prefix). Built-in names are passed through as-is and
+	// validated against allowedNetworks like everything else.
 	var networks []string
 	for _, n := range info.Networks {
 		if n.Name == "" {
 			continue
 		}
-		if n.Name == "bridge" {
-			networks = append(networks, "bridge")
+		if IsSystemNetworkName(n.Name) {
+			networks = append(networks, n.Name)
 			continue
 		}
 		display := dequalifyNetworkName(n.Name, username)
@@ -1156,17 +1169,18 @@ func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username s
 		}
 	}
 	opts := CreateOptions{
-		Username:      username,
-		Name:          newName,
-		ImageRef:      info.Image,
-		ImageName:     info.ImageName,
-		Env:           info.Env,
-		GPUs:          info.GPU,
-		Ports:         ports,
-		PortPrefix:    portPrefix,
-		Mounts:        mounts,
-		Networks:      networks,
-		RestartPolicy: info.RestartPolicy,
+		Username:        username,
+		Name:            newName,
+		ImageRef:        info.Image,
+		ImageName:       info.ImageName,
+		Env:             info.Env,
+		GPUs:            info.GPU,
+		Ports:           ports,
+		PortPrefix:      portPrefix,
+		Mounts:          mounts,
+		Networks:        networks,
+		AllowedNetworks: allowedNetworks,
+		RestartPolicy:   info.RestartPolicy,
 	}
 	// Duplicate does not auto-start; CreateContainer always starts, so create
 	// the container then stop it immediately to match Portainer's behavior.
@@ -1499,18 +1513,30 @@ func (d *Client) validateMountSource(ctx context.Context, username string, m *mo
 }
 
 // validateNetworkAttachment resolves a network name to its full Docker name and
-// verifies it is managed by mudp and owned by the user. This prevents users from
-// attaching to another user's network or to unmanaged system networks.
-func (d *Client) validateNetworkAttachment(ctx context.Context, username, name string) (string, error) {
+// verifies the user may attach to it: their own mudp-managed networks, plus
+// whatever the caller listed in opts.AllowedNetworks — the networks an admin
+// granted to one of their groups and the built-in "bridge" when it is open to
+// them. This prevents users from attaching to another user's network or to an
+// arbitrary host network nobody shared with them.
+//
+// "bridge" is deliberately not special-cased here: it is grantable like any
+// other network now, so whether it may be joined is a question only the caller
+// (which knows the grants) can answer.
+func (d *Client) validateNetworkAttachment(ctx context.Context, username, name string, allowed map[string]bool) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", fmt.Errorf("network name is empty")
 	}
-	// Docker's default bridge network is a safe pass-through (no host network
-	// access, unlike "host"/"none"), so it's the one system network users may
-	// attach alongside their own mudp-managed networks.
-	if name == "bridge" {
-		return "bridge", nil
+	if IsSystemNetworkName(name) && !allowed[name] {
+		return "", fmt.Errorf("network %q is not available to you", name)
+	}
+	// Allowed networks are already full Docker names and may not be mudp-managed
+	// at all, so they only have to exist.
+	if allowed[name] {
+		if _, err := d.c.NetworkInspect(ctx, name, types.NetworkInspectOptions{}); err != nil {
+			return "", fmt.Errorf("network %q not found", name)
+		}
+		return name, nil
 	}
 	full := NetworkFullName(username, name)
 	info, err := d.c.NetworkInspect(ctx, full, types.NetworkInspectOptions{})
