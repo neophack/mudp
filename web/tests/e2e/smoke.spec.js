@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { startServer } from "./fixtures/server.js";
+import { login } from "./fixtures/ui.js";
 
 let server;
 
@@ -45,13 +46,15 @@ test("login and navigate through core tabs", async ({ page }) => {
   }
 });
 
-test("health and metrics endpoints are reachable", async ({ request }) => {
+test("health and metrics endpoints are reachable", async ({ page, request }) => {
   const health = await request.get("/healthz");
   await expect(health).toBeOK();
   const body = await health.json();
   expect(body.status).toBe("healthy");
 
-  const metrics = await request.get("/metrics");
+  // /metrics exposes process internals, so it requires an admin session.
+  await login(page, "admin", "e2e-secret");
+  const metrics = await page.request.get("/metrics");
   await expect(metrics).toBeOK();
   const text = await metrics.text();
   expect(text).toContain("mudp_go_goroutines");
