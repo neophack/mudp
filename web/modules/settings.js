@@ -1,4 +1,5 @@
-// Settings: Feishu SSO + registries + language preferences.
+// Settings: Feishu SSO + registries + language preferences. (Port forwarding
+// has its own page — see modules/forwards.js.)
 
 import { state, api, toast, renderView, escapeHtml, isAdmin, t, $ } from "../app.js";
 import { showModal, closeModal } from "./ui.js";

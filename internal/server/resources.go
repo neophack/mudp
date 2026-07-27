@@ -27,6 +27,13 @@ func (a *App) refreshRuntimeCache(ctx context.Context) {
 	}
 	a.cacheAt = time.Now()
 	a.cacheMu.Unlock()
+
+	// Port forwarding is reconciled from the same sweep as the container cache,
+	// because it is driven by exactly the same facts: which containers exist and
+	// what address each holds. That gives it a boot pass, a 15s heartbeat, and a
+	// pass after every create/start/stop for free — a container that restarts
+	// onto a new IP is repointed without anyone asking.
+	a.syncPortForwardLogged(ctx)
 }
 
 // triggerRuntimeCacheRefresh runs a cache refresh in the background so that

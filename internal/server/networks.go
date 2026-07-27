@@ -99,6 +99,17 @@ func (a *App) networks(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		items, err := a.docker.ListNetworks(r.Context(), u.Username, u.Role == "admin", a.networkGrants(u))
+		if err == nil {
+			// Mark the networks whose containers mudp forwards for. Every user
+			// sees this, not just admins: it changes how their own container's
+			// ports get published, so the create wizard has to be able to say so.
+			if forward := a.forwardNetworks(); len(forward) > 0 {
+				for i := range items {
+					items[i].Forward = dockerx.NetworkNameMatchesAny(items[i].FullName, forward) ||
+						dockerx.NetworkNameMatchesAny(items[i].Name, forward)
+				}
+			}
+		}
 		if err == nil && u.Role == store.RoleAdmin {
 			// Admins manage the grants, so each row carries the groups it is
 			// shared with. One query for all rows, not one per row.

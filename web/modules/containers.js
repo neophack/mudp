@@ -207,6 +207,15 @@ function containerRow(c) {
   const conn = [];
   if (c.http8080Url) conn.push(`<a class="port-link" href="${escapeHtml(fixUrl(c.http8080Url))}" target="_blank" rel="noopener">8080 ↗</a>`);
   if (c.http80Url) conn.push(`<a class="port-link" href="${escapeHtml(fixUrl(c.http80Url))}" target="_blank" rel="noopener">80 ↗</a>`);
+  // The quick links used to replace the port list, which hid every mapping on a
+  // container publishing 80 or 8080 — including the ones mudp forwards. Show
+  // both: the links are a shortcut, the mappings are the information.
+  const portLine = [...conn, ports === "—" && conn.length ? "" : escapeHtml(ports)]
+    .filter(Boolean)
+    .join(" <span class='sep'>·</span> ");
+  // A container whose ports mudp relays itself carries the forward label. Docker
+  // reports nothing about those ports, so the row says where they come from.
+  const forwarded = !!(c.labels && c.labels["mudp.forward.ports"]);
   const iconBtn = (act, glyph, title, cls = "icon", enabled = true) => {
     const isLoading = pending(act);
     const dis = !enabled || isLoading ? "disabled" : "";
@@ -217,7 +226,8 @@ function containerRow(c) {
   return (
     `<tr>` +
       (canMutate() ? `<td class="chk-col"><input type="checkbox" data-cid="${escapeHtml(c.id)}" ${checked}></td>` : "") +
-      `<td><div class="primary-line">${escapeHtml(name)}</div><div class="secondary-line">${conn.length ? conn.join(" <span class='sep'>·</span> ") : escapeHtml(ports)}</div></td>` +
+      `<td><div class="primary-line">${escapeHtml(name)}${forwarded ? ` <span class="badge badge-muted" title="Host ports are relayed by mudp, not published by Docker">forward</span>` : ""}</div>` +
+        `<div class="secondary-line">${portLine || "—"}</div></td>` +
       (isAdmin() ? `<td><div class="secondary-line">${escapeHtml(displayNameForUsername(c.owner) || "—")}</div></td>` : "") +
       `<td>${statusBadge}</td>` +
       `<td><div class="secondary-line">${escapeHtml(c.image || c.Image || "—")}</div></td>` +

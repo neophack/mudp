@@ -38,6 +38,15 @@ export function openCreateModal() {
   const myVolumes = (state.volumes || []).map((v) => v.name);
   const prefix = Number(state.me?.portPrefix || 0);
   const portHint = prefix > 0 ? `Assigned host ports: ${prefix * 100}-${prefix * 100 + 99}` : "Ask an admin to assign a port prefix before publishing ports.";
+  // Networks an admin marked for mudp forwarding behave differently enough to
+  // say so: the host port still comes from the user's range, but it is relayed
+  // to the container's own address instead of published by Docker (which does
+  // not work on such a host). UDP mappings only work this way, so mention them
+  // where they are relevant.
+  const forwardNets = (state.networks || []).filter((n) => n.forward && n.attachable).map((n) => n.name);
+  const forwardHint = forwardNets.length
+    ? `<p class="hint">Ports on ${escapeHtml(forwardNets.join(", "))} are forwarded by mudp: the container keeps its own address (e.g. <span class="mono">10.210.1.3:8080</span>) and the host port relays to it. Add <span class="mono">/udp</span> to a mapping for a UDP port.</p>`
+    : "";
   showModal({
     kind: "create",
     title: "New Container",
@@ -47,9 +56,9 @@ export function openCreateModal() {
         `<select name="image" required><option value="">Select image</option>${imageOptions}</select>` +
         gpuSelectHtml() +
         `<textarea name="env" placeholder="Environment variables, one KEY=VALUE per line"></textarea>` +
-        `<textarea name="ports" placeholder="Port mappings, one host:container per line\n${escapeHtml(portHint)}"></textarea>` +
+        `<textarea name="ports" placeholder="Port mappings, one host:container[/tcp|/udp] per line\n${escapeHtml(portHint)}"></textarea>` +
         `<textarea name="mounts" placeholder="Managed volume mounts, one volume-name:target[:ro] per line${myVolumes.length ? '\nAvailable volumes: ' + escapeHtml(myVolumes.join(', ')) : ''}"></textarea>` +
-        (myNetworks ? `<label class="field-label">Networks</label><div class="check-grid">${myNetworks}</div>` : "") +
+        (myNetworks ? `<label class="field-label">Networks</label><div class="check-grid">${myNetworks}</div>${forwardHint}` : "") +
         `<label class="field-label">Restart policy</label>` +
         `<select name="restartPolicy">` +
           `<option value="unless-stopped" selected>Start on boot (unless-stopped)</option>` +
@@ -128,12 +137,14 @@ export function openCreateModal() {
   };
 }
 
-// networkHint labels a network that isn't one the user created themselves.
+// networkHint labels a network that isn't one the user created themselves, and
+// flags the ones whose ports mudp forwards rather than Docker publishing them.
 function networkHint(n) {
-  if (n.system) return ' <span class="hint">(system)</span>';
-  if (n.external) return ' <span class="hint">(host)</span>';
-  if (n.shared) return ' <span class="hint">(shared)</span>';
-  return "";
+  const forward = n.forward ? ' <span class="hint">(mudp forward)</span>' : "";
+  if (n.system) return ' <span class="hint">(system)</span>' + forward;
+  if (n.external) return ' <span class="hint">(host)</span>' + forward;
+  if (n.shared) return ' <span class="hint">(shared)</span>' + forward;
+  return forward;
 }
 
 // gpuSelectHtml renders the GPU dropdown based on the host's actual GPU count.

@@ -33,6 +33,7 @@ import (
 	"mudp/internal/httpx"
 	"mudp/internal/mcp"
 	"mudp/internal/middleware"
+	"mudp/internal/portfwd"
 	"mudp/internal/store"
 	"mudp/web"
 )
@@ -60,6 +61,10 @@ type App struct {
 	// remoteMCP is the optional second listener that publishes only the MCP
 	// endpoints on loopback for a Cloudflare tunnel. See mcp_remote.go.
 	remoteMCP remoteMCPState
+	// forward relays host ports to container addresses for the networks an
+	// administrator marked as needing it, where Docker's own publishing does not
+	// work. See portforward.go.
+	forward *portfwd.Manager
 }
 
 type dirSizeEntry struct {
@@ -88,13 +93,15 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 		dirSizeCache:     make(map[string]dirSizeEntry),
 		dirSizeRunning:   make(map[string]bool),
 		dirSizeSemaphore: make(chan struct{}, 1),
+		forward:          portfwd.NewManager(),
 	}, nil
 }
 
-// Close releases resources held by the app, such as the Docker client and the
-// external MCP listener.
+// Close releases resources held by the app, such as the Docker client, the
+// external MCP listener, and the port forwarder.
 func (a *App) Close() error {
 	a.StopRemoteMCP()
+	a.forward.Close()
 	if a.docker == nil {
 		return nil
 	}
@@ -216,6 +223,9 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/networks", a.networks)
 		r.Post("/api/networks", a.networks)
 		r.Post("/api/networks/delete", a.networkDelete)
+		// Port forwarding for one network, toggled from its row on the Networks
+		// page. Admin-only; the handler enforces that.
+		r.Post("/api/networks/forward", a.networkForward)
 		r.Post("/api/networks/access", a.networkAccess)
 		r.Get("/api/networks/inspect", a.networkInspect)
 		r.Post("/api/networks/connect", a.networkConnect)
@@ -272,6 +282,9 @@ func (a *App) Routes() http.Handler {
 		// The public hostname (if an admin configured one) so a user can copy an
 		// externally reachable link for their own token. Read-only, no secrets.
 		r.Get("/api/mcp/remote", a.mcpRemoteInfo)
+		// Which networks publish their ports through mudp rather than Docker, so
+		// the create wizard can explain what a port mapping will do.
+		r.Get("/api/network/forward", a.portForwardInfo)
 
 		// In-app notifications for activated users.
 		r.Get("/api/notifications", a.notifications)
@@ -348,6 +361,14 @@ func (a *App) Routes() http.Handler {
 		// hostname onto, and the safe network that gates it.
 		r.Get("/api/admin/mcp/remote", a.mcpRemoteSettings)
 		r.Post("/api/admin/mcp/remote", a.mcpRemoteSettings)
+		// Port forwarding: the networks whose containers mudp relays host ports
+		// for, because Docker cannot publish them on this host, plus the page
+		// that lists every running forward and the manual rules an admin adds.
+		r.Get("/api/admin/network/forward", a.portForwardSettings)
+		r.Post("/api/admin/network/forward", a.portForwardSettings)
+		r.Get("/api/admin/forwards", a.forwardsPage)
+		r.Post("/api/admin/forwards", a.forwardAdd)
+		r.Post("/api/admin/forwards/delete", a.forwardDelete)
 		r.Get("/api/admin/disks", a.disks)
 		r.Get("/api/admin/disks/config", a.diskMountConfigGet)
 		r.Post("/api/admin/disks/config", a.diskMountConfigPost)
@@ -931,6 +952,9 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	return dockerx.CreateOptions{
 		Username: u.Username, Name: req.Name, ImageRef: img.DockerRef, ImageName: img.DisplayName,
 		AllowedNetworks: a.attachableNetworks(ctx, u),
+		// Which networks mudp forwards for is an administrator's setting about
+		// the host, never anything the request can influence.
+		ForwardNetworks: a.forwardNetworks(),
 		Env: normalizeEnv(req.Env), GPUs: req.GPUs,
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
@@ -1280,7 +1304,7 @@ func (a *App) containerDuplicate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "container is not yours")
 		return
 	}
-	id, err := a.docker.DuplicateContainer(r.Context(), req.ID, strings.TrimSpace(req.Name), u.Username, u.PortPrefix, a.attachableNetworks(r.Context(), u))
+	id, err := a.docker.DuplicateContainer(r.Context(), req.ID, strings.TrimSpace(req.Name), u.Username, u.PortPrefix, a.attachableNetworks(r.Context(), u), a.forwardNetworks())
 	if err == nil {
 		a.record(r, "container.duplicate", req.Name)
 	}

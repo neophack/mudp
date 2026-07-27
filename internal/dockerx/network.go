@@ -47,6 +47,11 @@ type Network struct {
 	// Groups lists the user groups an administrator has granted this network to.
 	// Filled in by the server for admins only; empty for everyone else.
 	Groups []string `json:"groups,omitempty"`
+	// Forward marks a network whose containers get their host ports relayed by
+	// mudp instead of published by Docker (see forward.go). Filled in by the
+	// server from the administrator's setting; it is a property of the host's
+	// networking, not something stored on the network itself.
+	Forward bool `json:"forward,omitempty"`
 }
 
 // NetworkContainer is a container endpoint attached to a network, for the

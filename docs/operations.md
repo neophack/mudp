@@ -11,6 +11,51 @@ Each user can be assigned a numeric port prefix. Prefix `100` means the user can
 
 Admins set the prefix from **Users & Groups -> Edit -> Port prefix**.
 
+A mapping may name a protocol: `10001:8080` and `10001:8080/tcp` are the same, `10002:53/udp` publishes a UDP port. A stopped container keeps its host ports reserved, so restarting it never finds them taken by a newer container.
+
+## Port Forwarding (containers that Docker cannot publish)
+
+Docker publishes a port by installing NAT rules and binding the host port. On a host where something else owns the firewall — an OpenWrt router appliance routing a LAN, where Docker's iptables integration is off or its rules are overwritten — that does not work: `-p 10001:8080` either fails to bind or is bypassed, and the published port answers nothing. The container itself is fine; it holds a LAN address and `curl 10.210.1.3:8080` works.
+
+For those hosts, mudp can carry the host port itself. Mark the network with the **Forward** button on its row in **Networks**, or from the **Port forwarding** page (admin-only), which is also where every running forward is listed. From then on:
+
+- A container created on one of those networks still takes host ports from its owner's assigned range, exactly as before.
+- Instead of asking Docker to publish them, mudp records the mapping on the container and relays `0.0.0.0:<host port>` to the container's own address (`10.210.1.3:8080`) inside its own process.
+- Containers that were already on the network are adopted: the host ports Docker assigned them are relayed too, so marking the network fixes what is already running without recreating anything. If Docker's own proxy still holds one of those ports, that forward is reported as failed and nothing is taken over silently.
+- TCP and UDP are both carried byte for byte, with no interpretation of the payload — SSH, HTTP, WebSockets, gRPC, DNS, QUIC and VPN protocols all work.
+- Every other network keeps Docker's normal publishing. An install where nothing is selected behaves exactly as it did before.
+
+### The Port forwarding page
+
+**Port forwarding** (admin-only) is the whole picture in one place:
+
+| Column | Meaning |
+| --- | --- |
+| Host port | The port mudp is listening on, and its protocol. |
+| User | The owner of the container the port belongs to. |
+| Container | The container being relayed to (or the note, for a manual rule). |
+| Target | The address and port each connection is relayed to. |
+| Source | `container` for a rule derived from a container, `manual` for one added here. |
+| Connections | Live connection count, and the total since the listener started. |
+
+**+ Add Forward** creates a rule that no container implies — a service on a network mudp does not manage, a port that was never published, or a second host port for an existing container. The target is either:
+
+- **A container**, resolved to its current address on every reconcile, so the forward follows it across restarts and address changes; or
+- **A fixed address** (e.g. `10.210.1.3:8080`), for anything else the host can reach.
+
+Manual rules are stored, survive restarts, and are the only rules that can be deleted from this page — container-derived rules come and go with their containers. A host port already relayed for a container cannot be claimed manually, and the console's own port is refused.
+
+Notes:
+
+- The network may be named either the way it appears on the Networks view (`openwrt-lan`) or by its full Docker name (`mudp-alice-net-openwrt-lan`). Both resolve to the same network.
+- If Docker becomes unreachable, the forwards already running are kept as they are rather than torn down, and manual forwards to a fixed address keep working — they never needed Docker.
+- Forwards are reconciled from container state every 15 seconds and after every create/start/stop. A container that restarts onto a new address keeps its host port and is repointed automatically; a container that is removed releases its port.
+- A stopped container has no address, so its forwards are not listening — but its host ports stay reserved for it.
+- The Networks view marks a forwarding network with a **forward** badge, the create wizard says so next to the network, the container list marks a container whose ports mudp relays, and the container detail view marks each forwarded mapping.
+- Turning forwarding **off** hands publishing back to Docker for containers created afterwards; containers created while it was on keep their recorded mapping and stop being reachable on the host until they are recreated (**Duplicate** reproduces a container under the current setting).
+- Forwarding runs inside the mudp process, so the forwarded ports are up only while mudp is. They are re-established at startup.
+- Compose stacks publish through `docker compose` itself and are not forwarded; on such a host, reach a stack's services at the container address directly.
+
 ## Netdisk
 
 Admins assign a netdisk root path per group from **Users & Groups -> Group Netdisk Paths**. A user's files are stored under:

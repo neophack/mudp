@@ -35,7 +35,13 @@ export async function openDetails(id, name) {
         detailRow(
           "Ports",
           (i.ports || [])
-            .map((p) => escapeHtml(p.hostPort ? `${p.hostPort}:${p.privatePort}/${p.type}` : `${p.privatePort}/${p.type}`))
+            .map((p) => {
+              const mapping = escapeHtml(p.hostPort ? `${p.hostPort}:${p.privatePort}/${p.type}` : `${p.privatePort}/${p.type}`);
+              // A forwarded port is relayed by mudp rather than published by
+              // Docker; it answers on the host the same way, but `docker ps`
+              // will not show it, so the detail view is where that is said.
+              return p.forwarded ? `${mapping} <span class="hint">(mudp forward)</span>` : mapping;
+            })
             .join(", ") || "-"
         ) +
         detailRow(

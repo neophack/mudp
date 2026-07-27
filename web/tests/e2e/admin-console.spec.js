@@ -311,6 +311,17 @@ test("networks: create, open details, attach panel and delete", async ({ page })
   await expect(page.locator(".modal-backdrop.network-modal")).toBeVisible({ timeout: 20000 });
   await closeModals(page);
 
+  // Forwarding is a per-network choice made from this row: turning it on marks
+  // the network, turning it back off hands publishing to Docker again. A fresh
+  // network has no containers, so neither click starts a listener.
+  await h.withConfirm(async () => {
+    await row.locator("button[data-net-forward='on']").click();
+    await expect(row.locator("button[data-net-forward='off']")).toBeVisible({ timeout: 20000 });
+  });
+  await expect(row).toContainText("forward");
+  await row.locator("button[data-net-forward='off']").click();
+  await expect(row.locator("button[data-net-forward='on']")).toBeVisible({ timeout: 20000 });
+
   // The ✕ button must delete it once confirmed.
   await h.withConfirm(async () => {
     await row.locator('button[title="Delete"]').click();
@@ -793,6 +804,47 @@ test("disks: the admin page renders its panels and saves the mount config", asyn
   expect(await toastText(page)).toContain("saved");
 
   h.assertClean("the disks page");
+});
+
+test("port forwarding: the page lists forwards and a manual rule can be added and removed", async ({ page }) => {
+  test.setTimeout(120000);
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "forwards");
+
+  await expect(page.locator("#view table.data").first()).toBeVisible();
+  await expect(page.locator("#forwardNetForm")).toBeVisible();
+
+  // Saving the network selection untouched must leave the host publishing
+  // through Docker exactly as before — what an install that never opens this
+  // page relies on.
+  await page.click("#forwardNetForm button");
+  expect(await toastText(page)).toContain("Forwarding networks saved");
+
+  // A manual forward to a fixed address: no container has to exist for the rule
+  // to be stored, and the row must carry the port, target and source.
+  // A high port outside every user's range (and not the console's or the MCP
+  // listener's), so the rule can bind without competing with the suite.
+  const hostPort = 10999;
+  await page.click("#addForwardBtn");
+  await expect(page.locator("#forwardForm")).toBeVisible();
+  await page.fill("#forwardForm [name='hostPort']", String(hostPort));
+  await page.fill("#forwardForm [name='targetIp']", "127.0.0.1");
+  await page.fill("#forwardForm [name='targetPort']", "9");
+  await page.fill("#forwardForm [name='note']", `ui-fwd-${fixture.runId}`);
+  await page.click("#saveForward");
+
+  const row = page.locator("#view tbody tr", { hasText: `${hostPort}/tcp` });
+  await expect(row).toBeVisible({ timeout: 20000 });
+  await expect(row).toContainText("manual");
+  await expect(row).toContainText("127.0.0.1:9");
+
+  await h.withConfirm(async () => {
+    await row.locator("button[data-fwd-delete]").click();
+    await expect(page.locator("#view tbody tr", { hasText: `${hostPort}/tcp` })).toHaveCount(0, { timeout: 20000 });
+  });
+
+  h.assertClean("the port forwarding page");
 });
 
 test("settings: language panels render and a registry can be added, tested and removed", async ({ page }) => {

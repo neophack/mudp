@@ -1,4 +1,6 @@
-// Networks: list, create, delete. mudp-managed networks are namespaced per user.
+// Networks: list, create, delete, group sharing, and the per-network choice
+// between Docker publishing and mudp port forwarding. mudp-managed networks are
+// namespaced per user.
 
 import { state, api, toast, refreshSection, renderView, canMutate, isAdmin } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
@@ -15,7 +17,7 @@ export function renderNetworks() {
         (admin ? `<button class="primary" id="newNetBtn">+ New Network</button>` : "") +
       `</div>` +
       (admin
-        ? `<p class="hint" style="padding:0 16px;margin:0 0 8px">Networks already on this host are listed too. Use “Groups” to choose which user groups can see and attach to one — including Docker's “bridge”, which stays open to everyone until you pick groups for it. Only the network's creator can delete it.</p>`
+        ? `<p class="hint" style="padding:0 16px;margin:0 0 8px">Networks already on this host are listed too. Use “Groups” to choose which user groups can see and attach to one — including Docker's “bridge”, which stays open to everyone until you pick groups for it. Only the network's creator can delete it. Use “Forward” where Docker cannot publish a port (an OpenWrt/LAN network, where <span class="mono">-p</span> fails to bind or the router's firewall bypasses it): mudp then relays each container's host port to the container's own address instead.</p>`
         : "") +
       `<table class="data">` +
         `<thead><tr><th>Name</th><th>Driver</th><th>Subnet</th><th>Containers</th><th>Owner</th>` +
@@ -32,6 +34,9 @@ export function renderNetworks() {
   document.querySelectorAll("[data-net-share]").forEach((btn) => {
     btn.onclick = () => openShareNetwork(btn.dataset.netFullname, btn.dataset.netName);
   });
+  document.querySelectorAll("[data-net-forward]").forEach((btn) => {
+    btn.onclick = () => toggleForward(btn.dataset.netFullname, btn.dataset.netName, btn.dataset.netForward === "on");
+  });
   document.querySelectorAll("[data-net-delete]").forEach((btn) => {
     btn.onclick = () => deleteNetwork(btn.dataset.netFullname, btn.dataset.netName);
   });
@@ -40,10 +45,14 @@ export function renderNetworks() {
 // networkBadge labels where a row came from: a Docker built-in, a network that
 // already existed on the host, or one shared with the user through their group.
 function networkBadge(n) {
-  if (n.system) return ` <span class="badge badge-muted">system</span>`;
-  if (n.external) return ` <span class="badge badge-muted">host</span>`;
-  if (n.shared) return ` <span class="badge badge-muted">shared</span>`;
-  return "";
+  // "forward" says the ports of containers on this network are relayed by mudp
+  // instead of published by Docker — set in Settings → Port forwarding, and
+  // worth showing here because it changes what a port mapping does.
+  const forward = n.forward ? ` <span class="badge badge-ok">forward</span>` : "";
+  if (n.system) return ` <span class="badge badge-muted">system</span>` + forward;
+  if (n.external) return ` <span class="badge badge-muted">host</span>` + forward;
+  if (n.shared) return ` <span class="badge badge-muted">shared</span>` + forward;
+  return forward;
 }
 
 // groupsCell describes who may use a network, for the admin-only Groups column.
@@ -66,6 +75,12 @@ function networkRow(n) {
   // still shareable: restricting it to groups is the only way to keep users off
   // the default network. host/none can't be joined, so sharing them is moot.
   const shareable = admin && (!n.system || n.name === "bridge");
+  // Forwarding is only meaningful for a network a container can join and hold an
+  // address on — the same set that can be shared.
+  const forwardable = admin && n.attachable;
+  const forwardTitle = n.forward
+    ? "mudp forwards host ports for this network — click to hand publishing back to Docker"
+    : "Docker publishes host ports for this network — click to forward them through mudp instead";
   return (
     `<tr>` +
       `<td><div class="primary-line">${name}${networkBadge(n)}</div></td>` +
@@ -79,10 +94,47 @@ function networkRow(n) {
       `<td class="actions">` +
         `<button class="icon" title="Details" data-net-inspect data-net-name="${name}" data-net-fullname="${full}">ℹ</button>` +
         (shareable ? `<button class="ghost" data-net-share data-net-name="${name}" data-net-fullname="${full}">Groups</button>` : "") +
+        (forwardable
+          ? `<button class="ghost${n.forward ? " is-on" : ""}" title="${forwardTitle}" data-net-forward="${n.forward ? "off" : "on"}" data-net-name="${name}" data-net-fullname="${full}">${n.forward ? "Forwarding" : "Forward"}</button>`
+          : "") +
         (canMutate() && n.canDelete ? `<button class="icon danger" title="Delete" data-net-delete data-net-name="${name}" data-net-fullname="${full}">✕</button>` : "") +
       `</td>` +
     `</tr>`
   );
+}
+
+// toggleForward switches one network between Docker publishing and mudp
+// forwarding. It exists on this page because this is where an admin is standing
+// when they find that a network's published ports answer nothing: on a host
+// whose firewall is owned by something else (an OpenWrt router), Docker's
+// publishing does not work, while the container's own address does.
+//
+// Turning it on applies to containers created from then on *and* to the ones
+// already on the network, whose existing host ports are relayed instead.
+async function toggleForward(fullName, name, forward) {
+  if (forward && !confirm(
+    `Forward host ports for "${name}" through mudp?\n\n` +
+    `New containers on this network will have their ports relayed by mudp instead of published by Docker. ` +
+    `Containers already on it keep their host ports and are relayed too.`
+  )) return;
+  try {
+    const res = await api("/api/networks/forward", {
+      method: "POST",
+      body: JSON.stringify({ name: fullName, forward }),
+    });
+    // The Port forwarding page reads the same configuration, so drop its cache
+    // rather than let it show the state from before this click.
+    state.forwards = null;
+    await refreshSection("networks");
+    renderView();
+    if (res.warning) {
+      toast(`Saved, but some forwards could not start: ${res.warning}`);
+    } else {
+      toast(forward ? `mudp now forwards ports for ${name}` : `${name} publishes through Docker again`, true);
+    }
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 // openShareNetwork lets an admin pick the user groups that may see and use a

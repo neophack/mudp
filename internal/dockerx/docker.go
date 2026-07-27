@@ -87,6 +87,12 @@ type CreateOptions struct {
 	// own mudp-managed networks: the host/shared networks an admin granted to
 	// one of their groups. Server-supplied — never taken from the request.
 	AllowedNetworks []string
+	// ForwardNetworks are the networks an administrator has marked as needing
+	// mudp's own port forwarding instead of Docker's publishing (see forward.go).
+	// When the container joins one of them, its host ports are recorded on the
+	// container and relayed in-process rather than handed to Docker.
+	// Server-supplied from the admin settings — never taken from the request.
+	ForwardNetworks []string
 	// Devices are generic --device specs (host[:container[:rwm]]) to pass through,
 	// e.g. /dev/nvidia0. Used by admins to keep NVIDIA GPUs connected to GPU
 	// containers and to expose other host devices.
@@ -158,6 +164,9 @@ type PortBinding struct {
 	HostPort    string `json:"hostPort"`
 	PrivatePort uint16 `json:"privatePort"`
 	Type        string `json:"type"`
+	// Forwarded marks a mapping mudp relays itself rather than one Docker
+	// published, so the detail view can say which is which.
+	Forwarded bool `json:"forwarded,omitempty"`
 }
 
 type MountInfo struct {
@@ -343,8 +352,29 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	if err != nil {
 		return "", err
 	}
+	// Networks are resolved before the ports because they decide how a port gets
+	// published. A container joining a network the administrator marked for mudp
+	// forwarding takes its host ports from the same range as everyone else, but
+	// mudp relays them itself instead of asking Docker to publish them — on such
+	// a host (an OpenWrt box owning the firewall) Docker's publishing does not
+	// work, while the container's own LAN address does. See forward.go.
+	allowedNetworks := make(map[string]bool, len(opts.AllowedNetworks))
+	for _, n := range opts.AllowedNetworks {
+		allowedNetworks[n] = true
+	}
+	resolvedNetworks := make([]string, 0, len(opts.Networks))
+	for _, n := range opts.Networks {
+		full, err := d.validateNetworkAttachment(ctx, opts.Username, n, allowedNetworks)
+		if err != nil {
+			return "", err
+		}
+		resolvedNetworks = append(resolvedNetworks, full)
+	}
+	forwardNet := ForwardNetworkFor(resolvedNetworks, opts.ForwardNetworks)
+
 	exposed := nat.PortSet{}
 	portMap := nat.PortMap{}
+	var forwardSpecs []ForwardSpec
 	usedPorts, err := d.managedHostPorts(ctx)
 	if err != nil {
 		return "", err
@@ -366,9 +396,9 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		allocated[hostPort] = true
 		return nil
 	}
-	nextPort := func() (string, error) {
+	nextPort := func() (int, error) {
 		if opts.PortPrefix <= 0 {
-			return "", fmt.Errorf("port prefix is not assigned")
+			return 0, fmt.Errorf("port prefix is not assigned")
 		}
 		start := opts.PortPrefix * 100
 		for p := start; p <= start+99 && p <= 65535; p++ {
@@ -377,67 +407,64 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			}
 			if !usedPorts[p] && !allocated[p] && portFree(p) {
 				allocated[p] = true
-				return strconv.Itoa(p), nil
+				return p, nil
 			}
 		}
-		return "", fmt.Errorf("no free ports in assigned range %d-%d", start, start+99)
+		return 0, fmt.Errorf("no free ports in assigned range %d-%d", start, start+99)
 	}
+	// publish records one resolved mapping. The container port is always exposed;
+	// where the host side goes depends on the network: Docker's port bindings
+	// normally, or the forward label when the container sits on a network mudp
+	// forwards for. Nothing else in the create path needs to know which it was.
+	publish := func(hostPort, containerPort int, proto string) {
+		p := nat.Port(fmt.Sprintf("%d/%s", containerPort, proto))
+		exposed[p] = struct{}{}
+		if forwardNet != "" {
+			forwardSpecs = append(forwardSpecs, ForwardSpec{HostPort: hostPort, ContainerPort: containerPort, Proto: proto})
+			return
+		}
+		portMap[p] = []nat.PortBinding{{HostPort: strconv.Itoa(hostPort)}}
+	}
+	// addPort resolves one mapping from the create form (see parsePortSpec for
+	// the accepted shapes) and publishes it.
 	addPort := func(spec string) error {
-		if spec == "" {
-			return nil
-		}
-		parts := strings.Split(spec, ":")
-		if len(parts) == 2 && strings.TrimSpace(parts[0]) == "" {
-			hostPort, err := nextPort()
-			if err != nil {
-				return err
-			}
-			p := nat.Port(strings.TrimSpace(parts[1]) + "/tcp")
-			exposed[p] = struct{}{}
-			portMap[p] = []nat.PortBinding{{HostPort: hostPort}}
-			return nil
-		}
-		if len(parts) == 1 {
-			hostPort, err := nextPort()
-			if err != nil {
-				return err
-			}
-			p := nat.Port(strings.TrimSpace(parts[0]) + "/tcp")
-			exposed[p] = struct{}{}
-			portMap[p] = []nat.PortBinding{{HostPort: hostPort}}
-			return nil
-		}
-		if len(parts) != 2 {
-			return fmt.Errorf("port %q must be host:container, :container, or container", spec)
-		}
-		hostPort, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		req, err := parsePortSpec(spec)
 		if err != nil {
-			return fmt.Errorf("invalid host port %q", parts[0])
+			return err
 		}
+		if req.skip {
+			return nil
+		}
+		containerPort, proto := req.containerPort, req.proto
+		if req.hostPort == 0 {
+			hostPort, err := nextPort()
+			if err != nil {
+				return err
+			}
+			publish(hostPort, containerPort, proto)
+			return nil
+		}
+		hostPort := req.hostPort
 		if err := addHostPort(hostPort); err != nil {
 			// If the requested host port is occupied by a system program (not a
 			// port already managed by this application), automatically allocate
 			// another free port in the user's assigned range instead of failing.
 			if !usedPorts[hostPort] && !portFree(hostPort) {
 				emit("ports", fmt.Sprintf("Host port %d is occupied by another process; allocating a different port", hostPort))
-				hostPortStr, err := nextPort()
+				alt, err := nextPort()
 				if err != nil {
 					return err
 				}
-				p := nat.Port(parts[1] + "/tcp")
-				exposed[p] = struct{}{}
-				portMap[p] = []nat.PortBinding{{HostPort: hostPortStr}}
+				publish(alt, containerPort, proto)
 				return nil
 			}
 			return err
 		}
-		p := nat.Port(parts[1] + "/tcp")
-		exposed[p] = struct{}{}
-		portMap[p] = []nat.PortBinding{{HostPort: strconv.Itoa(hostPort)}}
+		publish(hostPort, containerPort, proto)
 		return nil
 	}
 	for _, p := range opts.Ports {
-		if err := addPort(strings.TrimSpace(p)); err != nil {
+		if err := addPort(p); err != nil {
 			return "", err
 		}
 	}
@@ -446,16 +473,14 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		if err != nil {
 			return "", err
 		}
-		exposed["8080/tcp"] = struct{}{}
-		portMap["8080/tcp"] = []nat.PortBinding{{HostPort: hostPort}}
+		publish(hostPort, 8080, "tcp")
 	}
 	if opts.Forward80 {
 		hostPort, err := nextPort()
 		if err != nil {
 			return "", err
 		}
-		exposed["80/tcp"] = struct{}{}
-		portMap["80/tcp"] = []nat.PortBinding{{HostPort: hostPort}}
+		publish(hostPort, 80, "tcp")
 	}
 	labels := map[string]string{
 		ManagedLabel:       "true",
@@ -474,6 +499,13 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			continue
 		}
 		labels[k] = v
+	}
+	// The forward labels are written after the merge (which refuses mudp.* keys
+	// from a caller) so the mapping mudp will relay cannot be forged from the
+	// request: it is exactly what the port allocator just handed out.
+	if forwardNet != "" && len(forwardSpecs) > 0 {
+		labels[ForwardPortsLabel] = FormatForwardSpecs(forwardSpecs)
+		labels[ForwardNetLabel] = forwardNet
 	}
 	hostCfg := &container.HostConfig{
 		PortBindings:  portMap,
@@ -510,18 +542,6 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			return "", err
 		}
 		hostCfg.Mounts = append(hostCfg.Mounts, mount)
-	}
-	allowedNetworks := make(map[string]bool, len(opts.AllowedNetworks))
-	for _, n := range opts.AllowedNetworks {
-		allowedNetworks[n] = true
-	}
-	resolvedNetworks := make([]string, 0, len(opts.Networks))
-	for _, n := range opts.Networks {
-		full, err := d.validateNetworkAttachment(ctx, opts.Username, n, allowedNetworks)
-		if err != nil {
-			return "", err
-		}
-		resolvedNetworks = append(resolvedNetworks, full)
 	}
 	if opts.MountNetdisk && strings.TrimSpace(opts.NetdiskPath) != "" {
 		hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{Type: mount.TypeBind, Source: strings.TrimSpace(opts.NetdiskPath), Target: "/workspace"})
@@ -598,6 +618,12 @@ func (d *Client) managedHostPorts(ctx context.Context) (map[int]bool, error) {
 			if p.PublicPort > 0 {
 				out[int(p.PublicPort)] = true
 			}
+		}
+		// Forwarded ports are not published, so Docker does not report them —
+		// but they are just as much allocated, and a stopped container keeps its
+		// claim so restarting it does not find its port taken by a newer one.
+		for _, s := range ParseForwardSpecs(c.Labels[ForwardPortsLabel]) {
+			out[s.HostPort] = true
 		}
 	}
 	return out, nil
@@ -864,12 +890,26 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 		if display == "" && !admin {
 			display = strings.TrimPrefix("/"+full, UserContainerPrefix(username))
 		}
-		ports := make([]string, 0, len(c.Ports))
+		// Forwarded ports are mudp's own, so Docker reports them as merely
+		// exposed. Render them from the label first and skip the bare
+		// "8080/tcp" duplicate Docker will report for the same port, or the
+		// list would claim a mapped port is unmapped.
+		forwards := ParseForwardSpecs(c.Labels[ForwardPortsLabel])
+		ports := make([]string, 0, len(c.Ports)+len(forwards))
 		seenPorts := map[string]bool{}
+		for _, s := range forwards {
+			rendered := s.String()
+			if !seenPorts[rendered] {
+				seenPorts[rendered] = true
+				ports = append(ports, rendered)
+			}
+		}
 		for _, p := range c.Ports {
 			var rendered string
 			if p.PublicPort > 0 {
 				rendered = fmt.Sprintf("%d:%d/%s", p.PublicPort, p.PrivatePort, p.Type)
+			} else if forwardHostPort(forwards, int(p.PrivatePort), p.Type) > 0 {
+				continue
 			} else {
 				rendered = fmt.Sprintf("%d/%s", p.PrivatePort, p.Type)
 			}
@@ -881,7 +921,7 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 		out = append(out, Container{
 			ID: c.ID, Name: display, FullName: full, Owner: c.Labels[UserLabel], Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
-			HTTP8080URL: httpURL(c.Ports, 8080), HTTP80URL: httpURL(c.Ports, 80),
+			HTTP8080URL: httpURL(c.Ports, forwards, 8080), HTTP80URL: httpURL(c.Ports, forwards, 80),
 		})
 	}
 	for i := range out {
@@ -900,8 +940,10 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 }
 
 // httpURL returns the host-side http:// URL for the given container private
-// port (e.g. 8080 or 80) when it is published.
-func httpURL(ports []types.Port, privatePort uint16) string {
+// port (e.g. 8080 or 80) when it is reachable from the host — published by
+// Docker, or forwarded by mudp. A forwarded port answers on the host exactly
+// like a published one, so the console's "open" link works the same either way.
+func httpURL(ports []types.Port, forwards []ForwardSpec, privatePort uint16) string {
 	for _, p := range ports {
 		if p.PrivatePort == privatePort && p.PublicPort > 0 {
 			host := p.IP
@@ -910,6 +952,9 @@ func httpURL(ports []types.Port, privatePort uint16) string {
 			}
 			return fmt.Sprintf("http://%s:%d", host, p.PublicPort)
 		}
+	}
+	if hp := forwardHostPort(forwards, int(privatePort), "tcp"); hp > 0 {
+		return fmt.Sprintf("http://127.0.0.1:%d", hp)
 	}
 	return ""
 }
@@ -1073,16 +1118,43 @@ func (d *Client) Inspect(ctx context.Context, id string) (InspectInfo, error) {
 	if t, err := time.Parse(time.RFC3339Nano, inspect.Created); err == nil {
 		info.CreatedAt = t.Unix()
 	}
+	// mudp-forwarded ports carry no Docker binding, so an unbound port is
+	// reported with the host port the label assigns it. Anything the label
+	// forwards that the image never exposed is added afterwards, so the detail
+	// view lists every mapping that actually answers on the host.
+	forwards := ParseForwardSpecs(info.Labels[ForwardPortsLabel])
+	// forwardShown tracks which forwarded container ports have been rendered
+	// already; seenMapping collapses the duplicates Docker reports for one
+	// published port (the IPv4 and IPv6 bindings, "0.0.0.0:10503" and
+	// "[::]:10503"), which otherwise show up as the same mapping listed twice.
+	forwardShown := map[string]bool{}
+	seenMapping := map[string]bool{}
 	for port, bindings := range inspect.NetworkSettings.Ports {
 		portType := port.Proto()
 		privatePort := port.Int()
 		if len(bindings) == 0 {
+			if hp := forwardHostPort(forwards, privatePort, portType); hp > 0 {
+				forwardShown[fmt.Sprintf("%d/%s", privatePort, portType)] = true
+				info.Ports = append(info.Ports, PortBinding{HostPort: strconv.Itoa(hp), PrivatePort: uint16(privatePort), Type: portType, Forwarded: true})
+				continue
+			}
 			info.Ports = append(info.Ports, PortBinding{PrivatePort: uint16(privatePort), Type: portType})
 			continue
 		}
 		for _, b := range bindings {
+			key := fmt.Sprintf("%s:%d/%s", b.HostPort, privatePort, portType)
+			if seenMapping[key] {
+				continue
+			}
+			seenMapping[key] = true
 			info.Ports = append(info.Ports, PortBinding{Host: b.HostIP, HostPort: b.HostPort, PrivatePort: uint16(privatePort), Type: portType})
 		}
+	}
+	for _, s := range forwards {
+		if forwardShown[fmt.Sprintf("%d/%s", s.ContainerPort, s.Proto)] {
+			continue
+		}
+		info.Ports = append(info.Ports, PortBinding{HostPort: strconv.Itoa(s.HostPort), PrivatePort: uint16(s.ContainerPort), Type: s.Proto, Forwarded: true})
 	}
 	for _, m := range inspect.Mounts {
 		info.Mounts = append(info.Mounts, MountInfo{Type: string(m.Type), Source: m.Source, Target: m.Destination, Mode: m.Mode})
@@ -1120,8 +1192,10 @@ func (d *Client) InspectRaw(ctx context.Context, id string) (json.RawMessage, er
 // CreateOptions.AllowedNetworks): the copy is created through the same
 // validation as a fresh container, so a network the owner may no longer join —
 // a "bridge" since restricted to other groups, say — fails the duplicate rather
-// than being reproduced.
-func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username string, portPrefix int, allowedNetworks []string) (string, error) {
+// than being reproduced. forwardNetworks carries the administrator's current
+// forwarding setting, so the copy publishes its ports the way the host works
+// today rather than the way it worked when the original was created.
+func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username string, portPrefix int, allowedNetworks, forwardNetworks []string) (string, error) {
 	if err := d.managedGuard(ctx, id); err != nil {
 		return "", err
 	}
@@ -1132,11 +1206,24 @@ func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username s
 	// Translate the ports back into the create spec. Public ports are host-side
 	// numbers that won't be reused verbatim — express them as ":container" so
 	// CreateContainer auto-allocates a fresh host port from the owner's range.
+	// The protocol travels with them: a copy of a container forwarding 53/udp
+	// must not come back as 53/tcp.
 	var ports []string
+	seenPort := map[string]bool{}
 	for _, p := range info.Ports {
-		if p.PrivatePort > 0 {
-			ports = append(ports, fmt.Sprintf(":%d", p.PrivatePort))
+		if p.PrivatePort == 0 {
+			continue
 		}
+		proto := p.Type
+		if proto == "" {
+			proto = "tcp"
+		}
+		spec := fmt.Sprintf(":%d/%s", p.PrivatePort, proto)
+		if seenPort[spec] {
+			continue
+		}
+		seenPort[spec] = true
+		ports = append(ports, spec)
 	}
 	// Translate named-volume mounts (bind mounts and netdisk are excluded to
 	// avoid double-mounting the host netdisk path or host bind sources, which
@@ -1180,6 +1267,7 @@ func (d *Client) DuplicateContainer(ctx context.Context, id, newName, username s
 		Mounts:          mounts,
 		Networks:        networks,
 		AllowedNetworks: allowedNetworks,
+		ForwardNetworks: forwardNetworks,
 		RestartPolicy:   info.RestartPolicy,
 	}
 	// Duplicate does not auto-start; CreateContainer always starts, so create

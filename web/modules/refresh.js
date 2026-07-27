@@ -14,6 +14,7 @@ import { fetchNotifications, updateNotificationBadge } from "./notifications.js"
 import { renderUsage } from "./usage.js";
 import { renderNetdisk } from "./netdisk.js";
 import { refreshMCPTokens } from "./mcp.js";
+import { reloadForwards } from "./forwards.js";
 
 // sectionLoader polls one or more global-state sections and returns a
 // signature string used for change detection.
@@ -72,6 +73,10 @@ const TAB_REFRESH = {
   // This keeps the inline create-token form from being clobbered every tick.
   mcp: { ms: 15000, load: async () => { await refreshMCPTokens(); return JSON.stringify([state.mcpTokens, state.mcpRemote]); } },
   disks: { ms: 15000, load: sectionLoader("disks") },
+  // Forwards carry live connection counts and follow containers across
+  // restarts, so they are polled on the container cadence rather than the
+  // slower config one.
+  forwards: { ms: 5000, load: async () => JSON.stringify(await reloadForwards()) },
 };
 
 const FALLBACK_MS = 10000;

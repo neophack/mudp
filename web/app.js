@@ -20,6 +20,7 @@ import { renderAudit } from "./modules/audit.js";
 import { renderSettings } from "./modules/settings.js";
 import { renderNetdisk } from "./modules/netdisk.js";
 import { renderDisks } from "./modules/disks.js";
+import { renderForwards } from "./modules/forwards.js";
 import { renderHardware, stopPolling as stopHardwarePolling } from "./modules/hardware.js";
 import { renderMCP } from "./modules/mcp.js";
 import { startAutoRefresh, refreshActiveTab } from "./modules/refresh.js";
@@ -278,6 +279,8 @@ const ICONS = {
   images: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>'),
   volumes: svgIcon('<path d="M10 16h.01"/><path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M21.946 12.013H2.054"/><path d="M6 16h.01"/>'),
   networks: svgIcon('<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>'),
+  // Two arrows crossing: a host port relayed to a container address.
+  forwards: svgIcon('<path d="M3 8h13l-3-3"/><path d="M16 8l-3 3"/><path d="M21 16H8l3-3"/><path d="M8 16l3 3"/>'),
   stacks: svgIcon('<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/>'),
   users: svgIcon('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/>'),
   usage: svgIcon('<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>'),
@@ -301,6 +304,7 @@ function label(tab) {
       images: t("nav.images"),
       volumes: t("nav.volumes"),
       networks: t("nav.networks"),
+      forwards: t("nav.forwards"),
       stacks: t("nav.stacks"),
       users: t("nav.usersGroups"),
       usage: t("nav.usage"),
@@ -323,6 +327,7 @@ function subtitle(tab) {
       images: t("subtitle.images"),
       volumes: t("subtitle.volumes"),
       networks: t("subtitle.networks"),
+      forwards: t("subtitle.forwards"),
       stacks: t("subtitle.stacks"),
       users: t("subtitle.users"),
       usage: t("subtitle.usage"),
@@ -339,7 +344,7 @@ function subtitle(tab) {
 export function render() {
   const admin = isAdmin();
   const tabs = admin
-    ? ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", "users", "audit", "disks", "scripts", "help"]
+    ? ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "forwards", "stacks", "hardware", "users", "audit", "disks", "scripts", "help"]
     : ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", "scripts", "help"];
 
   const collapsed = state.sidebarCollapsed;
@@ -451,6 +456,7 @@ export function renderView() {
   if (state.tab === "help") return renderHelp();
   if (state.tab === "audit") return renderAudit();
   if (state.tab === "disks") return renderDisks();
+  if (state.tab === "forwards") return renderForwards();
   if (state.tab === "scripts") return renderSettings();
   if (state.tab === "hardware") return renderHardware();
 }
