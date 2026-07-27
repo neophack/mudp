@@ -46,6 +46,33 @@ Admins can open **Disks** to view host disk information, run mount/unmount helpe
 
 The backup currently includes the MUDP SQLite database. Netdisk data can be copied or archived from the assigned netdisk root paths using the Netdisk file manager or host-level tools.
 
+## MCP External Access
+
+MCP tokens normally only work from the network the console is on. To let an agent connect from outside, an admin can publish a second listener that serves **only** the MCP endpoints, and point a Cloudflare tunnel hostname at it.
+
+Configure it in **Settings -> MCP external access**:
+
+| Field | Meaning |
+| --- | --- |
+| Public domain | The hostname the tunnel serves, e.g. `mcp.example.com`. Users copy this. |
+| Port | The loopback port the tunnel connects to. Default `19090`. |
+| Safe network | The Docker network a container must be attached to before its token works from outside. Default `openwrt-lan`. |
+| Enable external access | Starts the listener. |
+
+Then run the tunnel on the same host:
+
+```sh
+cloudflared tunnel --url http://127.0.0.1:19090
+```
+
+Notes:
+
+- The listener binds to `127.0.0.1` only. Nothing but `/mcp/...` and `/healthz` is served on it — the console, the API, and the netdisk are not reachable through the public hostname.
+- A token is refused on the external listener unless its container is attached to the safe network, so enabling external access does not by itself expose any container. Put a container on the safe network to make it reachable; disconnect it to revoke that.
+- The safe network name matches either the Docker network name (`openwrt-lan`) or the display name of a mudp-managed network (`openwrt-lan` for `mudp-<user>-net-openwrt-lan`).
+- Changing the port moves the listener immediately; disabling stops it. Existing tokens are unchanged either way — only where they can be used changes.
+- Users see the domain, and a per-token external link, on the **MCP** page.
+
 ## Feishu Login
 
 When Feishu SSO is enabled and has both App ID and App Secret configured, the login page shows a Feishu login entry. New Feishu users are placed in the `pending` group until an admin assigns them to a normal group.

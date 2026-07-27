@@ -70,7 +70,7 @@ const TAB_REFRESH = {
   netdisk: { ms: 15000, selfFetch: true, load: async () => { await renderNetdisk(); return null; } },
   // MCP: refresh the token list into state, then only re-render when it changed.
   // This keeps the inline create-token form from being clobbered every tick.
-  mcp: { ms: 15000, load: async () => { await refreshMCPTokens(); return JSON.stringify(state.mcpTokens); } },
+  mcp: { ms: 15000, load: async () => { await refreshMCPTokens(); return JSON.stringify([state.mcpTokens, state.mcpRemote]); } },
   disks: { ms: 15000, load: sectionLoader("disks") },
 };
 

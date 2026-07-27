@@ -57,6 +57,9 @@ type App struct {
 	dirSizeCache     map[string]dirSizeEntry
 	dirSizeRunning   map[string]bool
 	dirSizeSemaphore chan struct{}
+	// remoteMCP is the optional second listener that publishes only the MCP
+	// endpoints on loopback for a Cloudflare tunnel. See mcp_remote.go.
+	remoteMCP remoteMCPState
 }
 
 type dirSizeEntry struct {
@@ -88,8 +91,10 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 	}, nil
 }
 
-// Close releases resources held by the app, such as the Docker client.
+// Close releases resources held by the app, such as the Docker client and the
+// external MCP listener.
 func (a *App) Close() error {
+	a.StopRemoteMCP()
 	if a.docker == nil {
 		return nil
 	}
@@ -264,6 +269,9 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/mcp/tokens", a.mcpTokenList)
 		r.Post("/api/mcp/tokens", a.mcpTokenCreate)
 		r.Delete("/api/mcp/tokens/{id}", a.mcpTokenDelete)
+		// The public hostname (if an admin configured one) so a user can copy an
+		// externally reachable link for their own token. Read-only, no secrets.
+		r.Get("/api/mcp/remote", a.mcpRemoteInfo)
 
 		// In-app notifications for activated users.
 		r.Get("/api/notifications", a.notifications)
@@ -336,6 +344,10 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/netdisk/backup/all", a.netdiskBackupAll)
 		r.Get("/api/backup/schedule", a.backupScheduleGet)
 		r.Post("/api/backup/schedule", a.backupSchedulePost)
+		// External MCP access: the loopback port a Cloudflare tunnel maps a public
+		// hostname onto, and the safe network that gates it.
+		r.Get("/api/admin/mcp/remote", a.mcpRemoteSettings)
+		r.Post("/api/admin/mcp/remote", a.mcpRemoteSettings)
 		r.Get("/api/admin/disks", a.disks)
 		r.Get("/api/admin/disks/config", a.diskMountConfigGet)
 		r.Post("/api/admin/disks/config", a.diskMountConfigPost)
@@ -831,6 +843,33 @@ type createRequest struct {
 
 var errForbiddenImage = errors.New("image not visible")
 
+// presetDevices returns the device and CDI-device lists an image's admin-defined
+// preset grants. A nil preset grants nothing.
+func presetDevices(p *store.ImagePreset) (devices, cdiDevices []string) {
+	if p == nil {
+		return nil, nil
+	}
+	return append([]string(nil), p.Devices...), append([]string(nil), p.CDIDevices...)
+}
+
+// appendUnique appends the entries of extra that base does not already contain,
+// so merging a preset with an admin's explicit list doesn't duplicate devices.
+func appendUnique(base, extra []string) []string {
+	seen := make(map[string]bool, len(base))
+	for _, v := range base {
+		seen[v] = true
+	}
+	for _, v := range extra {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		base = append(base, v)
+	}
+	return base
+}
+
 // validateCreate normalises a create request and resolves the image + scripts.
 // It does not perform the docker create; callers do that themselves so the SSE
 // handler can stream progress.
@@ -851,13 +890,21 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	if err != nil {
 		return dockerx.CreateOptions{}, errForbiddenImage
 	}
-	// Capabilities, host devices, and sysctls can reach outside the container
-	// (e.g. CapAdd:["SYS_ADMIN"] or a raw block device) and are host-wide,
-	// security-sensitive knobs — restrict them to admins, same as the rest of
-	// the privileged image/host lifecycle surface. Non-admin fields are simply
-	// ignored below by never populating them from req.
-	if u.Role != "admin" && (len(req.CapAdd) > 0 || len(req.Devices) > 0 || len(req.CDIDevices) > 0 || len(req.Sysctls) > 0) {
-		return dockerx.CreateOptions{}, errors.New("capabilities, devices, and sysctls require admin privileges")
+	// Host devices reach outside the container (a raw block device is host-wide),
+	// so they are never taken from the client for a non-admin. They are not
+	// rejected either: the create wizard legitimately echoes back the image's
+	// admin-defined preset so GPU device nodes stay attached. Resolve them from
+	// the preset server-side and let only admins pass extra devices through.
+	devices, cdiDevices := presetDevices(img.Preset)
+	if u.Role == "admin" {
+		devices = appendUnique(devices, req.Devices)
+		cdiDevices = appendUnique(cdiDevices, req.CDIDevices)
+	}
+	// Capabilities and sysctls (e.g. CapAdd:["SYS_ADMIN"]) have no preset source
+	// and are host-wide, security-sensitive knobs — admins only, same as the rest
+	// of the privileged image/host lifecycle surface.
+	if u.Role != "admin" && (len(req.CapAdd) > 0 || len(req.Sysctls) > 0) {
+		return dockerx.CreateOptions{}, errors.New("capabilities and sysctls require admin privileges")
 	}
 	mountNetdisk := true
 	if req.MountNetdisk != nil {
@@ -888,7 +935,7 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
-		Devices: req.Devices, CDIDevices: req.CDIDevices,
+		Devices: devices, CDIDevices: cdiDevices,
 		RestartPolicy: req.RestartPolicy,
 		// Advanced fields. Command/Entrypoint accept a shell-style string (split
 		// into argv) for ergonomics in the wizard; empty means "use image default".

@@ -32,6 +32,13 @@ func main() {
 		log.Fatalf("start mudp: %v", err)
 	}
 
+	// Bring up the external MCP listener if an admin has configured one. A
+	// failure here (usually a port already in use) must not stop the console
+	// from starting: the admin can fix the port from Settings once they are in.
+	if err := app.ApplyRemoteMCP(); err != nil {
+		log.Printf("WARNING: external MCP access not started: %v", err)
+	}
+
 	backgroundCtx, cancelBackground := context.WithCancel(context.Background())
 	stopJobs := app.StartBackgroundJobs(backgroundCtx)
 	defer stopJobs()

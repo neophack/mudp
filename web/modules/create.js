@@ -1,6 +1,6 @@
 // New-container modal and its SSE-driven progress panel.
 
-import { state, toast, refreshAll, renderView, readCSRFCookie } from "../app.js";
+import { state, toast, refreshAll, renderView, readCSRFCookie, isAdmin } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 import { registerJob } from "./jobs.js";
 
@@ -76,7 +76,11 @@ export function openCreateModal() {
             `<input name="memoryMb" type="number" min="0" placeholder="Memory limit (MB, 0=unlimited)">` +
             `<input name="pidsLimit" type="number" min="0" placeholder="Max PIDs (0=unlimited)">` +
           `</div>` +
-          `<input name="capAdd" placeholder="cap-add (comma-separated, e.g. SYS_PTRACE)">` +
+          // cap-add grants host-wide privileges, so the backend accepts it from
+          // admins only; hiding it for everyone else avoids offering a field whose
+          // every non-empty value would be rejected. cap-drop only removes
+          // privileges and stays available to all users.
+          (isAdmin() ? `<input name="capAdd" placeholder="cap-add (comma-separated, e.g. SYS_PTRACE)">` : "") +
           `<input name="capDrop" placeholder="cap-drop (comma-separated)">` +
           `<textarea name="labels" placeholder="Custom labels, one key=value per line&#10;e.g. mcp.capability=go,nodejs&#10;e.g. mcp.runtime=java17"></textarea>` +
         `</details>` +
@@ -116,14 +120,9 @@ export function openCreateModal() {
     payload.capAdd = csvList(fd.get("capAdd"));
     payload.capDrop = csvList(fd.get("capDrop"));
     payload.labels = kvLines(fd.get("labels"));
-    // Forward the image preset's device passthrough (NVIDIA device nodes, CDI
-    // devices) so GPUs stay connected and admins' device choices apply. These come
-    // only from admin-configured presets; the user form has no device field.
-    const selectedImage = state.images.find((i) => i.name === payload.image);
-    if (selectedImage && selectedImage.preset) {
-      payload.devices = selectedImage.preset.devices || [];
-      payload.cdiDevices = selectedImage.preset.cdiDevices || [];
-    }
+    // Device passthrough (NVIDIA device nodes, CDI devices) is not sent from here:
+    // the backend applies the selected image's admin-defined preset itself, so GPUs
+    // stay connected without the client being trusted for host device specs.
     lastPayload = payload;
     await streamCreate(payload);
   };

@@ -12,6 +12,9 @@ export function renderSettings() {
   if (isAdmin() && !state.registries) {
     loadRegistries();
   }
+  if (isAdmin() && !state.mcpRemoteAdmin) {
+    loadMCPRemoteAdmin();
+  }
 
   const currentLanguage = getCurrentLanguage();
   const defaultLanguage = state.me?.defaultLanguage || "en_US";
@@ -44,6 +47,7 @@ export function renderSettings() {
       createUserLanguageSettings(currentLanguage) +
       adminLanguagePanel +
       registriesPanel +
+      mcpRemotePanel() +
       feishuSettingsPanel +
     `</div>`;
 
@@ -107,6 +111,34 @@ export function renderSettings() {
     };
   }
 
+  const mcpRemoteForm = $("#mcpRemoteForm");
+  if (mcpRemoteForm) {
+    mcpRemoteForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        const res = await api("/api/admin/mcp/remote", {
+          method: "POST",
+          body: JSON.stringify({
+            enabled: fd.has("enabled"),
+            port: Number(fd.get("port")) || 0,
+            domain: fd.get("domain") || "",
+            safeNetwork: fd.get("safeNetwork") || "",
+          }),
+        });
+        state.mcpRemoteAdmin = null;
+        // The MCP page builds its links from the user-facing copy of this
+        // config, so drop it too rather than show a stale domain for 15s.
+        state.mcpRemote = null;
+        await loadMCPRemoteAdmin();
+        renderView();
+        toast(res.running ? "External MCP access is live" : "External MCP access saved", true);
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+
   const newReg = $("#newRegistryBtn");
   if (newReg) newReg.onclick = () => openRegistryEditor(null);
   document.querySelectorAll("[data-reg-edit]").forEach((btn) => {
@@ -118,6 +150,60 @@ export function renderSettings() {
   document.querySelectorAll("[data-reg-test]").forEach((btn) => {
     btn.onclick = () => testRegistry(Number(btn.dataset.regTest));
   });
+}
+
+// mcpRemotePanel is the admin control for publishing MCP outside the LAN. The
+// listener it starts binds to loopback only and serves nothing but the MCP
+// endpoints — a Cloudflare tunnel is what makes it reachable, and the safe
+// network is what limits which containers answer on it.
+function mcpRemotePanel() {
+  if (!isAdmin()) return "";
+  const cfg = state.mcpRemoteAdmin;
+  if (!cfg) {
+    return (
+      `<div class="card"><div class="card-head"><h2>MCP external access</h2></div>` +
+        `<div class="card-body"><p class="hint">Loading…</p></div>` +
+      `</div>`
+    );
+  }
+  const status = cfg.running
+    ? `<span class="badge badge-ok">Listening on ${escapeHtml(cfg.listenAddr || "")}</span>`
+    : `<span class="badge">Stopped</span>`;
+  const link = cfg.baseUrl
+    ? `<p class="hint">Users see <span class="mono">${escapeHtml(cfg.baseUrl)}</span> on the MCP page and append their own token to it.</p>`
+    : "";
+  return (
+    `<div class="card"><div class="card-head"><h2>MCP external access</h2>${status}</div>` +
+      `<div class="card-body"><form id="mcpRemoteForm" class="compact">` +
+        `<p class="hint">Publishes only the MCP endpoints on a second, loopback-bound port. Point a Cloudflare tunnel hostname at <span class="mono">127.0.0.1:&lt;port&gt;</span> and users can connect an agent from anywhere — the console itself stays off that hostname.</p>` +
+        `<input name="domain" placeholder="Public domain, e.g. mcp.example.com" value="${escapeHtml(cfg.domain || "")}">` +
+        `<input name="port" type="number" min="1024" max="65535" placeholder="Port" value="${escapeHtml(String(cfg.port || 19090))}">` +
+        `<input name="safeNetwork" placeholder="Safe network" value="${escapeHtml(cfg.safeNetwork || "openwrt-lan")}">` +
+        `<label class="check"><input type="checkbox" name="enabled" ${cfg.enabled ? "checked" : ""}> Enable external access</label>` +
+        `<p class="hint">Only containers attached to the <strong>safe network</strong> are reachable through the domain; every other token is refused there, so turning this on does not by itself expose anything.</p>` +
+        `<p class="hint">Tunnel command: <span class="mono">cloudflared tunnel --url http://127.0.0.1:${escapeHtml(String(cfg.port || 19090))}</span></p>` +
+        link +
+        `<button>Save external access</button>` +
+      `</form></div>` +
+    `</div>`
+  );
+}
+
+// loadMCPRemoteAdmin caches the config for the panel above. It always leaves a
+// non-null value behind — renderSettings loads whenever the cache is empty, so
+// a null on failure would spin render → fetch → render.
+export async function loadMCPRemoteAdmin() {
+  const fallback = { enabled: false, port: 19090, domain: "", safeNetwork: "openwrt-lan", running: false };
+  if (!isAdmin()) {
+    state.mcpRemoteAdmin = fallback;
+    return;
+  }
+  try {
+    state.mcpRemoteAdmin = (await api("/api/admin/mcp/remote")) || fallback;
+  } catch {
+    state.mcpRemoteAdmin = fallback;
+  }
+  if (state.tab === "scripts") renderView();
 }
 
 function registryRow(r) {

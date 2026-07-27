@@ -95,6 +95,15 @@ func (a *App) resolveMcpContainer(w http.ResponseWriter, r *http.Request) (mcpTo
 		writeErr(w, http.StatusUnauthorized, "invalid or expired token")
 		return mcpTokenResolved{}, false
 	}
+	// A token that works on the LAN does not automatically work from the
+	// internet: over the external listener the container must also sit on the
+	// administrator's safe network. See mcp_remote.go.
+	if isRemoteMCP(r) {
+		if ok, reason := a.remoteMCPAllowed(r.Context(), tok.ContainerID); !ok {
+			writeErr(w, http.StatusForbidden, reason)
+			return mcpTokenResolved{}, false
+		}
+	}
 	_ = a.db.MCPTokenTouch(tok.ID)
 	return tok, true
 }

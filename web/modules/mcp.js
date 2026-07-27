@@ -72,6 +72,8 @@ export async function renderMCP() {
         `</div>` +
       `</section>` +
 
+      remoteAccessCard() +
+
       `<div class="mcp-main-grid">` +
         `<section class="card">` +
           `<div class="card-head"><h2>Agent tools</h2><span class="mcp-card-note">Scoped to the selected container</span></div>` +
@@ -144,6 +146,65 @@ export async function renderMCP() {
   document.querySelectorAll("[data-mcp-del]").forEach((btn) => {
     btn.onclick = () => onDeleteToken(btn.dataset.mcpDel, btn.dataset.mcpName);
   });
+  bindCopyButtons();
+}
+
+// bindCopyButtons wires every [data-copy] button in the current DOM. Used by
+// both the page and the config modal, which is re-rendered on every open.
+function bindCopyButtons() {
+  document.querySelectorAll(".mcp-copy-btn").forEach((btn) => {
+    btn.onclick = async () => {
+      let text = btn.dataset.copy;
+      const targetId = btn.dataset.copyTarget;
+      if (targetId) {
+        const el = document.getElementById(targetId);
+        if (el) text = el.value;
+      }
+      if (!text) return;
+      try {
+        await copyText(text);
+        const old = btn.textContent;
+        btn.textContent = "Copied";
+        setTimeout(() => { btn.textContent = old; }, 1200);
+        toast("Copied", true);
+      } catch {
+        toast("Copy failed; select the text manually");
+      }
+    };
+  });
+}
+
+// remoteAccessCard shows the public link an admin published for MCP clients that
+// cannot reach the console's LAN address. The domain is safe to show to anyone:
+// it is useless without a token, and only reaches containers sitting on the
+// configured safe network.
+function remoteAccessCard() {
+  const remote = state.mcpRemote;
+  if (!remote || !remote.enabled) {
+    const hint = isAdmin()
+      ? `Turn it on in <strong>Settings → MCP external access</strong>: pick a port, point a Cloudflare hostname at <span class="mono">127.0.0.1:&lt;port&gt;</span>, and name the safe network.`
+      : `Ask an admin to publish one if you need to connect an agent from outside this network.`;
+    return (
+      `<section class="card">` +
+        `<div class="card-head"><h2>External access</h2><span class="mcp-card-note">Not configured</span></div>` +
+        `<div class="card-body"><p class="hint">MCP tokens currently work only from this network. ${hint}</p></div>` +
+      `</section>`
+    );
+  }
+  const base = remote.baseUrl || "";
+  return (
+    `<section class="card">` +
+      `<div class="card-head"><h2>External access</h2><span class="mcp-card-note">Safe network: ${escapeHtml(remote.safeNetwork || "-")}</span></div>` +
+      `<div class="card-body">` +
+        `<p class="hint">Agents outside this network reach MCP through this domain. Swap the console's address for it in any config below — the token stays the same.</p>` +
+        `<div class="mcp-copy-row">` +
+          `<code class="mcp-code mcp-code-inline">${escapeHtml(base)}</code>` +
+          `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(base)}">Copy</button>` +
+        `</div>` +
+        `<p class="hint">Only containers attached to the <strong>${escapeHtml(remote.safeNetwork || "")}</strong> network answer on this domain; every other token is refused there.</p>` +
+      `</div>` +
+    `</section>`
+  );
 }
 
 function containerOptions(containers) {
@@ -156,6 +217,15 @@ function containerOptions(containers) {
       return `<option value="${escapeHtml(c.id)}">${escapeHtml(name)}</option>`;
     })
     .join("");
+}
+
+// externalUrlFor returns the token's SSE endpoint on the published domain, or
+// "" when there is no domain (or the token predates cleartext storage, in which
+// case there is no URL to build).
+function externalUrlFor(t) {
+  const remote = state.mcpRemote;
+  if (!remote || !remote.enabled || !remote.baseUrl || !t.token) return "";
+  return `${remote.baseUrl}/mcp/${t.token}/sse`;
 }
 
 function tokenRow(t, admin) {
@@ -174,6 +244,7 @@ function tokenRow(t, admin) {
       `<td>${expCell}</td>` +
       `<td class="actions">` +
         `<button class="icon" title="View config" data-mcp-view="${escapeHtml(t.id)}" data-mcp-token="${escapeHtml(t.token || "")}" data-mcp-name="${escapeHtml(t.containerName)}" data-mcp-label="${escapeHtml(t.label)}">CFG</button>` +
+        (externalUrlFor(t) ? `<button class="icon mcp-copy-btn" title="Copy external link" data-copy="${escapeHtml(externalUrlFor(t))}">WWW</button>` : "") +
         (canMutate() ? `<button class="icon danger" title="Delete" data-mcp-del="${escapeHtml(t.id)}" data-mcp-name="${escapeHtml(t.containerName)}">DEL</button>` : "") +
       `</td>` +
     `</tr>`
@@ -243,56 +314,72 @@ function onShowConfig(token, name, label) {
 }
 
 function onShowConfigRaw(token, label, placeholder = false) {
-  const host = window.location.origin;
+  const remote = state.mcpRemote;
+  const localBase = window.location.origin;
+  // The published domain, when an admin has one. Everything below is written
+  // against a base origin so the LAN address and the external domain produce
+  // the same artifacts with nothing but the host swapped.
+  const remoteBase = remote && remote.enabled ? remote.baseUrl || "" : "";
   const labelSlug = label ? label.replace(/[^a-zA-Z0-9_-]/g, "-") || "mudp-container" : "mudp-container";
-  const sseUrl = `${host}/mcp/${token}/sse`;
-  const httpUrl = `${host}/mcp/${token}`;
+  let scope = "local";
+  let transport = "sse";
+  const baseFor = (s) => (s === "remote" && remoteBase ? remoteBase : localBase);
+  const sseUrlFor = (base) => `${base}/mcp/${token}/sse`;
+  const httpUrlFor = (base) => `${base}/mcp/${token}`;
 
-  // Build the config object for a given transport.
-  const buildConfig = (transport) => {
-    if (transport === "http") {
-      return JSON.stringify(
-        {
-          mcpServers: {
-            [labelSlug]: {
-              type: "http",
-              url: httpUrl,
-            },
-          },
-        },
-        null,
-        2,
-      );
-    }
-    return JSON.stringify(
+  // Build the config object for a given transport and base origin.
+  const buildConfig = (transport, base) =>
+    JSON.stringify(
       {
         mcpServers: {
           [labelSlug]: {
-            type: "sse",
-            url: sseUrl,
+            type: transport === "http" ? "http" : "sse",
+            url: transport === "http" ? httpUrlFor(base) : sseUrlFor(base),
           },
         },
       },
       null,
       2,
     );
-  };
 
-  const buildCurlExample = (transport) =>
+  const buildCurlExample = (transport, base) =>
     transport === "http"
       ? `# Streamable HTTP: one POST per JSON-RPC request.\n` +
-        `curl -X POST "${httpUrl}" \\\n` +
+        `curl -X POST "${httpUrlFor(base)}" \\\n` +
         `  -H "Content-Type: application/json" \\\n` +
         `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`
       : `# 1. Open the SSE stream to get the message endpoint:\n` +
-        `curl -N ${sseUrl}\n\n` +
+        `curl -N ${sseUrlFor(base)}\n\n` +
         `# 2. POST a JSON-RPC request to the endpoint URL printed above, e.g.:\n` +
-        `curl -X POST "${host}/mcp/${token}/messages?session=SESSION_ID" \\\n` +
+        `curl -X POST "${base}/mcp/${token}/messages?session=SESSION_ID" \\\n` +
         `  -H "Content-Type: application/json" \\\n` +
         `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`;
 
-  const endpointFor = (transport) =>
-    transport === "http" ? httpUrl : sseUrl;
+  const endpointFor = (transport, base) =>
+    transport === "http" ? httpUrlFor(base) : sseUrlFor(base);
+
+  const transportHint = (transport) =>
+    transport === "http"
+      ? "Streamable HTTP is the modern transport: one POST per request, no session needed. Works with clients that support the http MCP type."
+      : "Paste this into your AI tool's MCP settings. SSE is the classic remote transport; some clients support it out of the box.";
+
+  const scopeHint = (scope) =>
+    scope === "remote"
+      ? `Reachable from anywhere via ${escapeHtml(remote?.domain || "")}. Requires this container to be on the ${escapeHtml(remote?.safeNetwork || "safe")} network.`
+      : "Reachable from this network only — the address your browser is using right now.";
+
+  // Offered only when an admin published a domain; otherwise there is one
+  // possible address and a toggle would just be a dead control.
+  const scopeToggle = remoteBase
+    ? `<div class="mcp-transport-row">` +
+        `<h4>Where from</h4>` +
+        `<div class="mcp-transport-toggle" role="tablist" aria-label="Access scope">` +
+          `<button class="mcp-scope-btn active" data-scope="local" role="tab" aria-selected="true">This network</button>` +
+          `<button class="mcp-scope-btn" data-scope="remote" role="tab" aria-selected="false">External</button>` +
+        `</div>` +
+      `</div>` +
+      `<p class="hint" id="mcpScopeHint">${scopeHint("local")}</p>`
+    : "";
 
   const note = placeholder
     ? `<p class="hint">Replace <code>YOUR_TOKEN_HERE</code> with the token from this row.</p>`
@@ -300,6 +387,7 @@ function onShowConfigRaw(token, label, placeholder = false) {
 
   const body =
     note +
+    (scopeToggle ? `<div class="mcp-config-section">${scopeToggle}</div>` : "") +
     `<div class="mcp-config-section">` +
       `<div class="mcp-transport-row">` +
         `<h4>MCP config</h4>` +
@@ -308,24 +396,24 @@ function onShowConfigRaw(token, label, placeholder = false) {
           `<button class="mcp-transport-btn" data-transport="http" role="tab" aria-selected="false">HTTP</button>` +
         `</div>` +
       `</div>` +
-      `<textarea class="mcp-code mcp-config-editor" id="mcpConfigEditor" spellcheck="false">${escapeHtml(buildConfig("sse"))}</textarea>` +
+      `<textarea class="mcp-code mcp-config-editor" id="mcpConfigEditor" spellcheck="false">${escapeHtml(buildConfig("sse", localBase))}</textarea>` +
       `<div class="mcp-config-actions">` +
         `<button class="primary mcp-copy-btn" data-copy-target="mcpConfigEditor">Copy config</button>` +
       `</div>` +
-      `<p class="hint" id="mcpTransportHint">Paste this into your AI tool's MCP settings. SSE is the classic remote transport; some clients support it out of the box.</p>` +
+      `<p class="hint" id="mcpTransportHint">${transportHint("sse")}</p>` +
     `</div>` +
     `<div class="mcp-config-section">` +
       `<h4>Endpoint</h4>` +
       `<div class="mcp-copy-row">` +
-        `<code class="mcp-code mcp-code-inline" id="mcpEndpointLabel">${escapeHtml(sseUrl)}</code>` +
-        `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(sseUrl)}" id="mcpEndpointCopy">Copy</button>` +
+        `<code class="mcp-code mcp-code-inline" id="mcpEndpointLabel">${escapeHtml(sseUrlFor(localBase))}</code>` +
+        `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(sseUrlFor(localBase))}" id="mcpEndpointCopy">Copy</button>` +
       `</div>` +
     `</div>` +
     `<div class="mcp-config-section">` +
       `<h4>Test with curl</h4>` +
       `<div class="mcp-copy-row">` +
-        `<pre class="mcp-code" id="mcpCurlExample">${escapeHtml(buildCurlExample("sse"))}</pre>` +
-        `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(buildCurlExample("sse"))}" id="mcpCurlCopy">Copy</button>` +
+        `<pre class="mcp-code" id="mcpCurlExample">${escapeHtml(buildCurlExample("sse", localBase))}</pre>` +
+        `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(buildCurlExample("sse", localBase))}" id="mcpCurlCopy">Copy</button>` +
       `</div>` +
     `</div>`;
 
@@ -336,57 +424,53 @@ function onShowConfigRaw(token, label, placeholder = false) {
     foot: `<button class="primary" data-close>Done</button>`,
   });
 
-  // Switching transport rewrites the config editor, endpoint, and curl example
-  // so the copied artifacts always match the selected transport.
+  // Rewrite the config editor, endpoint, and curl example from the current
+  // transport + scope, so every copyable artifact in the dialog agrees with the
+  // buttons above it.
+  const applySelection = () => {
+    const base = baseFor(scope);
+    const editor = document.getElementById("mcpConfigEditor");
+    if (editor) editor.value = buildConfig(transport, base);
+    const hint = document.getElementById("mcpTransportHint");
+    if (hint) hint.textContent = transportHint(transport);
+    const scopeEl = document.getElementById("mcpScopeHint");
+    if (scopeEl) scopeEl.innerHTML = scopeHint(scope);
+    const endpointLabel = document.getElementById("mcpEndpointLabel");
+    const endpointCopy = document.getElementById("mcpEndpointCopy");
+    if (endpointLabel) endpointLabel.textContent = `${transport.toUpperCase()}: ${endpointFor(transport, base)}`;
+    if (endpointCopy) endpointCopy.dataset.copy = endpointFor(transport, base);
+    const curlEl = document.getElementById("mcpCurlExample");
+    const curlCopy = document.getElementById("mcpCurlCopy");
+    const curlText = buildCurlExample(transport, base);
+    if (curlEl) curlEl.textContent = curlText;
+    if (curlCopy) curlCopy.dataset.copy = curlText;
+  };
+
+  // selectIn marks the clicked button active within its own toggle group.
+  const selectIn = (selector, btn) => {
+    document.querySelectorAll(selector).forEach((b) => {
+      const active = b === btn;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-selected", active ? "true" : "false");
+    });
+  };
+
   document.querySelectorAll(".mcp-transport-btn").forEach((btn) => {
     btn.onclick = () => {
-      const transport = btn.dataset.transport;
-      document.querySelectorAll(".mcp-transport-btn").forEach((b) => {
-        const active = b === btn;
-        b.classList.toggle("active", active);
-        b.setAttribute("aria-selected", active ? "true" : "false");
-      });
-      const editor = document.getElementById("mcpConfigEditor");
-      if (editor) editor.value = buildConfig(transport);
-      const hint = document.getElementById("mcpTransportHint");
-      if (hint) {
-        hint.textContent =
-          transport === "http"
-            ? "Streamable HTTP is the modern transport: one POST per request, no session needed. Works with clients that support the http MCP type."
-            : "Paste this into your AI tool's MCP settings. SSE is the classic remote transport; some clients support it out of the box.";
-      }
-      const endpointLabel = document.getElementById("mcpEndpointLabel");
-      const endpointCopy = document.getElementById("mcpEndpointCopy");
-      if (endpointLabel) endpointLabel.textContent = `${transport.toUpperCase()}: ${endpointFor(transport)}`;
-      if (endpointCopy) endpointCopy.dataset.copy = endpointFor(transport);
-      const curlEl = document.getElementById("mcpCurlExample");
-      const curlCopy = document.getElementById("mcpCurlCopy");
-      const curlText = buildCurlExample(transport);
-      if (curlEl) curlEl.textContent = curlText;
-      if (curlCopy) curlCopy.dataset.copy = curlText;
+      transport = btn.dataset.transport;
+      selectIn(".mcp-transport-btn", btn);
+      applySelection();
+    };
+  });
+  document.querySelectorAll(".mcp-scope-btn").forEach((btn) => {
+    btn.onclick = () => {
+      scope = btn.dataset.scope;
+      selectIn(".mcp-scope-btn", btn);
+      applySelection();
     };
   });
 
-  document.querySelectorAll(".mcp-copy-btn").forEach((btn) => {
-    btn.onclick = async () => {
-      let text = btn.dataset.copy;
-      const targetId = btn.dataset.copyTarget;
-      if (targetId) {
-        const el = document.getElementById(targetId);
-        if (el) text = el.value;
-      }
-      if (!text) return;
-      try {
-        await copyText(text);
-        const old = btn.textContent;
-        btn.textContent = "Copied";
-        setTimeout(() => { btn.textContent = old; }, 1200);
-        toast("Copied", true);
-      } catch {
-        toast("Copy failed; select the text manually");
-      }
-    };
-  });
+  bindCopyButtons();
 }
 
 export async function refreshMCPTokens() {
@@ -394,5 +478,12 @@ export async function refreshMCPTokens() {
     state.mcpTokens = (await api("/api/mcp/tokens")) || [];
   } catch {
     state.mcpTokens = [];
+  }
+  // The public hostname an admin bound to the MCP-only listener, if any. Kept
+  // next to the tokens because every link the page offers is built from it.
+  try {
+    state.mcpRemote = (await api("/api/mcp/remote")) || null;
+  } catch {
+    state.mcpRemote = null;
   }
 }

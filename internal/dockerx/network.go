@@ -434,3 +434,37 @@ func netLabelToDisplay(full string) string {
 	}
 	return full
 }
+
+// ContainerNetworkNames returns the Docker network names a container is
+// currently attached to. Unlike Inspect it does no other work, because the
+// external MCP listener calls it on every request to decide whether the target
+// container sits on the administrator's designated safe network.
+func (d *Client) ContainerNetworkNames(ctx context.Context, id string) ([]string, error) {
+	inspect, err := d.c.ContainerInspect(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(inspect.NetworkSettings.Networks))
+	for name := range inspect.NetworkSettings.Networks {
+		out = append(out, name)
+	}
+	return out, nil
+}
+
+// NetworkNameMatches reports whether an attached Docker network name refers to
+// the network an administrator named. Admins type the name they read off the
+// Networks view, which for a mudp-managed network is the display name ("lan"),
+// not the namespaced Docker name ("mudp-alice-net-lan") — so both forms have to
+// resolve to the same network, or a correctly-configured safe network would
+// silently never match.
+func NetworkNameMatches(attached, want string) bool {
+	attached = strings.TrimSpace(attached)
+	want = strings.TrimSpace(want)
+	if attached == "" || want == "" {
+		return false
+	}
+	if strings.EqualFold(attached, want) {
+		return true
+	}
+	return strings.EqualFold(netLabelToDisplay(attached), want)
+}

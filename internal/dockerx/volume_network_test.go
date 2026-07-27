@@ -87,3 +87,32 @@ func TestNetLabelToDisplay(t *testing.T) {
 		}
 	}
 }
+
+// NetworkNameMatches gates external MCP access, so both a false negative (a
+// correctly-placed container refused) and a false positive (a container on some
+// other network reachable from the internet) matter.
+func TestNetworkNameMatches(t *testing.T) {
+	cases := []struct {
+		attached, want string
+		match          bool
+	}{
+		// A host network an operator created: the name is what it is.
+		{"openwrt-lan", "openwrt-lan", true},
+		{"OpenWRT-LAN", "openwrt-lan", true},
+		// A mudp-managed network is namespaced on the host but admins type the
+		// display name they see in the Networks view.
+		{"mudp-alice-net-openwrt-lan", "openwrt-lan", true},
+		{"mudp-alice-net-openwrt-lan", "lan", false},
+		// Near-misses must not pass.
+		{"openwrt-lan2", "openwrt-lan", false},
+		{"bridge", "openwrt-lan", false},
+		{"", "openwrt-lan", false},
+		{"openwrt-lan", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		if got := NetworkNameMatches(c.attached, c.want); got != c.match {
+			t.Errorf("NetworkNameMatches(%q, %q) = %v, want %v", c.attached, c.want, got, c.match)
+		}
+	}
+}
