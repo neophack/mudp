@@ -1,8 +1,9 @@
-import { isAdmin, canMutate } from "../app.js";
+import { isAdmin, canMutate, state } from "../app.js";
 
 export function renderHelp() {
   const admin = isAdmin();
   const editable = canMutate();
+  const version = state.me?.version || "dev";
 
   const userBasics = [
     "Open Netdisk to upload, preview, copy/move files, and download.",
@@ -38,7 +39,7 @@ export function renderHelp() {
 
   $("#view").innerHTML =
     `<div class="stack">` +
-      `<div class="card"><div class="card-head"><h2>Getting Started</h2></div><div class="card-body">` +
+      `<div class="card"><div class="card-head"><h2>Getting Started</h2><span class="hint">v${escapeHtml(version)}</span></div><div class="card-body">` +
         `<p class="hint" style="margin:0 0 10px">This page is a quick guide for both users and administrators to operate MUDP safely and efficiently.</p>` +
         `<div class="grid two">` +
           `<section class="stack">` +

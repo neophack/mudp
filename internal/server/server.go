@@ -35,6 +35,7 @@ import (
 	"mudp/internal/middleware"
 	"mudp/internal/portfwd"
 	"mudp/internal/store"
+	"mudp/internal/version"
 	"mudp/web"
 )
 
@@ -513,6 +514,7 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 		CSRFToken       string `json:"csrfToken,omitempty"`
 		DefaultLanguage string `json:"defaultLanguage"`
 		GroupLanguage   string `json:"groupLanguage,omitempty"`
+		Version         string `json:"version"`
 	}
 	// A session can outlive its CSRF cookie (cleared by the browser, or issued
 	// before the cookie had an explicit expiry). The session is still valid, so
@@ -525,7 +527,7 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 			csrfToken = fresh
 		}
 	}
-	writeJSON(w, http.StatusOK, meUser{User: u, Pending: isPending(u), CSRFToken: csrfToken, DefaultLanguage: a.cfg.DefaultLanguage, GroupLanguage: groupLanguage})
+	writeJSON(w, http.StatusOK, meUser{User: u, Pending: isPending(u), CSRFToken: csrfToken, DefaultLanguage: a.cfg.DefaultLanguage, GroupLanguage: groupLanguage, Version: version.Version})
 }
 
 // isPending reports whether a user is still awaiting admin approval: a non-admin

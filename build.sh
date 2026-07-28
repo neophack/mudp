@@ -20,8 +20,9 @@ if [ "$GOOS" != "$HOST_OS" ] || [ "$GOARCH" != "$HOST_ARCH" ]; then
 fi
 
 OUTPUT="$OUTDIR/mudp${SUFFIX}${EXT}"
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo dev)
 
-echo "Building mudp for $GOOS/$GOARCH..."
-GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "-s -w" -o "$OUTPUT" ./cmd/mudp
+echo "Building mudp for $GOOS/$GOARCH (version $COMMIT)..."
+GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "-s -w -X mudp/internal/version.Version=$COMMIT" -o "$OUTPUT" ./cmd/mudp
 
 echo "Built $OUTPUT"

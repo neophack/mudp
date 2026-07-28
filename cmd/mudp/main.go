@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -12,9 +14,17 @@ import (
 	"mudp/internal/config"
 	"mudp/internal/server"
 	"mudp/internal/store"
+	"mudp/internal/version"
 )
 
 func main() {
+	showVersion := flag.Bool("version", false, "print the build version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println(version.Version)
+		return
+	}
+
 	cfg := config.Load()
 
 	db, err := store.Open(cfg.DBPath)
