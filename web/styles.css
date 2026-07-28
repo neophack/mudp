@@ -258,6 +258,15 @@ a:hover { text-decoration: underline; }
 .hint { color: var(--muted); font-size: 12px; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes backdropIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(6px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 /* ---------- Login ---------- */
 .login-wrap {
@@ -342,6 +351,10 @@ aside .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var
   cursor: pointer;
 }
 .sidebar-toggle:hover { background: var(--side-hover); color: #fff; }
+/* Only meaningful for the mobile horizontal tab strip; see the max-width:
+   860px block below for its visible styling. */
+.mobile-nav-toggle,
+.mobile-nav-backdrop { display: none; }
 nav { display: grid; gap: 2px; }
 nav button {
   background: transparent;
@@ -357,7 +370,9 @@ nav button {
   gap: 11px;
 }
 nav button .ico { width: 18px; text-align: center; opacity: .9; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+nav button { transition: background .15s, color .15s, transform .1s; }
 nav button:hover { background: var(--side-hover); color: var(--side-ink-active); }
+nav button:active { transform: scale(.96); }
 nav button.active { background: var(--accent); color: #fff; }
 nav button.active .ico { opacity: 1; }
 .profile {
@@ -439,6 +454,10 @@ header .titles p { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 }
 .card-head h2 { font-size: 14px; }
 .card-body { padding: 14px 16px; }
+/* A data table dropped straight into a card (no wrapping scroll div) would
+   otherwise force the whole page to scroll horizontally on narrow screens. */
+.card:has(> table.data),
+.card-body:has(> table.data) { overflow-x: auto; }
 .grid { display: grid; gap: 16px; }
 .grid.two { grid-template-columns: minmax(280px, 360px) 1fr; align-items: start; }
 .stack { display: grid; gap: 16px; }
@@ -596,6 +615,7 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   z-index: 60;
   font-size: 13px;
   border-left: 3px solid var(--danger);
+  animation: toastIn .22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .toast.ok { border-left-color: var(--ok); }
 
@@ -667,6 +687,7 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   place-items: center;
   padding: 24px;
   z-index: 50;
+  animation: backdropIn .12s ease;
 }
 /* [hidden] must win over .modal-backdrop's display:grid, otherwise backdrop
    modals toggled via the hidden attribute (e.g. the share-page login/picker
@@ -681,6 +702,7 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  animation: modalIn .16s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .modal.wide { width: min(860px, calc(100vw - 48px)); }
 .modal-head {
@@ -964,44 +986,149 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 860px) {
-  .login-wrap { grid-template-columns: 1fr; }
+  .login-wrap { grid-template-columns: minmax(0, 1fr); }
   .login-hero { display: none; }
-  /* Mobile: always icon-only rail (same look as desktop collapsed). */
+  /* Mobile: the sidebar becomes a slim top bar with a horizontally swipeable
+     tab strip, so vertical space stays with the content instead of a
+     full-height rail. The collapse toggle has no meaning in a horizontal bar
+     and is hidden; "collapsed" state is simply ignored on small screens. */
+  /* align-content: start stops the grid from stretching the aside/work row
+     tracks to fill .shell's min-height: 100vh — without it, a short page
+     (e.g. an empty table) leaves excess space that CSS Grid's default
+     align-content: normal (stretch) hands to the sticky top bar, ballooning
+     it to fill most of the viewport instead of staying a slim strip. */
   .shell,
-  .shell.sidebar-collapsed { grid-template-columns: 56px 1fr; }
+  .shell.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); align-content: start; }
   aside,
   aside.collapsed {
     position: sticky;
     top: 0;
-    height: 100vh;
-    flex-direction: column;
-    align-items: stretch;
-    overflow: hidden;
-    padding: 18px 8px;
-    gap: 6px;
+    z-index: 40;
+    height: auto;
+    width: 100%;
+    min-width: 0;
+    flex-direction: row;
+    align-items: center;
+    overflow: visible;
+    padding: 8px 10px;
+    gap: 10px;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
   }
-  aside .brand { padding: 4px 0 16px; justify-content: center; gap: 0; position: relative; }
-  aside .brand .brand-text { display: none; }
-  aside .brand .dot { display: none; }
-  aside .sidebar-toggle { position: absolute; top: 0; left: 0; width: 100%; height: 32px; }
-  nav { grid-auto-flow: row; overflow-y: auto; }
-  nav button { justify-content: center; padding: 0; }
-  nav button .nav-label { display: none; }
-  .profile { margin-top: auto; padding: 8px 6px; place-items: center; }
+  aside .brand { padding: 0; gap: 6px; flex-shrink: 0; }
+  aside .brand .brand-text { display: inline; font-size: 14px; }
+  aside .brand .dot { display: inline-block; }
+  aside .sidebar-toggle,
+  aside.collapsed .sidebar-toggle { display: none; }
+  /* Hamburger toggle: swipeable strip can hide tabs off-screen, so this opens
+     every tab at once in a dropdown grid instead of relying on scrolling. */
+  .mobile-nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    color: var(--side-ink);
+    border: 0;
+    min-width: 30px;
+    min-height: 30px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    flex-shrink: 0;
+  }
+  .mobile-nav-toggle:hover { background: var(--side-hover); color: #fff; }
+  nav {
+    display: flex;
+    flex-direction: row;
+    flex: 1;
+    min-width: 0;
+    gap: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-behavior: smooth;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    /* A soft fade at each edge hints there's more to swipe to without a
+       visible scrollbar cluttering the compact bar. */
+    mask-image: linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  }
+  nav::-webkit-scrollbar { display: none; }
+  nav button {
+    flex: 0 0 auto;
+    justify-content: center;
+    white-space: nowrap;
+    padding: 0 12px;
+    min-height: 34px;
+    scroll-snap-align: start;
+  }
+  nav { scroll-snap-type: x proximity; }
+  nav button .nav-label { display: inline; font-size: 12.5px; }
+  /* Expanded state: the strip becomes an absolutely positioned dropdown
+     panel below the top bar so opening it never changes the bar's own
+     height, then wraps every tab into a two-column grid. The backdrop is a
+     fixed sibling of aside (not a descendant) with a z-index between the
+     bar (40) and the page content (auto), so it dims the content below
+     without ever painting over the still-visible bar itself. */
+  .mobile-nav-backdrop.visible {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 39;
+  }
+  aside.mobile-nav-open nav {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 2;
+    flex-wrap: wrap;
+    max-height: calc(100vh - 100%);
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: var(--side-bg);
+    padding: 10px;
+    gap: 6px;
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.28);
+    mask-image: none;
+    scroll-snap-type: none;
+  }
+  aside.mobile-nav-open nav button {
+    flex: 1 1 calc(50% - 6px);
+    justify-content: flex-start;
+    scroll-snap-align: none;
+  }
+  .profile {
+    margin-top: 0;
+    flex-direction: row;
+    flex-shrink: 0;
+    background: transparent;
+    padding: 0;
+    gap: 0;
+  }
   .profile strong,
   .profile span { display: none; }
-  .profile button { margin-top: 0; min-width: 32px; padding: 0; }
+  .profile button { margin-top: 0; min-width: 34px; padding: 0; }
   .profile button .nav-label { display: none; }
-  .work { padding: 16px; }
-  .grid.two { grid-template-columns: 1fr; }
+  .work { padding: 14px; }
+  .grid.two { grid-template-columns: minmax(0, 1fr); }
   header { flex-direction: column; align-items: stretch; }
-  .search { min-width: 0; }
+  header h1 { font-size: 16px; }
+  .head-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .search { min-width: 0; flex: 1 1 100%; order: -1; }
+  .card-head { padding: 11px 12px; }
+  .card-body { padding: 11px 12px; }
   table.data { font-size: 12px; }
   table.data th, table.data td { padding: 8px 8px; }
   .dash-tiles { grid-template-columns: repeat(2, 1fr) !important; }
   .dash-row-2 { grid-template-columns: 1fr !important; }
   .dash-row-3 { grid-template-columns: 1fr !important; }
   .dash-span-2 { grid-column: span 2 !important; }
+}
+
+@media (max-width: 480px) {
+  .dash-tiles { grid-template-columns: 1fr !important; }
+  .dash-span-2 { grid-column: span 1 !important; }
+  .stat-tile { padding: 12px; }
+  .modal-backdrop { padding: 10px; }
 }
 
 /* ---------- Dashboard ---------- */
@@ -1622,7 +1749,7 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
 
 @media (max-width: 860px) {
   .picker-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .picker-tree {
     display: none;
@@ -1713,7 +1840,7 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
 
 @media (max-width: 560px) {
   .share-form .share-row,
-  .share-link-row { grid-template-columns: 1fr; gap: 6px; }
+  .share-link-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .share-code-row { align-items: stretch; }
 }
 
@@ -1876,10 +2003,10 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
 
 @media (max-width: 860px) {
   .gpu-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .hist-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -1887,6 +2014,7 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
 
 .mcp-page {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -2161,7 +2289,7 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
 @media (max-width: 1080px) {
   .mcp-hero,
   .mcp-main-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -2170,7 +2298,7 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
     padding: 14px;
   }
   .mcp-tool-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .mcp-copy-row {
     flex-direction: column;
@@ -2219,7 +2347,7 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
 .setup-error { background: var(--danger); color: #fff; }
 
 @media (max-width: 860px) {
-  .setup-wrap { grid-template-columns: 1fr; }
+  .setup-wrap { grid-template-columns: minmax(0, 1fr); }
   .setup-hero { display: none; }
 }
 
@@ -2770,7 +2898,7 @@ audio.viewer-media {
 /* On narrow screens stack the controls under the canvas. */
 @media (max-width: 720px) {
   .viewer-yuv-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 1fr auto;
   }
   .yuv-controls {

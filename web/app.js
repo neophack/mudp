@@ -86,6 +86,9 @@ export const state = {
   gpuCount: 0,
   tab: "dashboard",
   sidebarCollapsed: localStorage.getItem("mudp:sidebar") === "collapsed",
+  // mobileNavOpen expands the mobile top bar's tab strip into a full dropdown
+  // menu; irrelevant above the mobile breakpoint and never persisted.
+  mobileNavOpen: false,
 };
 
 // Backward-compatible helpers that operate on global state. New code should use
@@ -316,6 +319,8 @@ const ICONS = {
   hardware: svgIcon('<path d="M9 3v18"/><path d="M15 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/>'),
   help: svgIcon('<path d="M9.09 9a3 3 0 1 1 5.83 1c0 2-3 2-3 4"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="10"/>'),
   mcp: svgIcon('<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'),
+  menu: svgIcon('<path d="M4 12h16"/><path d="M4 6h16"/><path d="M4 18h16"/>'),
+  close: svgIcon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
 };
 
 function label(tab) {
@@ -371,14 +376,16 @@ export function render() {
     : ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", "scripts", "help"];
 
   const collapsed = state.sidebarCollapsed;
+  const mobileNavOpen = state.mobileNavOpen;
   $("#app").innerHTML =
     `<section class="shell${collapsed ? " sidebar-collapsed" : ""}">` +
-      `<aside class="${collapsed ? "collapsed" : ""}">` +
+      `<aside class="${collapsed ? "collapsed" : ""}${mobileNavOpen ? " mobile-nav-open" : ""}">` +
         `<div class="brand">` +
           `<span class="dot"></span>` +
           `<span class="brand-text">MUDP</span>` +
           `<button id="sidebarToggle" class="sidebar-toggle" title="${collapsed ? "Expand" : "Collapse"} sidebar" aria-label="Toggle sidebar">${collapsed ? ICONS.expand : ICONS.collapse}</button>` +
         `</div>` +
+        `<button id="mobileNavToggle" class="mobile-nav-toggle" title="${t("nav.toggleMenu")}" aria-label="${t("nav.toggleMenu")}" aria-expanded="${mobileNavOpen}">${mobileNavOpen ? ICONS.close : ICONS.menu}</button>` +
         `<nav>` +
           tabs
             .map(
@@ -393,6 +400,7 @@ export function render() {
           `<button id="logout" title="${t("user.logout")}">${ICONS.logout}<span class="nav-label">${t("user.logout")}</span></button>` +
         `</div>` +
       `</aside>` +
+      `<div id="mobileNavBackdrop" class="mobile-nav-backdrop${mobileNavOpen ? " visible" : ""}"></div>` +
       `<section class="work">` +
         `<header>` +
           `<div class="titles">` +
@@ -419,6 +427,7 @@ export function render() {
       // doesn't run in the background.
       if (state.tab === "hardware" && btn.dataset.tab !== "hardware") stopHardwarePolling();
       state.tab = btn.dataset.tab;
+      state.mobileNavOpen = false;
       render();
       // Quietly refresh the tab just entered so it shows fresh data without
       // waiting for the next poll interval. Self-fetching views (netdisk,
@@ -431,6 +440,20 @@ export function render() {
     toggle.onclick = () => {
       state.sidebarCollapsed = !state.sidebarCollapsed;
       localStorage.setItem("mudp:sidebar", state.sidebarCollapsed ? "collapsed" : "expanded");
+      render();
+    };
+  }
+  const mobileNavToggle = $("#mobileNavToggle");
+  if (mobileNavToggle) {
+    mobileNavToggle.onclick = () => {
+      state.mobileNavOpen = !state.mobileNavOpen;
+      render();
+    };
+  }
+  const mobileNavBackdrop = $("#mobileNavBackdrop");
+  if (mobileNavBackdrop) {
+    mobileNavBackdrop.onclick = () => {
+      state.mobileNavOpen = false;
       render();
     };
   }

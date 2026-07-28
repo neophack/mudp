@@ -29,6 +29,7 @@ const translations = {
     "nav.mcp": "MCP",
     "nav.usersGroups": "用户与组",
     "nav.activityLog": "活动日志",
+    "nav.toggleMenu": "菜单",
 
     // Shell actions
     "action.searchContainers": "搜索容器",
@@ -141,6 +142,7 @@ const translations = {
     "nav.mcp": "MCP",
     "nav.usersGroups": "Users & Groups",
     "nav.activityLog": "Activity Log",
+    "nav.toggleMenu": "Menu",
 
     // Shell actions
     "action.searchContainers": "Search containers",

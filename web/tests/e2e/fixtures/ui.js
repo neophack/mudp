@@ -3,7 +3,7 @@ import { expect } from "@playwright/test";
 // Tabs the sidebar renders per role, mirroring render() in web/app.js.
 export const ADMIN_TABS = [
   "dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes",
-  "networks", "stacks", "hardware", "users", "audit", "disks", "scripts", "help",
+  "networks", "forwards", "stacks", "hardware", "users", "audit", "disks", "scripts", "help",
 ];
 export const USER_TABS = [
   "dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes",

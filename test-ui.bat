@@ -5,10 +5,11 @@ setlocal enabledelayedexpansion
 :: Builds the binary, then drives a real browser through every sidebar tab and
 :: every page-level button as both an admin and a plain "user" account, plus
 :: the first-run setup wizard.
-:: Usage: test-ui.bat [admin|user]
-::   admin - run the admin console click-through plus the setup wizard
-::   user  - run only the user console click-through
-::   (none) - run everything
+:: Usage: test-ui.bat [admin|user|responsive]
+::   admin      - run the admin console click-through plus the setup wizard
+::   user       - run only the user console click-through
+::   responsive - run only the phone/tablet layout smoke test
+::   (none)     - run everything
 
 set "SCOPE=%~1"
 
@@ -33,9 +34,10 @@ if errorlevel 1 (
 
 :: Forward slashes only: Playwright matches spec arguments as regexes against
 :: POSIX-style paths, so a backslash here silently matches zero tests.
-set "SPECS=tests/e2e/admin-console.spec.js tests/e2e/user-console.spec.js tests/e2e/setup-wizard.spec.js"
+set "SPECS=tests/e2e/admin-console.spec.js tests/e2e/user-console.spec.js tests/e2e/setup-wizard.spec.js tests/e2e/responsive.spec.js"
 if /I "%SCOPE%"=="admin" set "SPECS=tests/e2e/admin-console.spec.js tests/e2e/setup-wizard.spec.js"
 if /I "%SCOPE%"=="user" set "SPECS=tests/e2e/user-console.spec.js"
+if /I "%SCOPE%"=="responsive" set "SPECS=tests/e2e/responsive.spec.js"
 
 pushd web
 echo [test-ui] running click-through tests: %SPECS%

@@ -84,6 +84,7 @@ export function openNotificationsModal() {
         try {
           await api("/api/notifications/read", { method: "POST", body: JSON.stringify({ ids: [id] }) });
           await fetchNotifications();
+          updateNotificationBadge();
           // Reopen the modal only if we did not navigate away.
           if (type !== "pending_user") {
             openNotificationsModal();
@@ -101,6 +102,7 @@ export function openNotificationsModal() {
       try {
         await api("/api/notifications/delete", { method: "POST", body: JSON.stringify({ ids: [id] }) });
         await fetchNotifications();
+        updateNotificationBadge();
         openNotificationsModal();
       } catch (err) {
         toast(err.message);
@@ -113,6 +115,7 @@ export function openNotificationsModal() {
       try {
         await api("/api/notifications/read", { method: "POST", body: JSON.stringify({ all: true }) });
         await fetchNotifications();
+        updateNotificationBadge();
         closeModal();
       } catch (err) {
         toast(err.message);
@@ -125,6 +128,7 @@ export function openNotificationsModal() {
       try {
         await api("/api/notifications/delete", { method: "POST", body: JSON.stringify({ all: true }) });
         await fetchNotifications();
+        updateNotificationBadge();
         closeModal();
       } catch (err) {
         toast(err.message);
