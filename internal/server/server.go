@@ -911,7 +911,7 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	if req.Name == "" || req.Image == "" {
 		return dockerx.CreateOptions{}, errors.New("name and image are required")
 	}
-	existing, err := a.docker.ListContainers(ctx, u.Username, false)
+	existing, err := a.docker.ListContainers(ctx, u.Username, false, a.forwardNetworks())
 	if err != nil {
 		return dockerx.CreateOptions{}, err
 	}
@@ -1143,7 +1143,7 @@ func (a *App) containerOwnedBy(ctx context.Context, u *store.User, id string) bo
 	if u.Role == "admin" {
 		return true
 	}
-	items, err := a.docker.ListContainers(ctx, u.Username, false)
+	items, err := a.docker.ListContainers(ctx, u.Username, false, a.forwardNetworks())
 	if err != nil {
 		return false
 	}
@@ -1163,7 +1163,7 @@ func (a *App) ownedContainerIDs(ctx context.Context, u *store.User) (map[string]
 	if u.Role == "admin" {
 		return nil, nil
 	}
-	items, err := a.docker.ListContainers(ctx, u.Username, false)
+	items, err := a.docker.ListContainers(ctx, u.Username, false, a.forwardNetworks())
 	if err != nil {
 		return nil, err
 	}

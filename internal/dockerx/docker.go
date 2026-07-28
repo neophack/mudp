@@ -60,6 +60,11 @@ type Container struct {
 	HTTP8080URL      string            `json:"http8080Url,omitempty"`
 	HTTP80URL        string            `json:"http80Url,omitempty"`
 	CreatedAt        int64             `json:"createdAt"`
+	// Forwarded reports whether mudp relays this container's host ports itself
+	// rather than Docker publishing them — from its forward label, or adopted
+	// because it currently sits on a network the administrator marked for
+	// forwarding. Drives the "forward" badge in the UI.
+	Forwarded bool `json:"forwarded,omitempty"`
 }
 
 type CreateOptions struct {
@@ -353,11 +358,15 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		return "", err
 	}
 	// Networks are resolved before the ports because they decide how a port gets
-	// published. A container joining a network the administrator marked for mudp
-	// forwarding takes its host ports from the same range as everyone else, but
-	// mudp relays them itself instead of asking Docker to publish them — on such
-	// a host (an OpenWrt box owning the firewall) Docker's publishing does not
-	// work, while the container's own LAN address does. See forward.go.
+	// published. A container joining only networks the administrator marked for
+	// mudp forwarding takes its host ports from the same range as everyone else,
+	// but mudp relays them itself instead of asking Docker to publish them — on
+	// such a host (an OpenWrt box owning the firewall) Docker's publishing does
+	// not work, while the container's own LAN address does. A container that
+	// also joins an ordinary network (bridge, say) skips forwarding and keeps
+	// Docker publishing instead, since that plain network can publish the same
+	// port normally — forwarding it too would just fight Docker for it. See
+	// forward.go.
 	allowedNetworks := make(map[string]bool, len(opts.AllowedNetworks))
 	for _, n := range opts.AllowedNetworks {
 		allowedNetworks[n] = true
@@ -860,15 +869,15 @@ func (d *Client) TopProcesses(ctx context.Context, containers []Container) []Top
 	return out
 }
 
-func (d *Client) ListContainers(ctx context.Context, username string, admin bool) ([]Container, error) {
-	return d.listContainers(ctx, username, admin, false)
+func (d *Client) ListContainers(ctx context.Context, username string, admin bool, forwardNetworks []string) ([]Container, error) {
+	return d.listContainers(ctx, username, admin, false, forwardNetworks)
 }
 
-func (d *Client) ListContainersWithSize(ctx context.Context, username string, admin bool) ([]Container, error) {
-	return d.listContainers(ctx, username, admin, true)
+func (d *Client) ListContainersWithSize(ctx context.Context, username string, admin bool, forwardNetworks []string) ([]Container, error) {
+	return d.listContainers(ctx, username, admin, true, forwardNetworks)
 }
 
-func (d *Client) listContainers(ctx context.Context, username string, admin, includeSize bool) ([]Container, error) {
+func (d *Client) listContainers(ctx context.Context, username string, admin, includeSize bool, forwardNetworks []string) ([]Container, error) {
 	args := filters.NewArgs(filters.Arg("label", "mudp.managed=true"))
 	list, err := d.c.ContainerList(ctx, container.ListOptions{All: true, Size: includeSize, Filters: args})
 	if err != nil {
@@ -891,10 +900,16 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 			display = strings.TrimPrefix("/"+full, UserContainerPrefix(username))
 		}
 		// Forwarded ports are mudp's own, so Docker reports them as merely
-		// exposed. Render them from the label first and skip the bare
-		// "8080/tcp" duplicate Docker will report for the same port, or the
-		// list would claim a mapped port is unmapped.
-		forwards := ParseForwardSpecs(c.Labels[ForwardPortsLabel])
+		// exposed. Resolve them the same way ForwardRules does — from the label,
+		// or adopted from a container's current bindings when it reached a
+		// forwarding network some other way (e.g. switched onto it after create
+		// via network settings) — so the list agrees with what mudp is actually
+		// relaying instead of showing a stale bridge-style binding, or none at
+		// all. Render them first and skip the bare "8080/tcp" duplicate Docker
+		// reports for the same port, or the list would claim a mapped port is
+		// unmapped.
+		_, forwards := EffectiveForwardSpecs(c, forwardNetworks)
+		forwarded := len(forwards) > 0
 		ports := make([]string, 0, len(c.Ports)+len(forwards))
 		seenPorts := map[string]bool{}
 		for _, s := range forwards {
@@ -922,6 +937,7 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 			ID: c.ID, Name: display, FullName: full, Owner: c.Labels[UserLabel], Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
 			HTTP8080URL: httpURL(c.Ports, forwards, 8080), HTTP80URL: httpURL(c.Ports, forwards, 80),
+			Forwarded: forwarded,
 		})
 	}
 	for i := range out {

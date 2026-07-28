@@ -92,11 +92,10 @@ func TestParseForwardSpecsEmpty(t *testing.T) {
 // for a mudp-managed network is the display name. Both forms must select it, or
 // a correctly-configured forward would silently never apply.
 func TestForwardNetworkFor(t *testing.T) {
-	attached := []string{"bridge", "mudp-alice-net-openwrt-lan"}
+	attached := []string{"mudp-alice-net-openwrt-lan"}
 	cases := map[string]string{
 		"openwrt-lan":                "mudp-alice-net-openwrt-lan",
 		"mudp-alice-net-openwrt-lan": "mudp-alice-net-openwrt-lan",
-		"bridge":                     "bridge",
 		"other-lan":                  "",
 	}
 	for want, expected := range cases {
@@ -109,6 +108,22 @@ func TestForwardNetworkFor(t *testing.T) {
 func TestForwardNetworkForNoSetting(t *testing.T) {
 	if got := ForwardNetworkFor([]string{"mudp-alice-net-openwrt-lan"}, nil); got != "" {
 		t.Fatalf("ForwardNetworkFor with no configured networks = %q, want empty", got)
+	}
+}
+
+// A container also joined to an ordinary network (bridge, say) can have Docker
+// publish its ports there normally, so mixing a forwarding network with
+// anything else must fall back to Docker's own publishing rather than
+// forwarding — forwarding it too would fight Docker for the same host port.
+func TestForwardNetworkForMixedNetworksFallsBackToBind(t *testing.T) {
+	attached := []string{"bridge", "mudp-alice-net-openwrt-lan"}
+	if got := ForwardNetworkFor(attached, []string{"openwrt-lan"}); got != "" {
+		t.Fatalf("ForwardNetworkFor(mixed with bridge) = %q, want empty (bind instead)", got)
+	}
+	// Even naming bridge itself does not help once another, unnominated network
+	// is also attached — every attached network must be nominated.
+	if got := ForwardNetworkFor(attached, []string{"bridge"}); got != "" {
+		t.Fatalf("ForwardNetworkFor(bridge nominated, openwrt-lan not) = %q, want empty", got)
 	}
 }
 
@@ -217,9 +232,18 @@ func TestContainerNetworkNames(t *testing.T) {
 	if len(names) != 2 {
 		t.Fatalf("containerNetworkNames = %v, want two entries", names)
 	}
-	// The adoption path feeds these straight into ForwardNetworkFor.
-	if got := ForwardNetworkFor(names, []string{"openwrt-lan"}); got != "mudp-alice-net-openwrt-lan" {
-		t.Fatalf("ForwardNetworkFor(containerNetworkNames) = %q, want the openwrt-lan network", got)
+	// The adoption path feeds these straight into ForwardNetworkFor, and a
+	// container also on bridge is mixed, not forwarding-only, so it falls back
+	// to Docker's own publishing.
+	if got := ForwardNetworkFor(names, []string{"openwrt-lan"}); got != "" {
+		t.Fatalf("ForwardNetworkFor(containerNetworkNames, mixed with bridge) = %q, want empty", got)
+	}
+	// Drop bridge and adoption finds the forwarding network as usual.
+	soloNames := containerNetworkNames(types.Container{NetworkSettings: &types.SummaryNetworkSettings{Networks: map[string]*network.EndpointSettings{
+		"mudp-alice-net-openwrt-lan": {IPAddress: "10.210.1.3"},
+	}}})
+	if got := ForwardNetworkFor(soloNames, []string{"openwrt-lan"}); got != "mudp-alice-net-openwrt-lan" {
+		t.Fatalf("ForwardNetworkFor(containerNetworkNames, forwarding-only) = %q, want the openwrt-lan network", got)
 	}
 	if len(containerNetworkNames(types.Container{})) != 0 {
 		t.Fatal("a container with no network settings reported networks")

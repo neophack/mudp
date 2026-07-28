@@ -213,9 +213,11 @@ function containerRow(c) {
   const portLine = [...conn, ports === "—" && conn.length ? "" : escapeHtml(ports)]
     .filter(Boolean)
     .join(" <span class='sep'>·</span> ");
-  // A container whose ports mudp relays itself carries the forward label. Docker
+  // A container whose ports mudp relays itself is flagged by the backend —
+  // either it carries the forward label, or it was adopted because it now sits
+  // on a forwarding network (e.g. switched there after creation). Docker
   // reports nothing about those ports, so the row says where they come from.
-  const forwarded = !!(c.labels && c.labels["mudp.forward.ports"]);
+  const forwarded = !!c.forwarded;
   const iconBtn = (act, glyph, title, cls = "icon", enabled = true) => {
     const isLoading = pending(act);
     const dis = !enabled || isLoading ? "disabled" : "";

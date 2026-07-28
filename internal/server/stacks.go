@@ -206,7 +206,7 @@ func (a *App) stackUpStream(w http.ResponseWriter, r *http.Request) {
 
 	// Quota guard: existing containers + new services must fit the cap.
 	svcCount, _ := dockerx.CountServices(s.ComposeYAML)
-	existing, _ := a.docker.ListContainers(r.Context(), u.Username, false)
+	existing, _ := a.docker.ListContainers(r.Context(), u.Username, false, a.forwardNetworks())
 	if u.Role != "admin" && len(existing)+svcCount > u.ContainerCap {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("stack would exceed container cap (%d + %d > %d)", len(existing), svcCount, u.ContainerCap))
 		return

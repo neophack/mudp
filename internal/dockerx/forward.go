@@ -150,20 +150,31 @@ func parsePortSpec(spec string) (portSpec, error) {
 	return out, nil
 }
 
-// ForwardNetworkFor picks the network a container should be forwarded on: the
-// first of its attached networks that the administrator nominated for
-// forwarding. Empty means Docker publishing applies as before.
+// ForwardNetworkFor picks the network a container should be forwarded on: one
+// of its attached networks that the administrator nominated for forwarding,
+// but only when *every* attached network is one — a container also joined to
+// bridge (or any other ordinary network) can have Docker publish its ports
+// there just fine, so forwarding it too would fight the same host port two
+// ways. Empty means Docker publishing applies, either because nothing here is
+// nominated or because the container is not forwarding-only.
 //
 // Matching goes through NetworkNameMatches, so an admin can nominate either the
 // display name they read off the Networks view ("openwrt-lan") or the full
 // Docker name ("mudp-alice-net-openwrt-lan").
 func ForwardNetworkFor(attached, forwardNetworks []string) string {
+	if len(attached) == 0 || len(forwardNetworks) == 0 {
+		return ""
+	}
+	match := ""
 	for _, name := range attached {
-		if NetworkNameMatchesAny(name, forwardNetworks) {
-			return name
+		if !NetworkNameMatchesAny(name, forwardNetworks) {
+			return ""
+		}
+		if match == "" {
+			match = name
 		}
 	}
-	return ""
+	return match
 }
 
 // NetworkNameMatchesAny reports whether a network name matches any of the
@@ -175,6 +186,28 @@ func NetworkNameMatchesAny(name string, want []string) bool {
 		}
 	}
 	return false
+}
+
+// EffectiveForwardSpecs resolves what mudp actually relays for a container:
+// the mapping recorded in its forward label when it was created on a
+// forwarding network, or — for a container that reached that network some
+// other way, such as being switched onto it after creation via network
+// settings — its current Docker port bindings adopted as forward specs. Both
+// ForwardRules (what is actually relayed) and the container list (what the UI
+// shows) must agree on this, or a container moved onto a forwarding network
+// after the fact keeps showing its stale bridge-style binding, or none at all,
+// even though mudp is in fact relaying it.
+func EffectiveForwardSpecs(c types.Container, forwardNetworks []string) (network string, specs []ForwardSpec) {
+	network = c.Labels[ForwardNetLabel]
+	specs = ParseForwardSpecs(c.Labels[ForwardPortsLabel])
+	if len(specs) > 0 {
+		return network, specs
+	}
+	network = ForwardNetworkFor(containerNetworkNames(c), forwardNetworks)
+	if network == "" {
+		return "", nil
+	}
+	return network, publishedForwardSpecs(c)
 }
 
 // ForwardRules builds the live forwarding rules from container state: every
@@ -206,19 +239,9 @@ func (d *Client) ForwardRules(ctx context.Context, forwardNetworks []string) ([]
 		if c.Labels[ManagedLabel] != "true" {
 			continue
 		}
-		network := c.Labels[ForwardNetLabel]
-		specs := ParseForwardSpecs(c.Labels[ForwardPortsLabel])
+		network, specs := EffectiveForwardSpecs(c, forwardNetworks)
 		if len(specs) == 0 {
-			// No label: adopt this container's published ports if it sits on a
-			// network the administrator marked for forwarding.
-			network = ForwardNetworkFor(containerNetworkNames(c), forwardNetworks)
-			if network == "" {
-				continue
-			}
-			specs = publishedForwardSpecs(c)
-			if len(specs) == 0 {
-				continue
-			}
+			continue
 		}
 		ip := forwardIP(c, network)
 		name := c.Labels[NameLabel]

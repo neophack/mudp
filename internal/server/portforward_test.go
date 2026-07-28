@@ -375,12 +375,18 @@ func TestForwardNetworksDrivesNetworkSelection(t *testing.T) {
 	if err := a.db.SavePortForwardConfig(store.PortForwardConfig{Networks: []string{"openwrt-lan"}}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	attached := []string{"bridge", "mudp-alice-net-openwrt-lan"}
-	if got := dockerx.ForwardNetworkFor(attached, a.forwardNetworks()); got != "mudp-alice-net-openwrt-lan" {
+	forwardingOnly := []string{"mudp-alice-net-openwrt-lan"}
+	if got := dockerx.ForwardNetworkFor(forwardingOnly, a.forwardNetworks()); got != "mudp-alice-net-openwrt-lan" {
 		t.Fatalf("ForwardNetworkFor = %q, want the openwrt-lan network", got)
 	}
 	// A container that never joins the nominated network keeps Docker publishing.
 	if got := dockerx.ForwardNetworkFor([]string{"bridge"}, a.forwardNetworks()); got != "" {
 		t.Fatalf("ForwardNetworkFor(bridge only) = %q, want empty", got)
+	}
+	// A container also joined to bridge can have Docker publish there normally,
+	// so the mix keeps Docker publishing instead of forwarding.
+	mixed := []string{"bridge", "mudp-alice-net-openwrt-lan"}
+	if got := dockerx.ForwardNetworkFor(mixed, a.forwardNetworks()); got != "" {
+		t.Fatalf("ForwardNetworkFor(mixed with bridge) = %q, want empty", got)
 	}
 }

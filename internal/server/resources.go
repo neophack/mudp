@@ -16,7 +16,7 @@ func (a *App) refreshRuntimeCache(ctx context.Context) {
 	defer a.refreshMu.Unlock()
 
 	sys := a.docker.SystemInfo(ctx)
-	containers, err := a.docker.ListContainersWithSize(ctx, "", true)
+	containers, err := a.docker.ListContainersWithSize(ctx, "", true, a.forwardNetworks())
 	if err != nil {
 		containers = nil
 	}
