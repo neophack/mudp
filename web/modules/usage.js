@@ -1,6 +1,6 @@
 // Per-user resource usage table (admin only).
 
-import { state, api, isAdmin, displayName, displayNameForUsername } from "../app.js";
+import { state, api, isAdmin, displayName, displayNameForUsername, t } from "../app.js";
 
 export async function renderUsage() {
   const tabAtEntry = state.tab;
@@ -31,9 +31,9 @@ export async function renderUsage() {
   $("#view").innerHTML =
     `<div class="stack">` +
     `<div class="card">` +
-      `<div class="card-head"><h2>Resource Usage</h2></div>` +
+      `<div class="card-head"><h2>${t("usage.resourceUsage")}</h2></div>` +
       `<table class="data">` +
-        `<thead><tr><th>User</th><th>Containers</th><th>Memory</th><th>Disk</th><th>GPU</th><th>GPU Usage</th><th>GPU Memory</th></tr></thead>` +
+        `<thead><tr><th>${t("common.user")}</th><th>${t("usage.colContainers")}</th><th>${t("usage.colMemory")}</th><th>${t("usage.colDisk")}</th><th>${t("usage.colGpu")}</th><th>${t("usage.colGpuUsage")}</th><th>${t("usage.colGpuMemory")}</th></tr></thead>` +
         `<tbody>${rows
           .map(
             (u) =>
@@ -47,15 +47,15 @@ export async function renderUsage() {
               `<td>${gpuMemory(u)}</td>` +
               `</tr>`
           )
-          .join("") || `<tr class="empty-row"><td colspan="7">No usage data.</td></tr>`}</tbody>` +
+          .join("") || `<tr class="empty-row"><td colspan="7">${t("usage.noUsage")}</td></tr>`}</tbody>` +
       `</table>` +
     `</div>` +
-    `<div class="card"><div class="card-head"><h2>Last 24 Hours</h2></div><div class="card-body">` +
-      `<div class="stats-grid">${trendCards(history).join("") || `<p class="hint">No history yet.</p>`}</div>` +
+    `<div class="card"><div class="card-head"><h2>${t("usage.last24h")}</h2></div><div class="card-body">` +
+      `<div class="stats-grid">${trendCards(history).join("") || `<p class="hint">${t("usage.noHistory")}</p>`}</div>` +
     `</div></div>` +
-    (isAdmin() ? `<div class="card"><div class="card-head"><h2>Top Processes</h2></div>` +
-      `<table class="data"><thead><tr><th>User</th><th>Container</th><th>PID</th><th>CPU</th><th>Command</th></tr></thead>` +
-      `<tbody>${(processes || []).map(processRow).join("") || `<tr class="empty-row"><td colspan="5">No process data.</td></tr>`}</tbody></table>` +
+    (isAdmin() ? `<div class="card"><div class="card-head"><h2>${t("usage.topProcesses")}</h2></div>` +
+      `<table class="data"><thead><tr><th>${t("common.user")}</th><th>${t("usage.colContainer")}</th><th>${t("usage.colPid")}</th><th>${t("usage.colCpu")}</th><th>${t("usage.colCommand")}</th></tr></thead>` +
+      `<tbody>${(processes || []).map(processRow).join("") || `<tr class="empty-row"><td colspan="5">${t("usage.noProcess")}</td></tr>`}</tbody></table>` +
     `</div>` : "") +
     `</div>`;
 }
@@ -90,7 +90,7 @@ function trendCards(history) {
     const maxCpu = Math.max(...cpu, 0).toFixed(1);
     const maxMem = Math.max(...mem, 0).toFixed(0);
     const maxGpu = Math.max(...gpu, 0).toFixed(1);
-    return `<div class="stat-card"><div class="stat-card-head">${escapeHtml(displayNameForUsername(user))}</div><div class="stat-card-value">${maxCpu}% CPU</div><div class="stat-card-sub">${maxMem} MB peak memory · ${maxGpu}% peak GPU</div>${spark(cpu)}</div>`;
+    return `<div class="stat-card"><div class="stat-card-head">${escapeHtml(displayNameForUsername(user))}</div><div class="stat-card-value">${maxCpu}% ${t("hardware.cpu")}</div><div class="stat-card-sub">${t("usage.peakGpu", { mem: maxMem, gpu: maxGpu })}</div>${spark(cpu)}</div>`;
   });
 }
 

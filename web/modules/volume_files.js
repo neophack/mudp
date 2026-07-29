@@ -4,7 +4,7 @@
 // Mirrors the table styling of files.js (the dual-pane container/netdisk
 // explorer) but operates only on the volume filesystem.
 
-import { api, toast, canMutate, state, readCSRFCookie } from "../app.js";
+import { api, toast, canMutate, state, readCSRFCookie, t } from "../app.js";
 import { showModalNoShell } from "./ui.js";
 import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
 
@@ -26,16 +26,16 @@ export function openVolumeFiles(fullName, displayName) {
     "volfiles-modal",
     "wide files-modal",
     `<div class="modal-head">
-       <h2>Files · ${escapeHtml(displayName)}</h2>
-       <button class="ghost" data-close>Close</button>
+       <h2>${t("volfiles.title", { name: escapeHtml(displayName) })}</h2>
+       <button class="ghost" data-close>${t("common.close")}</button>
      </div>
      <div class="modal-body files-body">
        <div class="files-toolbar">
-         <button class="primary" id="volUploadBtn" title="Upload files into the current folder">⬆ Upload</button>
+         <button class="primary" id="volUploadBtn" title="${t("volfiles.uploadTitle")}">${t("volfiles.upload")}</button>
          <input type="file" id="volUploadInput" multiple style="display:none">
-         <button class="ghost" id="volMkdirBtn" title="New folder">📁 New folder</button>
-         <button class="ghost danger" id="volDeleteBtn" title="Delete selected">✕ Delete</button>
-         <button class="ghost" id="volUpBtn">↑ Up</button>
+         <button class="ghost" id="volMkdirBtn" title="${t("volfiles.newFolder")}">📁 ${t("volfiles.newFolder")}</button>
+         <button class="ghost danger" id="volDeleteBtn" title="${t("volfiles.deleteTitle")}">✕ ${t("common.delete")}</button>
+         <button class="ghost" id="volUpBtn">${t("volfiles.up")}</button>
          <code class="mono pane-path" id="volPath">/</code>
          <span class="hint" id="volStatus"></span>
        </div>
@@ -98,8 +98,8 @@ function render() {
   pathEl.textContent = "/" + (session.path || "");
   const rows = sorted(session.items).map(row).join("");
   listEl.innerHTML = rows
-    ? `<table class="data files-table"><thead><tr><th class="chk-col"><input type="checkbox" id="volSelectAll"></th><th class="name-col">Name</th><th class="size-col">Size</th><th class="mode-col">Mode</th><th class="time-col">Last modified</th><th class="actions"></th></tr></thead><tbody>${rows}</tbody></table>`
-    : `<p class="hint">Empty folder.</p>`;
+    ? `<table class="data files-table"><thead><tr><th class="chk-col"><input type="checkbox" id="volSelectAll"></th><th class="name-col">${t("common.name")}</th><th class="size-col">${t("common.size")}</th><th class="mode-col">${t("volfiles.colMode")}</th><th class="time-col">${t("volfiles.colModified")}</th><th class="actions"></th></tr></thead><tbody>${rows}</tbody></table>`
+    : `<p class="hint">${t("volfiles.emptyFolder")}</p>`;
   const allBox = $("#volSelectAll");
   if (allBox) {
     allBox.onchange = () => {
@@ -142,8 +142,8 @@ function row(f) {
     `<td class="mode-col mono">${escapeHtml(f.mode || "—")}</td>` +
     `<td class="time-col">${escapeHtml(fmtTime(f.modTime))}</td>` +
     `<td class="actions">` +
-      `<a class="ghost-link" data-download="${escapeHtml(f.path)}" title="Download">⬇</a>` +
-      (mutable ? `<button class="ghost-link" data-rename="${escapeHtml(f.path)}" data-rename-name="${escapeHtml(f.name)}" title="Rename">✎</button>` : "") +
+      `<a class="ghost-link" data-download="${escapeHtml(f.path)}" title="${t("netdisk.download")}">⬇</a>` +
+      (mutable ? `<button class="ghost-link" data-rename="${escapeHtml(f.path)}" data-rename-name="${escapeHtml(f.name)}" title="${t("netdisk.rename")}">✎</button>` : "") +
     `</td>` +
     `</tr>`
   );
@@ -162,7 +162,7 @@ function goUp() {
 }
 
 async function newFolder() {
-  const name = prompt("Folder name:");
+  const name = prompt(t("netdisk.folderNamePrompt"));
   if (!name || !name.trim()) return;
   const dir = (session.path ? session.path + "/" : "") + name.trim();
   try {
@@ -170,7 +170,7 @@ async function newFolder() {
       method: "POST",
       body: JSON.stringify({ name: session.fullName, path: dir }),
     });
-    toast("Folder created", true);
+    toast(t("volfiles.folderCreated"), true);
     await load();
   } catch (err) {
     toast(err.message);
@@ -180,16 +180,16 @@ async function newFolder() {
 async function deleteSelected() {
   const paths = [...session.selected];
   if (paths.length === 0) {
-    toast("Select at least one file or folder first");
+    toast(t("volfiles.selectFirst"));
     return;
   }
-  if (!confirm(`Delete ${paths.length} item(s)? This cannot be undone.`)) return;
+  if (!confirm(t("volfiles.deleteConfirm", { n: paths.length }))) return;
   try {
     await api("/api/volumes/files/delete", {
       method: "POST",
       body: JSON.stringify({ name: session.fullName, paths }),
     });
-    toast(`Deleted ${paths.length} item(s)`, true);
+    toast(t("volfiles.deletedN", { n: paths.length }), true);
     await load();
   } catch (err) {
     toast(err.message);
@@ -197,14 +197,14 @@ async function deleteSelected() {
 }
 
 async function renameItem(path, oldName) {
-  const newName = prompt("New name:", oldName);
+  const newName = prompt(t("volfiles.newName"), oldName);
   if (!newName || !newName.trim() || newName.trim() === oldName) return;
   try {
     await api("/api/volumes/files/rename", {
       method: "POST",
       body: JSON.stringify({ name: session.fullName, path, newName: newName.trim() }),
     });
-    toast("Renamed", true);
+    toast(t("volfiles.renamed"), true);
     await load();
   } catch (err) {
     toast(err.message);
@@ -214,7 +214,7 @@ async function renameItem(path, oldName) {
 async function doUpload(fileList) {
   const files = [...(fileList || [])];
   if (files.length === 0) return;
-  setStatus(`Uploading ${files.length} file(s)…`);
+  setStatus(t("volfiles.uploading", { n: files.length }));
   const btns = $$(".files-toolbar button");
   btns.forEach((b) => (b.disabled = true));
   let ok = 0;
@@ -222,11 +222,11 @@ async function doUpload(fileList) {
   // progress: completed bytes plus the in-flight file's fraction of its size.
   const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
   let baseBytes = 0;
-  const overlay = showUploadOverlay(`Uploading ${files.length} file(s)…`);
+  const overlay = showUploadOverlay(t("volfiles.uploading", { n: files.length }));
   try {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      overlay.setLabel(`Uploading ${i + 1}/${files.length}: ${file.name}`);
+      overlay.setLabel(`${i + 1}/${files.length}: ${file.name}`);
       const fd = new FormData();
       fd.append("name", session.fullName);
       fd.append("path", session.path || "");
@@ -251,7 +251,7 @@ async function doUpload(fileList) {
       }
       baseBytes += file.size || 0;
     }
-    toast(`Uploaded ${ok} file(s)`, true);
+    toast(t("volfiles.uploadedN", { n: ok }), true);
     await load();
     setStatus("");
   } catch (err) {

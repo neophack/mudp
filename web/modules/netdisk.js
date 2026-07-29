@@ -1,4 +1,4 @@
-import { state, api, toast, escapeHtml, fmtBytes, isAdmin, canMutate, displayNameForUsername, readCSRFCookie } from "../app.js";
+import { state, api, toast, escapeHtml, fmtBytes, isAdmin, canMutate, displayNameForUsername, readCSRFCookie, t } from "../app.js";
 import { showModalNoShell, closeModal, onModalClose } from "./ui.js";
 import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
 import { openYuvViewer } from "../lib/yuv.js";
@@ -56,9 +56,9 @@ function isBackupMode() {
 
 function backupUnavailableMessage(errOrMsg) {
   const msg = String(errOrMsg?.message || errOrMsg || "").trim();
-  if (!msg) return "Backup disk is unavailable or not mounted. Ask an admin to mount the configured backup device.";
+  if (!msg) return t("netdisk.backupUnavailable");
   if (msg.toLowerCase().includes("not configured")) return msg;
-  return `Backup disk is unavailable or not mounted: ${msg}`;
+  return t("netdisk.backupUnavailableMsg", { msg });
 }
 
 export async function renderNetdisk() {
@@ -68,7 +68,7 @@ export async function renderNetdisk() {
   // current content until the new data arrives (no white flash).
   const firstLoad = !$("#netdiskCard");
   if (firstLoad) {
-    $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">Loading files...</p></div></div>`;
+    $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">${t("netdisk.loadingFiles")}</p></div></div>`;
   }
   const prevSig = state.netdisk?.sig;
   const prevSelSig = state.netdisk?.selSig;
@@ -149,25 +149,25 @@ export async function renderNetdisk() {
         `<div class="netdisk-toolbar">` +
           `<div class="netdisk-title">` +
             `<div class="netdisk-mode-toggle" role="tablist">` +
-              `<button class="netdisk-mode-btn${backup ? "" : " active"}" data-mode="netdisk" role="tab" aria-selected="${backup ? "false" : "true"}">Netdisk</button>` +
-              `<button class="netdisk-mode-btn${backup ? " active" : ""}" data-mode="backup" role="tab" aria-selected="${backup ? "true" : "false"}">Backup Disk</button>` +
+              `<button class="netdisk-mode-btn${backup ? "" : " active"}" data-mode="netdisk" role="tab" aria-selected="${backup ? "false" : "true"}">${t("netdisk.modeNetdisk")}</button>` +
+              `<button class="netdisk-mode-btn${backup ? " active" : ""}" data-mode="backup" role="tab" aria-selected="${backup ? "true" : "false"}">${t("netdisk.modeBackup")}</button>` +
             `</div>` +
-            `<span class="netdisk-count">${folderCount} folders, ${fileCount} files</span>` +
+            `<span class="netdisk-count">${t("netdisk.counts", { folders: folderCount, files: fileCount })}</span>` +
           `</div>` +
           `<div class="head-tools netdisk-actions">` +
-            `<button class="ghost" id="upDir">Up</button>` +
-            `<button class="ghost" id="mkdirBtn">New Folder</button>` +
+            `<button class="ghost" id="upDir">${t("netdisk.up")}</button>` +
+            `<button class="ghost" id="mkdirBtn">${t("netdisk.newFolder")}</button>` +
             // Upload and Folder-upload are netdisk-only: a backup disk is a
             // mirror target, not a place to drop arbitrary new files.
-            (backup ? "" : `<label class="buttonlike"><input id="uploadFiles" type="file" multiple> Upload</label>`) +
-            (backup ? "" : `<label class="buttonlike"><input id="uploadFolder" type="file" webkitdirectory directory multiple> Folder</label>`) +
+            (backup ? "" : `<label class="buttonlike"><input id="uploadFiles" type="file" multiple> ${t("netdisk.upload")}</label>`) +
+            (backup ? "" : `<label class="buttonlike"><input id="uploadFolder" type="file" webkitdirectory directory multiple> ${t("netdisk.folder")}</label>`) +
             (mutable
-              ? `<button class="ghost danger" id="batchDelete" ${selectionSize ? "" : "disabled"}>Delete (${selectionSize})</button>` +
-                `<button class="ghost" id="batchCopy" ${selectionSize ? "" : "disabled"}>Copy (${selectionSize})</button>` +
-                `<button class="ghost" id="batchMove" ${selectionSize ? "" : "disabled"}>Move (${selectionSize})</button>` +
+              ? `<button class="ghost danger" id="batchDelete" ${selectionSize ? "" : "disabled"}>${t("netdisk.deleteN", { n: selectionSize })}</button>` +
+                `<button class="ghost" id="batchCopy" ${selectionSize ? "" : "disabled"}>${t("netdisk.copyN", { n: selectionSize })}</button>` +
+                `<button class="ghost" id="batchMove" ${selectionSize ? "" : "disabled"}>${t("netdisk.moveN", { n: selectionSize })}</button>` +
                 // Share and Backup-to-backup don't apply on the backup disk.
-                (backup ? "" : `<button class="ghost" id="batchShare" ${selectionSize ? "" : "disabled"}>Share (${selectionSize})</button>`) +
-                `<button class="ghost" id="batchDownload" ${selectionSize ? "" : "disabled"}>Download (${selectionSize})</button>`
+                (backup ? "" : `<button class="ghost" id="batchShare" ${selectionSize ? "" : "disabled"}>${t("netdisk.shareN", { n: selectionSize })}</button>`) +
+                `<button class="ghost" id="batchDownload" ${selectionSize ? "" : "disabled"}>${t("netdisk.downloadN", { n: selectionSize })}</button>`
               : "") +
           `</div>` +
         `</div>` +
@@ -180,15 +180,15 @@ export async function renderNetdisk() {
         `</div>` +
         `<table class="data netdisk-table"><thead><tr>` +
           (mutable ? `<th class="chk-col"><input type="checkbox" id="selectAllFiles"></th>` : "") +
-          `<th>Name</th><th class="size-col">Size</th><th class="time-col">Modified</th><th class="actions">Actions</th>` +
+          `<th>${t("common.name")}</th><th class="size-col">${t("common.size")}</th><th class="time-col">${t("netdisk.colModified")}</th><th class="actions">${t("common.actions")}</th>` +
         `</tr></thead><tbody>${rows}</tbody></table>` +
       `</div>` +
       // External Links cards are netdisk-only — backup files can't be shared.
       (backup ? "" :
-        `<div class="card"><div class="card-head"><h2>External Links</h2></div>` +
-        `<table class="data netdisk-shares"><thead><tr><th class="share-name-col">Name</th><th class="share-link-col">Link</th><th class="share-expires-col">Expires</th><th class="share-access-col">Access</th><th class="actions">Actions</th></tr></thead><tbody>${shareRows(state.netdisk.shares || [])}</tbody></table></div>` +
-        (isAdmin() ? `<div class="card"><div class="card-head"><h2>All External Links</h2><div class="head-tools"><label class="check compact-check" for="selectAllShares"><input type="checkbox" id="selectAllShares"><span>Select all</span></label><button class="danger" id="deleteSelectedShares">Delete Selected</button></div></div>` +
-        `<table class="data netdisk-admin-shares"><thead><tr><th class="chk-col"></th><th class="share-owner-col">Owner</th><th class="share-name-col">Name</th><th class="share-link-col">Link</th><th class="share-expires-col">Expires</th><th class="share-access-col">Access</th></tr></thead><tbody>${adminShareRows(state.netdisk.adminShares || [])}</tbody></table></div>` : "")
+        `<div class="card"><div class="card-head"><h2>${t("netdisk.externalLinks")}</h2></div>` +
+        `<table class="data netdisk-shares"><thead><tr><th class="share-name-col">${t("common.name")}</th><th class="share-link-col">${t("netdisk.colLink")}</th><th class="share-expires-col">${t("netdisk.colExpires")}</th><th class="share-access-col">${t("netdisk.colAccess")}</th><th class="actions">${t("common.actions")}</th></tr></thead><tbody>${shareRows(state.netdisk.shares || [])}</tbody></table></div>` +
+        (isAdmin() ? `<div class="card"><div class="card-head"><h2>${t("netdisk.allExternalLinks")}</h2><div class="head-tools"><label class="check compact-check" for="selectAllShares"><input type="checkbox" id="selectAllShares"><span>${t("netdisk.selectAll")}</span></label><button class="danger" id="deleteSelectedShares">${t("netdisk.deleteSelected")}</button></div></div>` +
+        `<table class="data netdisk-admin-shares"><thead><tr><th class="chk-col"></th><th class="share-owner-col">${t("netdisk.colOwner")}</th><th class="share-name-col">${t("common.name")}</th><th class="share-link-col">${t("netdisk.colLink")}</th><th class="share-expires-col">${t("netdisk.colExpires")}</th><th class="share-access-col">${t("netdisk.colAccess")}</th></tr></thead><tbody>${adminShareRows(state.netdisk.adminShares || [])}</tbody></table></div>` : "")
       ) +
     `</div>`;
 
@@ -229,10 +229,10 @@ function bindNetdiskEvents(mutable) {
   });
 
   $("#mkdirBtn").onclick = async () => {
-    const name = prompt("Folder name");
+    const name = prompt(t("netdisk.folderNamePrompt"));
     if (!name) return;
     await api(`${base}/mkdir`, { method: "POST", body: JSON.stringify({ path: joinPath(state.netdisk.path, name) }) });
-    toast("Folder created", true);
+    toast(t("netdisk.folderCreated"), true);
     renderNetdisk();
   };
 
@@ -270,7 +270,7 @@ function bindNetdiskEvents(mutable) {
     card.ondrop = async (e) => {
       e.preventDefault();
       card.classList.remove("drag-over");
-      if (!mutable) return toast("Read-only account cannot upload");
+      if (!mutable) return toast(t("netdisk.readonlyUpload"));
       const entries = await collectDroppedFiles(e.dataTransfer?.items);
       if (entries.length) await uploadFilesHandler(entries, state.netdisk.path || "");
     };
@@ -291,9 +291,9 @@ function bindNetdiskEvents(mutable) {
   if (mutable) {
     document.querySelectorAll("[data-del]").forEach((btn) => {
       btn.onclick = async () => {
-        if (!confirm(`Delete ${btn.dataset.name}?`)) return;
+        if (!confirm(t("netdisk.deleteConfirmOne", { name: btn.dataset.name }))) return;
         await api(`${base}/delete`, { method: "POST", body: JSON.stringify({ paths: [btn.dataset.del] }) });
-        toast("Deleted", true);
+        toast(t("netdisk.deleted"), true);
         renderNetdisk();
       };
     });
@@ -336,15 +336,15 @@ function bindNetdiskEvents(mutable) {
   document.querySelectorAll("[data-copy-link]").forEach((btn) => {
     btn.onclick = async () => {
       const code = btn.dataset.copyCode;
-      const text = code ? `${btn.dataset.copyLink}\nExtraction code: ${code}` : btn.dataset.copyLink;
+      const text = code ? `${btn.dataset.copyLink}\n${t("netdisk.extractionCode")}: ${code}` : btn.dataset.copyLink;
       await navigator.clipboard.writeText(text);
-      toast(code ? "Link & code copied" : "Link copied", true);
+      toast(code ? t("netdisk.linkCodeCopied") : t("netdisk.linkCopied"), true);
     };
   });
   document.querySelectorAll("[data-share-del]").forEach((btn) => {
     btn.onclick = async () => {
       await api("/api/netdisk/share/delete", { method: "POST", body: JSON.stringify({ token: btn.dataset.shareDel }) });
-      toast("External link deleted", true);
+      toast(t("netdisk.externalLinkDeleted"), true);
       renderNetdisk();
     };
   });
@@ -359,10 +359,10 @@ function bindNetdiskEvents(mutable) {
   if (deleteSelected) {
     deleteSelected.onclick = async () => {
       const tokens = [...document.querySelectorAll("[data-admin-share-token]:checked")].map((i) => i.value);
-      if (!tokens.length) return toast("Select at least one external link.");
-      if (!confirm(`Delete ${tokens.length} external link(s)?`)) return;
+      if (!tokens.length) return toast(t("netdisk.selectLink"));
+      if (!confirm(t("netdisk.deleteLinksConfirm", { n: tokens.length }))) return;
       await api("/api/admin/netdisk/shares/delete", { method: "POST", body: JSON.stringify({ tokens }) });
-      toast("External links deleted", true);
+      toast(t("netdisk.externalLinksDeleted"), true);
       renderNetdisk();
     };
   }
@@ -375,7 +375,7 @@ function fileRow(f, mutable, backup) {
   const name = f.dir
     ? `<button class="linklike netdisk-name-link" data-open="${escapeHtml(f.path)}">${escapeHtml(f.name)}</button>`
     : kind
-      ? `<button class="linklike netdisk-name-link" data-view="${escapeHtml(f.path)}" data-backup="${backup ? "1" : ""}" title="Preview">${escapeHtml(f.name)}</button>`
+      ? `<button class="linklike netdisk-name-link" data-view="${escapeHtml(f.path)}" data-backup="${backup ? "1" : ""}" title="${t("netdisk.preview")}">${escapeHtml(f.name)}</button>`
       : `<a class="netdisk-name-link" href="${href}">${escapeHtml(f.name)}</a>`;
   const checkCell = mutable
     ? `<td class="chk-col"><input type="checkbox" class="netdisk-row-check" data-path="${escapeHtml(f.path)}" ${checked}></td>`
@@ -384,13 +384,13 @@ function fileRow(f, mutable, backup) {
   // Backup-to-backup button (it's already there). Everything else — download,
   // rename, copy/move within the disk, delete — stays for full management.
   const actionCell = mutable
-    ? `<a class="icon" href="${href}" title="Download">⬇</a>` +
-      `<button class="icon" title="Rename" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✎</button>` +
-      `<button class="icon" title="Copy" data-copy="${escapeHtml(f.path)}">⧉</button>` +
-      `<button class="icon" title="Move" data-move="${escapeHtml(f.path)}">↗</button>` +
-      (backup ? "" : `<button class="icon" title="Share" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">⤴</button>`) +
-      `<button class="icon danger" title="Delete" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✕</button>`
-    : `<a class="icon" href="${href}" title="Download">⬇</a>`;
+    ? `<a class="icon" href="${href}" title="${t("netdisk.download")}">⬇</a>` +
+      `<button class="icon" title="${t("netdisk.rename")}" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✎</button>` +
+      `<button class="icon" title="${t("netdisk.copy")}" data-copy="${escapeHtml(f.path)}">⧉</button>` +
+      `<button class="icon" title="${t("netdisk.move")}" data-move="${escapeHtml(f.path)}">↗</button>` +
+      (backup ? "" : `<button class="icon" title="${t("netdisk.share")}" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">⤴</button>`) +
+      `<button class="icon danger" title="${t("common.delete")}" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✕</button>`
+    : `<a class="icon" href="${href}" title="${t("netdisk.download")}">⬇</a>`;
   return `<tr>${checkCell}<td><div class="netdisk-file"><span class="netdisk-icon ${f.dir ? "folder" : "file"}" aria-hidden="true">${fileIcon(f.dir)}</span><div class="primary-line">${name}</div></div></td><td class="netdisk-size">${f.dir ? "-" : fmtBytes(f.size)}</td><td class="netdisk-time" title="${escapeHtml(new Date(f.modTime).toLocaleString())}">${escapeHtml(fmtDate(f.modTime))}</td><td class="actions netdisk-row-actions">${actionCell}</td></tr>`;
 }
 
@@ -404,11 +404,11 @@ function toggleFileSelection(path, checked) {
 async function batchDelete() {
   const paths = [...state.netdisk.selected];
   if (!paths.length) return;
-  if (!confirm(`Delete ${paths.length} item(s)?`)) return;
+  if (!confirm(t("netdisk.batchDeleteConfirm", { n: paths.length }))) return;
   const endpoint = isBackupMode() ? "/api/netdisk/backup/delete" : "/api/netdisk/delete";
   await api(endpoint, { method: "POST", body: JSON.stringify({ paths }) });
   clearCurrentSelection();
-  toast("Deleted", true);
+  toast(t("netdisk.deleted"), true);
   renderNetdisk();
 }
 
@@ -426,36 +426,36 @@ let folderPicker = null;
 function openFolderPicker(move, paths) {
   const sourceDisk = isBackupMode() ? "backup" : "netdisk";
   folderPicker = { move, paths, path: state.netdisk.path || "", items: [], sourceDisk, targetDisk: sourceDisk };
-  const action = move ? "Move" : "Copy";
-  const diskLabel = sourceDisk === "backup" ? "Backup Disk" : "My Netdisk";
+  const action = move ? t("netdisk.move") : t("netdisk.copy");
+  const diskLabel = sourceDisk === "backup" ? t("netdisk.backupDisk") : t("netdisk.myNetdisk");
   const netdiskActive = sourceDisk === "netdisk" ? " active" : "";
   const backupActive = sourceDisk === "backup" ? " active" : "";
   showModalNoShell(
     "netdisk-picker",
     "wide picker-modal",
     `<div class="modal-head">` +
-      `<div><h2>${action} ${paths.length} item(s)</h2><p class="hint" style="margin-top:4px">Choose a destination folder on ${diskLabel.toLowerCase()}</p></div>` +
+      `<div><h2>${t("netdisk.pickTitle", { action, n: paths.length })}</h2><p class="hint" style="margin-top:4px">${t("netdisk.pickHint", { disk: diskLabel.toLowerCase() })}</p></div>` +
       `<button class="icon" data-close>✕</button>` +
     `</div>` +
     `<div class="picker-layout">` +
       `<aside class="picker-tree">` +
-        `<button class="picker-tree-item picker-disk${netdiskActive}" data-picker-disk="netdisk" type="button">My Netdisk</button>` +
-        `<button class="picker-tree-item picker-disk${backupActive}" data-picker-disk="backup" type="button">Backup Disk</button>` +
+        `<button class="picker-tree-item picker-disk${netdiskActive}" data-picker-disk="netdisk" type="button">${t("netdisk.myNetdisk")}</button>` +
+        `<button class="picker-tree-item picker-disk${backupActive}" data-picker-disk="backup" type="button">${t("netdisk.backupDisk")}</button>` +
       `</aside>` +
       `<section class="picker-main">` +
         `<div class="picker-toolbar">` +
-          `<button class="ghost" id="pickerUp">↑ Up</button>` +
+          `<button class="ghost" id="pickerUp">${t("netdisk.pickUp")}</button>` +
           `<div class="picker-path" id="pickerPath">/</div>` +
-          `<button class="ghost" id="pickerMkdir">+ New Folder</button>` +
+          `<button class="ghost" id="pickerMkdir">${t("netdisk.pickNewFolder")}</button>` +
         `</div>` +
-        `<div class="picker-list" id="pickerList"><div class="picker-empty">Loading…</div></div>` +
+        `<div class="picker-list" id="pickerList"><div class="picker-empty">${t("netdisk.pickLoading")}</div></div>` +
       `</section>` +
     `</div>` +
     `<div class="modal-foot">` +
       `<span class="hint" id="pickerHint"></span>` +
       `<div class="modal-tools">` +
-        `<button class="ghost" data-close>Cancel</button>` +
-        `<button class="primary" id="pickerConfirm">${action} Here</button>` +
+        `<button class="ghost" data-close>${t("netdisk.pickCancel")}</button>` +
+        `<button class="primary" id="pickerConfirm">${t("netdisk.pickConfirm", { action })}</button>` +
       `</div>` +
     `</div>`
   );
@@ -487,7 +487,7 @@ async function loadPickerFolder(path) {
   folderPicker.path = path;
   const listEl = $("#pickerList");
   if (!listEl) return; // modal closed while navigating
-  listEl.innerHTML = `<div class="picker-empty">Loading…</div>`;
+  listEl.innerHTML = `<div class="picker-empty">${t("netdisk.pickLoading")}</div>`;
   try {
     const url = folderPicker.targetDisk === "backup"
       ? `/api/netdisk/backup/browse?path=${encodeURIComponent(path)}`
@@ -516,7 +516,7 @@ function renderFolderPicker() {
       `<span class="picker-folder-name">${escapeHtml(f.name)}</span>` +
     `</div>`;
   }).join("");
-  listEl.innerHTML = rows || `<div class="picker-empty">No subfolders</div>`;
+  listEl.innerHTML = rows || `<div class="picker-empty">${t("netdisk.pickNoSubfolders")}</div>`;
   listEl.querySelectorAll("[data-open]").forEach((row) => {
     row.onclick = () => loadPickerFolder(row.dataset.open);
   });
@@ -524,16 +524,16 @@ function renderFolderPicker() {
   // Moving items onto their current location is a no-op; block it.
   const alreadyHere = folderPicker.move && folderPicker.paths.every((p) => parentDir(p) === path);
   $("#pickerConfirm").disabled = alreadyHere;
-  $("#pickerHint").textContent = alreadyHere ? "Items are already in this folder" : `Destination: /${path}`;
+  $("#pickerHint").textContent = alreadyHere ? t("netdisk.pickAlreadyHere") : t("netdisk.pickDest", { path });
 }
 
 async function pickerMkdirFolder() {
-  const name = prompt("New folder name");
+  const name = prompt(t("netdisk.newFolderNamePrompt"));
   if (!name || !folderPicker) return;
   try {
     const endpoint = folderPicker.targetDisk === "backup" ? "/api/netdisk/backup/mkdir" : "/api/netdisk/mkdir";
     await api(endpoint, { method: "POST", body: JSON.stringify({ path: joinPath(folderPicker.path, name) }) });
-    toast("Folder created", true);
+    toast(t("netdisk.folderCreated"), true);
     await loadPickerFolder(folderPicker.path);
   } catch (err) {
     toast(err.message);
@@ -569,7 +569,7 @@ async function copyItems(items, targetDisk) {
   });
   clearCurrentSelection();
   const errors = (data.results || []).filter((r) => r.status === "error").length;
-  toast(errors ? `Copied ${data.count || 0} item(s), ${errors} failed` : `Copied ${data.count || 0} item(s)`, !errors);
+  toast(errors ? t("netdisk.copiedNFailed", { n: data.count || 0, err: errors }) : t("netdisk.copiedN", { n: data.count || 0 }), !errors);
   renderNetdisk();
 }
 
@@ -588,15 +588,15 @@ async function moveItems(items, targetDisk) {
   });
   clearCurrentSelection();
   const errors = (data.results || []).filter((r) => r.status === "error").length;
-  toast(errors ? `Moved ${data.count || 0} item(s), ${errors} failed` : `Moved ${data.count || 0} item(s)`, !errors);
+  toast(errors ? t("netdisk.movedNFailed", { n: data.count || 0, err: errors }) : t("netdisk.movedN", { n: data.count || 0 }), !errors);
   renderNetdisk();
 }
 
 async function batchShare() {
-  if (isBackupMode()) return toast("Backup disk does not support sharing");
+  if (isBackupMode()) return toast(t("netdisk.backupNoShare"));
   const paths = [...state.netdisk.selected];
   if (!paths.length) return;
-  const name = paths.length === 1 ? paths[0].split("/").pop() : "Shared items";
+  const name = paths.length === 1 ? paths[0].split("/").pop() : t("netdisk.sharedItems");
   openShareModal(paths, name);
 }
 
@@ -628,7 +628,7 @@ function sortedItems(items) {
 
 function breadcrumbs(path) {
   const parts = (path || "").split("/").filter(Boolean);
-  const crumbs = [`<button class="linklike" data-crumb="">All Files</button>`];
+  const crumbs = [`<button class="linklike" data-crumb="">${t("netdisk.allFiles")}</button>`];
   let acc = "";
   parts.forEach((part) => {
     acc = joinPath(acc, part);
@@ -647,37 +647,37 @@ function fileIcon(dir) {
 function shareRows(shares) {
   return (shares || []).map((s) => {
     const link = `${location.origin}/pan/${encodeURIComponent(s.token)}`;
-    const access = s.hasPassword ? s.password || "Password" : "Public";
+    const access = s.hasPassword ? s.password || t("netdisk.password") : t("netdisk.public");
     const pathsText = (s.paths || []).join(", ");
     const copyCode = s.password ? ` data-copy-code="${escapeHtml(s.password)}"` : "";
-    return `<tr class="${s.expired ? "row-muted" : ""}"><td class="share-name-cell" title="${escapeHtml(s.name)}${pathsText ? ` · ${escapeHtml(pathsText)}` : ""}"><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line">${(s.paths || []).map(escapeHtml).join(", ")}</div></td><td class="share-link-cell" title="${escapeHtml(link)}"><a href="${link}" target="_blank">${escapeHtml(link)}</a></td><td>${shareExpiry(s)}</td><td${s.password ? ` title="Extraction code"` : ""}>${escapeHtml(access)}</td><td class="actions"><button class="ghost" data-copy-link="${escapeHtml(link)}"${copyCode}>Copy</button><button class="icon danger" data-share-del="${escapeHtml(s.token)}">Del</button></td></tr>`;
-  }).join("") || `<tr class="empty-row"><td colspan="5">No external links.</td></tr>`;
+    return `<tr class="${s.expired ? "row-muted" : ""}"><td class="share-name-cell" title="${escapeHtml(s.name)}${pathsText ? ` · ${escapeHtml(pathsText)}` : ""}"><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line">${(s.paths || []).map(escapeHtml).join(", ")}</div></td><td class="share-link-cell" title="${escapeHtml(link)}"><a href="${link}" target="_blank">${escapeHtml(link)}</a></td><td>${shareExpiry(s)}</td><td${s.password ? ` title="${t("netdisk.extractionCode")}"` : ""}>${escapeHtml(access)}</td><td class="actions"><button class="ghost" data-copy-link="${escapeHtml(link)}"${copyCode}>${t("common.copy")}</button><button class="icon danger" data-share-del="${escapeHtml(s.token)}">Del</button></td></tr>`;
+  }).join("") || `<tr class="empty-row"><td colspan="5">${t("netdisk.noExternalLinks")}</td></tr>`;
 }
 
 function adminShareRows(shares) {
   return (shares || []).map((s) => {
     const link = `${location.origin}/pan/${encodeURIComponent(s.token)}`;
-    const access = s.hasPassword ? s.password || "Password" : "Public";
+    const access = s.hasPassword ? s.password || t("netdisk.password") : t("netdisk.public");
     const pathsText = (s.paths || []).join(", ");
-    return `<tr class="${s.expired ? "row-muted" : ""}"><td><input type="checkbox" data-admin-share-token value="${escapeHtml(s.token)}"></td><td>${escapeHtml(displayNameForUsername(s.owner) || s.ownerId)}</td><td class="share-name-cell" title="${escapeHtml(s.name)}${pathsText ? ` · ${escapeHtml(pathsText)}` : ""}"><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line">${(s.paths || []).map(escapeHtml).join(", ")}</div></td><td class="share-link-cell" title="${escapeHtml(link)}"><a href="${link}" target="_blank">${escapeHtml(link)}</a></td><td>${shareExpiry(s)}</td><td${s.password ? ` title="Extraction code"` : ""}>${escapeHtml(access)}</td></tr>`;
-  }).join("") || `<tr class="empty-row"><td colspan="6">No external links.</td></tr>`;
+    return `<tr class="${s.expired ? "row-muted" : ""}"><td><input type="checkbox" data-admin-share-token value="${escapeHtml(s.token)}"></td><td>${escapeHtml(displayNameForUsername(s.owner) || s.ownerId)}</td><td class="share-name-cell" title="${escapeHtml(s.name)}${pathsText ? ` · ${escapeHtml(pathsText)}` : ""}"><div class="primary-line">${escapeHtml(s.name)}</div><div class="secondary-line">${(s.paths || []).map(escapeHtml).join(", ")}</div></td><td class="share-link-cell" title="${escapeHtml(link)}"><a href="${link}" target="_blank">${escapeHtml(link)}</a></td><td>${shareExpiry(s)}</td><td${s.password ? ` title="${t("netdisk.extractionCode")}"` : ""}>${escapeHtml(access)}</td></tr>`;
+  }).join("") || `<tr class="empty-row"><td colspan="6">${t("netdisk.noExternalLinks")}</td></tr>`;
 }
 
 function shareExpiry(s) {
-  if (s.permanent) return `<span class="badge badge-accent">Permanent</span>`;
-  if (s.expired) return `<span class="badge badge-danger">Expired</span>`;
-  return escapeHtml(s.expiresAt ? new Date(s.expiresAt).toLocaleString() : "7 days");
+  if (s.permanent) return `<span class="badge badge-accent">${t("netdisk.permanent")}</span>`;
+  if (s.expired) return `<span class="badge badge-danger">${t("netdisk.expired")}</span>`;
+  return escapeHtml(s.expiresAt ? new Date(s.expiresAt).toLocaleString() : t("netdisk.7days"));
 }
 
 async function renameItem(path, oldName) {
-  const next = prompt("New name", oldName);
+  const next = prompt(t("netdisk.renamePrompt"), oldName);
   if (!next || next === oldName) return;
   const parts = path.split("/");
   parts.pop();
   const to = joinPath(parts.join("/"), next);
   const endpoint = isBackupMode() ? "/api/netdisk/backup/rename" : "/api/netdisk/rename";
   await api(endpoint, { method: "POST", body: JSON.stringify({ from: path, to }) });
-  toast("Renamed", true);
+  toast(t("netdisk.renamed"), true);
   renderNetdisk();
 }
 
@@ -697,7 +697,7 @@ function randomCode(len = 4) {
 
 function openShareModal(paths, name) {
   if (isBackupMode()) {
-    toast("Backup disk does not support sharing");
+    toast(t("netdisk.backupNoShare"));
     return;
   }
   shareModal = {
@@ -726,10 +726,10 @@ function renderShareModal() {
 function shareFormHtml() {
   const s = shareModal;
   const expiryOptions = [
-    { d: 1, label: "1 day" },
-    { d: 7, label: "7 days" },
-    { d: 30, label: "30 days" },
-    { d: 0, label: "Permanent" },
+    { d: 1, label: t("netdisk.1day") },
+    { d: 7, label: t("netdisk.7days") },
+    { d: 30, label: t("netdisk.30days") },
+    { d: 0, label: t("netdisk.permanent") },
   ];
   const expiryButtons = expiryOptions
     .map((o) => `<button class="share-seg-btn${s.expiry === o.d ? " active" : ""}" data-expiry="${o.d}">${escapeHtml(o.label)}</button>`)
@@ -737,29 +737,29 @@ function shareFormHtml() {
   const oneItem = s.paths.length === 1;
   return (
     `<div class="modal-head">` +
-      `<div class="share-head-text"><h2>Share ${oneItem ? "file" : "items"}</h2>` +
+      `<div class="share-head-text"><h2>${oneItem ? t("netdisk.shareFile") : t("netdisk.shareItems")}</h2>` +
       `<p class="hint share-name-line" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</p></div>` +
       `<button class="icon" data-close>✕</button>` +
     `</div>` +
     `<div class="modal-body share-form">` +
       `<div class="share-row">` +
-        `<div class="share-row-label">Valid for</div>` +
+        `<div class="share-row-label">${t("netdisk.validFor")}</div>` +
         `<div class="share-seg">${expiryButtons}</div>` +
       `</div>` +
       `<div class="share-row">` +
-        `<div class="share-row-label">Extraction code</div>` +
+        `<div class="share-row-label">${t("netdisk.extractionCodeLabel")}</div>` +
         `<div class="share-row-body share-code-row">` +
-          `<label class="check"><input type="checkbox" id="shareUseCode" ${s.usePassword ? "checked" : ""}><span>Protect with code</span></label>` +
+          `<label class="check"><input type="checkbox" id="shareUseCode" ${s.usePassword ? "checked" : ""}><span>${t("netdisk.protectWithCode")}</span></label>` +
           `<div class="share-code-field ${s.usePassword ? "" : "is-hidden"}">` +
             `<input id="shareCode" value="${escapeHtml(s.code)}" maxlength="8" autocomplete="off">` +
-            `<button class="ghost" id="shareRandomCode" type="button">Random</button>` +
+            `<button class="ghost" id="shareRandomCode" type="button">${t("netdisk.random")}</button>` +
           `</div>` +
         `</div>` +
       `</div>` +
     `</div>` +
     `<div class="modal-foot">` +
-      `<button class="ghost" data-close>Cancel</button>` +
-      `<button class="primary" id="shareCreate"${s.creating ? " disabled" : ""}>${s.creating ? "Creating…" : "Create link"}</button>` +
+      `<button class="ghost" data-close>${t("common.cancel")}</button>` +
+      `<button class="primary" id="shareCreate"${s.creating ? " disabled" : ""}>${s.creating ? t("netdisk.creating2") : t("netdisk.createLink")}</button>` +
     `</div>`
   );
 }
@@ -769,32 +769,32 @@ function shareLinkHtml() {
   const link = `${location.origin}/pan/${encodeURIComponent(s.created.token)}`;
   return (
     `<div class="modal-head">` +
-      `<div class="share-head-text"><h2>Share link ready</h2>` +
+      `<div class="share-head-text"><h2>${t("netdisk.shareLinkReady")}</h2>` +
       `<p class="hint share-name-line" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</p></div>` +
       `<button class="icon" data-close>✕</button>` +
     `</div>` +
     `<div class="modal-body share-result">` +
       `<div class="share-link-row">` +
-        `<div class="share-row-label">Link</div>` +
+        `<div class="share-row-label">${t("netdisk.linkLabel")}</div>` +
         `<div class="copy-chip share-copy-chip" title="${escapeHtml(link)}">` +
           `<code>${escapeHtml(link)}</code>` +
-          `<button class="copy-btn" data-copy="${escapeHtml(link)}" data-copy-target="link" type="button">Copy</button>` +
+          `<button class="copy-btn" data-copy="${escapeHtml(link)}" data-copy-target="link" type="button">${t("common.copy")}</button>` +
         `</div>` +
       `</div>` +
       (s.usePassword
         ? `<div class="share-link-row">` +
-          `<div class="share-row-label">Code</div>` +
+          `<div class="share-row-label">${t("netdisk.codeLabel")}</div>` +
           `<div class="copy-chip share-copy-chip">` +
             `<code>${escapeHtml(s.code)}</code>` +
-            `<button class="copy-btn" data-copy="${escapeHtml(s.code)}" data-copy-target="code" type="button">Copy</button>` +
+            `<button class="copy-btn" data-copy="${escapeHtml(s.code)}" data-copy-target="code" type="button">${t("common.copy")}</button>` +
           `</div>` +
         `</div>`
         : "") +
-      `<button class="subtle share-copy-all" id="shareCopyAll" type="button">Copy link${s.usePassword ? " & code" : ""}</button>` +
+      `<button class="subtle share-copy-all" id="shareCopyAll" type="button">${t("netdisk.copyAll", { code: s.usePassword ? ` & ${t("netdisk.codeLabel")}` : "" })}</button>` +
     `</div>` +
     `<div class="modal-foot">` +
-      `<button class="ghost" data-close>Close</button>` +
-      `<button class="primary" id="shareDone" type="button">Done</button>` +
+      `<button class="ghost" data-close>${t("common.close")}</button>` +
+      `<button class="primary" id="shareDone" type="button">${t("common.done")}</button>` +
     `</div>`
   );
 }
@@ -830,7 +830,7 @@ function bindShareModalEvents() {
     $("#shareCopyAll").onclick = async (btn) => {
       const s = shareModal;
       const link = `${location.origin}/pan/${encodeURIComponent(s.created.token)}`;
-      const text = s.usePassword ? `${link}\nExtraction code: ${s.code}` : link;
+      const text = s.usePassword ? `${link}\n${t("netdisk.extractionCode")}: ${s.code}` : link;
       await navigator.clipboard.writeText(text);
       flashCopy(btn);
     };
@@ -840,7 +840,7 @@ function bindShareModalEvents() {
 
 function flashCopy(btn) {
   const prev = btn.textContent;
-  btn.textContent = "Copied";
+  btn.textContent = t("common.copied");
   btn.classList.add("copied");
   setTimeout(() => { btn.textContent = prev; btn.classList.remove("copied"); }, 1200);
 }
@@ -966,8 +966,8 @@ function walkEntry(entry, prefix, out) {
 // nested directories from the "paths" field of each request.
 async function uploadFilesHandler(entries, path) {
   if (!entries || !entries.length) return;
-  if (!canMutate()) return toast("Read-only account cannot upload");
-  if (uploading) return toast("An upload is already in progress");
+  if (!canMutate()) return toast(t("netdisk.readonlyUpload"));
+  if (uploading) return toast(t("netdisk.uploadInProgress"));
   uploading = true;
   const list = entries.slice();
   const overlay = showUploadOverlay(list);
@@ -1008,7 +1008,7 @@ async function uploadFilesHandler(entries, path) {
     // Every previous batch has settled by now (the loop awaits), so ok+failed
     // is exactly how many files are behind this one in the queue.
     const first = ok + failed + 1;
-    overlay.setLabel(`Uploading ${first}-${first + idxs.length - 1} of ${list.length} file(s)…`);
+    overlay.setLabel(t("netdisk.uploadingRange", { lo: first, hi: first + idxs.length - 1, total: list.length }));
     // Flag the batch as active before the request goes out so its rows move to
     // the top of the card immediately, rather than on the first progress tick
     // (which never fires for very small files).
@@ -1066,10 +1066,10 @@ async function uploadFilesHandler(entries, path) {
     }
   }
 
-  overlay.setLabel(`Uploaded ${ok} of ${list.length} file(s)`);
+  overlay.setLabel(t("netdisk.uploadedN", { ok, total: list.length }));
   const summary = failed
-    ? `Uploaded ${ok} file(s), ${failed} failed`
-    : `Uploaded ${ok} file(s)`;
+    ? t("netdisk.uploadedNFailed", { ok, fail: failed })
+    : t("netdisk.uploadedN", { ok, total: list.length });
   toast(summary, !failed);
   setCurrentSelection(state.netdisk.selected || new Set());
   renderNetdisk();
@@ -1079,17 +1079,17 @@ async function uploadFilesHandler(entries, path) {
 }
 
 function quotaBar(q) {
-  if (!q) return `Used <strong>0 B</strong>`;
+  if (!q) return t("netdisk.usedN", { used: "0 B" });
   const used = q.usedBytes || 0;
-  const estimating = q.usedEstimating ? ` <span class="hint">(estimating, updates in background)</span>` : "";
+  const estimating = q.usedEstimating ? ` <span class="hint">${t("netdisk.estimating")}</span>` : "";
   if (q.totalBytes > 0) {
     const pct = Math.min(100, Math.round((used / q.totalBytes) * 100));
-    return `Used <strong>${fmtBytes(used)}</strong> / ${fmtBytes(q.totalBytes)} <span class="quota-bar"><span style="width:${pct}%"></span></span> ${pct}%${estimating}`;
+    return t("netdisk.usedOfTotal", { used: fmtBytes(used), total: fmtBytes(q.totalBytes) }) + ` <span class="quota-bar"><span style="width:${pct}%"></span></span> ${pct}%${estimating}`;
   }
   if (q.diskFreeBytes != null) {
-    return `Used <strong>${fmtBytes(used)}</strong> · Free ${fmtBytes(q.diskFreeBytes)}${estimating}`;
+    return t("netdisk.usedFree", { used: fmtBytes(used), free: fmtBytes(q.diskFreeBytes) }) + estimating;
   }
-  return `Used <strong>${fmtBytes(used)}</strong>${estimating}`;
+  return t("netdisk.usedN", { used: fmtBytes(used) }) + estimating;
 }
 
 function joinPath(a, b) {
@@ -1166,12 +1166,12 @@ function openFileViewer(path, fromBackup) {
     `<div class="modal-head">` +
       `<div class="viewer-head-text"><h2>${escapeHtml(name)}</h2></div>` +
       `<div class="modal-tools">` +
-        (supportsFullscreen ? `<button class="ghost" id="viewerFullscreen" title="Toggle fullscreen">⛶ Fullscreen</button>` : ``) +
-        `<a class="ghost" href="${dl}" title="Download">⬇ Download</a>` +
+        (supportsFullscreen ? `<button class="ghost" id="viewerFullscreen" title="${t("netdisk.viewerFullscreen")}">⛶ ${t("netdisk.viewerFullscreen")}</button>` : ``) +
+        `<a class="ghost" href="${dl}" title="${t("netdisk.download")}">⬇ ${t("netdisk.download")}</a>` +
         `<button class="icon" data-close>✕</button>` +
       `</div>` +
     `</div>` +
-    `<div class="modal-body viewer-body" id="viewerBody"><div class="viewer-loading">Loading…</div></div>`,
+    `<div class="modal-body viewer-body" id="viewerBody"><div class="viewer-loading">${t("netdisk.viewerLoading")}</div></div>`,
   );
   const fsBtn = document.getElementById("viewerFullscreen");
   if (fsBtn) fsBtn.onclick = () => toggleViewerFullscreen();
@@ -1198,9 +1198,9 @@ function showUnsupportedPreviewModal(name, href) {
     `<div class="modal-body viewer-body">` +
       `<div class="viewer-unsupported">` +
         `<div class="viewer-unsupported-icon" aria-hidden="true">📄</div>` +
-        `<p>Preview is not available for this file type yet.</p>` +
-        `<p class="hint">You can download it to view locally.</p>` +
-        `<a class="primary" href="${href}" download>⬇ Download</a>` +
+        `<p>${t("netdisk.viewerUnsupported")}</p>` +
+        `<p class="hint">${t("netdisk.viewerDownloadToView")}</p>` +
+        `<a class="primary" href="${href}" download>⬇ ${t("netdisk.download")}</a>` +
       `</div>` +
     `</div>`,
   );
@@ -1213,7 +1213,7 @@ function toggleViewerFullscreen() {
   if (!backdrop) return;
   const isFs = backdrop.classList.toggle("viewer-fullscreen");
   const fsBtn = document.getElementById("viewerFullscreen");
-  if (fsBtn) fsBtn.textContent = isFs ? "⛶ Exit fullscreen" : "⛶ Fullscreen";
+  if (fsBtn) fsBtn.textContent = isFs ? t("netdisk.viewerExitFullscreen") : t("netdisk.viewerFullscreen");
   // For <video>, prefer the native Fullscreen API so controls stay usable.
   if (!isFs && document.fullscreenElement) {
     document.exitFullscreen?.().catch(() => {});
@@ -1268,11 +1268,11 @@ let yuvController = null;
 async function renderPdf(url, body) {
   const pdfjs = window.pdfjsLib;
   if (!pdfjs) {
-    body.innerHTML = `<div class="viewer-error">PDF viewer failed to load. Try refreshing the page.</div>`;
+    body.innerHTML = `<div class="viewer-error">${t("netdisk.viewerPdfFail")}</div>`;
     return;
   }
   pdfjs.workerSrc = "/vendor/pdf.worker.min.js";
-  body.innerHTML = `<div class="viewer-loading">Rendering PDF…</div>`;
+  body.innerHTML = `<div class="viewer-loading">${t("netdisk.viewerRenderPdf")}</div>`;
   const pdf = await pdfjs.getDocument({ url }).promise;
   pdfRenderState = { pdf, url };
   await paintPdfPages(body);
@@ -1340,7 +1340,7 @@ async function renderText(url, body) {
   const res = await fetch(url, { credentials: "same-origin" });
   const len = Number(res.headers.get("Content-Length") || 0);
   if (len > 2 * 1024 * 1024) {
-    body.innerHTML = `<div class="viewer-error">This file is larger than 2 MB. Please download it to view.</div>`;
+    body.innerHTML = `<div class="viewer-error">${t("netdisk.viewerLarge")}</div>`;
     return;
   }
   const text = await res.text();
@@ -1353,7 +1353,7 @@ async function renderText(url, body) {
 // yuvController so toggleViewerFullscreen can ask it to repaint at the new
 // container size and resetViewerState can cancel its in-flight fetch on close.
 function renderYuv(url, body, name) {
-  body.innerHTML = `<div class="viewer-loading">Loading YUV…</div>`;
+  body.innerHTML = `<div class="viewer-loading">${t("netdisk.viewerLoadYuv")}</div>`;
   yuvController = openYuvViewer({ name, url, bodyEl: body });
 }
 

@@ -1,7 +1,7 @@
 // Network detail modal: properties + attached containers, with attach/detach.
 // Mirrors the container details.js modal pattern (showModalNoShell + id binding).
 
-import { api, toast, state, canMutate, refreshSection } from "../app.js";
+import { api, toast, state, canMutate, refreshSection, t } from "../app.js";
 import { showModalNoShell } from "./ui.js";
 
 // openNetworkDetail fetches the network detail payload and renders a modal with
@@ -11,8 +11,8 @@ export async function openNetworkDetail(fullName, displayName) {
   showModalNoShell(
     "network-modal",
     "wide",
-    `<div class="modal-head"><h2>Network: ${escapeHtml(displayName)}</h2><button class="ghost" data-close>Close</button></div>` +
-      `<div class="modal-body"><p class="hint">Loading…</p></div>`
+    `<div class="modal-head"><h2>${t("netdetail.title", { name: escapeHtml(displayName) })}</h2><button class="ghost" data-close>${t("common.close")}</button></div>` +
+      `<div class="modal-body"><p class="hint">${t("common.loadingDots")}</p></div>`
   );
   let inner;
   let ok = false;
@@ -26,7 +26,7 @@ export async function openNetworkDetail(fullName, displayName) {
   showModalNoShell(
     "network-modal",
     "wide",
-    `<div class="modal-head"><h2>Network: ${escapeHtml(displayName)}</h2><div class="modal-tools"><button class="ghost" data-close>Close</button></div></div>` +
+    `<div class="modal-head"><h2>${t("netdetail.title", { name: escapeHtml(displayName) })}</h2><div class="modal-tools"><button class="ghost" data-close>${t("common.close")}</button></div></div>` +
       `<div class="modal-body">${inner}</div>`
   );
   if (ok) bindActions(fullName);
@@ -36,18 +36,19 @@ export async function openNetworkDetail(fullName, displayName) {
 function propertiesCard(n) {
   return (
     `<section class="card detail-settings">` +
-      `<div class="card-head"><h2>Properties</h2></div>` +
+      `<div class="card-head"><h2>${t("netdetail.properties")}</h2></div>` +
       `<div class="card-body"><dl class="detail">` +
-        detailRow("Name", escapeHtml(n.name)) +
-        detailRow("Full name", `<span class="mono">${escapeHtml(n.fullName)}</span>`) +
-        detailRow("Driver", escapeHtml(n.driver || "—")) +
-        detailRow("Subnet", `<span class="mono">${escapeHtml(n.subnet || "auto")}</span>`) +
-        detailRow("Gateway", `<span class="mono">${escapeHtml(n.gateway || "—")}</span>`) +
-        (n.ipRange ? detailRow("IP range", `<span class="mono">${escapeHtml(n.ipRange)}</span>`) : "") +
-        detailRow("IPv6", n.ipv6 ? "enabled" : "disabled") +
+        detailRow(t("common.name"), escapeHtml(n.name)) +
+        detailRow(t("netdetail.fullName"), `<span class="mono">${escapeHtml(n.fullName)}</span>`) +
+        detailRow(t("common.driver"), escapeHtml(n.driver || "—")) +
+        detailRow(t("netdetail.subnet"), `<span class="mono">${escapeHtml(n.subnet || "auto")}</span>`) +
+        detailRow(t("netdetail.gateway"), `<span class="mono">${escapeHtml(n.gateway || "—")}</span>`) +
+        (n.ipRange ? detailRow(t("netdetail.ipRange"), `<span class="mono">${escapeHtml(n.ipRange)}</span>`) : "") +
+        detailRow(t("netdetail.ipv6"), n.ipv6 ? t("netdetail.enabled") : t("netdetail.disabled")) +
+        detailRow(t("networks.badgeInternal"), n.internal ? t("netdetail.internalOn") : t("netdetail.disabled")) +
         // The inspect payload returns containers as an array of endpoints (see
         // NetworkDetail), so count the array rather than treating it as a number.
-        detailRow("Attached", `${(n.containers || []).length} container(s)`) +
+        detailRow(t("netdetail.connectedContainers"), t("netdetail.attached", { n: (n.containers || []).length })) +
       `</dl></div>` +
     `</section>`
   );
@@ -66,15 +67,15 @@ function containersCard(n) {
               `<td><div class="primary-line">${escapeHtml(c.name)}</div><div class="secondary-line mono">${escapeHtml(c.id.slice(0, 12))}</div></td>` +
               `<td><span class="mono">${escapeHtml(c.ipv4 || "—")}</span></td>` +
               `<td><span class="mono">${escapeHtml(c.ipv6 || "—")}</span></td>` +
-              `<td>${mutable ? `<button class="icon warn" title="Detach" data-detach="${escapeHtml(c.id)}">■</button>` : "—"}</td>` +
+              `<td>${mutable ? `<button class="icon warn" title="${t("netdetail.detach")}" data-detach="${escapeHtml(c.id)}">■</button>` : "—"}</td>` +
             `</tr>`
         )
         .join("")
-    : `<tr class="empty-row"><td colspan="4">No containers attached.</td></tr>`;
+    : `<tr class="empty-row"><td colspan="4">${t("netdetail.noContainers")}</td></tr>`;
   return (
     `<section class="card detail-settings">` +
-      `<div class="card-head"><h2>Connected containers</h2></div>` +
-      `<table class="data"><thead><tr><th>Container</th><th>IPv4</th><th>IPv6</th><th class="actions">Actions</th></tr></thead>` +
+      `<div class="card-head"><h2>${t("netdetail.connectedContainers")}</h2></div>` +
+      `<table class="data"><thead><tr><th>${t("containers.colContainer")}</th><th>${t("netdetail.colIpv4")}</th><th>${t("netdetail.colIpv6")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
       `<tbody>${rows}</tbody></table>` +
     `</section>`
   );
@@ -94,11 +95,11 @@ function attachCard(n) {
     .join("");
   return (
     `<section class="card detail-settings">` +
-      `<div class="card-head"><h2>Attach container</h2></div>` +
+      `<div class="card-head"><h2>${t("netdetail.attachTitle")}</h2></div>` +
       `<div class="card-body">` +
         `<div class="attach-row">` +
           `<select id="attachSelect">${opts}</select>` +
-          `<button class="primary" id="attachBtn">Attach</button>` +
+          `<button class="primary" id="attachBtn">${t("netdetail.attach")}</button>` +
         `</div>` +
       `</div>` +
     `</section>`
@@ -115,13 +116,13 @@ function bindActions(fullName) {
       if (!containerId) return;
       attach.disabled = true;
       const old = attach.textContent;
-      attach.textContent = "Attaching…";
+      attach.textContent = t("netdetail.attaching");
       try {
         await api("/api/networks/connect", {
           method: "POST",
           body: JSON.stringify({ name: fullName, containerId }),
         });
-        toast("Container attached", true);
+        toast(t("netdetail.attachedOk"), true);
         await refreshSection("containers");
         // Re-open the modal to reflect the new attached container.
         openNetworkDetail(fullName, displayNameFromState(fullName));
@@ -136,14 +137,14 @@ function bindActions(fullName) {
   document.querySelectorAll("[data-detach]").forEach((btn) => {
     btn.onclick = async () => {
       const containerId = btn.dataset.detach;
-      if (!confirm("Detach this container from the network?")) return;
+      if (!confirm(t("netdetail.detachConfirm"))) return;
       btn.disabled = true;
       try {
         await api("/api/networks/disconnect", {
           method: "POST",
           body: JSON.stringify({ name: fullName, containerId }),
         });
-        toast("Container detached", true);
+        toast(t("netdetail.detachedOk"), true);
         await refreshSection("containers");
         openNetworkDetail(fullName, displayNameFromState(fullName));
       } catch (err) {

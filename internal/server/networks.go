@@ -141,6 +141,7 @@ func (a *App) networks(w http.ResponseWriter, r *http.Request) {
 			Gateway      string            `json:"gateway"`
 			IPRange      string            `json:"ipRange"`
 			IPv6         bool              `json:"ipv6"`
+			Internal     bool              `json:"internal"`
 			AuxAddresses map[string]string `json:"auxAddresses"`
 			Labels       map[string]string `json:"labels"`
 		}
@@ -160,6 +161,7 @@ func (a *App) networks(w http.ResponseWriter, r *http.Request) {
 			Gateway:      req.Gateway,
 			IPRange:      req.IPRange,
 			IPv6:         req.IPv6,
+			Internal:     req.Internal,
 			AuxAddresses: req.AuxAddresses,
 			Labels:       req.Labels,
 		})

@@ -1,16 +1,18 @@
 // Users & Groups management: create users/groups, assign roles, group
 // membership (Feishu approval flow), reset passwords, disable/delete accounts.
 
-import { state, api, toast, escapeHtml, fmtBytes, refreshSection, renderView, displayName, $ } from "../app.js";
+import { state, api, toast, escapeHtml, fmtBytes, refreshSection, renderView, displayName, $, t } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
-const ROLES = [
-  { value: "user", label: "User", hint: "Workspace containers, GPU, quotas" },
-  { value: "operator", label: "Operator", hint: "Full container/image/volume CRUD" },
-  { value: "helpdesk", label: "Help Desk", hint: "View all + logs/exec, no mutations" },
-  { value: "readonly", label: "Read-Only", hint: "View only" },
-  { value: "admin", label: "Administrator", hint: "Full control + user management" },
-];
+function ROLES() {
+  return [
+    { value: "user", label: t("users.roleUser"), hint: t("users.roleUserHint") },
+    { value: "operator", label: t("users.roleOperator"), hint: t("users.roleOperatorHint") },
+    { value: "helpdesk", label: t("users.roleHelpdesk"), hint: t("users.roleHelpdeskHint") },
+    { value: "readonly", label: t("users.roleReadonly"), hint: t("users.roleReadonlyHint") },
+    { value: "admin", label: t("users.roleAdmin"), hint: t("users.roleAdminHint") },
+  ];
+}
 
 export async function renderUsers() {
   // Prefer the usage rows the refresh engine already fetched for this tick
@@ -35,49 +37,49 @@ export async function renderUsers() {
   $("#view").innerHTML =
     `<div class="grid two users-layout">` +
       `<section class="stack users-settings-col">` +
-        `<div class="card"><div class="card-head"><h2>New Group</h2></div>` +
+        `<div class="card"><div class="card-head"><h2>${t("users.newGroup")}</h2></div>` +
           `<div class="card-body"><form id="newGroup" class="compact">` +
-            `<input name="name" placeholder="Group name, e.g. research" required>` +
-            `<button>Create Group</button>` +
+            `<input name="name" placeholder="${t("users.groupNamePlaceholder")}" required>` +
+            `<button>${t("users.createGroup")}</button>` +
           `</form></div>` +
         `</div>` +
-        `<div class="card"><div class="card-head"><h2>New User</h2></div>` +
+        `<div class="card"><div class="card-head"><h2>${t("users.newUser")}</h2></div>` +
           `<div class="card-body"><form id="newUser" class="compact">` +
-            `<input name="username" placeholder="Username" required>` +
-            `<input name="password" type="password" placeholder="Password" required>` +
+            `<input name="username" placeholder="${t("users.usernamePlaceholder")}" required>` +
+            `<input name="password" type="password" placeholder="${t("users.passwordPlaceholder")}" required>` +
             roleSelect("role", "user") +
-            `<input name="containerCap" type="number" min="1" value="10" placeholder="Container limit">` +
-            `<input name="netdiskQuotaGB" type="number" min="0" step="0.1" value="0" placeholder="Netdisk quota (GB, 0 = unlimited)">` +
+            `<input name="containerCap" type="number" min="1" value="10" placeholder="${t("users.containerLimitPlaceholder")}">` +
+            `<input name="netdiskQuotaGB" type="number" min="0" step="0.1" value="0" placeholder="${t("users.netdiskQuotaPlaceholder")}">` +
             `<div class="check-grid">${groupChecks(state.groups)}</div>` +
-            `<button>Create User</button>` +
+            `<button>${t("users.createUser")}</button>` +
           `</form></div>` +
         `</div>` +
-        `<div class="card"><div class="card-head"><h2>Group Netdisk Paths</h2></div>` +
-          `<table class="data"><thead><tr><th>Group</th><th>Path</th><th class="actions">Actions</th></tr></thead>` +
-          `<tbody>${state.groups.map(groupPathRow).join("") || `<tr class="empty-row"><td colspan="3">No groups yet.</td></tr>`}</tbody></table>` +
+        `<div class="card"><div class="card-head"><h2>${t("users.groupPaths")}</h2></div>` +
+          `<table class="data"><thead><tr><th>${t("users.colGroup")}</th><th>${t("users.colPath")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
+          `<tbody>${state.groups.map(groupPathRow).join("") || `<tr class="empty-row"><td colspan="3">${t("users.noGroups")}</td></tr>`}</tbody></table>` +
         `</div>` +
-        `<div class="card"><div class="card-head"><h2>Group Backup Paths</h2></div>` +
-          `<p class="hint" style="padding:0 16px;margin:0 0 8px">Slower mechanical disks where netdisk files are mirrored. Backup is not quota-bound.</p>` +
-          `<table class="data"><thead><tr><th>Group</th><th>Backup Path</th><th class="actions">Actions</th></tr></thead>` +
-          `<tbody>${state.groups.map(groupBackupRow).join("") || `<tr class="empty-row"><td colspan="3">No groups yet.</td></tr>`}</tbody></table>` +
+        `<div class="card"><div class="card-head"><h2>${t("users.groupBackupPaths")}</h2></div>` +
+          `<p class="hint" style="padding:0 16px;margin:0 0 8px">${t("users.backupHint")}</p>` +
+          `<table class="data"><thead><tr><th>${t("users.colGroup")}</th><th>${t("users.colBackupPath")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
+          `<tbody>${state.groups.map(groupBackupRow).join("") || `<tr class="empty-row"><td colspan="3">${t("users.noGroups")}</td></tr>`}</tbody></table>` +
         `</div>` +
-        `<div class="card"><div class="card-head"><h2>Group Languages</h2></div>` +
-          `<p class="hint" style="padding:0 16px;margin:0 0 8px">Default language for new members of each group.</p>` +
-          `<table class="data"><thead><tr><th>Group</th><th>Language</th><th class="actions">Actions</th></tr></thead>` +
-          `<tbody>${state.groups.map(groupLanguageRow).join("") || `<tr class="empty-row"><td colspan="3">No groups yet.</td></tr>`}</tbody></table>` +
+        `<div class="card"><div class="card-head"><h2>${t("users.groupLanguages")}</h2></div>` +
+          `<p class="hint" style="padding:0 16px;margin:0 0 8px">${t("users.groupLangHint")}</p>` +
+          `<table class="data"><thead><tr><th>${t("users.colGroup")}</th><th>${t("users.colLanguage")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
+          `<tbody>${state.groups.map(groupLanguageRow).join("") || `<tr class="empty-row"><td colspan="3">${t("users.noGroups")}</td></tr>`}</tbody></table>` +
         `</div>` +
       `</section>` +
       `<section class="stack users-main-col">` +
         `<div class="card">` +
-          `<div class="card-head"><h2>Users</h2></div>` +
+          `<div class="card-head"><h2>${t("users.users")}</h2></div>` +
           `<table class="data">` +
-            `<thead><tr><th>User</th><th>Role</th><th>Groups</th><th>Ports</th><th class="actions">Actions</th></tr></thead>` +
-            `<tbody>${state.users.map(userRow).join("") || `<tr class="empty-row"><td colspan="5">No users yet.</td></tr>`}</tbody>` +
+            `<thead><tr><th>${t("common.user")}</th><th>${t("users.colRole")}</th><th>${t("users.colGroups")}</th><th>${t("users.colPorts")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
+            `<tbody>${state.users.map(userRow).join("") || `<tr class="empty-row"><td colspan="5">${t("users.noUsers")}</td></tr>`}</tbody>` +
           `</table>` +
         `</div>` +
-        `<div class="card"><div class="card-head"><h2>Netdisk Usage</h2><span class="hint" id="netdiskUsageTotal"></span></div>` +
-          `<table class="data netdisk-usage-table"><thead><tr><th>User</th><th class="netdisk-used-col">Used</th><th>Quota</th><th class="netdisk-bar-col"></th></tr></thead>` +
-          `<tbody id="netdiskUsageBody">${prevUsage ? usageRowsHtml(prevUsage) : `<tr class="empty-row"><td colspan="4">Loading…</td></tr>`}</tbody></table>` +
+        `<div class="card"><div class="card-head"><h2>${t("users.netdiskUsage")}</h2><span class="hint" id="netdiskUsageTotal"></span></div>` +
+          `<table class="data netdisk-usage-table"><thead><tr><th>${t("common.user")}</th><th class="netdisk-used-col">${t("netdisk.usedCol")}</th><th>${t("users.colQuota")}</th><th class="netdisk-bar-col"></th></tr></thead>` +
+          `<tbody id="netdiskUsageBody">${prevUsage ? usageRowsHtml(prevUsage) : `<tr class="empty-row"><td colspan="4">${t("users.loadingDots")}</td></tr>`}</tbody></table>` +
         `</div>` +
       `</section>` +
     `</div>`;
@@ -91,7 +93,7 @@ export async function renderUsers() {
       });
       await refreshSection("users", "groups");
       renderView();
-      toast("Group created", true);
+      toast(t("users.groupCreated"), true);
     } catch (err) {
       toast(err.message);
     }
@@ -111,7 +113,7 @@ export async function renderUsers() {
       await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
       await refreshSection("users", "groups");
       renderView();
-      toast("User created", true);
+      toast(t("users.userCreated"), true);
     } catch (err) {
       toast(err.message);
     }
@@ -148,32 +150,32 @@ function userRow(user) {
   const disabled = user.disabled;
   return (
     `<tr class="${disabled ? "row-muted" : ""}">` +
-      `<td><div class="primary-line">${escapeHtml(displayName(user))}${disabled ? ' <span class="badge badge-muted">disabled</span>' : ""}</div>` +
-        `${user.feishuOpenId ? `<div class="secondary-line">Feishu · ${escapeHtml(user.username)}</div>` : ""}` +
-        `<div class="secondary-line" style="margin-top:2px;">limit ${user.containerCap} · netdisk ${formatQuota(user.netdiskQuotaBytes)}</div></td>` +
+      `<td><div class="primary-line">${escapeHtml(displayName(user))}${disabled ? ` <span class="badge badge-muted">${t("users.roleDisabled")}</span>` : ""}</div>` +
+        `${user.feishuOpenId ? `<div class="secondary-line">${t("users.feishuLine", { name: escapeHtml(user.username) })}</div>` : ""}` +
+        `<div class="secondary-line" style="margin-top:2px;">${t("users.limitLine", { cap: user.containerCap, quota: formatQuota(user.netdiskQuotaBytes) })}</div></td>` +
       `<td>${roleBadge}</td>` +
-      `<td><div class="secondary-line">${escapeHtml((user.groups || []).join(", ") || "None")}</div></td>` +
-      `<td><div class="secondary-line">${user.portPrefix ? `${user.portPrefix * 100}-${user.portPrefix * 100 + 99}` : "Not assigned"}</div></td>` +
+      `<td><div class="secondary-line">${escapeHtml((user.groups || []).join(", ") || t("users.groupsNone"))}</div></td>` +
+      `<td><div class="secondary-line">${user.portPrefix ? `${user.portPrefix * 100}-${user.portPrefix * 100 + 99}` : t("users.portsNotAssigned")}</div></td>` +
       `<td class="actions">` +
-        `<button class="ghost" data-edit-groups="${user.id}" data-user-name="${escapeHtml(user.username)}">Groups</button>` +
-        (isPending ? `<button class="ok" data-approve-user="${user.id}" data-user-name="${escapeHtml(user.username)}">Approve</button>` : "") +
-        `<button class="ghost" data-edit-user="${user.id}">Edit</button>` +
-        `<button class="warn" data-deactivate-user="${user.id}" data-user-name="${escapeHtml(user.username)}"${user.id === state.me.id ? " disabled" : ""}>Deactivate</button>` +
-        `<button class="icon danger" title="Delete" data-delete-user="${user.id}" data-user-name="${escapeHtml(user.username)}"${user.id === state.me.id ? " disabled" : ""}>✕</button>` +
+        `<button class="ghost" data-edit-groups="${user.id}" data-user-name="${escapeHtml(user.username)}">${t("networks.groups")}</button>` +
+        (isPending ? `<button class="ok" data-approve-user="${user.id}" data-user-name="${escapeHtml(user.username)}">${t("users.approve")}</button>` : "") +
+        `<button class="ghost" data-edit-user="${user.id}">${t("common.edit")}</button>` +
+        `<button class="warn" data-deactivate-user="${user.id}" data-user-name="${escapeHtml(user.username)}"${user.id === state.me.id ? " disabled" : ""}>${t("users.deactivate")}</button>` +
+        `<button class="icon danger" title="${t("common.delete")}" data-delete-user="${user.id}" data-user-name="${escapeHtml(user.username)}"${user.id === state.me.id ? " disabled" : ""}>✕</button>` +
       `</td>` +
     `</tr>`
   );
 }
 
 function roleBadgeFor(role, isPending) {
-  if (role === "admin") return `<span class="badge badge-accent">admin</span>`;
-  if (isPending) return `<span class="badge badge-warn">pending</span>`;
+  if (role === "admin") return `<span class="badge badge-accent">${t("users.roleAdminBadge")}</span>`;
+  if (isPending) return `<span class="badge badge-warn">${t("users.rolePending")}</span>`;
   const map = { operator: "badge-ok", helpdesk: "badge-muted", readonly: "badge-muted", user: "badge-muted" };
   return `<span class="badge ${map[role] || "badge-muted"}">${escapeHtml(role)}</span>`;
 }
 
 function roleSelect(name, current) {
-  const opts = ROLES.map(
+  const opts = ROLES().map(
     (r) => `<option value="${r.value}" ${r.value === current ? "selected" : ""}>${escapeHtml(r.label)} — ${escapeHtml(r.hint)}</option>`
   ).join("");
   return `<select name="${name}">${opts}</select>`;
@@ -182,43 +184,43 @@ function roleSelect(name, current) {
 function groupChecks(groups) {
   return (groups || [])
     .map((g) => `<label class="check"><input type="checkbox" name="groupIds" value="${g.id}"> ${escapeHtml(g.name)}</label>`)
-    .join("") || '<span class="hint">No groups yet.</span>';
+    .join("") || `<span class="hint">${t("networks.noGroupsYet")}</span>`;
 }
 
 function groupPathRow(g) {
-  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td class="path-cell"><div class="secondary-line mono">${escapeHtml(g.netdiskPath || "Not configured")}</div></td><td class="actions"><button class="ghost" data-group-path="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.netdiskPath || "")}">Set Path</button></td></tr>`;
+  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td class="path-cell"><div class="secondary-line mono">${escapeHtml(g.netdiskPath || t("users.notConfigured"))}</div></td><td class="actions"><button class="ghost" data-group-path="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.netdiskPath || "")}">${t("users.setPath")}</button></td></tr>`;
 }
 
 async function setGroupPath(groupId, name, current) {
-  const path = prompt(`Netdisk root path for ${name}`, current || "");
+  const path = prompt(t("users.netdiskPathPrompt", { name }), current || "");
   if (path === null) return;
   try {
     await api("/api/groups/netdisk", { method: "POST", body: JSON.stringify({ groupId, path }) });
     await refreshSection("users", "groups");
     renderView();
-    toast("Netdisk path saved", true);
+    toast(t("users.netdiskPathSaved"), true);
   } catch (err) {
     toast(err.message);
   }
 }
 
 function groupBackupRow(g) {
-  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td class="path-cell"><div class="secondary-line mono">${escapeHtml(g.backupPath || "Not configured")}</div></td><td class="actions"><button class="ghost" data-group-backup="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.backupPath || "")}">Set Backup Path</button></td></tr>`;
+  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td class="path-cell"><div class="secondary-line mono">${escapeHtml(g.backupPath || t("users.notConfigured"))}</div></td><td class="actions"><button class="ghost" data-group-backup="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.backupPath || "")}">${t("users.setBackupPath")}</button></td></tr>`;
 }
 
 function groupLanguageRow(g) {
-  const langName = g.language === "zh_CN" ? "中文" : (g.language === "en_US" ? "English" : "Not set");
-  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td><div class="secondary-line">${escapeHtml(langName)}</div></td><td class="actions"><button class="ghost" data-group-lang="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.language || "")}">Set Language</button></td></tr>`;
+  const langName = g.language === "zh_CN" ? "中文" : (g.language === "en_US" ? "English" : t("users.notSet"));
+  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td><div class="secondary-line">${escapeHtml(langName)}</div></td><td class="actions"><button class="ghost" data-group-lang="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.language || "")}">${t("users.setLanguage")}</button></td></tr>`;
 }
 
 async function setGroupBackupPath(groupId, name, current) {
-  const path = prompt(`Backup disk root path for ${name} (mechanical disk recommended)`, current || "");
+  const path = prompt(t("users.backupPathPrompt", { name }), current || "");
   if (path === null) return;
   try {
     await api("/api/groups/backup", { method: "POST", body: JSON.stringify({ groupId, path }) });
     await refreshSection("users", "groups");
     renderView();
-    toast("Backup path saved", true);
+    toast(t("users.backupPathSaved"), true);
   } catch (err) {
     toast(err.message);
   }
@@ -231,18 +233,18 @@ async function setGroupLanguage(groupId, name, current) {
     { value: "en_US", label: "English" },
   ];
   
-  let html = `<div style="padding: 16px"><p style="margin-bottom: 12px">Select default language for group <strong>${escapeHtml(name)}</strong>:</p>`;
+  let html = `<div style="padding: 16px"><p style="margin-bottom: 12px">${t("users.groupLangPrompt", { name: escapeHtml(name) })}</p>`;
   languages.forEach((lang) => {
     const checked = current === lang.value ? "checked" : "";
     html += `<label class="check"><input type="radio" name="language" value="${lang.value}" ${checked}> ${lang.label}</label>`;
   });
   html += `</div>`;
-  
+
   showModal({
     kind: "confirm",
-    title: `Set Language for ${name}`,
+    title: t("users.groupLangTitle", { name }),
     body: html,
-    foot: `<button class="primary" id="saveGroupLang">Save</button><button class="ghost" data-close>Cancel</button>`,
+    foot: `<button class="primary" id="saveGroupLang">${t("common.save")}</button><button class="ghost" data-close>${t("common.cancel")}</button>`,
   });
 
   document.getElementById("saveGroupLang").onclick = async () => {
@@ -256,7 +258,7 @@ async function setGroupLanguage(groupId, name, current) {
       await refreshSection("users", "groups");
       renderView();
       closeModal();
-      toast("Group language saved", true);
+      toast(t("users.groupLangSaved"), true);
     } catch (err) {
       toast(err.message);
     }
@@ -268,14 +270,14 @@ function openUserGroups(userId, userName) {
   const checks = (state.groups || [])
     .map((g) => {
       const checked = (user.groups || []).includes(g.name) ? "checked" : "";
-      return `<label class="check"><input type="checkbox" name="groupIds" value="${g.id}" ${checked}> ${escapeHtml(g.name)}${g.name === "pending" ? ' <span class="hint">(pending approval)</span>' : ""}</label>`;
+      return `<label class="check"><input type="checkbox" name="groupIds" value="${g.id}" ${checked}> ${escapeHtml(g.name)}${g.name === "pending" ? ` <span class="hint">${t("users.pendingApproval")}</span>` : ""}</label>`;
     })
     .join("");
   showModal({
     kind: "usergroups",
-    title: `Edit groups — ${escapeHtml(displayName(user) || userName)}`,
-    body: `<form id="groupForm" class="compact"><div class="check-grid">${checks || '<span class="hint">No groups.</span>'}</div></form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="saveGroups">Save</button>`,
+    title: t("users.editGroupsTitle", { name: escapeHtml(displayName(user) || userName) }),
+    body: `<form id="groupForm" class="compact"><div class="check-grid">${checks || `<span class="hint">${t("users.noGroupsShort")}</span>`}</div></form>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="saveGroups">${t("common.save")}</button>`,
   });
   $("#saveGroups").onclick = async () => {
     const groupIds = [...$("#groupForm").querySelectorAll("input[name=groupIds]:checked")].map((i) => Number(i.value));
@@ -287,7 +289,7 @@ function openUserGroups(userId, userName) {
       await refreshSection("users", "groups");
       renderView();
       closeModal();
-      toast("Groups updated", true);
+      toast(t("users.groupsUpdated"), true);
     } catch (err) {
       toast(err.message);
     }
@@ -297,26 +299,26 @@ function openUserGroups(userId, userName) {
 function openUserEdit(userId) {
   const user = state.users.find((u) => String(u.id) === String(userId));
   if (!user) return;
-  const currentRole = ROLES.find((r) => r.value === user.role) ? user.role : "user";
+  const currentRole = ROLES().find((r) => r.value === user.role) ? user.role : "user";
   const checked = user.disabled ? "" : "checked";
   showModal({
     kind: "useredit",
-    title: `Edit — ${escapeHtml(displayName(user))}`,
+    title: t("users.editTitle", { name: escapeHtml(displayName(user)) }),
     body:
       `<form id="editUser" class="compact">` +
-        `<label class="field-label">Role</label>` +
+        `<label class="field-label">${t("users.colRole")}</label>` +
         roleSelect("role", currentRole) +
-        `<label class="field-label">Container limit</label>` +
+        `<label class="field-label">${t("users.containerLimit")}</label>` +
         `<input name="containerCap" type="number" min="1" value="${user.containerCap}">` +
-        `<label class="field-label">Netdisk quota (GB, 0 = unlimited)</label>` +
+        `<label class="field-label">${t("users.netdiskQuota")}</label>` +
         `<input name="netdiskQuotaGB" type="number" min="0" step="0.1" value="${(user.netdiskQuotaBytes / 1024 / 1024 / 1024).toFixed(2)}">` +
-        `<label class="field-label">Port prefix</label>` +
-        `<input name="portPrefix" type="number" min="100" max="655" value="${user.portPrefix || ""}" placeholder="100 => 10000-10099">` +
-        `<label class="field-label">New password <span class="hint">(leave blank to keep)</span></label>` +
-        `<input name="password" type="password" placeholder="Reset password" autocomplete="new-password">` +
-        `<label class="check"><input type="checkbox" name="enabled" ${checked}> Account enabled</label>` +
+        `<label class="field-label">${t("users.portPrefix")}</label>` +
+        `<input name="portPrefix" type="number" min="100" max="655" value="${user.portPrefix || ""}" placeholder="${t("users.portPrefixPlaceholder")}">` +
+        `<label class="field-label">${t("users.newPassword")} <span class="hint">${t("users.newPasswordHint")}</span></label>` +
+        `<input name="password" type="password" placeholder="${t("users.resetPassword")}" autocomplete="new-password">` +
+        `<label class="check"><input type="checkbox" name="enabled" ${checked}> ${t("users.accountEnabled")}</label>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="saveUser">Save</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="saveUser">${t("common.save")}</button>`,
   });
   $("#saveUser").onclick = async () => {
     const fd = new FormData($("#editUser"));
@@ -335,7 +337,7 @@ function openUserEdit(userId) {
       await refreshSection("users", "groups");
       renderView();
       closeModal();
-      toast("User updated", true);
+      toast(t("users.userUpdated"), true);
     } catch (err) {
       toast(err.message);
     }
@@ -343,12 +345,12 @@ function openUserEdit(userId) {
 }
 
 async function approveUser(userId, userName) {
-  if (!confirm(`Approve user “${userName}” and move them to the default users group?`)) return;
+  if (!confirm(t("users.approveConfirm", { userName }))) return;
   try {
     await api("/api/users/approve", { method: "POST", body: JSON.stringify({ userId }) });
     await refreshSection("users", "groups");
     renderView();
-    toast("User approved", true);
+    toast(t("users.userApproved"), true);
   } catch (err) {
     toast(err.message);
   }
@@ -356,15 +358,15 @@ async function approveUser(userId, userName) {
 
 async function deactivateUser(userId, userName) {
   if (userId === state.me.id) {
-    toast("You cannot deactivate your own account.");
+    toast(t("users.cannotDeactivateSelf"));
     return;
   }
-  if (!confirm(`Deactivate user “${userName}”? They will be returned to the pending group and need to be re-approved before they can use the platform.`)) return;
+  if (!confirm(t("users.deactivateConfirm", { userName }))) return;
   try {
     await api("/api/users/deactivate", { method: "POST", body: JSON.stringify({ id: userId }) });
     await refreshSection("users", "groups");
     renderView();
-    toast("User deactivated", true);
+    toast(t("users.userDeactivated"), true);
   } catch (err) {
     toast(err.message);
   }
@@ -372,15 +374,15 @@ async function deactivateUser(userId, userName) {
 
 async function deleteUser(userId, userName) {
   if (userId === state.me.id) {
-    toast("You cannot delete your own account.");
+    toast(t("users.cannotDeleteSelf"));
     return;
   }
-  if (!confirm(`Delete user “${userName}”? This removes their group memberships and stacks permanently.`)) return;
+  if (!confirm(t("users.deleteConfirm", { userName }))) return;
   try {
     await api("/api/users/delete", { method: "POST", body: JSON.stringify({ id: userId }) });
     await refreshSection("users", "groups");
     renderView();
-    toast("User deleted", true);
+    toast(t("users.userDeleted"), true);
   } catch (err) {
     toast(err.message);
   }
@@ -414,7 +416,7 @@ function paintNetdiskUsage() {
   body.innerHTML = usageRowsHtml(usage);
   if (totalEl) {
     const total = Object.values(usage).reduce((s, r) => s + (r.usedBytes || 0), 0);
-    totalEl.textContent = `Total used: ${fmtBytes(total)}`;
+    totalEl.textContent = t("users.totalUsed", { size: fmtBytes(total) });
   }
 }
 
@@ -426,7 +428,7 @@ function usageRowsHtml(usage) {
   const rows = [...state.users]
     .sort((a, b) => (map[b.id]?.usedBytes || 0) - (map[a.id]?.usedBytes || 0))
     .map((u) => usageRow(u, map[u.id]));
-  return rows.join("") || `<tr class="empty-row"><td colspan="4">No users.</td></tr>`;
+  return rows.join("") || `<tr class="empty-row"><td colspan="4">${t("users.noUsers")}</td></tr>`;
 }
 
 function usageRow(user, info) {
@@ -436,11 +438,11 @@ function usageRow(user, info) {
   // A user may legitimately have no netdisk path yet (group not configured, or
   // the on-disk folder has never been created). Surface that instead of "0 B".
   let status = "";
-  if (info && !info.configured) status = ` <span class="badge badge-muted">no path</span>`;
-  else if (info && info.pathMissing) status = ` <span class="badge badge-muted">not created</span>`;
+  if (info && !info.configured) status = ` <span class="badge badge-muted">${t("users.noPath")}</span>`;
+  else if (info && info.pathMissing) status = ` <span class="badge badge-muted">${t("users.notCreated")}</span>`;
   const pct = quota > 0 ? Math.min(100, Math.round((used / quota) * 100)) : 0;
   const barCls = pct >= 90 ? "danger" : pct >= 70 ? "warn" : "";
-  const quotaText = quota > 0 ? `${pct}% of ${fmtBytes(quota)}` : "unlimited";
+  const quotaText = quota > 0 ? `${pct}% / ${fmtBytes(quota)}` : t("users.unlimited");
   return (
     `<tr>` +
       `<td>${name}${status}</td>` +

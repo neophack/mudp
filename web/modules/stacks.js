@@ -1,7 +1,7 @@
 // Stacks: deploy docker-compose projects via the host's `docker compose` CLI.
 // Compose body + env live in the DB; deploys stream progress over SSE.
 
-import { state, api, toast, refreshSection, renderView, canMutate, displayNameForUsername, readCSRFCookie } from "../app.js";
+import { state, api, toast, refreshSection, renderView, canMutate, displayNameForUsername, readCSRFCookie, t } from "../app.js";
 import { showModal, showModalNoShell, closeModal, readSSE, onModalClose } from "./ui.js";
 import { loadXterm, TERM_THEME } from "./terminal.js";
 import { registerJob } from "./jobs.js";
@@ -19,14 +19,14 @@ const SAMPLE = `services:
 
 export function renderStacks() {
   const rows = (state.stacks || []).map(stackRow).join("") ||
-    `<tr class="empty-row"><td colspan="6">No stacks. Click “+ New Stack” to deploy a compose project.</td></tr>`;
+    `<tr class="empty-row"><td colspan="6">${t("stacks.noStacksCreate")}</td></tr>`;
   $("#view").innerHTML =
     `<div class="card">` +
-      `<div class="card-head"><h2>Stacks</h2>` +
-        (canMutate() ? `<button class="primary" id="newStackBtn">+ New Stack</button>` : "") +
+      `<div class="card-head"><h2>${t("stacks.title")}</h2>` +
+        (canMutate() ? `<button class="primary" id="newStackBtn">${t("stacks.newStack")}</button>` : "") +
       `</div>` +
       `<table class="data">` +
-        `<thead><tr><th>Name</th><th>Services</th><th>Status</th><th>Owner</th><th>Updated</th><th class="actions">Actions</th></tr></thead>` +
+        `<thead><tr><th>${t("common.name")}</th><th>${t("stacks.colServices")}</th><th>${t("common.status")}</th><th>${t("common.owner")}</th><th>${t("stacks.colUpdated")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
         `<tbody>${rows}</tbody>` +
       `</table>` +
     `</div>`;
@@ -64,10 +64,10 @@ function stackRow(s) {
       `<td><div class="secondary-line">${escapeHtml(displayNameForUsername(s.owner) || "—")}</div></td>` +
       `<td><div class="secondary-line">${escapeHtml(fmtTime(s.updatedAt))}</div></td>` +
       `<td class="actions">` +
-        (canMutate() ? `<button class="icon ok" title="Deploy / Up" data-stack-up="${s.id}">▶</button>` : "") +
-        (canMutate() ? `<button class="icon warn" title="Down" data-stack-down="${s.id}">■</button>` : "") +
-        (canMutate() ? `<button class="icon" title="Edit" data-stack-edit="${s.id}">✎</button>` : "") +
-        (canMutate() ? `<button class="icon danger" title="Delete" data-stack-delete="${s.id}" data-stack-name="${escapeHtml(s.name)}">✕</button>` : "") +
+        (canMutate() ? `<button class="icon ok" title="${t("stacks.up")}" data-stack-up="${s.id}">▶</button>` : "") +
+        (canMutate() ? `<button class="icon warn" title="${t("stacks.down")}" data-stack-down="${s.id}">■</button>` : "") +
+        (canMutate() ? `<button class="icon" title="${t("stacks.edit")}" data-stack-edit="${s.id}">✎</button>` : "") +
+        (canMutate() ? `<button class="icon danger" title="${t("stacks.delete")}" data-stack-delete="${s.id}" data-stack-name="${escapeHtml(s.name)}">✕</button>` : "") +
       `</td>` +
     `</tr>`
   );
@@ -79,17 +79,17 @@ function openStackEditor(stack) {
   const env = stack ? envJSONToText(stack.envJson) : "DB_PASSWORD=change-me\n";
   showModal({
     kind: "stack",
-    title: isNew ? "New Stack" : `Edit — ${stack.name}`,
+    title: isNew ? t("stacks.newTitle") : t("stacks.editTitle", { name: stack.name }),
     body:
       `<form id="stackForm" class="compact">` +
-        `<input name="name" placeholder="Stack name, e.g. webapp" value="${escapeHtml(stack?.name || "")}" ${isNew ? "" : "disabled"}>` +
-        `<label class="field-label">Environment variables (KEY=VALUE per line)</label>` +
+        `<input name="name" placeholder="${t("stacks.namePlaceholder")}" value="${escapeHtml(stack?.name || "")}" ${isNew ? "" : "disabled"}>` +
+        `<label class="field-label">${t("stacks.envLabel")}</label>` +
         `<textarea name="env" class="mono" rows="4" spellcheck="false">${escapeHtml(env)}</textarea>` +
-        `<label class="field-label">docker-compose.yml</label>` +
+        `<label class="field-label">${t("stacks.composeLabel")}</label>` +
         `<textarea name="composeYaml" class="mono stack-editor" rows="14" spellcheck="false">${escapeHtml(body)}</textarea>` +
-        `<p class="hint">\${VAR} references are substituted from the environment above. Images are pulled by the host's docker daemon.</p>` +
+        `<p class="hint">${t("stacks.composeHint")}</p>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="saveStack">Save</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="saveStack">${t("common.save")}</button>`,
   });
   $("#saveStack").onclick = async () => {
     const fd = new FormData($("#stackForm"));
@@ -104,7 +104,7 @@ function openStackEditor(stack) {
       await refreshSection("stacks");
       renderView();
       closeModal();
-      toast(isNew ? "Stack saved" : "Stack updated", true);
+      toast(isNew ? t("stacks.stackSaved") : t("stacks.stackUpdated"), true);
       if (isNew && r.id) deployStack(r.id);
     } catch (err) {
       toast(err.message);
@@ -142,13 +142,13 @@ async function openStackTerminal(title) {
       `<div class="term-title"><h2>${escapeHtml(title)}</h2></div>` +
       `<div class="modal-tools"><button class="ghost" data-close>Close</button></div>` +
     `</div>` +
-    `<div class="modal-body">` +
-      `<div id="stackTermBox" class="term-box"></div>` +
-      `<div class="term-statusbar">` +
-        `<span class="term-stat" id="stackTermStatus"><span class="dot dot-muted"></span>Running…</span>` +
-        `<span class="term-stat term-keys">Read-only build log</span>` +
-      `</div>` +
-    `</div>`,
+      `<div class="modal-body">` +
+        `<div id="stackTermBox" class="term-box"></div>` +
+        `<div class="term-statusbar">` +
+          `<span class="term-stat" id="stackTermStatus"><span class="dot dot-muted"></span>${t("stacks.running")}</span>` +
+          `<span class="term-stat term-keys">${t("stacks.readonlyLog")}</span>` +
+        `</div>` +
+      `</div>`,
     false
   );
   const wrapper = document.querySelector(".modal-backdrop.stack-run-modal");
@@ -158,7 +158,7 @@ async function openStackTerminal(title) {
     await loadXterm();
   } catch {
     const box = $("#stackTermBox");
-    if (box) box.textContent = "Failed to load terminal library";
+    if (box) box.textContent = t("terminal.libFail");
     return { write: () => {}, setStatus: () => {}, close: closeModal };
   }
 
@@ -240,32 +240,32 @@ async function openStackTerminal(title) {
 async function deployStack(id) {
   // Reopen the existing terminal if the same stack is still being deployed.
   if (state.stackRun.active && state.stackRun.stackId === id && state.stackRun.verb === "up") {
-    const term = await openStackTerminal("Stack Deploy");
+    const term = await openStackTerminal(t("stacks.deployTitle"));
     syncStackStatus(term);
     return;
   }
   // Otherwise start a fresh run.
   state.stackRun = { active: true, stackId: id, verb: "up", lines: [], error: "", done: false, controller: null };
-  const term = await openStackTerminal("Stack Deploy");
+  const term = await openStackTerminal(t("stacks.deployTitle"));
   runStackStream(id, "up", term, "deployed");
 }
 
 async function downStack(id) {
-  if (!confirm("Tear down this stack? Containers will be stopped and removed (volumes kept).")) return;
+  if (!confirm(t("stacks.downConfirm"))) return;
   if (state.stackRun.active && state.stackRun.stackId === id && state.stackRun.verb === "down") {
-    const term = await openStackTerminal("Stack Down");
+    const term = await openStackTerminal(t("stacks.downTitle"));
     syncStackStatus(term);
     return;
   }
   state.stackRun = { active: true, stackId: id, verb: "down", lines: [], error: "", done: false, controller: null };
-  const term = await openStackTerminal("Stack Down");
+  const term = await openStackTerminal(t("stacks.downTitle"));
   runStackStream(id, "down", term, "torn down");
 }
 
 function syncStackStatus(term) {
   if (state.stackRun.error) term.setStatus(state.stackRun.error, "error");
-  else if (state.stackRun.done) term.setStatus("Complete", "ok");
-  else term.setStatus("Running…", "muted");
+  else if (state.stackRun.done) term.setStatus(t("stacks.complete"), "ok");
+  else term.setStatus(t("stacks.running"), "muted");
 }
 
 function isActiveRun(id, verb) {
@@ -286,7 +286,8 @@ async function runStackStream(id, verb, term, doneVerb) {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      const msg = data.error || `${verb === "up" ? "Deploy" : "Down"} failed (${res.status})`;
+      const verbKey = verb === "up" ? "stacks.deployFailed" : "stacks.downFailed";
+      const msg = data.error || t(verbKey, { status: res.status });
       job.error(msg);
       if (isActiveRun(id, verb)) {
         appendStackLine(msg);
@@ -303,7 +304,7 @@ async function runStackStream(id, verb, term, doneVerb) {
     if (job.signal.aborted) {
       job.cancel();
       if (isActiveRun(id, verb)) {
-        const msg = "Cancelled";
+        const msg = t("stacks.cancelled");
         appendStackLine(`[cancelled] ${msg}`);
         state.stackRun.error = msg;
         state.stackRun.active = false;
@@ -333,7 +334,7 @@ async function streamStack(res, id, verb, term, doneVerb, job) {
       appendStackLine(line);
       job.log(line);
     } else if (event === "error") {
-      const msg = data.message || "failed";
+      const msg = data.message || t("stacks.cancelled").toLowerCase();
       appendStackLine(`[error] ${msg}`);
       job.error(msg);
       state.stackRun.error = msg;
@@ -344,12 +345,12 @@ async function streamStack(res, id, verb, term, doneVerb, job) {
     } else if (event === "done" || event === "cancelled") {
       const ok = event === "done";
       appendStackLine(`[${event}] ${data.message || ""}`);
-      if (ok) job.done(data.message || "Complete");
+      if (ok) job.done(data.message || t("stacks.complete"));
       else job.cancel();
       state.stackRun.active = false;
       state.stackRun.done = true;
-      term.setStatus(ok ? "Complete" : "Cancelled", ok ? "ok" : "muted");
-      toast(`Stack ${doneVerb}`, ok);
+      term.setStatus(ok ? t("stacks.complete") : t("stacks.cancelled"), ok ? "ok" : "muted");
+      toast(ok ? t("stacks.stackDeployed") : t("stacks.stackDown"), ok);
       refreshSection("stacks", "containers").then(() => renderView());
       // Only auto-close if this controller still owns the active terminal.
       if (ok) {
@@ -364,12 +365,12 @@ async function streamStack(res, id, verb, term, doneVerb, job) {
 }
 
 async function deleteStack(id, name) {
-  if (!confirm(`Delete stack “${name}”? This removes the stored definition. Run Down first if you want to stop its containers.`)) return;
+  if (!confirm(t("stacks.deleteConfirm", { name }))) return;
   try {
     await api("/api/stacks/delete", { method: "POST", body: JSON.stringify({ id }) });
     await refreshSection("stacks", "containers");
     renderView();
-    toast("Stack deleted", true);
+    toast(t("stacks.deleted"), true);
   } catch (err) {
     toast(err.message);
   }

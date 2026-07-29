@@ -1,24 +1,24 @@
 // Activity log (admin only): filterable list of recent management actions,
 // with a CSV export button.
 
-import { state, api, toast, displayNameForUsername } from "../app.js";
+import { state, api, toast, displayNameForUsername, t } from "../app.js";
 
 export function renderAudit() {
   const q = state.auditSearch || {};
   const rows = (state.audit || []).map(auditRow).join("") ||
-    `<tr class="empty-row"><td colspan="4">No activity recorded.</td></tr>`;
+    `<tr class="empty-row"><td colspan="4">${t("audit.noActivity")}</td></tr>`;
   $("#view").innerHTML =
     `<div class="card">` +
       `<div class="card-head">` +
-        `<h2>Activity Log</h2>` +
+        `<h2>${t("audit.title")}</h2>` +
         `<div class="filters">` +
-          `<input id="fActor" placeholder="Filter by actor…" value="${escapeHtml(q.actor || "")}">` +
-          `<input id="fAction" placeholder="Filter by action…" value="${escapeHtml(q.action || "")}">` +
-          `<button class="ghost" id="exportCsv">Export CSV</button>` +
+          `<input id="fActor" placeholder="${t("audit.filterActor")}" value="${escapeHtml(q.actor || "")}">` +
+          `<input id="fAction" placeholder="${t("audit.filterAction")}" value="${escapeHtml(q.action || "")}">` +
+          `<button class="ghost" id="exportCsv">${t("audit.exportCsv")}</button>` +
         `</div>` +
       `</div>` +
       `<table class="data">` +
-        `<thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th></tr></thead>` +
+        `<thead><tr><th>${t("audit.colTime")}</th><th>${t("audit.colActor")}</th><th>${t("audit.colAction")}</th><th>${t("audit.colTarget")}</th></tr></thead>` +
         `<tbody>${rows}</tbody>` +
       `</table>` +
     `</div>`;

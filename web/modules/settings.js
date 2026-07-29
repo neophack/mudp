@@ -21,24 +21,24 @@ export function renderSettings() {
   const defaultLanguage = state.me?.defaultLanguage || "en_US";
   const adminLanguagePanel = isAdmin() ? createAdminLanguageSettings(defaultLanguage) : "";
   const registriesPanel = isAdmin()
-    ? `<div class="card"><div class="card-head"><h2>Registries</h2>` +
-        `<button class="primary" id="newRegistryBtn">+ Add Registry</button>` +
+    ? `<div class="card"><div class="card-head"><h2>${t("settings.registries")}</h2>` +
+        `<button class="primary" id="newRegistryBtn">${t("settings.addRegistry")}</button>` +
       `</div>` +
         `<table class="data">` +
-          `<thead><tr><th>Name</th><th>URL</th><th>Username</th><th class="actions">Actions</th></tr></thead>` +
-          `<tbody>${(state.registries || []).map(registryRow).join("") || `<tr class="empty-row"><td colspan="4">No registries configured.</td></tr>`}</tbody>` +
+          `<thead><tr><th>${t("common.name")}</th><th>${t("settings.colUrl")}</th><th>${t("settings.colUsername")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
+          `<tbody>${(state.registries || []).map(registryRow).join("") || `<tr class="empty-row"><td colspan="4">${t("settings.noRegistries")}</td></tr>`}</tbody>` +
         `</table>` +
       `</div>`
     : "";
   const feishuSettingsPanel = isAdmin()
-    ? `<div class="card"><div class="card-head"><h2>Feishu SSO</h2></div>` +
+    ? `<div class="card"><div class="card-head"><h2>${t("settings.feishuSso")}</h2></div>` +
         `<div class="card-body"><form id="feishuForm" class="compact">` +
-          `<p class="hint">Configure a Feishu (Lark) app to enable single sign-on. New users auto-join the <strong>pending</strong> group until an admin approves them.</p>` +
-          `<input name="appId" placeholder="App ID" value="${escapeHtml(state.feishuAdmin.appId)}">` +
-          `<input name="appSecret" type="password" placeholder="${state.feishuAdmin.appSecret ? "(leave blank to keep)" : "App Secret"}">` +
-          `<label class="check"><input type="checkbox" name="enabled" ${state.feishuAdmin.enabled ? "checked" : ""}> Enable Feishu login</label>` +
-          `<p class="hint">Callback URL: <span class="mono">${location.origin}/api/feishu/callback</span></p>` +
-          `<button>Save Feishu Settings</button>` +
+          `<p class="hint">${t("settings.feishuHint")}</p>` +
+          `<input name="appId" placeholder="${t("settings.appIdPlaceholder")}" value="${escapeHtml(state.feishuAdmin.appId)}">` +
+          `<input name="appSecret" type="password" placeholder="${state.feishuAdmin.appSecret ? t("settings.appSecretKeep") : t("settings.appSecretPlaceholder")}">` +
+          `<label class="check"><input type="checkbox" name="enabled" ${state.feishuAdmin.enabled ? "checked" : ""}> ${t("settings.enableFeishu")}</label>` +
+          `<p class="hint">${t("settings.callbackUrl")}<span class="mono">${location.origin}/api/feishu/callback</span></p>` +
+          `<button>${t("settings.saveFeishu")}</button>` +
         `</form></div>` +
       `</div>`
     : "";
@@ -105,7 +105,7 @@ export function renderSettings() {
         state.feishu = fd.has("enabled");
         state.feishuAdmin.loaded = false;
         loadFeishuAdmin();
-        toast("Feishu settings saved", true);
+        toast(t("settings.feishuSaved"), true);
       } catch (err) {
         toast(err.message);
       }
@@ -133,7 +133,7 @@ export function renderSettings() {
         state.mcpRemote = null;
         await loadMCPRemoteAdmin();
         renderView();
-        toast(res.running ? "External MCP access is live" : "External MCP access saved", true);
+        toast(res.running ? t("settings.mcpLive") : t("settings.mcpSaved"), true);
       } catch (err) {
         toast(err.message);
       }
@@ -162,29 +162,29 @@ function mcpRemotePanel() {
   const cfg = state.mcpRemoteAdmin;
   if (!cfg) {
     return (
-      `<div class="card"><div class="card-head"><h2>MCP external access</h2></div>` +
-        `<div class="card-body"><p class="hint">Loading…</p></div>` +
+      `<div class="card"><div class="card-head"><h2>${t("settings.mcpExternal")}</h2></div>` +
+        `<div class="card-body"><p class="hint">${t("common.loadingDots")}</p></div>` +
       `</div>`
     );
   }
   const status = cfg.running
-    ? `<span class="badge badge-ok">Listening on ${escapeHtml(cfg.listenAddr || "")}</span>`
-    : `<span class="badge">Stopped</span>`;
+    ? `<span class="badge badge-ok">${t("settings.mcpListening", { addr: escapeHtml(cfg.listenAddr || "") })}</span>`
+    : `<span class="badge">${t("settings.mcpStopped")}</span>`;
   const link = cfg.baseUrl
-    ? `<p class="hint">Users see <span class="mono">${escapeHtml(cfg.baseUrl)}</span> on the MCP page and append their own token to it.</p>`
+    ? `<p class="hint">${t("settings.mcpUsersSee", { url: `<span class="mono">${escapeHtml(cfg.baseUrl)}</span>` })}</p>`
     : "";
   return (
-    `<div class="card"><div class="card-head"><h2>MCP external access</h2>${status}</div>` +
+    `<div class="card"><div class="card-head"><h2>${t("settings.mcpExternal")}</h2>${status}</div>` +
       `<div class="card-body"><form id="mcpRemoteForm" class="compact">` +
-        `<p class="hint">Publishes only the MCP endpoints on a second, loopback-bound port. Point a Cloudflare tunnel hostname at <span class="mono">127.0.0.1:&lt;port&gt;</span> and users can connect an agent from anywhere — the console itself stays off that hostname.</p>` +
-        `<input name="domain" placeholder="Public domain, e.g. mcp.example.com" value="${escapeHtml(cfg.domain || "")}">` +
-        `<input name="port" type="number" min="1024" max="65535" placeholder="Port" value="${escapeHtml(String(cfg.port || 19090))}">` +
-        `<input name="safeNetwork" placeholder="Safe network" value="${escapeHtml(cfg.safeNetwork || "openwrt-lan")}">` +
-        `<label class="check"><input type="checkbox" name="enabled" ${cfg.enabled ? "checked" : ""}> Enable external access</label>` +
-        `<p class="hint">Only containers attached to the <strong>safe network</strong> are reachable through the domain; every other token is refused there, so turning this on does not by itself expose anything.</p>` +
-        `<p class="hint">Tunnel command: <span class="mono">cloudflared tunnel --url http://127.0.0.1:${escapeHtml(String(cfg.port || 19090))}</span></p>` +
+        `<p class="hint">${t("settings.mcpHint")}</p>` +
+        `<input name="domain" placeholder="${t("settings.mcpDomainPlaceholder")}" value="${escapeHtml(cfg.domain || "")}">` +
+        `<input name="port" type="number" min="1024" max="65535" placeholder="${t("settings.mcpPortPlaceholder")}" value="${escapeHtml(String(cfg.port || 19090))}">` +
+        `<input name="safeNetwork" placeholder="${t("settings.mcpSafeNetPlaceholder")}" value="${escapeHtml(cfg.safeNetwork || "openwrt-lan")}">` +
+        `<label class="check"><input type="checkbox" name="enabled" ${cfg.enabled ? "checked" : ""}> ${t("settings.mcpEnableExternal")}</label>` +
+        `<p class="hint">${t("settings.mcpSafeHint")}</p>` +
+        `<p class="hint">${t("settings.mcpTunnel")}<span class="mono">cloudflared tunnel --url http://127.0.0.1:${escapeHtml(String(cfg.port || 19090))}</span></p>` +
         link +
-        `<button>Save external access</button>` +
+        `<button>${t("settings.saveExternal")}</button>` +
       `</form></div>` +
     `</div>`
   );
@@ -214,9 +214,9 @@ function registryRow(r) {
       `<td><div class="secondary-line mono">${escapeHtml(r.url)}</div></td>` +
       `<td><div class="secondary-line">${escapeHtml(r.username || "-")}</div></td>` +
       `<td class="actions">` +
-        `<button class="ghost" data-reg-test="${r.id}">Test</button>` +
-        `<button class="ghost" data-reg-edit="${r.id}">Edit</button>` +
-        `<button class="icon danger" data-reg-delete="${r.id}" data-reg-name="${escapeHtml(r.name)}">Delete</button>` +
+        `<button class="ghost" data-reg-test="${r.id}">${t("settings.test")}</button>` +
+        `<button class="ghost" data-reg-edit="${r.id}">${t("common.edit")}</button>` +
+        `<button class="icon danger" data-reg-delete="${r.id}" data-reg-name="${escapeHtml(r.name)}">${t("common.delete")}</button>` +
       `</td>` +
     `</tr>`
   );
@@ -226,15 +226,15 @@ function openRegistryEditor(existingId) {
   const r = existingId ? (state.registries || []).find((x) => x.id === existingId) : null;
   showModal({
     kind: "registry",
-    title: r ? `Edit ${r.name}` : "Add Registry",
+    title: r ? t("settings.editRegistry", { name: r.name }) : t("settings.addRegistryTitle"),
     body:
       `<form id="regForm" class="compact">` +
-        `<input name="name" placeholder="Name, e.g. GitHub Container Registry" value="${escapeHtml(r?.name || "")}" required>` +
-        `<input name="url" placeholder="Registry URL, e.g. ghcr.io" value="${escapeHtml(r?.url || "")}" required>` +
-        `<input name="username" placeholder="Username" value="${escapeHtml(r?.username || "")}">` +
-        `<input name="token" type="password" placeholder="${r ? "(leave blank to keep)" : "Access token / password"}">` +
+        `<input name="name" placeholder="${t("settings.regNamePlaceholder")}" value="${escapeHtml(r?.name || "")}" required>` +
+        `<input name="url" placeholder="${t("settings.regUrlPlaceholder")}" value="${escapeHtml(r?.url || "")}" required>` +
+        `<input name="username" placeholder="${t("settings.regUserPlaceholder")}" value="${escapeHtml(r?.username || "")}">` +
+        `<input name="token" type="password" placeholder="${r ? t("settings.appSecretKeep") : t("settings.regTokenPlaceholder2")}">` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="saveReg">Save</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="saveReg">${t("common.save")}</button>`,
   });
   $("#saveReg").onclick = async () => {
     const fd = new FormData($("#regForm"));
@@ -250,7 +250,7 @@ function openRegistryEditor(existingId) {
       await loadRegistries();
       renderView();
       closeModal();
-      toast("Registry saved", true);
+      toast(t("settings.registrySaved"), true);
     } catch (err) {
       toast(err.message);
     }
@@ -258,12 +258,12 @@ function openRegistryEditor(existingId) {
 }
 
 async function deleteRegistry(id, name) {
-  if (!confirm(`Delete registry "${name}"?`)) return;
+  if (!confirm(t("settings.deleteRegistryConfirm", { name }))) return;
   try {
     await api("/api/registries/delete", { method: "POST", body: JSON.stringify({ id }) });
     await loadRegistries();
     renderView();
-    toast("Registry deleted", true);
+    toast(t("settings.registryDeleted"), true);
   } catch (err) {
     toast(err.message);
   }
@@ -272,7 +272,7 @@ async function deleteRegistry(id, name) {
 async function testRegistry(id) {
   try {
     await api("/api/registries/test", { method: "POST", body: JSON.stringify({ id }) });
-    toast("Login successful", true);
+    toast(t("settings.loginSuccessful"), true);
   } catch (err) {
     toast(err.message);
   }

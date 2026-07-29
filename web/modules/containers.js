@@ -5,7 +5,7 @@
 //   - state filtering (all / running / stopped / paused)
 //   - multi-select with a batch action toolbar (start/stop/restart/remove/unpause)
 
-import { state, api, toast, refreshAll, renderView, escapeHtml, canMutate, isAdmin, displayNameForUsername } from "../app.js";
+import { state, api, toast, refreshAll, renderView, escapeHtml, canMutate, isAdmin, displayNameForUsername, t } from "../app.js";
 import { openLogs } from "./logs.js";
 import { openTerminal } from "./terminal.js";
 import { openDetails } from "./details.js";
@@ -26,7 +26,7 @@ export function renderContainers() {
 
   const rows =
     list.map((c) => containerRow(c)).join("") ||
-    `<tr class="empty-row"><td colspan="${colSpan()}">No containers match. Adjust the filter or click “+ New Container”.</td></tr>`;
+    `<tr class="empty-row"><td colspan="${colSpan()}">${t("containers.noMatch")}</td></tr>`;
 
   const sel = state.containerSelection;
   const anySelected = sel.size > 0;
@@ -38,9 +38,9 @@ export function renderContainers() {
     `<div class="card"><table class="data">` +
     `<thead><tr>` +
       (canMutate() ? `<th class="chk-col"><input type="checkbox" id="selectAll" ${allChecked ? "checked" : ""}></th>` : "") +
-      `<th>Container</th>` +
-      (isAdmin() ? `<th>Owner</th>` : "") +
-      `<th>Status</th><th>Image</th><th>Resources</th><th class="actions">Actions</th>` +
+      `<th>${t("containers.colContainer")}</th>` +
+      (isAdmin() ? `<th>${t("containers.colOwner")}</th>` : "") +
+      `<th>${t("containers.colStatus")}</th><th>${t("containers.colImage")}</th><th>${t("containers.colResources")}</th><th class="actions">${t("common.actions")}</th>` +
     `</tr></thead>` +
     `<tbody>${rows}</tbody></table></div>`;
 
@@ -52,13 +52,13 @@ export function renderContainers() {
     btn.onclick = async () => {
       try {
         await navigator.clipboard.writeText(btn.dataset.copy);
-        toast("Copied", true);
+        toast(t("common.copied"), true);
         const old = btn.textContent;
         btn.textContent = "✓";
         btn.classList.add("copied");
         setTimeout(() => { btn.textContent = old; btn.classList.remove("copied"); }, 1200);
       } catch {
-        toast("Copy failed — select the text manually");
+        toast(t("common.copyFailed"));
       }
     };
   });
@@ -112,10 +112,10 @@ function filterBar() {
   const all = state.containers || [];
   const count = (pred) => all.filter(pred).length;
   const tabs = [
-    { key: "all", label: "All", n: all.length },
-    { key: "running", label: "Running", n: count((c) => c.state === "running") },
-    { key: "stopped", label: "Stopped", n: count((c) => c.state !== "running" && c.state !== "paused") },
-    { key: "paused", label: "Paused", n: count((c) => c.state === "paused") },
+    { key: "all", label: t("containers.filterAll"), n: all.length },
+    { key: "running", label: t("containers.filterRunning"), n: count((c) => c.state === "running") },
+    { key: "stopped", label: t("containers.filterStopped"), n: count((c) => c.state !== "running" && c.state !== "paused") },
+    { key: "paused", label: t("containers.filterPaused"), n: count((c) => c.state === "paused") },
   ];
   return (
     `<div class="filter-bar">` +
@@ -132,16 +132,16 @@ function filterBar() {
 // batchToolbar appears above the table when one or more containers are selected.
 // Mutating batch actions are hidden for read-only roles.
 function batchToolbar(n) {
-  if (!canMutate()) return `<div class="batch-bar"><span>${n} selected</span></div>`;
+  if (!canMutate()) return `<div class="batch-bar"><span>${t("containers.selectedN", { n })}</span></div>`;
   return (
     `<div class="batch-bar">` +
-      `<span class="batch-count">${n} selected</span>` +
+      `<span class="batch-count">${t("containers.selectedN", { n })}</span>` +
       `<div class="batch-actions">` +
-        `<button class="ghost" data-batch="start">▶ Start</button>` +
-        `<button class="ghost" data-batch="stop">■ Stop</button>` +
-        `<button class="ghost" data-batch="restart">⟳ Restart</button>` +
-        `<button class="ghost" data-batch="unpause">⏵ Unpause</button>` +
-        `<button class="ghost danger" data-batch="remove">✕ Remove</button>` +
+        `<button class="ghost" data-batch="start">${t("containers.batchStart")}</button>` +
+        `<button class="ghost" data-batch="stop">${t("containers.batchStop")}</button>` +
+        `<button class="ghost" data-batch="restart">${t("containers.batchRestart")}</button>` +
+        `<button class="ghost" data-batch="unpause">${t("containers.batchUnpause")}</button>` +
+        `<button class="ghost danger" data-batch="remove">${t("containers.batchRemove")}</button>` +
       `</div>` +
     `</div>`
   );
@@ -161,7 +161,7 @@ function matchesAnyId(fullId, prefixes) {
 async function runBatch(action) {
   const ids = [...state.containerSelection];
   if (ids.length === 0) return;
-  if (action === "remove" && !confirm(`Remove ${ids.length} container(s)? This cannot be undone.`)) return;
+  if (action === "remove" && !confirm(t("containers.confirmRemoveN", { n: ids.length }))) return;
   try {
     const res = await api("/api/containers/batch", {
       method: "POST",
@@ -175,8 +175,8 @@ async function runBatch(action) {
     renderView();
     const okN = (res.ok || []).length;
     const failN = (res.failed || []).length;
-    if (failN === 0) toast(`${okN} container(s) ${action} OK`, true);
-    else toast(`${okN} OK, ${failN} failed`);
+    if (failN === 0) toast(t("containers.batchResult", { ok: okN, action }), true);
+    else toast(t("containers.batchResultPartial", { ok: okN, fail: failN }));
   } catch (err) {
     toast(err.message);
   }
@@ -192,10 +192,10 @@ function containerRow(c) {
   const name = c.name || c.fullName;
   const pending = (act) => state.pending.has(c.id + ":" + act);
   const statusBadge = running
-    ? `<span class="badge badge-ok"><span class="dot"></span>${escapeHtml(c.status || "Up")}</span>`
+    ? `<span class="badge badge-ok"><span class="dot"></span>${escapeHtml(c.status || t("containers.up"))}</span>`
     : paused
-    ? `<span class="badge badge-warn"><span class="dot"></span>${escapeHtml(c.status || "Paused")}</span>`
-    : `<span class="badge badge-muted"><span class="dot"></span>${escapeHtml(c.status || c.state || "Stopped")}</span>`;
+    ? `<span class="badge badge-warn"><span class="dot"></span>${escapeHtml(c.status || t("containers.paused"))}</span>`
+    : `<span class="badge badge-muted"><span class="dot"></span>${escapeHtml(c.status || c.state || t("containers.stopped"))}</span>`;
   const ports = (c.ports || []).join(", ") || "—";
   // Docker on Linux binds to 0.0.0.0 so the backend URL contains 127.0.0.1.
   // Replace it (and localhost/0.0.0.0/::1) with the server hostname the browser
@@ -228,25 +228,25 @@ function containerRow(c) {
   return (
     `<tr>` +
       (canMutate() ? `<td class="chk-col"><input type="checkbox" data-cid="${escapeHtml(c.id)}" ${checked}></td>` : "") +
-      `<td><div class="primary-line">${escapeHtml(name)}${forwarded ? ` <span class="badge badge-muted" title="Host ports are relayed by mudp, not published by Docker">forward</span>` : ""}</div>` +
+      `<td><div class="primary-line">${escapeHtml(name)}${forwarded ? ` <span class="badge badge-muted" title="${t("containers.forwardBadgeTitle")}">${t("containers.forwardBadge")}</span>` : ""}</div>` +
         `<div class="secondary-line">${portLine || "—"}</div></td>` +
       (isAdmin() ? `<td><div class="secondary-line">${escapeHtml(displayNameForUsername(c.owner) || "—")}</div></td>` : "") +
       `<td>${statusBadge}</td>` +
       `<td><div class="secondary-line">${escapeHtml(c.image || c.Image || "—")}</div></td>` +
-      `<td><div class="secondary-line">${num(c.memoryMb).toFixed(0)} MB mem · ${num(c.diskMb).toFixed(0)} MB disk</div>` +
-        `<div class="secondary-line">GPU: ${escapeHtml(c.gpu || "none")}</div></td>` +
+      `<td><div class="secondary-line">${t("containers.memDisk", { mem: num(c.memoryMb).toFixed(0), disk: num(c.diskMb).toFixed(0) })}</div>` +
+        `<div class="secondary-line">${t("containers.gpuLine", { gpu: escapeHtml(c.gpu || "none") })}</div></td>` +
       `<td class="actions">` +
-        iconBtn("logs", "📄", "Logs") +
-        iconBtn("start", "▶", "Start", "icon ok", !running) +
-        iconBtn("stop", "■", "Stop", "icon warn", running || paused) +
-        iconBtn("restart", "⟳", "Restart", "icon", running || paused) +
-        (running ? iconBtn("pause", "⏸", "Pause") : "") +
-        (paused ? iconBtn("unpause", "⏵", "Unpause", "icon ok") : "") +
-        iconBtn("files", "📁", "Files") +
-        (running ? iconBtn("terminal", "🖥", "Console") : "") +
-        (running ? iconBtn("stats", "📊", "Stats") : "") +
-        iconBtn("inspect", "ℹ", "Details") +
-        iconBtn("remove", "✕", "Delete", "icon danger") +
+        iconBtn("logs", "📄", t("containers.actLogs")) +
+        iconBtn("start", "▶", t("containers.actStart"), "icon ok", !running) +
+        iconBtn("stop", "■", t("containers.actStop"), "icon warn", running || paused) +
+        iconBtn("restart", "⟳", t("containers.actRestart"), "icon", running || paused) +
+        (running ? iconBtn("pause", "⏸", t("containers.actPause")) : "") +
+        (paused ? iconBtn("unpause", "⏵", t("containers.actUnpause"), "icon ok") : "") +
+        iconBtn("files", "📁", t("containers.actFiles")) +
+        (running ? iconBtn("terminal", "🖥", t("containers.actConsole")) : "") +
+        (running ? iconBtn("stats", "📊", t("containers.actStats")) : "") +
+        iconBtn("inspect", "ℹ", t("containers.actDetails")) +
+        iconBtn("remove", "✕", t("containers.actDelete"), "icon danger") +
       `</td>` +
     `</tr>`
   );
@@ -258,7 +258,7 @@ export async function actionContainer(id, name, action) {
   if (action === "inspect") return openDetails(id, name);
   if (action === "stats") return openStats(id, name);
   if (action === "files") return openFiles(id, name);
-  if (action === "remove" && !confirm(`Delete container “${name}”? This cannot be undone.`)) return;
+  if (action === "remove" && !confirm(t("containers.confirmDeleteOne", { name }))) return;
   const key = id + ":" + action;
   state.pending.add(key);
   renderView();
@@ -269,7 +269,7 @@ export async function actionContainer(id, name, action) {
     }
     await refreshAll();
     renderView();
-    toast("Done", true);
+    toast(t("containers.done"), true);
   } catch (err) {
     toast(err.message);
   } finally {

@@ -341,7 +341,7 @@ function label(tab) {
       disks: t("nav.disks"),
       scripts: t("nav.settings"),
       hardware: t("nav.hardware"),
-      mcp: "MCP",
+      mcp: t("nav.mcp"),
     }[tab] || tab
   );
 }
@@ -383,7 +383,7 @@ export function render() {
         `<div class="brand">` +
           `<span class="dot"></span>` +
           `<span class="brand-text">MUDP</span>` +
-          `<button id="sidebarToggle" class="sidebar-toggle" title="${collapsed ? "Expand" : "Collapse"} sidebar" aria-label="Toggle sidebar">${collapsed ? ICONS.expand : ICONS.collapse}</button>` +
+          `<button id="sidebarToggle" class="sidebar-toggle" title="${collapsed ? t("shell.expandSidebar") : t("shell.collapseSidebar")}" aria-label="Toggle sidebar">${collapsed ? ICONS.expand : ICONS.collapse}</button>` +
         `</div>` +
         `<button id="mobileNavToggle" class="mobile-nav-toggle" title="${t("nav.toggleMenu")}" aria-label="${t("nav.toggleMenu")}" aria-expanded="${mobileNavOpen}">${mobileNavOpen ? ICONS.close : ICONS.menu}</button>` +
         `<nav>` +

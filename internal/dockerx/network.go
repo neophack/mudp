@@ -52,6 +52,10 @@ type Network struct {
 	// server from the administrator's setting; it is a property of the host's
 	// networking, not something stored on the network itself.
 	Forward bool `json:"forward,omitempty"`
+	// Internal marks a network whose containers are isolated from the host's
+	// external networks — they can reach each other, but not the host or the
+	// internet. Mirrors Docker's `--internal` flag.
+	Internal bool `json:"internal,omitempty"`
 }
 
 // NetworkContainer is a container endpoint attached to a network, for the
@@ -82,7 +86,9 @@ type CreateNetworkOptions struct {
 	IPRange      string
 	AuxAddresses map[string]string
 	IPv6         bool
-	Labels       map[string]string
+	// Internal isolates the network from the host's external networks.
+	Internal bool
+	Labels   map[string]string
 }
 
 // NetworkFullName builds the mudp-namespaced network name.
@@ -145,6 +151,7 @@ func (d *Client) ListNetworks(ctx context.Context, username string, admin bool, 
 			Labels:     n.Labels,
 			Owner:      owner,
 			Containers: len(n.Containers),
+			Internal:   n.Internal,
 		}
 		// Surface the first IPv4 IPAM config (subnet/gateway/range). IPv6-aware
 		// networks carry a second config entry; flag IPv6 when one is present.
@@ -278,6 +285,9 @@ func (d *Client) CreateNetwork(ctx context.Context, opts CreateNetworkOptions) (
 	if opts.IPv6 {
 		createOpts.EnableIPv6 = true
 	}
+	if opts.Internal {
+		createOpts.Internal = true
+	}
 	resp, err := d.c.NetworkCreate(ctx, full, createOpts)
 	if err != nil {
 		return "", err
@@ -304,6 +314,7 @@ func (d *Client) InspectNetwork(ctx context.Context, full, username string, admi
 		Labels:     info.Labels,
 		Owner:      info.Labels[UserLabel],
 		Containers: len(info.Containers),
+		Internal:   info.Internal,
 	}}
 	switch {
 	case info.Labels[ManagedLabel] == "true":

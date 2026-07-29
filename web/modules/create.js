@@ -1,6 +1,6 @@
 // New-container modal and its SSE-driven progress panel.
 
-import { state, toast, refreshAll, renderView, readCSRFCookie, isAdmin } from "../app.js";
+import { state, toast, refreshAll, renderView, readCSRFCookie, isAdmin, t } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 import { registerJob } from "./jobs.js";
 
@@ -10,13 +10,15 @@ const STAGE_ORDER = ["image", "create", "start", "refresh", "done"];
 // progress panel can resubmit it instead of wiping the form (which would also
 // stack a second modal backdrop — see openCreateModal's showModal call).
 let lastPayload = null;
-const STAGE_LABEL = {
-  image: "Inspect image",
-  create: "Create container",
-  start: "Start container",
-  refresh: "Refresh list",
-  done: "Complete",
-};
+function stageLabels() {
+  return {
+    image: t("create.stageImage"),
+    create: t("create.stageCreate"),
+    start: t("create.stageStart"),
+    refresh: t("create.stageRefresh"),
+    done: t("create.stageDone"),
+  };
+}
 
 export function openCreateModal() {
   state.create = { active: false, steps: [], logs: "", error: "" };
@@ -37,7 +39,7 @@ export function openCreateModal() {
     .join("");
   const myVolumes = (state.volumes || []).map((v) => v.name);
   const prefix = Number(state.me?.portPrefix || 0);
-  const portHint = prefix > 0 ? `Assigned host ports: ${prefix * 100}-${prefix * 100 + 99}` : "Ask an admin to assign a port prefix before publishing ports.";
+  const portHint = prefix > 0 ? t("create.portHintAssigned", { lo: prefix * 100, hi: prefix * 100 + 99 }) : t("create.portHintAsk");
   // Networks an admin marked for mudp forwarding behave differently enough to
   // say so: the host port still comes from the user's range, but it is relayed
   // to the container's own address instead of published by Docker (which does
@@ -45,56 +47,56 @@ export function openCreateModal() {
   // where they are relevant.
   const forwardNets = (state.networks || []).filter((n) => n.forward && n.attachable).map((n) => n.name);
   const forwardHint = forwardNets.length
-    ? `<p class="hint">Ports on ${escapeHtml(forwardNets.join(", "))} are forwarded by mudp: the container keeps its own address (e.g. <span class="mono">10.210.1.3:8080</span>) and the host port relays to it. Add <span class="mono">/udp</span> to a mapping for a UDP port.</p>`
+    ? `<p class="hint">${t("create.forwardHint", { nets: escapeHtml(forwardNets.join(", ")) })}</p>`
     : "";
   showModal({
     kind: "create",
-    title: "New Container",
+    title: t("create.title"),
     body:
       `<form id="newContainer" class="compact">` +
-        `<input name="name" placeholder="Container name, e.g. dev01" required>` +
-        `<select name="image" required><option value="">Select image</option>${imageOptions}</select>` +
+        `<input name="name" placeholder="${t("create.namePlaceholder")}" required>` +
+        `<select name="image" required><option value="">${t("create.selectImage")}</option>${imageOptions}</select>` +
         gpuSelectHtml() +
-        `<textarea name="env" placeholder="Environment variables, one KEY=VALUE per line"></textarea>` +
-        `<textarea name="ports" placeholder="Port mappings, one host:container[/tcp|/udp] per line\n${escapeHtml(portHint)}"></textarea>` +
-        `<textarea name="mounts" placeholder="Managed volume mounts, one volume-name:target[:ro] per line${myVolumes.length ? '\nAvailable volumes: ' + escapeHtml(myVolumes.join(', ')) : ''}"></textarea>` +
-        (myNetworks ? `<label class="field-label">Networks</label><div class="check-grid">${myNetworks}</div>${forwardHint}` : "") +
-        `<label class="field-label">Restart policy</label>` +
+        `<textarea name="env" placeholder="${t("create.envPlaceholder")}"></textarea>` +
+        `<textarea name="ports" placeholder="${t("create.portsPlaceholder")}\n${escapeHtml(portHint)}"></textarea>` +
+        `<textarea name="mounts" placeholder="${t("create.mountsPlaceholder")}${myVolumes.length ? '\n' + escapeHtml(t("create.mountsAvail")) + escapeHtml(myVolumes.join(', ')) : ''}"></textarea>` +
+        (myNetworks ? `<label class="field-label">${t("create.networks")}</label><div class="check-grid">${myNetworks}</div>${forwardHint}` : "") +
+        `<label class="field-label">${t("create.restartPolicy")}</label>` +
         `<select name="restartPolicy">` +
-          `<option value="unless-stopped" selected>Start on boot (unless-stopped)</option>` +
-          `<option value="always">Always restart (always)</option>` +
-          `<option value="on-failure">Restart on failure (on-failure)</option>` +
-          `<option value="no">Do not auto-restart (no)</option>` +
+          `<option value="unless-stopped" selected>${t("create.policyUnlessStopped")}</option>` +
+          `<option value="always">${t("create.policyAlways")}</option>` +
+          `<option value="on-failure">${t("create.policyOnFailure")}</option>` +
+          `<option value="no">${t("create.policyNo")}</option>` +
         `</select>` +
 
-        `<label class="check"><input type="checkbox" name="forward8080"> Forward container port 8080</label>` +
-        `<label class="check"><input type="checkbox" name="forward80"> Forward container port 80</label>` +
-        `<label class="check"><input type="checkbox" name="mountNetdisk" checked> Mount netdisk at /workspace</label>` +
-        `<label class="check"><input type="checkbox" name="mountShm" checked> Mount host /dev/shm (shared memory)</label>` +
+        `<label class="check"><input type="checkbox" name="forward8080"> ${t("create.forward8080")}</label>` +
+        `<label class="check"><input type="checkbox" name="forward80"> ${t("create.forward80")}</label>` +
+        `<label class="check"><input type="checkbox" name="mountNetdisk" checked> ${t("create.mountNetdisk")}</label>` +
+        `<label class="check"><input type="checkbox" name="mountShm" checked> ${t("create.mountShm")}</label>` +
         // Collapsible advanced block. Empty fields inherit the image defaults
         // (the backend treats them as "unset"), so leaving this collapsed keeps
         // the simple wizard behavior for most users.
-        `<details class="advanced-block"><summary>Advanced (optional overrides)</summary>` +
-          `<input name="command" placeholder="Command (overrides image CMD), e.g. python app.py">` +
-          `<input name="entrypoint" placeholder="Entrypoint (overrides image ENTRYPOINT)">` +
-          `<input name="workingDir" placeholder="Working directory (overrides WORKDIR)">` +
-          `<input name="hostname" placeholder="Container hostname">` +
-          `<input name="runUser" placeholder="Run as user (e.g. root, 1000:1000)">` +
+        `<details class="advanced-block"><summary>${t("create.advanced")}</summary>` +
+          `<input name="command" placeholder="${t("create.commandPlaceholder")}">` +
+          `<input name="entrypoint" placeholder="${t("create.entrypointPlaceholder")}">` +
+          `<input name="workingDir" placeholder="${t("create.workingDirPlaceholder")}">` +
+          `<input name="hostname" placeholder="${t("create.hostnamePlaceholder")}">` +
+          `<input name="runUser" placeholder="${t("create.runUserPlaceholder")}">` +
           `<div class="advanced-row">` +
-            `<input name="cpuLimit" type="number" min="0" step="0.5" placeholder="CPU cores (0=unlimited)">` +
-            `<input name="memoryMb" type="number" min="0" placeholder="Memory limit (MB, 0=unlimited)">` +
-            `<input name="pidsLimit" type="number" min="0" placeholder="Max PIDs (0=unlimited)">` +
+            `<input name="cpuLimit" type="number" min="0" step="0.5" placeholder="${t("create.cpuPlaceholder")}">` +
+            `<input name="memoryMb" type="number" min="0" placeholder="${t("create.memoryPlaceholder")}">` +
+            `<input name="pidsLimit" type="number" min="0" placeholder="${t("create.pidsPlaceholder")}">` +
           `</div>` +
           // cap-add grants host-wide privileges, so the backend accepts it from
           // admins only; hiding it for everyone else avoids offering a field whose
           // every non-empty value would be rejected. cap-drop only removes
           // privileges and stays available to all users.
-          (isAdmin() ? `<input name="capAdd" placeholder="cap-add (comma-separated, e.g. SYS_PTRACE)">` : "") +
-          `<input name="capDrop" placeholder="cap-drop (comma-separated)">` +
-          `<textarea name="labels" placeholder="Custom labels, one key=value per line&#10;e.g. mcp.capability=go,nodejs&#10;e.g. mcp.runtime=java17"></textarea>` +
+          (isAdmin() ? `<input name="capAdd" placeholder="${t("create.capAddPlaceholder")}">` : "") +
+          `<input name="capDrop" placeholder="${t("create.capDropPlaceholder")}">` +
+          `<textarea name="labels" placeholder="${t("create.labelsPlaceholder")}"></textarea>` +
         `</details>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="createSubmit">Create and Start</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="createSubmit">${t("create.createAndStart")}</button>`,
   });
   // Auto-fill the form from the selected image's admin-defined preset. Picking an
   // image with a preset pre-populates GPUs, env, ports, networks, and the SSH/VSCode
@@ -140,10 +142,10 @@ export function openCreateModal() {
 // networkHint labels a network that isn't one the user created themselves, and
 // flags the ones whose ports mudp forwards rather than Docker publishing them.
 function networkHint(n) {
-  const forward = n.forward ? ' <span class="hint">(mudp forward)</span>' : "";
-  if (n.system) return ' <span class="hint">(system)</span>' + forward;
-  if (n.external) return ' <span class="hint">(host)</span>' + forward;
-  if (n.shared) return ' <span class="hint">(shared)</span>' + forward;
+  const forward = n.forward ? ` <span class="hint">${t("create.netHintForward")}</span>` : "";
+  if (n.system) return ` <span class="hint">${t("create.netHintSystem")}</span>` + forward;
+  if (n.external) return ` <span class="hint">${t("create.netHintHost")}</span>` + forward;
+  if (n.shared) return ` <span class="hint">${t("create.netHintShared")}</span>` + forward;
   return forward;
 }
 
@@ -151,7 +153,7 @@ function networkHint(n) {
 // Falls back to none/all when the count is unknown (non-GPU host or not yet loaded).
 function gpuSelectHtml() {
   const count = Number(state.gpuCount || 0);
-  let opts = `<option value="none">No GPU</option><option value="all">All GPUs</option>`;
+  let opts = `<option value="none">${t("create.noGpu")}</option><option value="all">${t("create.allGpus")}</option>`;
   for (let i = 0; i < count; i++) {
     opts += `<option value="${i}">GPU ${i}</option>`;
   }
@@ -191,7 +193,8 @@ export function renderCreateProgress() {
   if (state.modal.kind !== "create") return;
   const steps = state.create.steps
     .map((s) => {
-      const label = STAGE_LABEL[s.stage] || s.stage;
+      const labels = stageLabels();
+      const label = labels[s.stage] || s.stage;
       let icon = "○";
       let cls = "";
       if (s.state === "active") {
@@ -212,8 +215,8 @@ export function renderCreateProgress() {
       (state.create.error ? `<div class="error-box">✗ ${escapeHtml(state.create.error)}</div>` : ``) +
       `<pre class="log-output create-log">${escapeHtml(state.create.logs || "")}</pre>` +
       `<div style="display:flex;gap:8px;justify-content:flex-end;">` +
-        (state.create.error ? `<button class="primary" id="createRetry">Retry</button>` : ``) +
-        `<button class="ghost" data-close>${state.create.error ? "Close" : "Hide"}</button>` +
+        (state.create.error ? `<button class="primary" id="createRetry">${t("common.retry")}</button>` : ``) +
+        `<button class="ghost" data-close>${state.create.error ? t("common.close") : t("common.hide")}</button>` +
       `</div>`
   );
   const retry = $("#createRetry");
@@ -253,7 +256,7 @@ export async function streamCreate(payload) {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      state.create.error = data.error || `Request failed (${res.status})`;
+      state.create.error = data.error || t("create.requestFailed", { status: res.status });
       state.create.active = false;
       job.error(state.create.error);
       renderCreateProgress();
@@ -282,16 +285,16 @@ export async function streamCreate(payload) {
         state.create.steps.forEach((s) => {
           if (s.state === "active") s.state = "error";
         });
-        state.create.error = data.message || "Creation failed";
+        state.create.error = data.message || t("create.creationFailed");
         state.create.logs += `[error] ${state.create.error}\n`;
         job.error(state.create.error);
         renderCreateProgress();
         toast(state.create.error);
       } else if (event === "done") {
         state.create.active = false;
-        job.done(data.message || "Container created");
+        job.done(data.message || t("create.created"));
         renderCreateProgress();
-        toast("Container created", true);
+        toast(t("create.created"), true);
         refreshAll().then(() => renderView());
         setTimeout(() => closeModal(), 700);
       } else if (event === "cancelled") {
@@ -304,7 +307,7 @@ export async function streamCreate(payload) {
   } catch (err) {
     state.create.active = false;
     if (job.signal.aborted) {
-      state.create.error = "Cancelled";
+      state.create.error = t("create.cancelled");
       job.cancel();
     } else {
       state.create.error = err.message;

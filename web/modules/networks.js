@@ -2,7 +2,7 @@
 // between Docker publishing and mudp port forwarding. mudp-managed networks are
 // namespaced per user.
 
-import { state, api, toast, refreshSection, renderView, canMutate, isAdmin } from "../app.js";
+import { state, api, toast, refreshSection, renderView, canMutate, isAdmin, t } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 import { openNetworkDetail } from "./network_details.js";
 
@@ -10,19 +10,19 @@ export function renderNetworks() {
   const admin = isAdmin();
   const cols = admin ? 7 : 6;
   const rows = (state.networks || []).map(networkRow).join("") ||
-    `<tr class="empty-row"><td colspan="${cols}">No networks. Click “+ New Network” to create one.</td></tr>`;
+    `<tr class="empty-row"><td colspan="${cols}">${t("networks.noNetworksCreate")}</td></tr>`;
   $("#view").innerHTML =
     `<div class="card">` +
-      `<div class="card-head"><h2>Networks</h2>` +
-        (admin ? `<button class="primary" id="newNetBtn">+ New Network</button>` : "") +
+      `<div class="card-head"><h2>${t("networks.title")}</h2>` +
+        (admin ? `<button class="primary" id="newNetBtn">${t("networks.newNetwork")}</button>` : "") +
       `</div>` +
       (admin
-        ? `<p class="hint" style="padding:0 16px;margin:0 0 8px">Networks already on this host are listed too. Use “Groups” to choose which user groups can see and attach to one — including Docker's “bridge”, which stays open to everyone until you pick groups for it. Only the network's creator can delete it. Use “Forward” where Docker cannot publish a port (an OpenWrt/LAN network, where <span class="mono">-p</span> fails to bind or the router's firewall bypasses it): mudp then relays each container's host port to the container's own address instead.</p>`
+        ? `<p class="hint" style="padding:0 16px;margin:0 0 8px">${t("networks.adminHint")}</p>`
         : "") +
       `<table class="data">` +
-        `<thead><tr><th>Name</th><th>Driver</th><th>Subnet</th><th>Containers</th><th>Owner</th>` +
-          (admin ? `<th>Groups</th>` : "") +
-          `<th class="actions">Actions</th></tr></thead>` +
+        `<thead><tr><th>${t("common.name")}</th><th>${t("common.driver")}</th><th>${t("networks.colSubnet")}</th><th>${t("common.containers")}</th><th>${t("common.owner")}</th>` +
+          (admin ? `<th>${t("networks.colGroups")}</th>` : "") +
+          `<th class="actions">${t("common.actions")}</th></tr></thead>` +
         `<tbody>${rows}</tbody>` +
       `</table>` +
     `</div>`;
@@ -48,11 +48,14 @@ function networkBadge(n) {
   // "forward" says the ports of containers on this network are relayed by mudp
   // instead of published by Docker — set in Settings → Port forwarding, and
   // worth showing here because it changes what a port mapping does.
-  const forward = n.forward ? ` <span class="badge badge-ok">forward</span>` : "";
-  if (n.system) return ` <span class="badge badge-muted">system</span>` + forward;
-  if (n.external) return ` <span class="badge badge-muted">host</span>` + forward;
-  if (n.shared) return ` <span class="badge badge-muted">shared</span>` + forward;
-  return forward;
+  const forward = n.forward ? ` <span class="badge badge-ok">${t("networks.badgeForward")}</span>` : "";
+  // "internal" isolates the network from the host's external networks, so it is
+  // worth flagging on the row: containers on it cannot reach the internet.
+  const internal = n.internal ? ` <span class="badge badge-muted">${t("networks.badgeInternal")}</span>` : "";
+  if (n.system) return ` <span class="badge badge-muted">${t("networks.badgeSystem")}</span>` + internal + forward;
+  if (n.external) return ` <span class="badge badge-muted">${t("networks.badgeHost")}</span>` + internal + forward;
+  if (n.shared) return ` <span class="badge badge-muted">${t("networks.badgeShared")}</span>` + internal + forward;
+  return internal + forward;
 }
 
 // groupsCell describes who may use a network, for the admin-only Groups column.
@@ -63,7 +66,7 @@ function networkBadge(n) {
 function groupsCell(n) {
   const groups = n.groups || [];
   if (groups.length) return groups.join(", ");
-  if (n.system) return n.name === "bridge" ? "everyone" : "—";
+  if (n.system) return n.name === "bridge" ? t("networks.everyone") : "—";
   return "—";
 }
 
@@ -79,25 +82,25 @@ function networkRow(n) {
   // address on — the same set that can be shared.
   const forwardable = admin && n.attachable;
   const forwardTitle = n.forward
-    ? "mudp forwards host ports for this network — click to hand publishing back to Docker"
-    : "Docker publishes host ports for this network — click to forward them through mudp instead";
+    ? t("networks.forwardTitleOn")
+    : t("networks.forwardTitleOff");
   return (
     `<tr>` +
       `<td><div class="primary-line">${name}${networkBadge(n)}</div></td>` +
       `<td><div class="secondary-line">${escapeHtml(n.driver)}</div></td>` +
       `<td><div class="secondary-line mono">${escapeHtml(n.subnet || "—")}</div></td>` +
       `<td>${n.containers || 0}</td>` +
-      `<td><div class="secondary-line">${escapeHtml(n.owner || "system")}</div></td>` +
+      `<td><div class="secondary-line">${escapeHtml(n.owner || t("networks.badgeSystem"))}</div></td>` +
       (admin
         ? `<td><div class="secondary-line">${escapeHtml(groupsCell(n))}</div></td>`
         : "") +
       `<td class="actions">` +
-        `<button class="icon" title="Details" data-net-inspect data-net-name="${name}" data-net-fullname="${full}">ℹ</button>` +
-        (shareable ? `<button class="ghost" data-net-share data-net-name="${name}" data-net-fullname="${full}">Groups</button>` : "") +
+        `<button class="icon" title="${t("networks.details")}" data-net-inspect data-net-name="${name}" data-net-fullname="${full}">ℹ</button>` +
+        (shareable ? `<button class="ghost" data-net-share data-net-name="${name}" data-net-fullname="${full}">${t("networks.groups")}</button>` : "") +
         (forwardable
-          ? `<button class="ghost${n.forward ? " is-on" : ""}" title="${forwardTitle}" data-net-forward="${n.forward ? "off" : "on"}" data-net-name="${name}" data-net-fullname="${full}">${n.forward ? "Forwarding" : "Forward"}</button>`
+          ? `<button class="ghost${n.forward ? " is-on" : ""}" title="${forwardTitle}" data-net-forward="${n.forward ? "off" : "on"}" data-net-name="${name}" data-net-fullname="${full}">${n.forward ? t("networks.forwarding") : t("networks.forward")}</button>`
           : "") +
-        (canMutate() && n.canDelete ? `<button class="icon danger" title="Delete" data-net-delete data-net-name="${name}" data-net-fullname="${full}">✕</button>` : "") +
+        (canMutate() && n.canDelete ? `<button class="icon danger" title="${t("common.delete")}" data-net-delete data-net-name="${name}" data-net-fullname="${full}">✕</button>` : "") +
       `</td>` +
     `</tr>`
   );
@@ -112,11 +115,7 @@ function networkRow(n) {
 // Turning it on applies to containers created from then on *and* to the ones
 // already on the network, whose existing host ports are relayed instead.
 async function toggleForward(fullName, name, forward) {
-  if (forward && !confirm(
-    `Forward host ports for "${name}" through mudp?\n\n` +
-    `New containers on this network will have their ports relayed by mudp instead of published by Docker. ` +
-    `Containers already on it keep their host ports and are relayed too.`
-  )) return;
+  if (forward && !confirm(t("networks.forwardConfirm", { name }))) return;
   try {
     const res = await api("/api/networks/forward", {
       method: "POST",
@@ -128,9 +127,9 @@ async function toggleForward(fullName, name, forward) {
     await refreshSection("networks");
     renderView();
     if (res.warning) {
-      toast(`Saved, but some forwards could not start: ${res.warning}`);
+      toast(t("networks.forwardSavedWarn", { warn: res.warning }));
     } else {
-      toast(forward ? `mudp now forwards ports for ${name}` : `${name} publishes through Docker again`, true);
+      toast(forward ? t("networks.forwardOn", { name }) : t("networks.forwardOff", { name }), true);
     }
   } catch (err) {
     toast(err.message);
@@ -149,17 +148,17 @@ function openShareNetwork(fullName, name) {
   // Docker's "bridge" starts out open to everyone, so for that row the dialog
   // is about taking access away, not granting it.
   const hint = net.system
-    ? `Every user can attach to <b>bridge</b> while no group is selected. Select groups to restrict it to their members — admins keep access either way.`
-    : `Members of the selected groups can see this network and attach their containers to it.`;
+    ? t("networks.groupsHintSystem")
+    : t("networks.groupsHint");
   showModal({
     kind: "netgroups",
-    title: `Groups — ${name}`,
+    title: t("networks.groupsTitle", { name }),
     body:
       `<form id="netGroupForm" class="compact">` +
         `<p class="hint">${hint}</p>` +
-        `<div class="check-grid">${checks || '<span class="hint">No groups yet.</span>'}</div>` +
+        `<div class="check-grid">${checks || `<span class="hint">${t("networks.noGroupsYet")}</span>`}</div>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="netGroupSave">Save</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="netGroupSave">${t("common.save")}</button>`,
   });
   $("#netGroupSave").onclick = async () => {
     const groupIds = [...$("#netGroupForm").querySelectorAll('input[name="groupIds"]:checked')].map((i) => Number(i.value));
@@ -168,7 +167,7 @@ function openShareNetwork(fullName, name) {
       await refreshSection("networks");
       renderView();
       closeModal();
-      toast("Network access updated", true);
+      toast(t("networks.accessUpdated"), true);
     } catch (err) {
       toast(err.message);
     }
@@ -178,19 +177,20 @@ function openShareNetwork(fullName, name) {
 function openCreateNetwork() {
   showModal({
     kind: "network",
-    title: "New Network",
+    title: t("networks.newTitle"),
     body:
       `<form id="netForm" class="compact">` +
-        `<input name="name" placeholder="Network name, e.g. frontend" required>` +
+        `<input name="name" placeholder="${t("networks.namePlaceholder")}" required>` +
         `<select name="driver"><option value="bridge">bridge</option><option value="overlay">overlay</option><option value="macvlan">macvlan</option></select>` +
-        `<input name="subnet" placeholder="Subnet (optional), e.g. 172.20.0.0/16">` +
-        `<details class="advanced-block"><summary>Advanced IPAM (optional)</summary>` +
-          `<input name="gateway" placeholder="Gateway, e.g. 172.20.0.1">` +
-          `<input name="ipRange" placeholder="IP range, e.g. 172.20.0.0/24">` +
-          `<label class="check"><input type="checkbox" name="ipv6"> Enable IPv6</label>` +
+        `<input name="subnet" placeholder="${t("networks.subnetPlaceholder")}">` +
+        `<details class="advanced-block"><summary>${t("networks.advancedIpam")}</summary>` +
+          `<input name="gateway" placeholder="${t("networks.gatewayPlaceholder")}">` +
+          `<input name="ipRange" placeholder="${t("networks.ipRangePlaceholder")}">` +
+          `<label class="check"><input type="checkbox" name="ipv6"> ${t("networks.enableIpv6")}</label>` +
+          `<label class="check"><input type="checkbox" name="internal"> ${t("networks.internal")}</label>` +
         `</details>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="netSubmit">Create</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="netSubmit">${t("common.create")}</button>`,
   });
   $("#netSubmit").onclick = async () => {
     const form = $("#netForm");
@@ -202,13 +202,14 @@ function openCreateNetwork() {
       gateway: fd.get("gateway") || "",
       ipRange: fd.get("ipRange") || "",
       ipv6: form.querySelector('[name="ipv6"]').checked,
+      internal: form.querySelector('[name="internal"]').checked,
     };
     try {
       await api("/api/networks", { method: "POST", body: JSON.stringify(payload) });
       await refreshSection("networks");
       renderView();
       closeModal();
-      toast("Network created", true);
+      toast(t("networks.created"), true);
     } catch (err) {
       toast(err.message);
     }
@@ -216,12 +217,12 @@ function openCreateNetwork() {
 }
 
 async function deleteNetwork(fullName, name) {
-  if (!confirm(`Delete network “${name}”?`)) return;
+  if (!confirm(t("networks.deleteConfirm", { name }))) return;
   try {
     await api("/api/networks/delete", { method: "POST", body: JSON.stringify({ name: fullName }) });
     await refreshSection("networks");
     renderView();
-    toast("Network deleted", true);
+    toast(t("networks.deleted"), true);
   } catch (err) {
     toast(err.message);
   }

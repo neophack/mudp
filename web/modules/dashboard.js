@@ -1,13 +1,13 @@
 // Dashboard: environment overview, resource counts, and the caller's workspace
 // rollup. Rendered from a single /api/dashboard payload (no N+1 fetches).
 
-import { state, escapeHtml, isAdmin, displayName } from "../app.js";
+import { state, escapeHtml, isAdmin, displayName, t } from "../app.js";
 
 export function renderDashboard() {
   const d = state.dashboard;
   const admin = isAdmin();
   if (!d) {
-    $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">Loading dashboard…</p></div></div>`;
+    $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">${t("subtitle.dashboard")}</p></div></div>`;
     return;
   }
   const sys = d.system || {};
@@ -17,17 +17,17 @@ export function renderDashboard() {
   // platform. A short label keeps the scope obvious.
   const scopeHint = admin
     ? ""
-    : `<p class="hint dash-scope">Showing your resources only.</p>`;
+    : `<p class="hint dash-scope">${t("dash.scopeMine")}</p>`;
 
   $("#view").innerHTML =
     `<div class="dash-stack">` +
       scopeHint +
       // Row 1: four uniform stat tiles
       `<div class="dash-tiles">` +
-        statTile("Containers", sys.containers?.total ?? 0, `${sys.containers?.running ?? 0} running`, "📦") +
-        statTile("Images", sys.images?.count ?? 0, admin ? fmtMB(sys.images?.sizeMb) : `${sys.images?.count ?? 0} in use`, "🖼") +
-        statTile("Volumes", sys.volumes?.count ?? 0, fmtMB(sys.volumes?.sizeMb), "💾") +
-        statTile("Networks", sys.networks ?? 0, admin ? "managed + system" : "mine + system", "🌐") +
+        statTile(t("nav.containers"), sys.containers?.total ?? 0, t("dash.running", { n: sys.containers?.running ?? 0 }), "📦") +
+        statTile(t("nav.images"), sys.images?.count ?? 0, admin ? fmtMB(sys.images?.sizeMb) : t("dash.inUse", { n: sys.images?.count ?? 0 }), "🖼") +
+        statTile(t("nav.volumes"), sys.volumes?.count ?? 0, fmtMB(sys.volumes?.sizeMb), "💾") +
+        statTile(t("nav.networks"), sys.networks ?? 0, admin ? t("dash.managedSystem") : t("dash.mineSystem"), "🌐") +
       `</div>` +
       // Row 2: environment (wide) + donut chart
       `<div class="dash-row-2">` +
@@ -54,28 +54,28 @@ function myContainersCard() {
   );
   return (
     `<section class="card">` +
-      `<div class="card-head"><h2>My Containers</h2></div>` +
-      `<div class="card-body"><ul class="audit-mini">${rows.join("") || `<li class="hint">You have no containers yet.</li>`}</ul></div>` +
+      `<div class="card-head"><h2>${t("dash.myContainers")}</h2></div>` +
+      `<div class="card-body"><ul class="audit-mini">${rows.join("") || `<li class="hint">${t("dash.noContainers")}</li>`}</ul></div>` +
     `</section>`
   );
 }
 
 function envCard(sys, healthy) {
   const rows = [
-    ["Host", escapeHtml(sys.name || "—")],
+    [t("hardware.host"), escapeHtml(sys.name || "—")],
     ["OS", escapeHtml([sys.osType, sys.osVersion].filter(Boolean).join(" ") || "—")],
     ["Kernel", escapeHtml(sys.kernel || "—")],
-    ["Architecture", escapeHtml(sys.arch || "—")],
+    [t("dash.arch"), escapeHtml(sys.arch || "—")],
     ["CPUs", String(sys.cpus ?? "—")],
-    ["Memory", sys.memoryGb ? `${sys.memoryGb} GB` : "—"],
+    [t("hardware.memory"), sys.memoryGb ? `${sys.memoryGb} GB` : "—"],
     ["Docker", escapeHtml(sys.dockerVersion || "—")],
-    ["Storage driver", escapeHtml(sys.storageDriver || "—")],
-    ["Agent", escapeHtml(sys.agentGoRuntime || "—") + ` · ${sys.agentCpu ?? "—"} CPU · ${fmtMB(sys.agentMemMb)} mem`],
+    [t("hardware.colStorageDriver"), escapeHtml(sys.storageDriver || "—")],
+    [t("dash.agent"), escapeHtml(sys.agentGoRuntime || "—") + ` · ${sys.agentCpu ?? "—"} CPU · ${fmtMB(sys.agentMemMb)} mem`],
   ];
   return (
     `<section class="card">` +
-      `<div class="card-head"><h2>Environment</h2>` +
-        `<span class="badge ${healthy ? "badge-ok" : "badge-danger"}"><span class="dot"></span>${healthy ? "Healthy" : "Unreachable"}</span>` +
+      `<div class="card-head"><h2>${t("dash.environment")}</h2>` +
+        `<span class="badge ${healthy ? "badge-ok" : "badge-danger"}"><span class="dot"></span>${healthy ? t("dash.healthy") : t("dash.unreachable")}</span>` +
       `</div>` +
       `<div class="card-body"><dl class="detail">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}</dl></div>` +
     `</section>`
@@ -107,9 +107,9 @@ function containersChart(c) {
   let acc = 0;
   const slices = [];
   for (const [_label, n, color] of [
-    ["Running", running, "var(--ok)"],
-    ["Paused", paused, "var(--warn)"],
-    ["Stopped", stopped, "var(--muted)"],
+    [t("containers.filterRunning"), running, "var(--ok)"],
+    [t("containers.filterPaused"), paused, "var(--warn)"],
+    [t("containers.filterStopped"), stopped, "var(--muted)"],
   ]) {
     const span = pct(n);
     slices.push(`${color} ${acc}% ${acc + span}%`);
@@ -118,13 +118,13 @@ function containersChart(c) {
   const bg = total > 0 ? `conic-gradient(${slices.join(", ")})` : "var(--line-soft)";
   return (
     `<section class="card">` +
-      `<div class="card-head"><h2>Containers</h2></div>` +
+      `<div class="card-head"><h2>${t("dash.containers")}</h2></div>` +
       `<div class="card-body chart-row">` +
-        `<div class="donut" style="background:${bg}"><div class="donut-hole"><strong>${total}</strong><span>total</span></div></div>` +
+        `<div class="donut" style="background:${bg}"><div class="donut-hole"><strong>${total}</strong><span>${t("dash.total")}</span></div></div>` +
         `<ul class="legend">` +
-          legendItem("Running", running, "var(--ok)") +
-          legendItem("Paused", paused, "var(--warn)") +
-          legendItem("Stopped", stopped, "var(--muted)") +
+          legendItem(t("containers.filterRunning"), running, "var(--ok)") +
+          legendItem(t("containers.filterPaused"), paused, "var(--warn)") +
+          legendItem(t("containers.filterStopped"), stopped, "var(--muted)") +
           (unhealthy > 0 ? legendItem("Unhealthy", unhealthy, "var(--danger)") : "") +
         `</ul>` +
       `</div>` +
@@ -142,14 +142,14 @@ function myWorkspaceCard(mine) {
   const pct = cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0;
   return (
     `<section class="card">` +
-      `<div class="card-head"><h2>My Workspace</h2></div>` +
+      `<div class="card-head"><h2>${t("dash.myWorkspace")}</h2></div>` +
       `<div class="card-body">` +
-        `<div class="kv"><span>Containers</span><strong>${used}${cap ? ` / ${cap}` : ""}</strong></div>` +
+        `<div class="kv"><span>${t("nav.containers")}</span><strong>${used}${cap ? ` / ${cap}` : ""}</strong></div>` +
         `<div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>` +
         `<div class="kv-row">` +
-          kv("Running", mine.running ?? 0) +
-          kv("Memory", fmtMB(mine.memoryMb)) +
-          kv("Disk", fmtMB(mine.diskMb)) +
+          kv(t("containers.filterRunning"), mine.running ?? 0) +
+          kv(t("hardware.memory"), fmtMB(mine.memoryMb)) +
+          kv(t("common.disk"), fmtMB(mine.diskMb)) +
         `</div>` +
       `</div>` +
     `</section>`
@@ -166,9 +166,9 @@ function topUsersCard(usage) {
     .slice(0, 6);
   return (
     `<section class="card">` +
-      `<div class="card-head"><h2>Top Users by Containers</h2></div>` +
-      `<table class="data"><thead><tr><th>User</th><th>Containers</th><th>Memory</th><th>Disk</th><th>GPU</th></tr></thead>` +
-      `<tbody>${top.map(topRow).join("") || `<tr class="empty-row"><td colspan="5">No data.</td></tr>`}</tbody></table>` +
+      `<div class="card-head"><h2>${t("dash.topUsers")}</h2></div>` +
+      `<table class="data"><thead><tr><th>${t("common.user")}</th><th>${t("common.containers")}</th><th>${t("hardware.memory")}</th><th>${t("common.disk")}</th><th>${t("common.gpu")}</th></tr></thead>` +
+      `<tbody>${top.map(topRow).join("") || `<tr class="empty-row"><td colspan="5">${t("common.noData")}</td></tr>`}</tbody></table>` +
     `</section>`
   );
 }
@@ -194,8 +194,8 @@ function recentActivityCard(audit) {
   );
   return (
     `<section class="card">` +
-      `<div class="card-head"><h2>Recent Activity</h2></div>` +
-      `<div class="card-body"><ul class="audit-mini">${rows.join("") || `<li class="hint">No recent activity.</li>`}</ul></div>` +
+      `<div class="card-head"><h2>${t("dash.recentActivity")}</h2></div>` +
+      `<div class="card-body"><ul class="audit-mini">${rows.join("") || `<li class="hint">${t("dash.noActivity")}</li>`}</ul></div>` +
     `</section>`
   );
 }
@@ -208,13 +208,13 @@ function fmtMB(mb) {
 
 function relTime(iso) {
   if (!iso) return "";
-  const t = new Date(iso).getTime();
-  if (isNaN(t)) return iso;
-  const s = Math.round((Date.now() - t) / 1000);
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-  return `${Math.round(s / 86400)}d ago`;
+  const tt = new Date(iso).getTime();
+  if (isNaN(tt)) return iso;
+  const s = Math.round((Date.now() - tt) / 1000);
+  if (s < 60) return t("dash.sAgo", { n: s });
+  if (s < 3600) return t("dash.minAgo", { n: Math.round(s / 60) });
+  if (s < 86400) return t("dash.hAgo", { n: Math.round(s / 3600) });
+  return t("dash.dAgo", { n: Math.round(s / 86400) });
 }
 
 function $(selector) {

@@ -1,23 +1,23 @@
 // Volumes: list, create, delete, prune. mudp-managed volumes are namespaced
 // per user; admins see everyone's.
 
-import { state, api, toast, refreshSection, renderView, canMutate, displayNameForUsername } from "../app.js";
+import { state, api, toast, refreshSection, renderView, canMutate, displayNameForUsername, t } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 import { openVolumeFiles } from "./volume_files.js";
 
 export function renderVolumes() {
   const rows = (state.volumes || []).map(volumeRow).join("") ||
-    `<tr class="empty-row"><td colspan="6">No volumes. Click “+ New Volume” to create one.</td></tr>`;
+    `<tr class="empty-row"><td colspan="6">${t("volumes.noVolumesCreate")}</td></tr>`;
   $("#view").innerHTML =
     `<div class="card">` +
-      `<div class="card-head"><h2>Volumes</h2>` +
+      `<div class="card-head"><h2>${t("volumes.title")}</h2>` +
         `<div class="head-tools">` +
-          (canMutate() ? `<button class="ghost" id="pruneVolumes">Prune Unused</button>` : "") +
-          (canMutate() ? `<button class="primary" id="newVolumeBtn">+ New Volume</button>` : "") +
+          (canMutate() ? `<button class="ghost" id="pruneVolumes">${t("volumes.pruneUnused")}</button>` : "") +
+          (canMutate() ? `<button class="primary" id="newVolumeBtn">${t("volumes.newVolume")}</button>` : "") +
         `</div>` +
       `</div>` +
       `<table class="data">` +
-        `<thead><tr><th>Name</th><th>Driver</th><th>Size</th><th>In Use</th><th>Owner</th><th class="actions">Actions</th></tr></thead>` +
+        `<thead><tr><th>${t("common.name")}</th><th>${t("volumes.colDriver")}</th><th>${t("common.size")}</th><th>${t("volumes.colInUse")}</th><th>${t("common.owner")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
         `<tbody>${rows}</tbody>` +
       `</table>` +
     `</div>`;
@@ -41,11 +41,11 @@ function volumeRow(v) {
       `<td><div class="primary-line">${escapeHtml(v.name)}</div><div class="secondary-line mono">${escapeHtml(v.fullName || v.name)}</div></td>` +
       `<td><div class="secondary-line">${escapeHtml(v.driver)}</div></td>` +
       `<td>${fmtMB(v.sizeMb)}</td>` +
-      `<td>${v.inUse ? `<span class="badge badge-ok">in use</span>` : `<span class="badge badge-muted">free</span>`}</td>` +
+      `<td>${v.inUse ? `<span class="badge badge-ok">${t("volumes.inUse")}</span>` : `<span class="badge badge-muted">${t("volumes.free")}</span>`}</td>` +
       `<td><div class="secondary-line">${escapeHtml(displayNameForUsername(v.owner) || "—")}</div></td>` +
       `<td class="actions">` +
-        `<button class="icon" title="Browse files" data-vol-name="${escapeHtml(v.name)}" data-vol-fullname="${escapeHtml(v.fullName || v.name)}" data-vol-files="1">📁</button>` +
-        (canMutate() ? `<button class="icon danger" title="Delete" data-vol-name="${escapeHtml(v.name)}" data-vol-fullname="${escapeHtml(v.fullName || v.name)}">✕</button>` : "") +
+        `<button class="icon" title="${t("volumes.browseFiles")}" data-vol-name="${escapeHtml(v.name)}" data-vol-fullname="${escapeHtml(v.fullName || v.name)}" data-vol-files="1">📁</button>` +
+        (canMutate() ? `<button class="icon danger" title="${t("volumes.delete")}" data-vol-name="${escapeHtml(v.name)}" data-vol-fullname="${escapeHtml(v.fullName || v.name)}">✕</button>` : "") +
       `</td>` +
     `</tr>`
   );
@@ -54,15 +54,15 @@ function volumeRow(v) {
 function openCreateVolume() {
   showModal({
     kind: "volume",
-    title: "New Volume",
+    title: t("volumes.newTitle"),
     body:
       `<form id="volForm" class="compact">` +
-        `<input name="name" placeholder="Volume name, e.g. workspace" required>` +
+        `<input name="name" placeholder="${t("volumes.namePlaceholder")}" required>` +
         `<select name="driver"><option value="local">local</option><option value="nfs">nfs</option></select>` +
-        `<input name="subnet" placeholder="(local driver needs no options)" disabled>` +
-        `<p class="hint">The volume will be owned by you and visible in the container wizard.</p>` +
+        `<input name="subnet" placeholder="${t("volumes.localHint")}" disabled>` +
+        `<p class="hint">${t("volumes.ownedHint")}</p>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="volSubmit">Create</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="volSubmit">${t("common.create")}</button>`,
   });
   $("#volSubmit").onclick = async () => {
     const fd = new FormData($("#volForm"));
@@ -75,7 +75,7 @@ function openCreateVolume() {
       await refreshSection("volumes");
       renderView();
       closeModal();
-      toast("Volume created", true);
+      toast(t("volumes.created"), true);
     } catch (err) {
       toast(err.message);
     }
@@ -83,24 +83,24 @@ function openCreateVolume() {
 }
 
 async function deleteVolume(fullName, name) {
-  if (!confirm(`Delete volume “${name}”? Data inside is lost.`)) return;
+  if (!confirm(t("volumes.deleteConfirm", { name }))) return;
   try {
     await api("/api/volumes/delete", { method: "POST", body: JSON.stringify({ name: fullName, force: false }) });
     await refreshSection("volumes");
     renderView();
-    toast("Volume deleted", true);
+    toast(t("volumes.deleted"), true);
   } catch (err) {
     toast(err.message);
   }
 }
 
 async function pruneVolumes() {
-  if (!confirm("Remove all your unused (dangling) volumes?")) return;
+  if (!confirm(t("volumes.pruneConfirm"))) return;
   try {
     const r = await api("/api/volumes/prune", { method: "POST" });
     await refreshSection("volumes");
     renderView();
-    toast(`Reclaimed ${r.removed || 0} volume(s), ${fmtMB((r.bytesFreed || 0) / 1024 / 1024)}`, true);
+    toast(t("volumes.pruneResult", { n: r.removed || 0, size: fmtMB((r.bytesFreed || 0) / 1024 / 1024) }), true);
   } catch (err) {
     toast(err.message);
   }

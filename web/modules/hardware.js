@@ -7,7 +7,7 @@
 // resetting their graphs on restart) so CPU/memory get an htop-style trend
 // chart and GPUs/sensors get nvtop/lm-sensors-style trend sparklines.
 
-import { api, escapeHtml } from "../app.js";
+import { api, escapeHtml, t } from "../app.js";
 
 const POLL_MS = 5000;
 // 120 samples @ 5s = 10 minutes of history, similar to htop's default window.
@@ -63,7 +63,7 @@ export function renderHardware() {
   // #hwTooltip is a sibling of #hwRoot (not inside it) so it survives the 5s
   // innerHTML replacement in refreshHardware() -> renderHardwareData().
   $("#view").innerHTML =
-    `<div class="dash-stack" id="hwRoot"><div class="card"><div class="card-body"><p class="hint">Loading hardware snapshot…</p></div></div></div>` +
+    `<div class="dash-stack" id="hwRoot"><div class="card"><div class="card-body"><p class="hint">${t("hardware.loadingSnapshot")}</p></div></div></div>` +
     `<div class="hw-tooltip" id="hwTooltip" hidden></div>`;
   bindHover();
   // Tear down any prior timer before starting a fresh one (covers tab re-entry).
@@ -98,22 +98,22 @@ function renderHardwareData(snap) {
   if (!root) return;
   root.innerHTML =
     `<div class="dash-tiles">` +
-    tile("CPU", (host.cpuPct ?? 0).toFixed(1) + "%", `${sys.cpus ?? "?"} cores`, "🖥", host.cpuPct) +
-    tile("Memory", (host.memPct ?? 0).toFixed(1) + "%", `${fmtMB(host.memUsedMb)} / ${fmtMB(host.memTotalMb)}`, "🧠", host.memPct) +
-    tile("Load (1m)", (host.load1 ?? 0).toFixed(2), `CPUs: ${sys.cpus ?? "?"}`, "📈") +
-    tile("GPU Temp", avgTemp(gpus), `${gpus.length} GPU${gpus.length === 1 ? "" : "s"}`, "🌡") +
+      tile(t("hardware.cpu"), (host.cpuPct ?? 0).toFixed(1) + "%", t("hardware.cores", { n: sys.cpus ?? "?" }), "🖥", host.cpuPct) +
+      tile(t("hardware.memory"), (host.memPct ?? 0).toFixed(1) + "%", `${fmtMB(host.memUsedMb)} / ${fmtMB(host.memTotalMb)}`, "🧠", host.memPct) +
+      tile(t("hardware.load1m"), (host.load1 ?? 0).toFixed(2), `${t("hardware.cpu")}: ${sys.cpus ?? "?"}`, "📈") +
+      tile(t("hardware.gpuTemp"), avgTemp(gpus), `${gpus.length} GPU${gpus.length === 1 ? "" : "s"}`, "🌡") +
     `</div>` +
     `<div class="hist-row">` +
-    historyChart("CPU usage", history.cpu, history.t, { color: "var(--chart-cpu)" }) +
-    historyChart("Memory usage", history.mem, history.t, { color: "var(--chart-mem)" }) +
+      historyChart(t("hardware.cpuUsage"), history.cpu, history.t, { color: "var(--chart-cpu)" }) +
+      historyChart(t("hardware.memUsage"), history.mem, history.t, { color: "var(--chart-mem)" }) +
     `</div>` +
-    `<div class="dash-section-head"><h2>GPUs</h2><span class="hint">${gpus.length} detected</span></div>` +
+    `<div class="dash-section-head"><h2>${t("hardware.gpus")}</h2><span class="hint">${t("hardware.nDetected", { n: gpus.length })}</span></div>` +
     gpuGrid(gpus) +
     `<div class="dash-row-2">` +
-    hostCard(sys, host) +
-    tempCard(host.temp || []) +
+      hostCard(sys, host) +
+      tempCard(host.temp || []) +
     `</div>` +
-    `<p class="hint">Updated ${new Date(snap.updated ?? Date.now()).toLocaleTimeString()} · refreshes every ${POLL_MS / 1000}s</p>`;
+    `<p class="hint">${t("hardware.updated", { time: new Date(snap.updated ?? Date.now()).toLocaleTimeString(), sec: POLL_MS / 1000 })}</p>`;
 }
 
 // tile renders a uniform stat tile with a big number, an optional meter bar
@@ -146,7 +146,7 @@ function avgTemp(gpus) {
 // utilisation + temperature trend sparkline (nvtop-style).
 function gpuGrid(gpus) {
   if (!gpus || !gpus.length) {
-    return `<div class="card"><div class="card-body"><p class="hint">No NVIDIA GPUs detected (nvidia-smi unavailable).</p></div></div>`;
+    return `<div class="card"><div class="card-body"><p class="hint">${t("hardware.noGpus")}</p></div></div>`;
   }
   const cards = gpus
     .map((g) => {
@@ -155,13 +155,13 @@ function gpuGrid(gpus) {
         `<div class="card gpu-card">` +
           `<div class="card-head"><h3>${escapeHtml(g.name || "GPU " + g.index)}</h3><span class="badge ${tempClass(g.tempC)}">${(g.tempC ?? 0).toFixed(0)}°C</span></div>` +
           `<div class="card-body">` +
-            metricRow("GPU util", (g.utilPct ?? 0).toFixed(0) + "%", loadBars(g.utilPct)) +
-            metricRow("Memory", `${fmtMB(g.memUsedMb)} / ${fmtMB(g.memTotalMb)}`, loadBars(g.memPct)) +
-            (g.powerW > 0 ? metricRow("Power", g.powerW.toFixed(1) + " W", "") : "") +
-            (g.memUtilPct > 0 ? metricRow("Mem controller", g.memUtilPct.toFixed(0) + "%", loadBars(g.memUtilPct)) : "") +
+            metricRow(t("hardware.gpuUtil"), (g.utilPct ?? 0).toFixed(0) + "%", loadBars(g.utilPct)) +
+            metricRow(t("hardware.memory"), `${fmtMB(g.memUsedMb)} / ${fmtMB(g.memTotalMb)}`, loadBars(g.memPct)) +
+            (g.powerW > 0 ? metricRow(t("hardware.power"), g.powerW.toFixed(1) + " W", "") : "") +
+            (g.memUtilPct > 0 ? metricRow(t("hardware.memController"), g.memUtilPct.toFixed(0) + "%", loadBars(g.memUtilPct)) : "") +
             `<div class="gpu-trends">` +
-              trendRow("Util trend", h.util, "var(--chart-cpu)", 100) +
-              trendRow("Temp trend", h.temp, trendColor(g.tempC), 100) +
+              trendRow(t("hardware.utilTrend"), h.util, "var(--chart-cpu)", 100) +
+              trendRow(t("hardware.tempTrend"), h.temp, trendColor(g.tempC), 100) +
             `</div>` +
           `</div>` +
         `</div>`
@@ -213,17 +213,17 @@ function tempClass(tempC) {
 // hostCard shows the static host facts (OS, kernel, CPU count, total memory, Docker version).
 function hostCard(sys, host) {
   const rows = [
-    ["Host", sys.name],
+    [t("hardware.host"), sys.name],
     ["OS", `${sys.osType || ""} ${sys.osVersion || ""}`.trim()],
     ["Kernel", sys.kernel],
-    ["Architecture", sys.arch],
-    ["CPU cores", sys.cpus],
-    ["Total memory", fmtMB(host.memTotalMb)],
+    [t("dash.arch"), sys.arch],
+    [t("hardware.colCpuCores"), sys.cpus],
+    [t("hardware.colTotalMemory"), fmtMB(host.memTotalMb)],
     ["Docker", sys.dockerVersion],
-    ["Storage driver", sys.storageDriver],
+    [t("hardware.colStorageDriver"), sys.storageDriver],
   ];
   return (
-    `<div class="card"><div class="card-head"><h2>Host</h2></div><div class="card-body">` +
+    `<div class="card"><div class="card-head"><h2>${t("hardware.host")}</h2></div><div class="card-body">` +
       rows
         .filter(([, v]) => v !== undefined && v !== null && v !== "")
         .map(([k, v]) => `<div class="kv"><span>${escapeHtml(k)}</span><strong>${escapeHtml(String(v))}</strong></div>`)
@@ -235,19 +235,19 @@ function hostCard(sys, host) {
 // tempCard shows motherboard/CPU temperature sensors read from /sys/class/hwmon,
 // each with a small trend sparkline (lm-sensors "watch" style).
 function tempCard(temps) {
-  if (!temps || !temps.length) return `<div class="card"><div class="card-head"><h2>Temperatures</h2></div><div class="card-body"><p class="hint">No temperature sensors available.</p></div></div>`;
+  if (!temps || !temps.length) return `<div class="card"><div class="card-head"><h2>${t("hardware.temperatures")}</h2></div><div class="card-body"><p class="hint">${t("hardware.noTempSensors")}</p></div></div>`;
   const rows = temps
-    .map((t) => {
-      const h = history.sensor.get(t.name) || [];
+    .map((tp) => {
+      const h = history.sensor.get(tp.name) || [];
       return (
         `<div class="sensor-row">` +
-          `<div class="kv"><span>${escapeHtml(t.name)}</span><strong class="${tempClass(t.tempC)}">${(t.tempC ?? 0).toFixed(1)}°C</strong></div>` +
-          miniSparkline(h, { color: trendColor(t.tempC), max: null }) +
+          `<div class="kv"><span>${escapeHtml(tp.name)}</span><strong class="${tempClass(tp.tempC)}">${(tp.tempC ?? 0).toFixed(1)}°C</strong></div>` +
+          miniSparkline(h, { color: trendColor(tp.tempC), max: null }) +
         `</div>`
       );
     })
     .join("");
-  return `<div class="card"><div class="card-head"><h2>Temperatures</h2></div><div class="card-body">${rows}</div></div>`;
+  return `<div class="card"><div class="card-head"><h2>${t("hardware.temperatures")}</h2></div><div class="card-body">${rows}</div></div>`;
 }
 
 // fmtMB formats a megabyte figure with a unit suffix, rounding large values to GB.
@@ -299,13 +299,13 @@ function historyChart(label, values, times, { color }) {
         dot +
       `</svg>` +
       `<div class="hist-crosshair" hidden></div><div class="hist-dot" hidden></div>`
-    : `<p class="hint">Collecting data…</p>`;
+    : `<p class="hint">${t("common.collectingData")}</p>`;
   const startAgo = times.length > 1 ? Math.round((times[times.length - 1] - times[0]) / 60000) : 0;
   return (
     `<div class="hist-card">` +
       `<div class="hist-head"><span class="hist-label">${escapeHtml(label)}</span><span class="hist-current" style="color:${color}">${last.toFixed(1)}%</span></div>` +
       `<div class="hist-chart" data-values="${values.join(",")}" data-times="${times.join(",")}" data-max="100" data-min="0" data-color="${color}" data-unit="%">${body}</div>` +
-      (points.length ? `<div class="hist-axis"><span>${startAgo > 0 ? startAgo + " min ago" : "just now"}</span><span>now</span></div>` : "") +
+      (points.length ? `<div class="hist-axis"><span>${startAgo > 0 ? t("hardware.minAgo", { n: startAgo }) : t("hardware.justNow")}</span><span>now</span></div>` : "") +
     `</div>`
   );
 }
@@ -382,10 +382,10 @@ function bindHover() {
 
 // timeAgo formats a millisecond age as a short relative label for the tooltip.
 function timeAgo(ms) {
-  if (ms < 15000) return "just now";
+  if (ms < 15000) return t("hardware.justNow");
   const mins = Math.round(ms / 60000);
-  if (mins < 1) return `${Math.round(ms / 1000)}s ago`;
-  return `${mins}m ago`;
+  if (mins < 1) return t("hardware.sAgo", { n: Math.round(ms / 1000) });
+  return t("hardware.minAgo", { n: mins });
 }
 
 // stopPolling clears the hardware polling timer. Called when leaving the tab.

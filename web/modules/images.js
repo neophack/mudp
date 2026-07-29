@@ -1,6 +1,6 @@
 // Images list, pull modal with SSE progress, and image deletion.
 
-import { state, api, toast, refreshSection, renderView, isAdmin, readCSRFCookie } from "../app.js";
+import { state, api, toast, refreshSection, renderView, isAdmin, readCSRFCookie, t } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 import { registerJob } from "./jobs.js";
 
@@ -11,17 +11,17 @@ export function renderImages() {
   const canEdit = admin;
   $("#view").innerHTML =
     `<div class="card">` +
-      `<div class="card-head"><h2>Images</h2>` +
+      `<div class="card-head"><h2>${t("images.title")}</h2>` +
         (canEdit ? `<div class="head-tools">` +
-          `<button class="ghost" id="buildImageBtn" title="Build from Dockerfile">🔨 Build</button>` +
-          `<button class="ghost" id="importImageBtn" title="Load tarball">⬆ Import</button>` +
-          `<button class="ghost" id="registerImageBtn" title="Register existing local image">📋 Register</button>` +
-          `<button class="primary" id="pullImageBtn">+ Pull Image</button>` +
+          `<button class="ghost" id="buildImageBtn" title="${t("images.buildTitle")}">${t("images.build")}</button>` +
+          `<button class="ghost" id="importImageBtn" title="${t("images.importTitle")}">${t("images.import")}</button>` +
+          `<button class="ghost" id="registerImageBtn" title="${t("images.registerTitle")}">${t("images.register")}</button>` +
+          `<button class="primary" id="pullImageBtn">${t("images.pull")}</button>` +
         `</div>` : "") +
       `</div>` +
       `<table class="data">` +
-        `<thead><tr><th>Name</th><th>Source</th>${admin ? "<th>Visible to</th>" : ""}<th>Defaults</th><th class="actions">Actions</th></tr></thead>` +
-        `<tbody>${state.images.map((img) => imageRow(img, canEdit)).join("") || `<tr class="empty-row"><td colspan="${admin ? 5 : 4}">No images available${canEdit ? ". Click “+ Pull Image” to add one." : "."}</td></tr>`}</tbody>` +
+        `<thead><tr><th>${t("common.name")}</th><th>${t("images.colSource")}</th>${admin ? `<th>${t("images.colVisible")}</th>` : ""}<th>${t("images.colDefaults")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
+        `<tbody>${state.images.map((img) => imageRow(img, canEdit)).join("") || `<tr class="empty-row"><td colspan="${admin ? 5 : 4}">${canEdit ? t("images.noImagesAdmin") : t("images.noImages")}</td></tr>`}</tbody>` +
       `</table>` +
     `</div>`;
   document.querySelectorAll("[data-image-delete]").forEach((btn) => {
@@ -48,10 +48,10 @@ function imageRow(image, canEdit) {
     `<tr>` +
       `<td><div class="primary-line">${escapeHtml(image.name)}</div><div class="secondary-line mono">${escapeHtml(image.dockerRef)}</div>${preset.description ? `<div class="secondary-line">📝 ${escapeHtml(preset.description)}</div>` : ""}</td>` +
       `<td><div class="secondary-line">${escapeHtml(image.sourceRef)}</div></td>` +
-      (admin ? `<td><div class="secondary-line">${escapeHtml((image.groups || []).join(", ") || "All users")}</div></td>` : "") +
+      (admin ? `<td><div class="secondary-line">${escapeHtml((image.groups || []).join(", ") || t("images.allUsers"))}</div></td>` : "") +
       `<td><div class="secondary-line">${summary}</div></td>` +
       `<td class="actions">` +
-        (canEdit ? `<button class="icon" title="Configure defaults" data-image-preset="${escapeHtml(image.id)}">⚙</button><button class="icon danger" title="Delete" data-image-delete="${escapeHtml(image.id)}" data-image-ref="${escapeHtml(image.dockerRef)}">✕</button>` : "—") +
+        (canEdit ? `<button class="icon" title="${t("images.presetHint")}" data-image-preset="${escapeHtml(image.id)}">⚙</button><button class="icon danger" title="${t("common.delete")}" data-image-delete="${escapeHtml(image.id)}" data-image-ref="${escapeHtml(image.dockerRef)}">✕</button>` : "—") +
       `</td>` +
     `</tr>`
   );
@@ -89,41 +89,41 @@ export function openPresetModal(imageId) {
     .join("");
   showModal({
     kind: "preset",
-    title: "Edit · " + image.name,
+    title: t("images.titleEdit", { name: image.name }),
     body:
       `<form id="presetForm" class="compact">` +
-        `<p class="hint">These defaults auto-fill the create-container form when a user picks this image. Leave fields blank to let users decide.</p>` +
-        `<input name="description" placeholder="Description (what this image contains, e.g. PyTorch 2.1 + CUDA 12)" value="${escapeHtml(p.description || "")}">` +
-        `<label class="field-label">GPUs</label>` +
-        `<select name="gpus"><option value="">(user decides)</option><option value="none"${p.gpus === "none" ? " selected" : ""}>none</option><option value="all"${p.gpus === "all" ? " selected" : ""}>all</option></select>` +
-        `<label class="field-label">Environment variables (one KEY=VALUE per line, e.g. VNC_PW=secret)</label>` +
+        `<p class="hint">${t("images.presetHint")}</p>` +
+        `<input name="description" placeholder="${t("images.descPlaceholder")}" value="${escapeHtml(p.description || "")}">` +
+        `<label class="field-label">${t("images.gpus")}</label>` +
+        `<select name="gpus"><option value="">${t("images.gpusUserDecides")}</option><option value="none"${p.gpus === "none" ? " selected" : ""}>none</option><option value="all"${p.gpus === "all" ? " selected" : ""}>all</option></select>` +
+        `<label class="field-label">${t("images.envLabel")}</label>` +
         `<textarea name="env" spellcheck="false">${escapeHtml((p.env || []).join("\n"))}</textarea>` +
-        `<label class="field-label">Container ports to map (one per line, e.g. 8080)</label>` +
+        `<label class="field-label">${t("images.portsLabel")}</label>` +
         `<textarea name="ports" spellcheck="false">${escapeHtml((p.ports || []).join("\n"))}</textarea>` +
         `<div class="check-grid">` +
-          presetCheck("forward8080", "Forward port 8080", p.forward8080) +
-          presetCheck("forward80", "Forward port 80", p.forward80) +
-          presetCheck("mountNetdisk", "Mount netdisk at /workspace", p.mountNetdisk) +
-          presetCheck("mountShm", "Mount host /dev/shm", p.mountShm) +
+          presetCheck("forward8080", t("images.forward8080"), p.forward8080) +
+          presetCheck("forward80", t("images.forward80"), p.forward80) +
+          presetCheck("mountNetdisk", t("images.presetNetdisk"), p.mountNetdisk) +
+          presetCheck("mountShm", t("images.presetShm"), p.mountShm) +
         `</div>` +
-        (networkChecks ? `<label class="field-label">Networks</label><div class="check-grid">${networkChecks}</div>` : "") +
-        `<label class="field-label">Restart policy</label>` +
+        (networkChecks ? `<label class="field-label">${t("create.networks")}</label><div class="check-grid">${networkChecks}</div>` : "") +
+        `<label class="field-label">${t("images.restartPolicy")}</label>` +
         `<select name="restartPolicy">` +
-          `<option value="">(user decides)</option>` +
+          `<option value="">${t("images.gpusUserDecides")}</option>` +
           `<option value="unless-stopped"${p.restartPolicy === "unless-stopped" ? " selected" : ""}>unless-stopped</option>` +
           `<option value="always"${p.restartPolicy === "always" ? " selected" : ""}>always</option>` +
           `<option value="on-failure"${p.restartPolicy === "on-failure" ? " selected" : ""}>on-failure</option>` +
           `<option value="no"${p.restartPolicy === "no" ? " selected" : ""}>no</option>` +
         `</select>` +
-        `<label class="field-label">Devices (one --device per line, e.g. /dev/nvidia0)</label>` +
+        `<label class="field-label">${t("images.devices")}</label>` +
         `<textarea name="devices" spellcheck="false">${escapeHtml((p.devices && p.devices.length ? p.devices : DEFAULT_NVIDIA_DEVICES).join("\n"))}</textarea>` +
-        `<label class="field-label">CDI devices (one per line, e.g. nvidia.com/gpu=0)</label>` +
+        `<label class="field-label">${t("images.cdiDevices")}</label>` +
         `<textarea name="cdiDevices" spellcheck="false">${escapeHtml((p.cdiDevices || []).join("\n"))}</textarea>` +
-        `<label class="field-label">Visible to</label>` +
-        `<div class="check-grid">${groupChecks || '<span class="hint">No groups yet. Leave unchecked to make the image visible to all users.</span>'}</div>` +
-        `<p class="hint">Leave all groups unchecked to make the image visible to every activated user. Selecting one or more groups restricts visibility to members of those groups.</p>` +
+        `<label class="field-label">${t("images.visibleTo")}</label>` +
+        `<div class="check-grid">${groupChecks || `<span class="hint">${t("images.noGroupsHint")}</span>`}</div>` +
+        `<p class="hint">${t("images.visibleHint")}</p>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="presetSubmit">Save</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="presetSubmit">${t("common.save")}</button>`,
   });
   $("#presetSubmit").onclick = async () => {
     const form = $("#presetForm");
@@ -152,7 +152,7 @@ export function openPresetModal(imageId) {
       closeModal();
       await refreshSection("images");
       renderView();
-      toast("Image updated", true);
+      toast(t("images.presetUpdated"), true);
     } catch (err) {
       toast(err.message);
       $("#presetSubmit").disabled = false;
@@ -189,14 +189,14 @@ export function openPullModal() {
     .join("");
   showModal({
     kind: "pull",
-    title: "Pull Image",
+    title: t("images.pullTitle"),
     body:
       `<form id="pullForm" class="compact">` +
-        `<input name="sourceRef" placeholder="Source image, e.g. ubuntu:22.04" required>` +
-        `<input name="name" placeholder="Display name, e.g. ubuntu">` +
-        `<div style="display:flex;flex-wrap:wrap;gap:8px 14px;">${groupChecks || '<span class="hint">No groups yet.</span>'}</div>` +
+        `<input name="sourceRef" placeholder="${t("images.pullSourcePlaceholder")}" required>` +
+        `<input name="name" placeholder="${t("images.pullNamePlaceholder")}">` +
+        `<div style="display:flex;flex-wrap:wrap;gap:8px 14px;">${groupChecks || `<span class="hint">${t("networks.noGroupsYet")}</span>`}</div>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="pullSubmit">Pull and Publish</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="pullSubmit">${t("images.pullPublish")}</button>`,
   });
   $("#pullSubmit").onclick = async () => {
     const form = $("#pullForm");
@@ -215,11 +215,11 @@ export function renderPullProgress() {
   setModalBody(
     (state.pull.error
       ? `<div class="error-box">✗ ${escapeHtml(state.pull.error)}</div>`
-      : `<div class="step active"><span class="step-icon"><span class="spinner"></span></span><span class="step-label">Pulling ${escapeHtml(state.pull.name)}</span></div>`) +
+      : `<div class="step active"><span class="step-icon"><span class="spinner"></span></span><span class="step-label">${t("images.pulling", { name: escapeHtml(state.pull.name) })}</span></div>`) +
       `<pre class="log-output">${escapeHtml(state.pull.logs || "")}</pre>` +
       `<div style="display:flex;gap:8px;justify-content:flex-end;">` +
-        (state.pull.error ? `<button class="primary" id="pullRetry">Retry</button>` : ``) +
-        `<button class="ghost" data-close>${state.pull.error ? "Close" : "Hide"}</button>` +
+        (state.pull.error ? `<button class="primary" id="pullRetry">${t("common.retry")}</button>` : ``) +
+        `<button class="ghost" data-close>${state.pull.error ? t("common.close") : t("common.hide")}</button>` +
       `</div>`
   );
   const retry = $("#pullRetry");
@@ -242,7 +242,7 @@ export async function streamPull(payload) {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      state.pull.error = data.error || `Request failed (${res.status})`;
+      state.pull.error = data.error || t("create.requestFailed", { status: res.status });
       state.pull.active = false;
       job.error(state.pull.error);
       renderPullProgress();
@@ -256,7 +256,7 @@ export async function streamPull(payload) {
         job.log(line);
         renderPullProgress();
       } else if (event === "error") {
-        state.pull.error = data.message || "Pull failed";
+        state.pull.error = data.message || t("images.pullFailed");
         state.pull.logs += `[error] ${state.pull.error}\n`;
         state.pull.active = false;
         job.error(state.pull.error);
@@ -264,10 +264,10 @@ export async function streamPull(payload) {
         toast(state.pull.error);
       } else if (event === "done") {
         state.pull.active = false;
-        state.pull.logs += `[done] Published as ${data.dockerRef}\n`;
-        job.done(`Published as ${data.dockerRef}`);
+        state.pull.logs += `[done] ${t("images.publishedAs", { ref: data.dockerRef })}\n`;
+        job.done(t("images.publishedAs", { ref: data.dockerRef }));
         renderPullProgress();
-        toast("Image pulled", true);
+        toast(t("images.imagePulled"), true);
         refreshSection("images").then(() => renderView());
         setTimeout(() => closeModal(), 700);
       } else if (event === "cancelled") {
@@ -280,7 +280,7 @@ export async function streamPull(payload) {
   } catch (err) {
     state.pull.active = false;
     if (job.signal.aborted) {
-      state.pull.error = "Cancelled";
+      state.pull.error = t("create.cancelled");
       job.cancel();
     } else {
       state.pull.error = err.message;
@@ -293,7 +293,7 @@ export async function streamPull(payload) {
 }
 
 export async function deleteImage(imageId, dockerRef) {
-  if (!confirm("Delete this managed image?")) return;
+  if (!confirm(t("images.deleteConfirm"))) return;
   try {
     await api("/api/images/delete", {
       method: "POST",
@@ -301,7 +301,7 @@ export async function deleteImage(imageId, dockerRef) {
     });
     await refreshSection("images");
     renderView();
-    toast("Image deleted", true);
+    toast(t("images.imageDeleted"), true);
   } catch (err) {
     toast(err.message);
   }
@@ -318,17 +318,17 @@ export function openBuildModal() {
     .join("");
   showModal({
     kind: "build",
-    title: "Build Image",
+    title: t("images.buildTitle2"),
     body:
       `<form id="buildForm" class="compact">` +
-        `<input name="tags" placeholder="Tags, comma-separated (e.g. myapp:1.0)" required>` +
-        `<input name="name" placeholder="Display name (optional, derived from first tag)">` +
-        `<div style="display:flex;flex-wrap:wrap;gap:8px 14px;">${groupChecks || '<span class="hint">No groups yet.</span>'}</div>` +
-        `<textarea name="buildArgs" placeholder="Build args, one KEY=VALUE per line (optional)"></textarea>` +
-        `<label class="field-label">Dockerfile</label>` +
+        `<input name="tags" placeholder="${t("images.tagsPlaceholder")}" required>` +
+        `<input name="name" placeholder="${t("images.namePlaceholder2")}">` +
+        `<div style="display:flex;flex-wrap:wrap;gap:8px 14px;">${groupChecks || `<span class="hint">${t("networks.noGroupsYet")}</span>`}</div>` +
+        `<textarea name="buildArgs" placeholder="${t("images.buildArgsPlaceholder")}"></textarea>` +
+        `<label class="field-label">${t("images.dockerfile")}</label>` +
         `<textarea name="dockerfile" class="mono stack-editor" spellcheck="false">${escapeHtml(SAMPLE_DOCKERFILE)}</textarea>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="buildSubmit">Build</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="buildSubmit">${t("images.build")}</button>`,
   });
   $("#buildSubmit").onclick = async () => {
     const form = $("#buildForm");
@@ -341,7 +341,7 @@ export function openBuildModal() {
       dockerfile: fd.get("dockerfile"),
     };
     if (payload.tags.length === 0 || !payload.dockerfile) {
-      toast("Tags and Dockerfile are required");
+      toast(t("images.tagsRequired"));
       return;
     }
     await streamBuild(payload);
@@ -362,7 +362,7 @@ async function streamBuild(payload) {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      state.pull.error = data.error || `Build failed (${res.status})`;
+      state.pull.error = data.error || t("images.buildFailed2", { status: res.status });
       job.error(state.pull.error);
       renderBuildProgress();
       toast(state.pull.error);
@@ -375,17 +375,18 @@ async function streamBuild(payload) {
         job.log(line);
         renderBuildProgress();
       } else if (event === "error") {
-        state.pull.error = data.message || "Build failed";
+        state.pull.error = data.message || t("images.buildFailed");
         state.pull.logs += `[error] ${state.pull.error}\n`;
         job.error(state.pull.error);
         renderBuildProgress();
         toast(state.pull.error);
       } else if (event === "done") {
         state.pull.active = false;
-        state.pull.logs += `[done] Built ${(data.tags || []).join(", ")}\n`;
-        job.done(`Built ${(data.tags || []).join(", ")}`);
+        const tagList = (data.tags || []).join(", ");
+        state.pull.logs += `[done] ${t("images.built", { tags: tagList })}\n`;
+        job.done(t("images.built", { tags: tagList }));
         renderBuildProgress();
-        toast("Image built", true);
+        toast(t("images.imageBuilt"), true);
         refreshSection("images").then(() => renderView());
         setTimeout(() => closeModal(), 800);
       } else if (event === "cancelled") {
@@ -397,7 +398,7 @@ async function streamBuild(payload) {
     });
   } catch (err) {
     if (job.signal.aborted) {
-      state.pull.error = "Cancelled";
+      state.pull.error = t("create.cancelled");
       job.cancel();
     } else {
       state.pull.error = err.message;
@@ -414,11 +415,11 @@ function renderBuildProgress() {
   setModalBody(
     (state.pull.error
       ? `<div class="error-box">✗ ${escapeHtml(state.pull.error)}</div>`
-      : `<div class="step active"><span class="step-icon"><span class="spinner"></span></span><span class="step-label">Building ${escapeHtml(state.pull.name)}</span></div>`) +
+      : `<div class="step active"><span class="step-icon"><span class="spinner"></span></span><span class="step-label">${t("images.building", { name: escapeHtml(state.pull.name) })}</span></div>`) +
       `<pre class="log-output">${escapeHtml(state.pull.logs || "")}</pre>` +
       `<div style="display:flex;gap:8px;justify-content:flex-end;">` +
-        (state.pull.error ? `<button class="primary" id="buildRetry">Retry</button>` : ``) +
-        `<button class="ghost" data-close>${state.pull.error ? "Close" : "Hide"}</button>` +
+        (state.pull.error ? `<button class="primary" id="buildRetry">${t("common.retry")}</button>` : ``) +
+        `<button class="ghost" data-close>${state.pull.error ? t("common.close") : t("common.hide")}</button>` +
       `</div>`
   );
   const retry = $("#buildRetry");
@@ -430,18 +431,18 @@ function renderBuildProgress() {
 export function openImportModal() {
   showModal({
     kind: "import",
-    title: "Import Image (tar)",
+    title: t("images.importTitle2"),
     body:
       `<form id="importForm" class="compact">` +
         `<input type="file" name="file" accept=".tar" required>` +
-        `<p class="hint">Load an image previously saved with <code>docker save</code>.</p>` +
+        `<p class="hint">${t("images.importHint")}</p>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="importSubmit">Import</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="importSubmit">${t("images.import2")}</button>`,
   });
   $("#importSubmit").onclick = async () => {
     const fileInput = $("#importForm").querySelector('input[name="file"]');
     if (!fileInput.files[0]) {
-      toast("Select a tar file");
+      toast(t("images.selectTar"));
       return;
     }
     await streamImport(fileInput.files[0]);
@@ -449,7 +450,7 @@ export function openImportModal() {
 }
 
 async function streamImport(file) {
-  state.pull = { active: true, logs: "Importing…\n", error: "", name: file.name };
+  state.pull = { active: true, logs: t("images.importing") + "\n", error: "", name: file.name };
   renderImportProgress();
   const job = registerJob({ kind: "image.import", name: file.name });
   try {
@@ -462,7 +463,7 @@ async function streamImport(file) {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      state.pull.error = data.error || `Import failed (${res.status})`;
+      state.pull.error = data.error || t("images.importFailed", { status: res.status });
       job.error(state.pull.error);
       renderImportProgress();
       toast(state.pull.error);
@@ -475,15 +476,15 @@ async function streamImport(file) {
         job.log(line);
         renderImportProgress();
       } else if (event === "error") {
-        state.pull.error = data.message || "Import failed";
+        state.pull.error = data.message || t("images.importFailed2");
         job.error(state.pull.error);
         renderImportProgress();
         toast(state.pull.error);
       } else if (event === "done") {
-        state.pull.logs += "[done] Image loaded\n";
-        job.done("Image loaded");
+        state.pull.logs += `[done] ${t("images.imageLoaded")}\n`;
+        job.done(t("images.imageLoaded"));
         renderImportProgress();
-        toast("Image imported", true);
+        toast(t("images.imageImported"), true);
         refreshSection("images").then(() => renderView());
         setTimeout(() => closeModal(), 800);
       } else if (event === "cancelled") {
@@ -495,7 +496,7 @@ async function streamImport(file) {
     });
   } catch (err) {
     if (job.signal.aborted) {
-      state.pull.error = "Cancelled";
+      state.pull.error = t("create.cancelled");
       job.cancel();
     } else {
       state.pull.error = err.message;
@@ -511,7 +512,7 @@ function renderImportProgress() {
   setModalBody(
     (state.pull.error ? `<div class="error-box">✗ ${escapeHtml(state.pull.error)}</div>` : "") +
       `<pre class="log-output">${escapeHtml(state.pull.logs || "")}</pre>` +
-      `<div style="display:flex;gap:8px;justify-content:flex-end;"><button class="ghost" data-close>${state.pull.error ? "Close" : "Hide"}</button></div>`
+      `<div style="display:flex;gap:8px;justify-content:flex-end;"><button class="ghost" data-close>${state.pull.error ? t("common.close") : t("common.hide")}</button></div>`
   );
   const log = document.querySelector(".modal-body .log-output");
   if (log) log.scrollTop = log.scrollHeight;
@@ -523,14 +524,14 @@ export function openRegisterModal() {
     .join("");
   showModal({
     kind: "register",
-    title: "Register Local Image",
+    title: t("images.registerTitle"),
     body:
       `<form id="registerForm" class="compact">` +
-        `<input name="dockerRef" placeholder="Existing local image tag, e.g. ubuntu:22.04" required>` +
-        `<input name="name" placeholder="Display name (optional, derived from tag)">` +
-        `<div style="display:flex;flex-wrap:wrap;gap:8px 14px;">${groupChecks || '<span class="hint">No groups yet.</span>'}</div>` +
+        `<input name="dockerRef" placeholder="${t("images.registerRefPlaceholder")}" required>` +
+        `<input name="name" placeholder="${t("images.registerNamePlaceholder")}">` +
+        `<div style="display:flex;flex-wrap:wrap;gap:8px 14px;">${groupChecks || `<span class="hint">${t("networks.noGroupsYet")}</span>`}</div>` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="registerSubmit">Register</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="registerSubmit">${t("images.register2")}</button>`,
   });
   $("#registerSubmit").onclick = async () => {
     const form = $("#registerForm");
@@ -541,7 +542,7 @@ export function openRegisterModal() {
       groupIds: [...form.querySelectorAll("input[name=groupIds]:checked")].map((i) => Number(i.value)),
     };
     if (!payload.dockerRef) {
-      toast("Image tag is required");
+      toast(t("images.tagRequired"));
       return;
     }
     $("#registerSubmit").disabled = true;
@@ -553,7 +554,7 @@ export function openRegisterModal() {
       closeModal();
       await refreshSection("images");
       renderView();
-      toast("Image registered", true);
+      toast(t("images.imageRegistered"), true);
     } catch (err) {
       toast(err.message);
       $("#registerSubmit").disabled = false;

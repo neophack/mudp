@@ -9,18 +9,18 @@
 // listening, and any rule an admin added by hand for something the container
 // labels do not cover.
 
-import { state, api, toast, renderView, escapeHtml, isAdmin } from "../app.js";
+import { state, api, toast, renderView, escapeHtml, isAdmin, t } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 export async function renderForwards() {
   if (!isAdmin()) {
-    $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">Port forwarding is managed by administrators.</p></div></div>`;
+    $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">${t("forwards.adminOnly")}</p></div></div>`;
     return;
   }
   // The refresh engine loads state.forwards before repainting; fetch only on
   // first entry so a signature-driven repaint costs no extra request.
   if (!state.forwards) {
-    $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">Loading forwards…</p></div></div>`;
+    $("#view").innerHTML = `<div class="card"><div class="card-body"><p class="hint">${t("forwards.loading")}</p></div></div>`;
     try {
       state.forwards = await api("/api/admin/forwards");
     } catch (err) {
@@ -35,36 +35,28 @@ export async function renderForwards() {
   $("#view").innerHTML =
     `<div class="stack">` +
       (data.warning
-        ? `<div class="card"><div class="card-body"><div class="error-box">Some forwards are not running: ${escapeHtml(data.warning)}</div></div></div>`
+        ? `<div class="card"><div class="card-body"><div class="error-box">${t("forwards.someNotRunning", { warn: escapeHtml(data.warning) })}</div></div></div>`
         : "") +
       `<div class="card">` +
-        `<div class="card-head"><h2>Active forwards</h2>` +
-          `<button class="primary" id="addForwardBtn">+ Add Forward</button>` +
+        `<div class="card-head"><h2>${t("forwards.activeForwards")}</h2>` +
+          `<button class="primary" id="addForwardBtn">${t("forwards.addForward")}</button>` +
         `</div>` +
-        `<p class="hint" style="padding:0 16px;margin:0 0 8px">` +
-          `Each row is a host port mudp is listening on and relaying to a container address. ` +
-          `Rules marked <b>container</b> come from a container on a forwarding network and disappear with it; ` +
-          `rules marked <b>manual</b> were added here and stay until deleted.` +
-        `</p>` +
+        `<p class="hint" style="padding:0 16px;margin:0 0 8px">${t("forwards.hint")}</p>` +
         `<table class="data">` +
-          `<thead><tr><th>Host port</th><th>User</th><th>Container</th><th>Target</th><th>Source</th><th>Connections</th><th class="actions">Actions</th></tr></thead>` +
-          `<tbody>${rules.map(ruleRow).join("") || `<tr class="empty-row"><td colspan="7">No forwards are running.</td></tr>`}</tbody>` +
+          `<thead><tr><th>${t("forwards.colHostPort")}</th><th>${t("common.user")}</th><th>${t("containers.colContainer")}</th><th>${t("forwards.colTarget")}</th><th>${t("forwards.colSource")}</th><th>${t("forwards.colConnections")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
+          `<tbody>${rules.map(ruleRow).join("") || `<tr class="empty-row"><td colspan="7">${t("forwards.noRules")}</td></tr>`}</tbody>` +
         `</table>` +
       `</div>` +
       `<div class="card">` +
-        `<div class="card-head"><h2>Forwarding networks</h2>` +
-          (networks.length ? `<span class="badge badge-ok">${networks.length} selected</span>` : `<span class="badge">none</span>`) +
+        `<div class="card-head"><h2>${t("forwards.forwardingNetworks")}</h2>` +
+          (networks.length ? `<span class="badge badge-ok">${t("forwards.nSelected", { n: networks.length })}</span>` : `<span class="badge">${t("forwards.none")}</span>`) +
         `</div>` +
-        `<p class="hint" style="padding:0 16px;margin:0 0 8px">` +
-          `Containers created on a selected network get their host ports relayed by mudp instead of published by Docker, ` +
-          `and containers already on it are adopted with the host ports they have. ` +
-          `Everything else keeps Docker's publishing.` +
-        `</p>` +
+        `<p class="hint" style="padding:0 16px;margin:0 0 8px">${t("forwards.netHint")}</p>` +
         `<div class="card-body"><form id="forwardNetForm" class="compact">` +
-          (networkOptions(networks) || `<p class="hint">No attachable networks on this host yet.</p>`) +
-          `<label class="field-label">Other network names (one per line)</label>` +
+          (networkOptions(networks) || `<p class="hint">${t("forwards.noAttachable")}</p>`) +
+          `<label class="field-label">${t("forwards.otherNames")}</label>` +
           `<textarea name="networksRaw" placeholder="e.g. openwrt-lan">${escapeHtml(unknownNetworks(networks).join("\n"))}</textarea>` +
-          `<button>Save networks</button>` +
+          `<button>${t("forwards.saveNetworks")}</button>` +
         `</form></div>` +
       `</div>` +
     `</div>`;
@@ -86,7 +78,7 @@ export async function renderForwards() {
         });
         await reloadForwards();
         renderView();
-        toast(res.warning ? `Saved, but: ${res.warning}` : "Forwarding networks saved", !res.warning);
+        toast(res.warning ? t("forwards.savedWithWarn", { warn: res.warning }) : t("forwards.networksSaved"), !res.warning);
       } catch (err) {
         toast(err.message);
       }
@@ -108,12 +100,12 @@ function ruleRow(r) {
         (r.note && r.note !== r.name ? `<div class="secondary-line hint">${escapeHtml(r.note)}</div>` : "") +
       `</td>` +
       `<td><div class="secondary-line mono">${escapeHtml(target)}</div></td>` +
-      `<td><span class="badge ${manual ? "badge-warn" : "badge-muted"}">${manual ? "manual" : "container"}</span></td>` +
-      `<td><div class="secondary-line">${escapeHtml(String(r.active ?? 0))} now · ${escapeHtml(String(r.total ?? 0))} total</div></td>` +
+      `<td><span class="badge ${manual ? "badge-warn" : "badge-muted"}">${manual ? t("forwards.manual") : t("forwards.container")}</span></td>` +
+      `<td><div class="secondary-line">${t("forwards.connNow", { now: escapeHtml(String(r.active ?? 0)), total: escapeHtml(String(r.total ?? 0)) })}</div></td>` +
       `<td class="actions">` +
         (manual && r.manualId
-          ? `<button class="icon danger" title="Delete forward" data-fwd-delete="${r.manualId}" data-fwd-label="${escapeHtml(label)}">✕</button>`
-          : `<span class="hint">from container</span>`) +
+          ? `<button class="icon danger" title="${t("common.delete")}" data-fwd-delete="${r.manualId}" data-fwd-label="${escapeHtml(label)}">✕</button>`
+          : `<span class="hint">${t("forwards.fromContainer")}</span>`) +
       `</td>` +
     `</tr>`
   );
@@ -156,23 +148,23 @@ function openAddForward() {
     .join("");
   showModal({
     kind: "forward",
-    title: "Add Forward",
+    title: t("forwards.addTitle"),
     body:
       `<form id="forwardForm" class="compact">` +
-        `<p class="hint">mudp listens on the host port and relays every byte to the target. Pick a container to follow it across restarts, or give a fixed address for something mudp did not create.</p>` +
+        `<p class="hint">${t("forwards.addHint")}</p>` +
         `<div class="advanced-row">` +
-          `<input name="hostPort" type="number" min="1" max="65535" placeholder="Host port, e.g. 10500" required>` +
+          `<input name="hostPort" type="number" min="1" max="65535" placeholder="${t("forwards.hostPortPlaceholder")}" required>` +
           `<select name="proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>` +
         `</div>` +
-        `<label class="field-label">Target container</label>` +
-        `<select name="containerId"><option value="">— fixed address instead —</option>${options}</select>` +
+        `<label class="field-label">${t("forwards.targetContainer")}</label>` +
+        `<select name="containerId"><option value="">${t("forwards.fixedInstead")}</option>${options}</select>` +
         `<div class="advanced-row">` +
-          `<input name="targetIp" placeholder="Target address (only for a fixed target), e.g. 10.210.1.3">` +
-          `<input name="targetPort" type="number" min="1" max="65535" placeholder="Target port, e.g. 8080" required>` +
+          `<input name="targetIp" placeholder="${t("forwards.targetIpPlaceholder")}">` +
+          `<input name="targetPort" type="number" min="1" max="65535" placeholder="${t("forwards.targetPortPlaceholder")}" required>` +
         `</div>` +
-        `<input name="note" placeholder="Note (optional), e.g. why this forward exists">` +
+        `<input name="note" placeholder="${t("forwards.notePlaceholder")}">` +
       `</form>`,
-    foot: `<button class="ghost" data-close>Cancel</button><button class="primary" id="saveForward">Add forward</button>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="saveForward">${t("forwards.addBtn")}</button>`,
   });
   $("#saveForward").onclick = async () => {
     const fd = new FormData($("#forwardForm"));
@@ -189,7 +181,7 @@ function openAddForward() {
       await reloadForwards();
       renderView();
       closeModal();
-      toast(res.warning ? `Added, but not listening: ${res.warning}` : "Forward added", !res.warning);
+      toast(res.warning ? t("forwards.addedWithWarn", { warn: res.warning }) : t("forwards.forwardAdded"), !res.warning);
     } catch (err) {
       toast(err.message);
     }
@@ -197,12 +189,12 @@ function openAddForward() {
 }
 
 async function deleteForward(id, label) {
-  if (!confirm(`Delete the manual forward on ${label}?`)) return;
+  if (!confirm(t("forwards.deleteConfirm", { label }))) return;
   try {
     await api("/api/admin/forwards/delete", { method: "POST", body: JSON.stringify({ id }) });
     await reloadForwards();
     renderView();
-    toast("Forward deleted", true);
+    toast(t("forwards.forwardDeleted"), true);
   } catch (err) {
     toast(err.message);
   }
