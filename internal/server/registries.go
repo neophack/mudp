@@ -172,11 +172,11 @@ func (a *App) registryTest(w http.ResponseWriter, r *http.Request) {
 
 // nextRegistryID returns max(id)+1 for new registry entries.
 func nextRegistryID(items []store.Registry) int64 {
-	var max int64
+	var maxID int64
 	for _, it := range items {
-		if it.ID > max {
-			max = it.ID
+		if it.ID > maxID {
+			maxID = it.ID
 		}
 	}
-	return max + 1
+	return maxID + 1
 }

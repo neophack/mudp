@@ -736,14 +736,14 @@ func (db *DB) recordSchemaVersionTx(tx *sql.Tx, version int) error {
 }
 
 func (db *DB) nextPortPrefix(tx *sql.Tx) (int, error) {
-	var max sql.NullInt64
-	err := tx.QueryRow(`select max(port_prefix) from users`).Scan(&max)
+	var maxPrefix sql.NullInt64
+	err := tx.QueryRow(`select max(port_prefix) from users`).Scan(&maxPrefix)
 	if err != nil {
 		return 0, err
 	}
 	next := 101
-	if max.Valid && int(max.Int64) >= next {
-		next = int(max.Int64) + 1
+	if maxPrefix.Valid && int(maxPrefix.Int64) >= next {
+		next = int(maxPrefix.Int64) + 1
 	}
 	if next > 655 {
 		return 0, errors.New("no port prefix available (all slots 101-655 are taken)")
@@ -751,9 +751,9 @@ func (db *DB) nextPortPrefix(tx *sql.Tx) (int, error) {
 	return next, nil
 }
 
-func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap int, quotaBytes int64) error {
-	if cap <= 0 {
-		cap = 10
+func (db *DB) CreateUser(username, password, role string, groupIDs []int64, containerCap int, quotaBytes int64) error {
+	if containerCap <= 0 {
+		containerCap = 10
 	}
 	if quotaBytes < 0 {
 		quotaBytes = 0
@@ -770,7 +770,7 @@ func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap 
 	// to detect and retry. Other constraint failures (e.g. duplicate username)
 	// are returned immediately so callers see the real cause.
 	for i := 0; i < 10; i++ {
-		err := db.createUserTx(username, string(hash), role, groupIDs, cap, quotaBytes)
+		err := db.createUserTx(username, string(hash), role, groupIDs, containerCap, quotaBytes)
 		if err == nil {
 			return nil
 		}
@@ -781,7 +781,7 @@ func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cap 
 	return errors.New("could not allocate a unique port prefix")
 }
 
-func (db *DB) createUserTx(username, passwordHash, role string, groupIDs []int64, cap int, quotaBytes int64) error {
+func (db *DB) createUserTx(username, passwordHash, role string, groupIDs []int64, containerCap int, quotaBytes int64) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -792,7 +792,7 @@ func (db *DB) createUserTx(username, passwordHash, role string, groupIDs []int64
 		return err
 	}
 	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,netdisk_quota_bytes,port_prefix,created_at) values(?,?,?,?,?,?,?)`,
-		username, passwordHash, role, cap, quotaBytes, prefix, time.Now().Format(time.RFC3339))
+		username, passwordHash, role, containerCap, quotaBytes, prefix, time.Now().Format(time.RFC3339))
 	if err != nil {
 		return err
 	}
@@ -1265,9 +1265,9 @@ func (db *DB) createFeishuUserTx(openID, username, displayName string) (*User, e
 	// who knew one could log in through the ordinary password form and bypass
 	// OAuth entirely.
 	hash := NoPasswordSentinel
-	tx, err := db.Begin()
-	if err != nil {
-		return nil, err
+	tx, beginErr := db.Begin()
+	if beginErr != nil {
+		return nil, beginErr
 	}
 	defer tx.Rollback()
 	var existing int
@@ -1298,14 +1298,6 @@ func (db *DB) createFeishuUserTx(openID, username, displayName string) (*User, e
 		return nil, err
 	}
 	return db.UserByID(uid)
-}
-
-func isSQLiteConstraintError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "UNIQUE constraint failed") ||
-		strings.Contains(err.Error(), "constraint failed")
 }
 
 func isPortPrefixConflict(err error) bool {
@@ -1578,9 +1570,9 @@ func (db *DB) NotifyAdmins(n Notification) error {
 		if u.Role != RoleAdmin {
 			continue
 		}
-		copy := n
-		copy.UserID = u.ID
-		if err := db.CreateNotification(&copy); err != nil {
+		clone := n
+		clone.UserID = u.ID
+		if err := db.CreateNotification(&clone); err != nil {
 			return err
 		}
 	}
@@ -1888,9 +1880,9 @@ func (db *DB) DeleteUser(id int64) error {
 // endpoints is gated by activatedMiddleware / isPending, not by the disabled
 // flag. Use UpdateUser(..., disabled=true) for a hard admin lockout.
 func (db *DB) DeactivateUser(id int64) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
+	tx, beginErr := db.Begin()
+	if beginErr != nil {
+		return beginErr
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`delete from user_groups where user_id=?`, id); err != nil {

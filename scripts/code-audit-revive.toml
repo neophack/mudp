@@ -1,0 +1,157 @@
+# ============================================================================
+# code-audit-revive.toml -- enterprise convention + style rules for revive.
+# Consumed by scripts\code-audit.bat (Phase: "Enterprise / convention rules").
+#
+# Severity mapping (how a finding counts in the report):
+#   severity = "error"   -> counted as a FAIL (exit code reflects it)
+#   severity = "warning" -> counted as a WARNING (reported, non-blocking)
+# Edit this file to tighten or relax your team's policy. See:
+#   https://github.com/mgechev/revive#available-rules
+#
+# Rule names verified against revive v1.15.0 (RULES_DESCRIPTIONS.md).
+# ============================================================================
+
+ignoreGeneratedHeader = true
+severity = "warning"
+confidence = 0.8
+errorCode = 1
+warningCode = 1
+
+# --------------------------------------------------------------------------- #
+# 1. Coding-standard / readability rules                                      #
+# --------------------------------------------------------------------------- #
+[rule.blank-imports]
+[rule.context-as-argument]
+[rule.context-keys-type]
+[rule.dot-imports]
+[rule.error-return]
+[rule.error-strings]
+[rule.error-naming]
+[rule.exported]
+  severity = "warning"
+  arguments = ["checkPrivateReceivers", "sayRepetitiveInsteadOfStutters"]
+[rule.if-return]
+[rule.increment-decrement]
+[rule.var-naming]
+  arguments = [["ID", "URL", "HTTP", "JSON", "IP", "TCP", "UDP"], ["json", "xml", "http", "url"]]
+[rule.var-declaration]
+[rule.package-comments]
+  severity = "warning"
+[rule.receiver-naming]
+[rule.time-naming]
+[rule.indent-error-flow]
+[rule.range]
+[rule.range-val-in-closure]
+[rule.empty-block]
+[rule.superfluous-else]
+[rule.unused-parameter]
+  severity = "warning"
+[rule.unused-receiver]
+  severity = "warning"
+[rule.unreachable-code]
+[rule.redefines-builtin-id]
+[rule.confusing-naming]
+[rule.flag-parameter]
+[rule.unexported-naming]
+[rule.modifies-parameter]
+[rule.modifies-value-receiver]
+[rule.bool-literal-in-expr]
+[rule.get-return]
+[rule.errorf]
+[rule.import-shadowing]
+[rule.range-val-address]
+[rule.waitgroup-by-value]
+[rule.atomic]
+[rule.empty-lines]
+[rule.line-length-limit]
+  severity = "warning"
+  arguments = [140]
+[rule.call-to-gc]
+[rule.identical-branches]
+[rule.identical-switch-branches]
+[rule.constant-logical-expr]
+[rule.bare-return]
+[rule.redundant-import-alias]
+[rule.useless-break]
+[rule.useless-fallthrough]
+
+# --------------------------------------------------------------------------- #
+# 2. Common-bug / complexity rules                                            #
+# --------------------------------------------------------------------------- #
+[rule.argument-limit]
+  severity = "warning"
+  arguments = [6]
+[rule.cyclomatic]
+  severity = "warning"
+  arguments = [30]
+[rule.cognitive-complexity]
+  severity = "warning"
+  arguments = [50]
+[rule.function-result-limit]
+  arguments = [4]
+[rule.function-length]
+  severity = "warning"
+  arguments = [120, 0]
+[rule.max-public-structs]
+  severity = "warning"
+  arguments = [5]
+[rule.file-length-limit]
+  severity = "warning"
+  arguments = [{ max = 800, skipComments = true, skipBlankLines = true }]
+[rule.unhandled-error]
+  severity = "error"
+  # Ignore writes that categorically cannot fail or whose failure is
+  # uninteresting. revive matches each pattern against the *fully-qualified
+  # callee name* (e.g. "database/sql.Rows.Close"), so patterns are name globs.
+  arguments = [
+    "fmt\\..*",
+    "(os\\.(Stdout|Stderr))",
+    ".*(bytes\\.Buffer|strings\\.Builder).*",
+    "io\\.Copy",
+    "io\\.Pipe.*",
+    ".*\\.Write.*",
+    ".*\\.Close",
+    ".*\\.Rollback",
+    "os\\.RemoveAll",
+  ]
+[rule.unconditional-recursion]
+  severity = "error"
+[rule.datarace]
+  severity = "error"
+
+# --------------------------------------------------------------------------- #
+# 3. CUSTOM ENTERPRISE RULES -- enable/adjust per company policy              #
+# --------------------------------------------------------------------------- #
+# Enforce a corporate copyright/license header at the top of every file.
+# Replace the argument with your own header string. Commented out by default so
+# the first run is not flooded with findings; uncomment to enforce.
+#
+# [rule.file-header]
+#   severity = "error"
+#   arguments = ["Copyright (c) 2026 Your Company. All rights reserved."]
+
+# Reject raw panic()/os.Exit in non-test code (use explicit error returns).
+[rule.deep-exit]
+  severity = "error"
+
+# Forbid defer in loops (resource/timing bugs).
+[rule.defer]
+  severity = "error"
+  arguments = [["loop", "call-chain", "recover"]]
+
+# Enforce early return / guard-clause style.
+[rule.early-return]
+  severity = "warning"
+
+# Flag unexported types leaking through exported APIs.
+[rule.unexported-return]
+  severity = "warning"
+
+# Banned characters in identifiers (e.g. no non-ASCII in package names).
+# [rule.banned-characters]
+#   arguments = ["Ω", "Σ", "δ"]
+
+# Imports blocklist: forbid specific deprecated/forbidden import paths.
+# Add your own, e.g. banned internal packages.
+# [rule.imports-blocklist]
+#   arguments = ["mudp/deprecated"]

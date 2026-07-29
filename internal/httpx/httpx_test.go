@@ -1,10 +1,8 @@
 package httpx
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,8 +118,4 @@ func (p *validatedPayload) Validate(r *http.Request) error {
 		return errors.New("email required")
 	}
 	return nil
-}
-
-func bodyReader(s string) io.ReadCloser {
-	return io.NopCloser(bytes.NewReader([]byte(s)))
 }

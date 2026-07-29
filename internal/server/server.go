@@ -71,7 +71,6 @@ type App struct {
 type dirSizeEntry struct {
 	bytes   int64
 	updated time.Time
-	err     string
 }
 
 type contextKey string
@@ -968,7 +967,7 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		// Which networks mudp forwards for is an administrator's setting about
 		// the host, never anything the request can influence.
 		ForwardNetworks: a.forwardNetworks(),
-		Env: normalizeEnv(req.Env), GPUs: req.GPUs,
+		Env:             normalizeEnv(req.Env), GPUs: req.GPUs,
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
@@ -1814,14 +1813,6 @@ func shellSplit(s string) []string {
 	return out
 }
 
-func logRequest(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		fmt.Printf("%s %s %s\n", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
-	})
-}
-
 func parseID(s string) int64 {
 	id, _ := strconv.ParseInt(s, 10, 64)
 	return id
@@ -1890,21 +1881,21 @@ func writeWSMessage(conn net.Conn, opcode byte, payload []byte) error {
 	header[0] = 0x80 | opcode // FIN bit set.
 	masked := false
 	header[1] = byte(maskedBit(masked))
-	len := len(payload)
+	payloadLen := len(payload)
 	switch {
-	case len < 126:
-		header[1] |= byte(len)
+	case payloadLen < 126:
+		header[1] |= byte(payloadLen)
 		if _, err := conn.Write(header[:]); err != nil {
 			return err
 		}
-	case len < 65536:
+	case payloadLen < 65536:
 		header[1] |= 126
 		if _, err := conn.Write(header[:]); err != nil {
 			return err
 		}
 		var ext [2]byte
-		ext[0] = byte(len >> 8)
-		ext[1] = byte(len)
+		ext[0] = byte(payloadLen >> 8)
+		ext[1] = byte(payloadLen)
 		if _, err := conn.Write(ext[:]); err != nil {
 			return err
 		}
@@ -1915,7 +1906,7 @@ func writeWSMessage(conn net.Conn, opcode byte, payload []byte) error {
 		}
 		var ext [8]byte
 		for i := 0; i < 8; i++ {
-			ext[7-i] = byte(len >> (8 * uint(i)))
+			ext[7-i] = byte(payloadLen >> (8 * uint(i)))
 		}
 		if _, err := conn.Write(ext[:]); err != nil {
 			return err
@@ -2068,18 +2059,6 @@ func (f *deadlineFrameWriter) Write(p []byte) (int, error) {
 	if err := f.conn.SetWriteDeadline(time.Now().Add(f.timeout)); err != nil {
 		return 0, err
 	}
-	if err := writeWSMessage(f.conn, wsText, p); err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
-// frameWriter adapts raw exec output into WebSocket text frames.
-type frameWriter struct {
-	conn net.Conn
-}
-
-func (f frameWriter) Write(p []byte) (int, error) {
 	if err := writeWSMessage(f.conn, wsText, p); err != nil {
 		return 0, err
 	}

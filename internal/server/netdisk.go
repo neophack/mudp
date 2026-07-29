@@ -429,7 +429,11 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := r.ParseMultipartForm(2 << 30); err != nil {
+	// Cap the whole request body so a single upload cannot exhaust server
+	// memory/disk (the 2 GiB ParseMultipartForm argument only bounds the RAM
+	// buffer, not total bytes). 2 GiB matches the previous effective ceiling.
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<30)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1314,19 +1318,19 @@ var previewableContentType = map[string]string{
 // textishContentType reports a text/* Content-Type for source/config files so
 // the browser renders them as text rather than offering a download.
 var textishContentType = map[string]string{
-	".txt":       "text/plain; charset=utf-8",
-	".log":       "text/plain; charset=utf-8",
-	".md":        "text/markdown; charset=utf-8",
-	".markdown":  "text/markdown; charset=utf-8",
-	".json":      "application/json; charset=utf-8",
-	".csv":       "text/csv; charset=utf-8",
-	".tsv":       "text/tab-separated-values; charset=utf-8",
-	".ini":       "text/plain; charset=utf-8",
-	".conf":      "text/plain; charset=utf-8",
-	".cfg":       "text/plain; charset=utf-8",
-	".yml":       "text/plain; charset=utf-8",
-	".yaml":      "text/plain; charset=utf-8",
-	".toml":      "text/plain; charset=utf-8",
+	".txt":      "text/plain; charset=utf-8",
+	".log":      "text/plain; charset=utf-8",
+	".md":       "text/markdown; charset=utf-8",
+	".markdown": "text/markdown; charset=utf-8",
+	".json":     "application/json; charset=utf-8",
+	".csv":      "text/csv; charset=utf-8",
+	".tsv":      "text/tab-separated-values; charset=utf-8",
+	".ini":      "text/plain; charset=utf-8",
+	".conf":     "text/plain; charset=utf-8",
+	".cfg":      "text/plain; charset=utf-8",
+	".yml":      "text/plain; charset=utf-8",
+	".yaml":     "text/plain; charset=utf-8",
+	".toml":     "text/plain; charset=utf-8",
 	// Markup and script sources are shown as plain text, never as a live
 	// document. Serving user-uploaded HTML as text/html on this origin is a
 	// stored-XSS primitive: /api/netdisk/share/raw is public, so anyone could
@@ -1691,10 +1695,6 @@ func shareVisible(paths []string, req string) bool {
 		}
 	}
 	return false
-}
-
-func copyPath(src, dst string) error {
-	return copyPathWithPolicy(src, dst, "overwrite")
 }
 
 func copyPathWithPolicy(src, dst, policy string) error {

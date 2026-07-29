@@ -45,8 +45,8 @@ type rawStats struct {
 		OnlineCPUs     uint32 `json:"online_cpus"`
 	} `json:"cpu_stats"`
 	MemoryStats struct {
-		Usage uint64 `json:"usage"`
-		Limit uint64 `json:"limit"`
+		Usage uint64            `json:"usage"`
+		Limit uint64            `json:"limit"`
 		Stats memoryStatsDetail `json:"stats"`
 	} `json:"memory_stats"`
 	Networks map[string]struct {
@@ -69,11 +69,11 @@ type rawStats struct {
 // Docker daemon). Every field is optional; absent keys decode to zero.
 type memoryStatsDetail struct {
 	Cache             uint64 `json:"cache"`
-	RSS               uint64 `json:"rss"`                     // resident anonymous memory (v1)
-	Rss               uint64 `json:"Rss"`                     // cgroup v2 capitalised variant
-	ActiveAnon        uint64 `json:"active_anon"`             // v1: active anonymous pages
-	InactiveFile      uint64 `json:"inactive_file"`           // v1: reclaimable file pages
-	TotalInactiveFile uint64 `json:"total_inactive_file"`     // v2 unified key
+	RSS               uint64 `json:"rss"`                 // resident anonymous memory (v1)
+	Rss               uint64 `json:"Rss"`                 // cgroup v2 capitalised variant
+	ActiveAnon        uint64 `json:"active_anon"`         // v1: active anonymous pages
+	InactiveFile      uint64 `json:"inactive_file"`       // v1: reclaimable file pages
+	TotalInactiveFile uint64 `json:"total_inactive_file"` // v2 unified key
 }
 
 // SampleStats takes a single one-shot stats reading for a container.

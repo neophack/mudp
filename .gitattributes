@@ -1,0 +1,12 @@
+# Line-ending policy for mudp.
+#
+# Go sources and shell scripts must stay LF: `gofmt -l` reports every line of a
+# CRLF file as "needs formatting" (the diff is line endings only), and a CRLF
+# shebang silently breaks `#!interpreter` exec on Linux. On Windows, where
+# core.autocrlf=true is the default, this pins LF on checkout so gofmt, the
+# compiler, and shell scripts all see consistent input.
+*.go   text eol=lf
+*.mod  text eol=lf
+*.sum  text eol=lf
+*.sh   text eol=lf
+*.bat  text eol=crlf

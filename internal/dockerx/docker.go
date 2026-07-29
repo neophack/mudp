@@ -373,9 +373,9 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	}
 	resolvedNetworks := make([]string, 0, len(opts.Networks))
 	for _, n := range opts.Networks {
-		full, err := d.validateNetworkAttachment(ctx, opts.Username, n, allowedNetworks)
-		if err != nil {
-			return "", err
+		full, netErr := d.validateNetworkAttachment(ctx, opts.Username, n, allowedNetworks)
+		if netErr != nil {
+			return "", netErr
 		}
 		resolvedNetworks = append(resolvedNetworks, full)
 	}
@@ -446,9 +446,9 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		}
 		containerPort, proto := req.containerPort, req.proto
 		if req.hostPort == 0 {
-			hostPort, err := nextPort()
-			if err != nil {
-				return err
+			hostPort, allocErr := nextPort()
+			if allocErr != nil {
+				return allocErr
 			}
 			publish(hostPort, containerPort, proto)
 			return nil
@@ -460,9 +460,9 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			// another free port in the user's assigned range instead of failing.
 			if !usedPorts[hostPort] && !portFree(hostPort) {
 				emit("ports", fmt.Sprintf("Host port %d is occupied by another process; allocating a different port", hostPort))
-				alt, err := nextPort()
-				if err != nil {
-					return err
+				alt, reallocErr := nextPort()
+				if reallocErr != nil {
+					return reallocErr
 				}
 				publish(alt, containerPort, proto)
 				return nil
@@ -985,7 +985,7 @@ func (d *Client) memoryMB(ctx context.Context, id string) (float64, error) {
 	defer resp.Body.Close()
 	var s struct {
 		MemoryStats struct {
-			Usage uint64 `json:"usage"`
+			Usage uint64            `json:"usage"`
 			Stats memoryStatsDetail `json:"stats"`
 		} `json:"memory_stats"`
 	}

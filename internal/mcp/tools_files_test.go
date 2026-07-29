@@ -80,7 +80,11 @@ func TestSearchLines_LastLineNoTrailingNewline(t *testing.T) {
 
 // makeArchive builds a tar with the given entries (name, typeflag, body) for
 // testing rewriteArchive.
-func makeArchive(entries []struct{ name string; typeflag byte; body string }) []byte {
+func makeArchive(entries []struct {
+	name     string
+	typeflag byte
+	body     string
+}) []byte {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for _, e := range entries {
@@ -99,7 +103,11 @@ func makeArchive(entries []struct{ name string; typeflag byte; body string }) []
 }
 
 func TestRewriteArchive_RenamesRoot(t *testing.T) {
-	src := makeArchive([]struct{ name string; typeflag byte; body string }{
+	src := makeArchive([]struct {
+		name     string
+		typeflag byte
+		body     string
+	}{
 		{"src", tar.TypeDir, ""},
 		{"src/a.txt", tar.TypeReg, "hello"},
 		{"src/sub", tar.TypeDir, ""},
@@ -140,7 +148,11 @@ func TestRewriteArchive_RenamesRoot(t *testing.T) {
 }
 
 func TestRewriteArchive_DropsSymlinks(t *testing.T) {
-	src := makeArchive([]struct{ name string; typeflag byte; body string }{
+	src := makeArchive([]struct {
+		name     string
+		typeflag byte
+		body     string
+	}{
 		{"f", tar.TypeReg, "data"},
 		{"link", tar.TypeSymlink, ""},
 	})

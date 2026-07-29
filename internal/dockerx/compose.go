@@ -444,7 +444,7 @@ func (p *ComposeProject) ComposeDown(ctx context.Context, progress func(line str
 // forwarding each line through progress. It blocks until the command exits.
 func (p *ComposeProject) run(ctx context.Context, args []string, progress func(line string)) error {
 	full := append([]string{"compose", "-p", p.Name, "-f", filepath.Join(p.Dir, "compose.yaml")}, args...)
-	cmd := exec.CommandContext(ctx, "docker", full...)
+	cmd := exec.CommandContext(ctx, "docker", full...) // #nosec G204 -- argv is fully server-derived (p.Name is Slug()'d, p.Dir is a MkdirTemp, args are fixed up/-d/--remove-orphans/down); no shell
 	cmd.Dir = p.Dir
 	// Merge stdout+stderr so ordering is preserved.
 	pr, pw := io.Pipe()

@@ -357,7 +357,11 @@ func (a *App) volumeFilesUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "read-only role cannot modify volumes")
 		return
 	}
-	if err := r.ParseMultipartForm(2 << 30); err != nil {
+	// Cap the whole request body so a single upload cannot exhaust server
+	// memory/disk (the 2 GiB ParseMultipartForm argument only bounds the RAM
+	// buffer, not total bytes). 2 GiB matches the previous effective ceiling.
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<30)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

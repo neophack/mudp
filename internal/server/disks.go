@@ -140,13 +140,13 @@ func (a *App) diskMount(w http.ResponseWriter, r *http.Request) {
 	}
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("powershell", "-NoProfile", "-Command", "New-Item -ItemType Directory -Force -Path "+escapePathForPowerShell(req.Target)+" | Out-Null")
+		cmd = exec.Command("powershell", "-NoProfile", "-Command", "New-Item -ItemType Directory -Force -Path "+escapePathForPowerShell(req.Target)+" | Out-Null") // #nosec G204 -- req.Target is single-quote-escaped by escapePathForPowerShell (no PS interpolation); admin-only endpoint
 	} else {
 		args := []string{req.Source, req.Target}
 		if req.FSType != "" {
 			args = []string{"-t", req.FSType, req.Source, req.Target}
 		}
-		cmd = exec.Command("mount", args...)
+		cmd = exec.Command("mount", args...) // #nosec G204 -- separate argv, no shell; mount takes a literal mountpoint
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		writeErr(w, http.StatusBadRequest, strings.TrimSpace(string(out))+" "+err.Error())
@@ -173,9 +173,9 @@ func (a *App) diskUnmount(w http.ResponseWriter, r *http.Request) {
 		// which still interpolates $(...) and backticks, so a target like
 		// "$(calc)" would execute. escapePathForPowerShell emits a single-quoted
 		// literal instead, where no interpolation happens.
-		cmd = exec.Command("powershell", "-NoProfile", "-Command", "Remove-Item -Force "+escapePathForPowerShell(req.Target))
+		cmd = exec.Command("powershell", "-NoProfile", "-Command", "Remove-Item -Force "+escapePathForPowerShell(req.Target)) // #nosec G204 -- single-quote-escaped target; admin-only endpoint
 	} else {
-		cmd = exec.Command("umount", req.Target)
+		cmd = exec.Command("umount", req.Target) // #nosec G204 -- separate argv, no shell
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		writeErr(w, http.StatusBadRequest, strings.TrimSpace(string(out))+" "+err.Error())

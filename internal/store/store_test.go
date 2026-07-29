@@ -219,9 +219,6 @@ func TestImagesForUserVisibility(t *testing.T) {
 	}
 }
 
-// boolPtr returns a pointer to b, used to build preset pointer-typed booleans.
-func boolPtr(b bool) *bool { return &b }
-
 // TestValidatePreset guards the server-side preset validation: well-formed presets
 // pass, malformed env/ports/devices are rejected before the DB write.
 func TestValidatePreset(t *testing.T) {
@@ -972,7 +969,7 @@ func TestNotificationLifecycle(t *testing.T) {
 	if err := db.MarkNotificationsRead(alice.ID, []int64{aliceItems[0].ID}); err != nil {
 		t.Fatal(err)
 	}
-	aliceItems, unread, _ = db.NotificationsForUser(alice.ID, 10)
+	_, unread, _ = db.NotificationsForUser(alice.ID, 10)
 	if unread != 0 {
 		t.Fatalf("expected 0 unread after mark, got %d", unread)
 	}

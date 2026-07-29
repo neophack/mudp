@@ -23,8 +23,8 @@ const maxBinaryFileBytes = 16 << 20 // 16 MiB raw
 // Result caps keep a single glob/search call bounded when pointed at a large
 // tree (CopyFromContainer returns the whole subtree).
 const (
-	maxGlobResults   = 500
-	maxSearchResults = 500
+	maxGlobResults     = 500
+	maxSearchResults   = 500
 	maxSearchFileBytes = 5 << 20 // skip files larger than 5 MiB during search
 )
 
@@ -101,7 +101,7 @@ func walkArchiveNames(rc io.Reader, keep func(entry string) bool) []string {
 			continue
 		}
 		if keep(name) {
-			out = append(out, "/" + name)
+			out = append(out, "/"+name)
 		}
 	}
 	return out
@@ -156,9 +156,9 @@ func handleSearchFiles(ctx context.Context, dc *dockerx.Client, id string, raw j
 				return jsonTextResult([]searchHit{})
 			}
 		}
-		body, err := readArchiveFile(rc, stat.Name, maxSearchFileBytes)
-		if err != nil {
-			return nil, err
+		body, readErr := readArchiveFile(rc, stat.Name, maxSearchFileBytes)
+		if readErr != nil {
+			return nil, readErr
 		}
 		hits = searchLines(root, string(body), needle, p.CaseInsensitive)
 	} else {
@@ -426,7 +426,7 @@ func readArchiveFile(rc io.Reader, name string, limit int) ([]byte, error) {
 			}
 			return nil, err
 		}
-		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
 		if hdr.Size > int64(limit) {

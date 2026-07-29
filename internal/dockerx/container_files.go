@@ -107,8 +107,8 @@ func (d *Client) containerFileListExec(ctx context.Context, id, dir string) ([]F
 	defer attach.Close()
 
 	var stdout, stderr bytes.Buffer
-	if _, err := stdcopy.StdCopy(&stdout, &stderr, attach.Reader); err != nil {
-		return nil, err
+	if _, copyErr := stdcopy.StdCopy(&stdout, &stderr, attach.Reader); copyErr != nil {
+		return nil, copyErr
 	}
 
 	inspect, err := d.c.ContainerExecInspect(ctx, resp.ID)
@@ -371,4 +371,3 @@ func (d *Client) ContainerFileUpload(ctx context.Context, id, destDir string, ta
 
 // assertContainerPath is a guard used by handlers to refuse obviously bad input
 // early; the Docker API itself rejects paths it cannot resolve.
-var errBadContainerPath = fmt.Errorf("invalid container path")

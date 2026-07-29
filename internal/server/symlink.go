@@ -104,8 +104,12 @@ $Shortcut.WorkingDirectory = %s
 $Shortcut.Save()
 `, linkPathEscaped, targetPathEscaped, targetPathEscaped)
 
-	// Execute PowerShell script
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", psScript)
+	// Execute PowerShell script. psScript is built only from
+	// linkPathEscaped/targetPathEscaped, which ran through escapePathForPowerShell
+	// (single-quote wrapping + ' escaping); single quotes suppress PowerShell's
+	// $()/backtick interpolation, and displayName is rejected if it contains
+	// / \ . .. upstream (symlink.go:23-25).
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", psScript) // #nosec G204,G702 -- see rationale above
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create shortcut: %w (output: %s)", err, string(output))
 	}

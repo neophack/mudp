@@ -58,9 +58,9 @@ func (a *App) setupInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AdminUsername       string `json:"adminUsername"`
-		AdminPassword       string `json:"adminPassword"`
-		SiteName            string `json:"siteName"`
+		AdminUsername         string `json:"adminUsername"`
+		AdminPassword         string `json:"adminPassword"`
+		SiteName              string `json:"siteName"`
 		UsersGroupNetdiskPath string `json:"usersGroupNetdiskPath"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
@@ -110,4 +110,3 @@ func (a *App) setupInit(w http.ResponseWriter, r *http.Request) {
 	a.db.Audit(req.AdminUsername, "setup.complete", "initial setup completed")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
-

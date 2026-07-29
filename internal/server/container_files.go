@@ -101,7 +101,10 @@ func streamTarFile(w io.Writer, rc io.Reader, name string) error {
 			return err
 		}
 		if path.Base(strings.TrimSuffix(hdr.Name, "/")) == name || hdr.Typeflag == tar.TypeReg {
-			_, err = io.Copy(w, tr)
+			// Cap the copy at hdr.Size (authoritative for tar regular files)
+			// so a forged/crafted archive cannot stream unbounded bytes and
+			// exhaust server memory (decompression-bomb, CWE-409).
+			_, err = io.Copy(w, io.LimitReader(tr, hdr.Size))
 			return err
 		}
 	}
@@ -135,7 +138,8 @@ func streamContainerTarAsZip(w io.Writer, rc io.Reader) {
 			return
 		}
 		if !fi.IsDir() {
-			_, _ = io.Copy(fh, tr)
+			// Cap each member at its declared size (decompression-bomb defense).
+			_, _ = io.Copy(fh, io.LimitReader(tr, hdr.Size))
 		}
 	}
 }
@@ -381,7 +385,14 @@ func extractContainerTar(rc io.Reader, dest string) (int, error) {
 		if err != nil {
 			return written, err
 		}
-		if _, err := io.Copy(f, tr); err != nil {
+		// Cap extraction at hdr.Size (authoritative for tar.TypeReg) to
+		// defend against decompression bombs written to the netdisk (CWE-409).
+		// hdr.Size < 0 only happens with a malformed archive; skip such entries.
+		if hdr.Size < 0 {
+			f.Close()
+			continue
+		}
+		if _, err := io.Copy(f, io.LimitReader(tr, hdr.Size)); err != nil {
 			f.Close()
 			return written, err
 		}

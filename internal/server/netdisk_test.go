@@ -106,9 +106,9 @@ func TestUploadDestPath(t *testing.T) {
 		want string // relative to dir
 	}{
 		{0, filepath.Join("top", "sub", "b.txt")}, // nested path preserved
-		{1, "c.txt"},                              // empty entry: fall back to the part filename
-		{2, "escape.txt"},                         // traversal is clamped inside dir
-		{3, "e.txt"},                              // no entry at all: fall back to the filename
+		{1, "c.txt"},      // empty entry: fall back to the part filename
+		{2, "escape.txt"}, // traversal is clamped inside dir
+		{3, "e.txt"},      // no entry at all: fall back to the filename
 	}
 	for _, c := range cases {
 		got, err := uploadDestPath(dir, relPaths, c.i, files[c.i])
@@ -416,12 +416,12 @@ func TestCleanUserPathAllowsNormalPaths(t *testing.T) {
 // A netdisk root that is itself reached through a symlink (a path pointing at a
 // mounted disk) must still work — both sides are resolved before comparison.
 func TestCleanUserPathAllowsSymlinkedRoot(t *testing.T) {
-	real := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(real, "sub"), 0750); err != nil {
+	realDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(realDir, "sub"), 0750); err != nil {
 		t.Fatal(err)
 	}
 	linkRoot := filepath.Join(t.TempDir(), "netdisk")
-	linkDir(t, real, linkRoot)
+	linkDir(t, realDir, linkRoot)
 	if _, _, err := cleanUserPath(linkRoot, "sub/file.txt"); err != nil {
 		t.Errorf("symlinked root should be usable: %v", err)
 	}
