@@ -1,6 +1,6 @@
 // Login screen: password form plus optional Feishu SSO button.
 
-import { state, api, renderPending, refreshAll, render } from "../app.js";
+import { state, api, renderPending, refreshAll, render, escapeHtml } from "../app.js";
 import { LANG_CHINESE, SUPPORTED_LANGS, getCurrentLanguage, switchLanguage, t, initI18n } from "../lib/i18n.js";
 
 export async function renderLogin() {
@@ -23,7 +23,7 @@ function _renderLoginHTML(feishuOn) {
     `<section class="login-wrap">` +
       `<div class="login-hero">` +
         `<div class="brand-lg">Multi User Docker Platform</div>` +
-        `<div class="brand-subtitle">MUDP</div>` +
+        `<div class="brand-subtitle">${escapeHtml(state.siteName || "MUDP")}</div>` +
         `<p>${t("login.brandSubtitle")}</p>` +
         `<ul>` +
           `<li>${t("login.feature1")}</li>` +
@@ -33,6 +33,7 @@ function _renderLoginHTML(feishuOn) {
         `</ul>` +
       `</div>` +
       `<div class="login-pane">` +
+        `<div class="login-mobile-brand">${escapeHtml(state.siteName || "MUDP")}</div>` +
         `<form class="login-card" id="loginForm">` +
           `<h1>${t("login.title")}</h1>` +
           `<input name="username" placeholder="${t("login.username")}" autocomplete="username" required>` +

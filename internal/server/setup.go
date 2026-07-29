@@ -17,7 +17,8 @@ func (a *App) setupStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"setupNeeded": needed})
+	siteName, _ := a.db.Setting("site_name")
+	writeJSON(w, http.StatusOK, map[string]any{"setupNeeded": needed, "siteName": siteName})
 }
 
 // setupNeeded returns true when no administrator account exists and the
@@ -109,4 +110,38 @@ func (a *App) setupInit(w http.ResponseWriter, r *http.Request) {
 
 	a.db.Audit(req.AdminUsername, "setup.complete", "initial setup completed")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// siteSettings lets an admin read/write the site name shown in the browser
+// tab and sidebar. Reading is restricted to admins; the value everyone else
+// sees is exposed publicly (and pre-login) via setupStatus.
+func (a *App) siteSettings(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil || roleRank(u.Role) < rankAdmin {
+		writeErr(w, http.StatusForbidden, "insufficient privileges")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		siteName, err := a.db.Setting("site_name")
+		respond(w, map[string]string{"siteName": siteName}, err)
+	case http.MethodPost:
+		var req struct {
+			SiteName string `json:"siteName"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		name := strings.TrimSpace(req.SiteName)
+		if err := a.db.SaveSetting("site_name", name); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		a.db.Audit(u.Username, "settings.site", "updated site name")
+		writeJSON(w, http.StatusOK, map[string]string{"siteName": name})
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }

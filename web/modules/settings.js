@@ -1,12 +1,15 @@
-// Settings: Feishu SSO + registries + language preferences. (Port forwarding
-// has its own page — see modules/forwards.js.)
+// Settings: site name + Feishu SSO + registries + language preferences. (Port
+// forwarding has its own page — see modules/forwards.js.)
 
-import { state, api, toast, renderView, escapeHtml, isAdmin, t, $ } from "../app.js";
+import { state, api, toast, render, renderView, escapeHtml, isAdmin, t, $, applySiteName } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 import { createUserLanguageSettings, createAdminLanguageSettings } from "../lib/languageUI.js";
 import { getCurrentLanguage, switchLanguage } from "../lib/i18n.js";
 
 export function renderSettings() {
+  if (isAdmin() && !state.siteAdmin.loaded) {
+    loadSiteAdmin();
+  }
   if (isAdmin() && !state.feishuAdmin.loaded) {
     loadFeishuAdmin();
   }
@@ -20,6 +23,15 @@ export function renderSettings() {
   const currentLanguage = getCurrentLanguage();
   const defaultLanguage = state.me?.defaultLanguage || "en_US";
   const adminLanguagePanel = isAdmin() ? createAdminLanguageSettings(defaultLanguage) : "";
+  const siteSettingsPanel = isAdmin()
+    ? `<div class="card"><div class="card-head"><h2>${t("settings.siteSettings")}</h2></div>` +
+        `<div class="card-body"><form id="siteForm" class="compact">` +
+          `<p class="hint">${t("settings.siteNameHint")}</p>` +
+          `<input name="siteName" placeholder="${t("settings.siteNamePlaceholder")}" value="${escapeHtml(state.siteAdmin.siteName)}">` +
+          `<button>${t("settings.saveSite")}</button>` +
+        `</form></div>` +
+      `</div>`
+    : "";
   const registriesPanel = isAdmin()
     ? `<div class="card"><div class="card-head"><h2>${t("settings.registries")}</h2>` +
         `<button class="primary" id="newRegistryBtn">${t("settings.addRegistry")}</button>` +
@@ -47,6 +59,7 @@ export function renderSettings() {
     `<div class="stack">` +
       createUserLanguageSettings(currentLanguage) +
       adminLanguagePanel +
+      siteSettingsPanel +
       registriesPanel +
       mcpRemotePanel() +
       feishuSettingsPanel +
@@ -82,6 +95,26 @@ export function renderSettings() {
           body: JSON.stringify({ defaultLanguage: fd.get("defaultLanguage") }),
         });
         toast(t("admin.saved"), true);
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+
+  const siteForm = $("#siteForm");
+  if (siteForm) {
+    siteForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        const res = await api("/api/admin/settings/site", {
+          method: "POST",
+          body: JSON.stringify({ siteName: fd.get("siteName") || "" }),
+        });
+        state.siteAdmin = { siteName: res.siteName || "", loaded: true };
+        applySiteName(res.siteName || "");
+        render();
+        toast(t("settings.siteSaved"), true);
       } catch (err) {
         toast(err.message);
       }
@@ -276,6 +309,20 @@ async function testRegistry(id) {
   } catch (err) {
     toast(err.message);
   }
+}
+
+export async function loadSiteAdmin() {
+  if (!isAdmin()) {
+    state.siteAdmin = { siteName: "", loaded: true };
+    return;
+  }
+  try {
+    const cfg = await api("/api/admin/settings/site");
+    state.siteAdmin = { siteName: cfg.siteName || "", loaded: true };
+  } catch {
+    state.siteAdmin = { siteName: "", loaded: true };
+  }
+  if (state.tab === "scripts") renderView();
 }
 
 export async function loadFeishuAdmin() {

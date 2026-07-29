@@ -299,6 +299,7 @@ a:hover { text-decoration: underline; }
   gap: 14px;
 }
 .login-card h1 { font-size: 22px; }
+.login-mobile-brand { display: none; }
 .login-divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; }
 .login-divider::before, .login-divider::after { content: ""; height: 1px; background: var(--line); flex: 1; }
 .login-feishu {
@@ -988,6 +989,7 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 @media (max-width: 860px) {
   .login-wrap { grid-template-columns: minmax(0, 1fr); }
   .login-hero { display: none; }
+  .login-mobile-brand { display: block; text-align: center; font-size: 20px; font-weight: 800; color: var(--ink); margin-bottom: 4px; }
   /* Mobile: the sidebar becomes a slim top bar with a horizontally swipeable
      tab strip, so vertical space stays with the content instead of a
      full-height rail. The collapse toggle has no meaning in a horizontal bar

@@ -347,6 +347,8 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/admin/audit", a.audit)
 		r.Get("/api/settings/feishu", a.feishuSettings)
 		r.Post("/api/settings/feishu", a.feishuSettings)
+		r.Get("/api/admin/settings/site", a.siteSettings)
+		r.Post("/api/admin/settings/site", a.siteSettings)
 		r.Post("/api/groups/netdisk", a.groupNetdisk)
 		r.Post("/api/groups/backup", a.groupBackup)
 		r.Get("/api/admin/netdisk/shares", a.netdiskSharesAdmin)

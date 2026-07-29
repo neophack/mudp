@@ -52,6 +52,7 @@ export const state = {
   me: null,
   csrfToken: "",
   feishu: false,
+  siteName: "",
   dashboard: null,
   images: [],
   users: [],
@@ -66,6 +67,7 @@ export const state = {
   mcpTokens: [],
   disks: [],
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
+  siteAdmin: { siteName: "", loaded: false },
   notifications: [],
   unreadCount: 0,
   search: "",
@@ -198,10 +200,18 @@ export function readCSRFCookie() {
   return m ? decodeURIComponent(m[1]) : "";
 }
 
+// applySiteName sets the browser tab title from the admin-configured site
+// name, falling back to the default MUDP branding when unset.
+export function applySiteName(name) {
+  state.siteName = name || "";
+  document.title = state.siteName || "MUDP";
+}
+
 export async function load() {
   try {
     state.csrfToken = readCSRFCookie();
     const setup = await api("/api/setup/status").catch(() => ({ setupNeeded: false }));
+    applySiteName(setup.siteName);
     if (setup.setupNeeded) {
       renderSetup();
       return;
@@ -382,7 +392,7 @@ export function render() {
       `<aside class="${collapsed ? "collapsed" : ""}${mobileNavOpen ? " mobile-nav-open" : ""}">` +
         `<div class="brand">` +
           `<span class="dot"></span>` +
-          `<span class="brand-text">MUDP</span>` +
+          `<span class="brand-text">${escapeHtml(state.siteName || "MUDP")}</span>` +
           `<button id="sidebarToggle" class="sidebar-toggle" title="${collapsed ? t("shell.expandSidebar") : t("shell.collapseSidebar")}" aria-label="Toggle sidebar">${collapsed ? ICONS.expand : ICONS.collapse}</button>` +
         `</div>` +
         `<button id="mobileNavToggle" class="mobile-nav-toggle" title="${t("nav.toggleMenu")}" aria-label="${t("nav.toggleMenu")}" aria-expanded="${mobileNavOpen}">${mobileNavOpen ? ICONS.close : ICONS.menu}</button>` +
