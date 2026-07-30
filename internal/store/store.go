@@ -245,6 +245,7 @@ var migrations = []migration{
 	{31, "create mcp_attack_logs", migrateCreateMCPAttackLogs},
 	{32, "widen mcp_usage_logs (geo/client)", migrateWidenMCPUsageLogs},
 	{33, "add port_forwards.require_login", migrateAddPortForwardRequireLogin},
+	{34, "add images.env_seq", migrateAddImageEnvSeq},
 }
 
 // migrateRevokeFeishuDerivedPasswords clears password hashes that were derived
@@ -491,6 +492,12 @@ func migrateAddSharePassword(db executor) error {
 
 func migrateAddImagePreset(db executor) error {
 	return execIgnoring(db, `alter table images add column preset_json text not null default ''`, sqliteDuplicateColumn)
+}
+
+// migrateAddImageEnvSeq adds the per-image counter backing {{sequence}} preset env
+// placeholders, so each container built from an image can get the next number.
+func migrateAddImageEnvSeq(db executor) error {
+	return execIgnoring(db, `alter table images add column env_seq integer not null default 0`, sqliteDuplicateColumn)
 }
 
 // migrateCreateMCPTokens creates the table backing per-container MCP access
@@ -1136,6 +1143,32 @@ func (db *DB) SetImagePreset(imageID int64, preset *ImagePreset) error {
 		return fmt.Errorf("image %d not found", imageID)
 	}
 	return nil
+}
+
+// NextImageEnvSeq atomically increments and returns the image's env-var sequence
+// counter, resolving a {{sequence}} preset placeholder to the next number (e.g.
+// USER_CODE=0007) each time a container is built from the image.
+func (db *DB) NextImageEnvSeq(imageID int64) (int64, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`update images set env_seq = env_seq + 1 where id=?`, imageID)
+	if err != nil {
+		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return 0, fmt.Errorf("image %d not found", imageID)
+	}
+	var seq int64
+	if err := tx.QueryRow(`select env_seq from images where id=?`, imageID).Scan(&seq); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return seq, nil
 }
 
 func (db *DB) UserGroupNames(userID int64) []string {

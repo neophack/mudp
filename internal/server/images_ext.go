@@ -528,3 +528,43 @@ func (a *App) imagePreset(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, map[string]any{"ok": true}, nil)
 }
+
+// imagePresetResolve expands an image preset's Env template placeholders (random
+// passwords, random numbers/strings, a per-image {{sequence}} counter) into concrete
+// values. The create-container form calls this each time a user selects the image,
+// so every build gets a freshly generated value that the user can still edit before
+// submitting; plain KEY=VALUE entries with no placeholder pass through unchanged.
+func (a *App) imagePresetResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		ImageID int64 `json:"imageId"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ImageID == 0 {
+		writeErr(w, http.StatusBadRequest, "imageId is required")
+		return
+	}
+	img, err := a.db.ImageByID(req.ImageID)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var env []string
+	if img.Preset != nil {
+		env = img.Preset.Env
+	}
+	resolved, err := store.ResolveEnvTemplates(env, func() (int64, error) {
+		return a.db.NextImageEnvSeq(req.ImageID)
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respond(w, map[string]any{"env": resolved}, nil)
+}

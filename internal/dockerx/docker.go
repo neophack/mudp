@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -32,6 +33,11 @@ const (
 	ManagedLabel = "mudp.managed"
 	UserLabel    = "mudp.user"
 	NameLabel    = "mudp.name"
+	// NoVNCPasswordLabel stores the resolved value of the env var an image
+	// preset named as its noVNC auto-login password (e.g. VNC_PW), so the
+	// container list can build a "?password=" open link without a per-row
+	// inspect call. Empty/absent means the image did not request this.
+	NoVNCPasswordLabel = "mudp.novnc.password"
 )
 
 var cleanPart = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
@@ -80,8 +86,13 @@ type CreateOptions struct {
 	// ports is login-gated. Server-supplied from the image preset — never taken
 	// from the request, so a user cannot self-grant or self-revoke it.
 	RequireLogin bool
-	Ports        []string
-	PortPrefix   int
+	// NoVNCPasswordEnv names an env var (e.g. "VNC_PW") whose resolved value
+	// should be stamped as NoVNCPasswordLabel, so the container list can open a
+	// noVNC page pre-authenticated via "?password=". Server-supplied from the
+	// image preset — never taken from the request.
+	NoVNCPasswordEnv string
+	Ports            []string
+	PortPrefix       int
 	// Mounts are bind/named-volume mounts: "source:target[:ro]" entries.
 	Mounts       []string
 	NetdiskPath  string
@@ -526,6 +537,14 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			labels[ForwardRequireLoginLabel] = "true"
 		}
 	}
+	// Stamp the resolved noVNC auto-login password (if the image preset named
+	// one), so the container list can build a "?password=" open link without a
+	// second inspect call per row. Server-supplied, same rationale as RequireLogin.
+	if key := strings.TrimSpace(opts.NoVNCPasswordEnv); key != "" {
+		if val, ok := lookupEnvValue(opts.Env, key); ok && val != "" {
+			labels[NoVNCPasswordLabel] = val
+		}
+	}
 	hostCfg := &container.HostConfig{
 		PortBindings:  portMap,
 		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyMode(normalizeRestartPolicy(opts.RestartPolicy))},
@@ -943,11 +962,13 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 				ports = append(ports, rendered)
 			}
 		}
+		novncPassword := c.Labels[NoVNCPasswordLabel]
 		out = append(out, Container{
 			ID: c.ID, Name: display, FullName: full, Owner: c.Labels[UserLabel], Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
-			HTTP8080URL: httpURL(c.Ports, forwards, 8080), HTTP80URL: httpURL(c.Ports, forwards, 80),
-			Forwarded: forwarded,
+			HTTP8080URL: withNoVNCPassword(httpURL(c.Ports, forwards, 8080), novncPassword),
+			HTTP80URL:   withNoVNCPassword(httpURL(c.Ports, forwards, 80), novncPassword),
+			Forwarded:   forwarded,
 		})
 	}
 	for i := range out {
@@ -963,6 +984,27 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 		}
 	}
 	return out, nil
+}
+
+// lookupEnvValue returns the value of key within a "KEY=VALUE" env list.
+func lookupEnvValue(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for _, e := range env {
+		if val, ok := strings.CutPrefix(e, prefix); ok {
+			return val, true
+		}
+	}
+	return "", false
+}
+
+// withNoVNCPassword appends a "?password=" query string to a forwarded-port open
+// URL when the container carries a resolved NoVNCPasswordLabel, so clicking it
+// logs straight into noVNC instead of stopping at its password prompt.
+func withNoVNCPassword(rawURL, password string) string {
+	if rawURL == "" || password == "" {
+		return rawURL
+	}
+	return rawURL + "/?password=" + url.QueryEscape(password)
 }
 
 // httpURL returns the host-side http:// URL for the given container private

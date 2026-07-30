@@ -3,8 +3,13 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// envKeyRe matches a plausible env var name: letters/digits/underscore, not
+// starting with a digit, e.g. VNC_PW.
+var envKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ImagePreset captures an admin-defined default configuration for an image. When a user
 // picks this image in the create-container modal, the preset auto-fills the form so
@@ -17,6 +22,10 @@ type ImagePreset struct {
 	// user; otherwise one of "none", "all", or a comma-separated index list.
 	GPUs string `json:"gpus,omitempty"`
 	// Env are extra environment variables (KEY=VALUE) to inject, e.g. VNC_PW=secret.
+	// A value may embed a {{random_password:N}}, {{random_number:N}}, {{random_string:N}},
+	// or {{sequence:N}} placeholder (N optional); ResolveEnvTemplates expands these to
+	// a freshly generated value each time a container is built from the image, e.g.
+	// VNC_PW={{random_password:16}}. See envgen.go.
 	Env []string `json:"env,omitempty"`
 	// Ports are container-side ports that should be mapped to the user's allocated
 	// host-port range, e.g. ["8080", "8443"]. The host side is auto-assigned.
@@ -51,6 +60,11 @@ type ImagePreset struct {
 	// forwards can honour it — a UDP or raw-TCP forward cannot check a cookie —
 	// and the forward layer refuses non-HTTP traffic to one of these ports.
 	RequireLogin *bool `json:"requireLogin,omitempty"`
+	// NoVNCPasswordEnv names one of this preset's Env keys (e.g. "VNC_PW") whose
+	// resolved value should be appended as "?password=" to the container's
+	// forwarded-port open link, so clicking it logs straight into a noVNC page
+	// instead of stopping at its password prompt. Empty means no auto-login.
+	NoVNCPasswordEnv string `json:"novncPasswordEnv,omitempty"`
 }
 
 // MarshalJSON serialises the preset to JSON, returning an empty byte slice for a
@@ -99,7 +113,8 @@ func isEmptyPreset(p *ImagePreset) bool {
 	return p.GPUs == "" && len(p.Env) == 0 && len(p.Ports) == 0 &&
 		p.Forward8080 == nil && p.Forward80 == nil &&
 		p.MountNetdisk == nil && p.MountShm == nil && len(p.Networks) == 0 && p.RestartPolicy == "" &&
-		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == "" && p.RequireLogin == nil
+		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == "" && p.RequireLogin == nil &&
+		p.NoVNCPasswordEnv == ""
 }
 
 // ValidatePreset performs lightweight, security-conscious validation of an admin
@@ -114,6 +129,12 @@ func ValidatePreset(p *ImagePreset) error {
 		if !strings.Contains(e, "=") {
 			return fmt.Errorf("env entry %q must be KEY=VALUE", e)
 		}
+	}
+	if err := ValidateEnvTemplates(p.Env); err != nil {
+		return err
+	}
+	if p.NoVNCPasswordEnv != "" && !envKeyRe.MatchString(p.NoVNCPasswordEnv) {
+		return fmt.Errorf("novnc password env %q must be a valid env var name", p.NoVNCPasswordEnv)
 	}
 	for _, port := range p.Ports {
 		if !isAllDigits(port) {

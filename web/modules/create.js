@@ -1,6 +1,6 @@
 // New-container modal and its SSE-driven progress panel.
 
-import { state, toast, refreshAll, renderView, readCSRFCookie, isAdmin, t } from "../app.js";
+import { state, api, toast, refreshAll, renderView, readCSRFCookie, isAdmin, t } from "../app.js";
 import { showModal, setModalBody, closeModal, readSSE } from "./ui.js";
 import { registerJob } from "./jobs.js";
 
@@ -166,14 +166,32 @@ function gpuSelectHtml() {
 }
 
 // applyPreset fills the create form from an image's admin-defined preset. Only the
-// image-dependent fields are touched; the name stays as the user left it.
-function applyPreset(imageName) {
+// image-dependent fields are touched; the name stays as the user left it. Env values
+// go through the resolve endpoint so any {{random_password}}/{{sequence}} etc.
+// placeholders in the preset are expanded into a fresh concrete value for this
+// build — the user can still edit the result before submitting.
+async function applyPreset(imageName) {
   const img = state.images.find((i) => i.name === imageName);
   const form = $("#newContainer");
   if (!form || !img || !img.preset) return;
   const p = img.preset;
   if (p.gpus) form.querySelector('[name="gpus"]').value = p.gpus;
-  if (p.env && p.env.length) form.querySelector('[name="env"]').value = p.env.join("\n");
+  if (p.env && p.env.length) {
+    form.querySelector('[name="env"]').value = p.env.join("\n");
+    try {
+      const resolved = await api("/api/images/preset/resolve", {
+        method: "POST",
+        body: JSON.stringify({ imageId: Number(img.id) }),
+      });
+      // Bail if the user switched images (or closed the form) while the request
+      // was in flight, so a slow response can't clobber a newer selection.
+      if (resolved.env && form.querySelector('[name="image"]').value === imageName) {
+        form.querySelector('[name="env"]').value = resolved.env.join("\n");
+      }
+    } catch (err) {
+      toast(err.message);
+    }
+  }
   // Preset ports are container-side only; render as ":container" so the backend
   // auto-allocates a host port from the user's range.
   if (p.ports && p.ports.length) form.querySelector('[name="ports"]').value = p.ports.map((c) => ":" + c).join("\n");

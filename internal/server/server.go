@@ -236,6 +236,11 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/containers/files/download", a.containerFilesDownload)
 		r.Post("/api/containers/files/copy", a.containerFilesCopy)
 		r.Get("/api/images", a.images)
+		// Expands an image preset's Env template placeholders (random password/number/
+		// string, per-image sequence) into concrete values for the create form. Any
+		// activated user can call this (they already see the resolved-free preset via
+		// /api/images); editing the preset itself stays admin-only below.
+		r.Post("/api/images/preset/resolve", a.imagePresetResolve)
 		r.Get("/api/groups", a.groups)
 		r.Post("/api/groups", a.groups)
 		r.Get("/api/volumes", a.volumes)
@@ -959,6 +964,15 @@ func presetDevices(p *store.ImagePreset) (devices, cdiDevices []string) {
 	return append([]string(nil), p.Devices...), append([]string(nil), p.CDIDevices...)
 }
 
+// presetNoVNCPasswordEnv returns the env var name an image preset flagged as
+// its noVNC auto-login password source. A nil preset flags nothing.
+func presetNoVNCPasswordEnv(p *store.ImagePreset) string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.NoVNCPasswordEnv)
+}
+
 // appendUnique appends the entries of extra that base does not already contain,
 // so merging a preset with an admin's explicit list doesn't duplicate devices.
 func appendUnique(base, extra []string) []string {
@@ -1045,7 +1059,11 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		// never from the request, so a user cannot lift the gate off a forwarded
 		// port of an image the admin marked as needing a login.
 		RequireLogin: img.Preset != nil && img.Preset.RequireLogin != nil && *img.Preset.RequireLogin,
-		Env:          normalizeEnv(req.Env), GPUs: req.GPUs,
+		// Which env var (if any) holds the noVNC auto-login password is an
+		// image-level admin decision, read from the preset and never from the
+		// request, for the same reason as RequireLogin above.
+		NoVNCPasswordEnv: presetNoVNCPasswordEnv(img.Preset),
+		Env:              normalizeEnv(req.Env), GPUs: req.GPUs,
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,

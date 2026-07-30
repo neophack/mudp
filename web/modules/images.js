@@ -67,6 +67,7 @@ function presetSummary(p) {
   if ((p.ports || []).length) bits.push("ports:" + p.ports.join(","));
   if ((p.devices || []).length) bits.push("dev:" + p.devices.length);
   if ((p.cdiDevices || []).length) bits.push("cdi:" + p.cdiDevices.length);
+  if (p.novncPasswordEnv) bits.push("noVNC:" + p.novncPasswordEnv);
   return bits.length ? escapeHtml(bits.join(" · ")) : "—";
 }
 
@@ -97,7 +98,17 @@ export function openPresetModal(imageId) {
         `<label class="field-label">${t("images.gpus")}</label>` +
         `<select name="gpus"><option value="">${t("images.gpusUserDecides")}</option><option value="none"${p.gpus === "none" ? " selected" : ""}>none</option><option value="all"${p.gpus === "all" ? " selected" : ""}>all</option></select>` +
         `<label class="field-label">${t("images.envLabel")}</label>` +
-        `<textarea name="env" spellcheck="false">${escapeHtml((p.env || []).join("\n"))}</textarea>` +
+        `<textarea name="env" id="presetEnvField" spellcheck="false">${escapeHtml((p.env || []).join("\n"))}</textarea>` +
+        `<div style="display:flex;gap:8px;align-items:center;margin:-4px 0 6px;">` +
+          `<select id="envGenType">` +
+            `<option value="random_password:16">${t("images.genRandomPassword")}</option>` +
+            `<option value="random_number:6">${t("images.genRandomNumber")}</option>` +
+            `<option value="random_string:12">${t("images.genRandomString")}</option>` +
+            `<option value="sequence:4">${t("images.genSequence")}</option>` +
+          `</select>` +
+          `<button type="button" class="ghost" id="envGenInsert">${t("images.genInsert")}</button>` +
+        `</div>` +
+        `<p class="hint">${t("images.envGenHint")}</p>` +
         `<label class="field-label">${t("images.portsLabel")}</label>` +
         `<textarea name="ports" spellcheck="false">${escapeHtml((p.ports || []).join("\n"))}</textarea>` +
         `<div class="check-grid">` +
@@ -107,6 +118,9 @@ export function openPresetModal(imageId) {
           presetCheck("mountShm", t("images.presetShm"), p.mountShm) +
           presetCheck("requireLogin", t("images.requireLogin"), p.requireLogin) +
         `</div>` +
+        `<label class="field-label">${t("images.novncPasswordLabel")}</label>` +
+        `<input name="novncPasswordEnv" placeholder="VNC_PW" value="${escapeHtml(p.novncPasswordEnv || "")}">` +
+        `<p class="hint">${t("images.novncPasswordHint")}</p>` +
         (networkChecks ? `<label class="field-label">${t("create.networks")}</label><div class="check-grid">${networkChecks}</div>` : "") +
         `<label class="field-label">${t("images.restartPolicy")}</label>` +
         `<select name="restartPolicy">` +
@@ -126,6 +140,9 @@ export function openPresetModal(imageId) {
       `</form>`,
     foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="presetSubmit">${t("common.save")}</button>`,
   });
+  $("#envGenInsert").onclick = () => {
+    insertAtCursor($("#presetEnvField"), "{{" + $("#envGenType").value + "}}");
+  };
   $("#presetSubmit").onclick = async () => {
     const form = $("#presetForm");
     const fd = new FormData(form);
@@ -139,6 +156,7 @@ export function openPresetModal(imageId) {
       mountNetdisk: form.querySelector('[name=mountNetdisk]').checked || undefined,
       mountShm: form.querySelector('[name=mountShm]').checked || undefined,
       requireLogin: form.querySelector('[name=requireLogin]').checked || undefined,
+      novncPasswordEnv: (fd.get("novncPasswordEnv") || "").trim(),
       networks: [...form.querySelectorAll('input[name=networks]:checked')].map((i) => i.value),
       restartPolicy: (fd.get("restartPolicy") || "").trim(),
       devices: lines(fd.get("devices")),
@@ -170,6 +188,17 @@ function presetCheck(name, label, value) {
 // lines splits a textarea value into trimmed, non-empty lines.
 function lines(raw) {
   return String(raw || "").split("\n").map((s) => s.trim()).filter(Boolean);
+}
+
+// insertAtCursor inserts text into a textarea at the current cursor position (or
+// appends at the end if it isn't focused), replacing any selection.
+function insertAtCursor(textarea, text) {
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? textarea.value.length;
+  textarea.value = textarea.value.slice(0, start) + text + textarea.value.slice(end);
+  const pos = start + text.length;
+  textarea.focus();
+  textarea.setSelectionRange(pos, pos);
 }
 
 // DEFAULT_NVIDIA_DEVICES pre-fills the devices field for images that need direct
