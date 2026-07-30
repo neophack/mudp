@@ -66,6 +66,20 @@ type App struct {
 	// administrator marked as needing it, where Docker's own publishing does not
 	// work. See portforward.go.
 	forward *portfwd.Manager
+	// trusted holds the parsed TrustedProxies set so handlers (not just the
+	// rate limiter) can resolve the real client IP, including behind a CDN via
+	// CF-Connecting-IP / True-Client-IP / X-Real-IP. Set in Routes().
+	trusted *middleware.TrustedProxies
+	// geoCache / geoCacheMu back the IP→location lookup used by the security
+	// monitor. The cache is lazily allocated on first lookup.
+	geoCacheMu sync.Mutex
+	geoCache   map[string]geoCacheEntry
+	// secSettingsMu guards secSettings, the cached security-monitor config read
+	// from the DB. Refreshed whenever an admin saves it, so every login reads a
+	// single map lookup instead of hitting the DB.
+	secSettingsMu sync.RWMutex
+	secSettings   store.SecuritySettings
+	secLoaded     bool
 }
 
 type dirSizeEntry struct {
@@ -86,7 +100,7 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{
+	app := &App{
 		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret),
 		mcpHub:           mcp.NewSSEHub(),
 		backupJobs:       NewBackupJobRegistry(),
@@ -94,7 +108,13 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 		dirSizeRunning:   make(map[string]bool),
 		dirSizeSemaphore: make(chan struct{}, 1),
 		forward:          portfwd.NewManager(),
-	}, nil
+	}
+	// Install the login gate used by RequireLogin forwards. Done here (rather
+	// than in Routes) so the gate is in place for the boot-time reconcile and
+	// any sync before the first request. The gate re-reads auth config on every
+	// connection, so changes take effect without re-installing.
+	app.forward.SetAuthGate(app.newForwardAuthGate())
+	return app, nil
 }
 
 // Close releases resources held by the app, such as the Docker client, the
@@ -152,6 +172,9 @@ func (a *App) Routes() http.Handler {
 	}
 	apiRateLimiter := middleware.DefaultAPIRateLimiter().TrustProxies(trusted)
 	loginRateLimiter := middleware.StrictRateLimiter().TrustProxies(trusted)
+	// Remember the proxy set so handlers can resolve the real client IP
+	// (including CDN headers) for the security monitor.
+	a.trusted = trusted
 
 	// Liveness/readiness stay open so a load balancer can poll them; they reveal
 	// nothing beyond up/down. Metrics expose process internals, so they require
@@ -171,6 +194,11 @@ func (a *App) Routes() http.Handler {
 	r.Get("/api/feishu/config", a.feishuConfigPublic)
 	r.Get("/api/feishu/login", a.feishuLogin)
 	r.Get("/api/feishu/callback", a.feishuCallback)
+	// Login-page view tracking for the security monitor. Rides the same
+	// strict per-IP limiter as login so the access log can't be inflated.
+	r.With(loginRateLimiter.Middleware).Post("/api/login/track", a.accessTrackHandler)
+	// Tells the login page whether to collect device hints (collectClient).
+	r.Get("/api/security/config", a.securityConfigPublic)
 	// Public share links are unauthenticated by design, so they get the same
 	// per-IP throttle as login to blunt share-password brute forcing and
 	// unmetered zip-download DoS.
@@ -279,6 +307,9 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/mcp/tokens", a.mcpTokenList)
 		r.Post("/api/mcp/tokens", a.mcpTokenCreate)
 		r.Delete("/api/mcp/tokens/{id}", a.mcpTokenDelete)
+		// A token's own tool-call history for the LOG dialog. Owners read their
+		// own; the handler enforces ownership server-side for non-admins.
+		r.Get("/api/mcp/tokens/{id}/usage", a.mcpTokenUsage)
 		// The public hostname (if an admin configured one) so a user can copy an
 		// externally reachable link for their own token. Read-only, no secrets.
 		r.Get("/api/mcp/remote", a.mcpRemoteInfo)
@@ -345,6 +376,20 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/registries/test", a.registryTest)
 		r.Get("/api/admin/usage", a.usage)
 		r.Get("/api/admin/audit", a.audit)
+		// Security monitor: access log + map points + summary + CSV export.
+		r.Get("/api/admin/access/logs", a.accessLogsHandler)
+		r.Get("/api/admin/access/geo", a.accessGeoHandler)
+		r.Get("/api/admin/access/stats", a.accessStatsHandler)
+		r.Get("/api/admin/access/export", a.accessExportHandler)
+		// MCP observability: per-token tool-call usage and external-port attack log.
+		r.Get("/api/admin/mcp/usage", a.mcpAdminUsage)
+		r.Get("/api/admin/mcp/attacks", a.mcpAttackLogs)
+		r.Get("/api/admin/mcp/attacks/stats", a.mcpAttackStats)
+		// Aggregated map points (access green + attacks yellow/red) for the map.
+		r.Get("/api/admin/mcp/map", a.mcpMapPoints)
+		// Security monitor configuration (master switch + per-feature toggles).
+		r.Get("/api/admin/security/settings", a.securitySettingsHandler)
+		r.Post("/api/admin/security/settings", a.securitySettingsHandler)
 		r.Get("/api/settings/feishu", a.feishuSettings)
 		r.Post("/api/settings/feishu", a.feishuSettings)
 		r.Get("/api/admin/settings/site", a.siteSettings)
@@ -371,6 +416,15 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/admin/forwards", a.forwardsPage)
 		r.Post("/api/admin/forwards", a.forwardAdd)
 		r.Post("/api/admin/forwards/delete", a.forwardDelete)
+		// Forward login-gating: the master switch and console URL used when a
+		// forward's rule carries RequireLogin (per-image preset or manual).
+		r.Get("/api/admin/forward/auth", a.forwardAuthSettings)
+		r.Post("/api/admin/forward/auth", a.forwardAuthSettings)
+		// Database housekeeping: per-table disk usage and on-demand log pruning
+		// (the allow-list is enforced in the store layer — user tables can never
+		// be reached here).
+		r.Get("/api/admin/db/usage", a.dbUsage)
+		r.Post("/api/admin/db/prune", a.dbPrune)
 		r.Get("/api/admin/disks", a.disks)
 		r.Get("/api/admin/disks/config", a.diskMountConfigGet)
 		r.Post("/api/admin/disks/config", a.diskMountConfigPost)
@@ -461,6 +515,10 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// Resolve the caller once: every login attempt (success or failure) is
+	// recorded for the security monitor. We read the username here so failed
+	// attempts carry which account was being targeted.
+	ci := a.collectClient(r)
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -471,9 +529,13 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := a.db.Authenticate(req.Username, req.Password)
 	if err != nil {
+		// Record the failed attempt. The password is never persisted — only the
+		// targeted username and the failure reason.
+		a.recordAccess(ci, store.AccessEventLoginFailed, req.Username, err.Error(), false)
 		writeErr(w, http.StatusUnauthorized, err.Error())
 		return
 	}
+	a.recordAccess(ci, store.AccessEventLoginSuccess, u.Username, "", true)
 	a.auth.Set(w, r, u.ID)
 	if netdiskPath, err := a.db.NetdiskPathForUser(u.ID); err == nil && netdiskPath != "" {
 		_ = EnsureUserNetdiskDir(netdiskPath, u.Username, fmt.Sprintf("%d", u.ID), u.DisplayName)
@@ -969,7 +1031,11 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		// Which networks mudp forwards for is an administrator's setting about
 		// the host, never anything the request can influence.
 		ForwardNetworks: a.forwardNetworks(),
-		Env:             normalizeEnv(req.Env), GPUs: req.GPUs,
+		// Login-gating is an image-level admin decision, read from the preset and
+		// never from the request, so a user cannot lift the gate off a forwarded
+		// port of an image the admin marked as needing a login.
+		RequireLogin: img.Preset != nil && img.Preset.RequireLogin != nil && *img.Preset.RequireLogin,
+		Env:          normalizeEnv(req.Env), GPUs: req.GPUs,
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
@@ -1491,11 +1557,13 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 		a.notifyAdminsPendingUser(u)
 	}
 	if u.Disabled {
+		a.recordAccess(a.collectClient(r), store.AccessEventLoginFailed, u.Username, "user is disabled", false)
 		writeErr(w, http.StatusForbidden, "user is disabled")
 		return
 	}
 	now := time.Now().Format(time.RFC3339)
 	_, _ = a.db.Exec(`update users set last_login_at=? where id=?`, now, u.ID)
+	a.recordAccess(a.collectClient(r), store.AccessEventLoginSuccess, u.Username, "feishu sso", true)
 	a.auth.Set(w, r, u.ID)
 	if netdiskPath, err := a.db.NetdiskPathForUser(u.ID); err == nil && netdiskPath != "" {
 		_ = EnsureUserNetdiskDir(netdiskPath, u.Username, fmt.Sprintf("%d", u.ID), u.DisplayName)

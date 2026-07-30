@@ -16,13 +16,14 @@ import (
 // /messages handler pushes inbound JSON-RPC requests through Process which
 // routes the response back onto that same channel.
 type SSESession struct {
-	id      string
-	out     chan []byte // JSON-RPC responses, written to the SSE stream
-	server  *Server
-	ctx     context.Context
-	cancel  context.CancelFunc
-	closed  bool
-	closeMu sync.Mutex
+	id          string
+	containerID string // the container this session is scoped to (for in-use lights)
+	out         chan []byte // JSON-RPC responses, written to the SSE stream
+	server      *Server
+	ctx         context.Context
+	cancel      context.CancelFunc
+	closed      bool
+	closeMu     sync.Mutex
 }
 
 // sessionHub tracks active SSE sessions by id so a POST /messages request can
@@ -108,16 +109,18 @@ func NewSSEHub() *SSEHub {
 }
 
 // OpenSession starts a new SSE session bound to the given server (which is
-// scoped to a specific container by the caller). The returned session must be
-// removed via Close when the SSE stream ends.
-func (h *SSEHub) OpenSession(server *Server, ctx context.Context) *SSESession {
+// scoped to a specific container by the caller). containerID lets the hub
+// answer "is anything connected to this container?" for the in-use indicator.
+// The returned session must be removed via Close when the SSE stream ends.
+func (h *SSEHub) OpenSession(server *Server, ctx context.Context, containerID string) *SSESession {
 	innerCtx, cancel := context.WithCancel(ctx)
 	session := &SSESession{
-		id:     newSessionID(),
-		out:    make(chan []byte, 32),
-		server: server,
-		ctx:    innerCtx,
-		cancel: cancel,
+		id:          newSessionID(),
+		containerID: containerID,
+		out:         make(chan []byte, 32),
+		server:      server,
+		ctx:         innerCtx,
+		cancel:      cancel,
 	}
 	h.hub.add(session)
 	return session
@@ -126,6 +129,24 @@ func (h *SSEHub) OpenSession(server *Server, ctx context.Context) *SSESession {
 // Close removes a session from the hub and signals its SSE loop to exit.
 func (h *SSEHub) Close(session *SSESession) {
 	h.hub.remove(session.id)
+}
+
+// ActiveForContainer reports how many SSE sessions are currently open against
+// the given container. A non-zero result is what lights a token's "in use"
+// indicator: an agent has an open SSE stream to that container right now.
+func (h *SSEHub) ActiveForContainer(containerID string) int {
+	if containerID == "" {
+		return 0
+	}
+	h.hub.mu.RLock()
+	defer h.hub.mu.RUnlock()
+	n := 0
+	for _, s := range h.hub.sessions {
+		if s.containerID == containerID && !s.closed {
+			n++
+		}
+	}
+	return n
 }
 
 // ServeSSE drives the SSE write loop for a session that was opened by

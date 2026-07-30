@@ -31,6 +31,16 @@ export async function renderForwards() {
   const data = state.forwards || {};
   const rules = data.rules || [];
   const networks = data.networks || [];
+  // Login-gating config is small and rarely changed; fetch it on first entry
+  // alongside the page data so the settings card is ready without a flicker.
+  if (!state.forwardAuth) {
+    try {
+      state.forwardAuth = await api("/api/admin/forward/auth");
+    } catch {
+      state.forwardAuth = { enabled: false, consoleUrl: "" };
+    }
+  }
+  const auth = state.forwardAuth || { enabled: false, consoleUrl: "" };
 
   $("#view").innerHTML =
     `<div class="stack">` +
@@ -59,6 +69,19 @@ export async function renderForwards() {
           `<button>${t("forwards.saveNetworks")}</button>` +
         `</form></div>` +
       `</div>` +
+      `<div class="card">` +
+        `<div class="card-head"><h2>${t("forwardAuth.title")}</h2>` +
+          (auth.enabled ? `<span class="badge badge-ok">${t("forwardAuth.enabled")}</span>` : `<span class="badge">${t("forwardAuth.disabled")}</span>`) +
+        `</div>` +
+        `<p class="hint" style="padding:0 16px;margin:0 0 8px">${t("forwardAuth.hint")}</p>` +
+        `<div class="card-body"><form id="forwardAuthForm" class="compact">` +
+          `<label class="check"><input type="checkbox" id="fwdAuthEnabled" ${auth.enabled ? "checked" : ""}> <span>${t("forwardAuth.enable")}</span></label>` +
+          `<label class="field-label">${t("forwardAuth.consoleUrl")}</label>` +
+          `<input name="consoleUrl" placeholder="${t("forwardAuth.consoleUrlPlaceholder")}" value="${escapeHtml(auth.consoleUrl || "")}">` +
+          `<p class="hint" style="margin:0">${t("forwardAuth.consoleUrlHint")}</p>` +
+          `<button>${t("common.save")}</button>` +
+        `</form></div>` +
+      `</div>` +
     `</div>`;
 
   $("#addForwardBtn").onclick = () => openAddForward();
@@ -84,6 +107,25 @@ export async function renderForwards() {
       }
     };
   }
+  const authForm = $("#forwardAuthForm");
+  if (authForm) {
+    authForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const enabled = $("#fwdAuthEnabled").checked;
+      const consoleUrl = (authForm.querySelector('[name="consoleUrl"]').value || "").trim();
+      try {
+        await api("/api/admin/forward/auth", {
+          method: "POST",
+          body: JSON.stringify({ enabled, consoleUrl }),
+        });
+        state.forwardAuth = { enabled, consoleUrl };
+        renderView();
+        toast(t("forwardAuth.saved"), true);
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
 }
 
 // ruleRow renders one running listener. The user and container columns are what
@@ -100,7 +142,7 @@ function ruleRow(r) {
         (r.note && r.note !== r.name ? `<div class="secondary-line hint">${escapeHtml(r.note)}</div>` : "") +
       `</td>` +
       `<td><div class="secondary-line mono">${escapeHtml(target)}</div></td>` +
-      `<td><span class="badge ${manual ? "badge-warn" : "badge-muted"}">${manual ? t("forwards.manual") : t("forwards.container")}</span></td>` +
+      `<td><span class="badge ${manual ? "badge-warn" : "badge-muted"}">${manual ? t("forwards.manual") : t("forwards.container")}</span>${r.requireLogin ? ` <span class="badge badge-accent" title="${t("forwards.requireLoginHint")}">${t("forwards.requireLogin")}</span>` : ""}</td>` +
       `<td><div class="secondary-line">${t("forwards.connNow", { now: escapeHtml(String(r.active ?? 0)), total: escapeHtml(String(r.total ?? 0)) })}</div></td>` +
       `<td class="actions">` +
         (manual && r.manualId
@@ -163,9 +205,21 @@ function openAddForward() {
           `<input name="targetPort" type="number" min="1" max="65535" placeholder="${t("forwards.targetPortPlaceholder")}" required>` +
         `</div>` +
         `<input name="note" placeholder="${t("forwards.notePlaceholder")}">` +
+        `<label class="check"><input type="checkbox" name="requireLogin" id="fwdRequireLogin"> ${t("forwards.requireLogin")} <span class="hint">${t("forwards.requireLoginHint")}</span></label>` +
       `</form>`,
     foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="saveForward">${t("forwards.addBtn")}</button>`,
   });
+  // Login verification only works for TCP (the gate peeks an HTTP request), so
+  // the checkbox is disabled and cleared whenever UDP is picked.
+  const protoSel = $("#forwardForm").querySelector('[name="proto"]');
+  const loginBox = $("#fwdRequireLogin");
+  const syncLoginBox = () => {
+    const isUDP = protoSel.value === "udp";
+    loginBox.disabled = isUDP;
+    if (isUDP) loginBox.checked = false;
+  };
+  protoSel.onchange = syncLoginBox;
+  syncLoginBox();
   $("#saveForward").onclick = async () => {
     const fd = new FormData($("#forwardForm"));
     const payload = {
@@ -175,6 +229,7 @@ function openAddForward() {
       targetIp: (fd.get("targetIp") || "").trim(),
       targetPort: Number(fd.get("targetPort")) || 0,
       note: (fd.get("note") || "").trim(),
+      requireLogin: !!loginBox?.checked,
     };
     try {
       const res = await api("/api/admin/forwards", { method: "POST", body: JSON.stringify(payload) });

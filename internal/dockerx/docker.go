@@ -76,8 +76,12 @@ type CreateOptions struct {
 	GPUs        string
 	Forward8080 bool
 	Forward80   bool
-	Ports       []string
-	PortPrefix  int
+	// RequireLogin, when true, stamps the container so each of its forwarded
+	// ports is login-gated. Server-supplied from the image preset — never taken
+	// from the request, so a user cannot self-grant or self-revoke it.
+	RequireLogin bool
+	Ports        []string
+	PortPrefix   int
 	// Mounts are bind/named-volume mounts: "source:target[:ro]" entries.
 	Mounts       []string
 	NetdiskPath  string
@@ -515,6 +519,12 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	if forwardNet != "" && len(forwardSpecs) > 0 {
 		labels[ForwardPortsLabel] = FormatForwardSpecs(forwardSpecs)
 		labels[ForwardNetLabel] = forwardNet
+		// Login-gating is stamped only when the container actually forwards, so
+		// a gated image run on a non-forwarding network does not carry a stale
+		// flag that would do nothing but confuse an admin reading the labels.
+		if opts.RequireLogin {
+			labels[ForwardRequireLoginLabel] = "true"
+		}
 	}
 	hostCfg := &container.HostConfig{
 		PortBindings:  portMap,

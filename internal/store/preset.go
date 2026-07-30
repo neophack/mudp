@@ -43,6 +43,14 @@ type ImagePreset struct {
 	// Description is a human-readable note about the image shown to users (what it
 	// contains, how to use it). Surfaced in the image list.
 	Description string `json:"description,omitempty"`
+	// RequireLogin marks this image's forwarded host ports as needing a console
+	// login before they can be reached: a browser hitting the port without a
+	// valid session is redirected to the login page. It exists for images that
+	// ship no authentication of their own (a bare web desktop, a dev server),
+	// so an exposed host port is not an open door to the whole LAN. Only TCP/HTTP
+	// forwards can honour it — a UDP or raw-TCP forward cannot check a cookie —
+	// and the forward layer refuses non-HTTP traffic to one of these ports.
+	RequireLogin *bool `json:"requireLogin,omitempty"`
 }
 
 // MarshalJSON serialises the preset to JSON, returning an empty byte slice for a
@@ -91,7 +99,7 @@ func isEmptyPreset(p *ImagePreset) bool {
 	return p.GPUs == "" && len(p.Env) == 0 && len(p.Ports) == 0 &&
 		p.Forward8080 == nil && p.Forward80 == nil &&
 		p.MountNetdisk == nil && p.MountShm == nil && len(p.Networks) == 0 && p.RestartPolicy == "" &&
-		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == ""
+		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == "" && p.RequireLogin == nil
 }
 
 // ValidatePreset performs lightweight, security-conscious validation of an admin

@@ -141,10 +141,14 @@ export async function renderMCP() {
     if (form) form.onsubmit = onCreateToken;
   }
   document.querySelectorAll("[data-mcp-view]").forEach((btn) => {
-    btn.onclick = () => onShowConfig(btn.dataset.mcpToken, btn.dataset.mcpName, btn.dataset.mcpLabel);
+    btn.onclick = () =>
+      onShowConfig(btn.dataset.mcpToken, btn.dataset.mcpName, btn.dataset.mcpLabel, btn.dataset.mcpSafe === "1");
   });
   document.querySelectorAll("[data-mcp-del]").forEach((btn) => {
     btn.onclick = () => onDeleteToken(btn.dataset.mcpDel, btn.dataset.mcpName);
+  });
+  document.querySelectorAll("[data-mcp-log]").forEach((btn) => {
+    btn.onclick = () => onShowUsage(btn.dataset.mcpLog, btn.dataset.mcpName, btn.dataset.mcpLabel);
   });
   bindCopyButtons();
 }
@@ -220,11 +224,14 @@ function containerOptions(containers) {
 }
 
 // externalUrlFor returns the token's SSE endpoint on the published domain, or
-// "" when there is no domain (or the token predates cleartext storage, in which
-// case there is no URL to build).
+// "" when there is no external link to offer. The link is gated on
+// onSafeNetwork — which the server stamps from the safe-network rule — so a
+// URL is only ever produced when the container actually sits on the network the
+// external listener admits. Otherwise the row shows a LAN link only.
 function externalUrlFor(t) {
   const remote = state.mcpRemote;
   if (!remote || !remote.enabled || !remote.baseUrl || !t.token) return "";
+  if (!t.onSafeNetwork) return "";
   return `${remote.baseUrl}/mcp/${t.token}/sse`;
 }
 
@@ -234,16 +241,23 @@ function tokenRow(tk, admin) {
     ? `<span class="${expired ? "badge badge-warn" : "secondary-line"}">${formatDate(tk.expiresAt)}</span>`
     : `<span class="secondary-line">${t("mcp.never")}</span>`;
   const ownerCell = admin ? `<td>${escapeHtml(displayNameForUsername(tk.owner) || "-")}</td>` : "";
+  // A pulsing green dot when an MCP client holds an open SSE stream to this
+  // container right now. Only the SSE transport keeps a session alive, so an
+  // HTTP-only client never lights it (documented in the config modal hint).
+  const liveDot = tk.inUse
+    ? `<span class="mcp-live-dot" title="${t("mcp.inUse")}"></span>`
+    : "";
   return (
     `<tr>` +
-      `<td><div class="primary-line">${escapeHtml(tk.containerName || "-")}</div><div class="secondary-line mono">${escapeHtml((tk.containerId || "").slice(0, 12))}</div></td>` +
+      `<td><div class="primary-line">${liveDot}${escapeHtml(tk.containerName || "-")}</div><div class="secondary-line mono">${escapeHtml((tk.containerId || "").slice(0, 12))}</div></td>` +
       `<td>${escapeHtml(tk.label || "-")}</td>` +
       ownerCell +
       `<td><div class="secondary-line">${formatDate(tk.createdAt)}</div></td>` +
       `<td><div class="secondary-line">${tk.lastUsedAt ? formatDate(tk.lastUsedAt) : t("mcp.never")}</div></td>` +
       `<td>${expCell}</td>` +
       `<td class="actions">` +
-        `<button class="icon" title="${t("mcp.viewConfig")}" data-mcp-view="${escapeHtml(tk.id)}" data-mcp-token="${escapeHtml(tk.token || "")}" data-mcp-name="${escapeHtml(tk.containerName)}" data-mcp-label="${escapeHtml(tk.label)}">CFG</button>` +
+        `<button class="icon" title="${t("mcp.viewConfig")}" data-mcp-view="${escapeHtml(tk.id)}" data-mcp-token="${escapeHtml(tk.token || "")}" data-mcp-name="${escapeHtml(tk.containerName)}" data-mcp-label="${escapeHtml(tk.label)}" data-mcp-safe="${tk.onSafeNetwork ? "1" : "0"}">CFG</button>` +
+        `<button class="icon" title="${t("mcp.usageLog")}" data-mcp-log="${escapeHtml(tk.id)}" data-mcp-name="${escapeHtml(tk.containerName)}" data-mcp-label="${escapeHtml(tk.label)}">LOG</button>` +
         (externalUrlFor(tk) ? `<button class="icon mcp-copy-btn" title="${t("mcp.copyExternal")}" data-copy="${escapeHtml(externalUrlFor(tk))}">WWW</button>` : "") +
         (canMutate() ? `<button class="icon danger" title="${t("mcp.deleteToken")}" data-mcp-del="${escapeHtml(tk.id)}" data-mcp-name="${escapeHtml(tk.containerName)}">DEL</button>` : "") +
       `</td>` +
@@ -274,7 +288,12 @@ async function onCreateToken(e) {
     toast(t("mcp.tokenCreated"), true);
     await refreshMCPTokens();
     renderView();
-    onShowConfigRaw(res.token, res.label || "");
+    // refreshMCPTokens re-fetched the list with each token's onSafeNetwork flag,
+    // so look the new token up to carry that into the config modal — a freshly
+    // minted token still has no external link unless its container is on the
+    // safe network.
+    const created = (state.mcpTokens || []).find((tk) => tk.id === res.id);
+    onShowConfigRaw(res.token, res.label || "", false, created ? created.onSafeNetwork : false);
   } catch (err) {
     toast(err.message || t("mcp.createFail"));
   } finally {
@@ -295,12 +314,59 @@ async function onDeleteToken(id, name) {
   }
 }
 
-function onShowConfig(token, name, label) {
+// onShowUsage opens the LOG dialog listing a token's recent tool calls — what
+// an agent actually did inside the container. The endpoint is owner-scoped
+// server-side, so a user only ever reads their own token's history.
+async function onShowUsage(id, name, label) {
+  showModal({
+    kind: "mcp",
+    title: t("mcp.usageTitle", { name: name || "", label: label || "" }),
+    body: `<p class="hint">${t("mcp.loadingTokens")}</p>`,
+    foot: `<button class="primary" data-close>${t("common.done")}</button>`,
+  });
+  let rows = [];
+  try {
+    rows = (await api(`/api/mcp/tokens/${id}/usage?limit=200`)) || [];
+  } catch (err) {
+    showModal({
+      kind: "mcp",
+      title: t("mcp.usageTitle", { name: name || "", label: label || "" }),
+      body: `<p class="hint">${escapeHtml(err.message || t("mcp.usageFail"))}</p>`,
+      foot: `<button class="primary" data-close>${t("common.done")}</button>`,
+    });
+    return;
+  }
+  const list =
+    rows.length === 0
+      ? `<p class="hint">${t("mcp.usageEmpty")}</p>`
+      : `<ul class="mcp-log-list">` +
+        rows
+          .map(
+            (r) =>
+              `<li>` +
+                `<div class="mcp-log-head">` +
+                  `<code class="mcp-log-tool">${escapeHtml(r.tool)}</code>` +
+                  `<span class="secondary-line">${escapeHtml(formatDate(r.createdAt))}</span>` +
+                `</div>` +
+                `<code class="mcp-log-args">${escapeHtml(r.argsPreview || "—")}</code>` +
+              `</li>`,
+          )
+          .join("") +
+        `</ul>`;
+  showModal({
+    kind: "mcp",
+    title: t("mcp.usageTitle", { name: name || "", label: label || "" }),
+    body: list,
+    foot: `<button class="primary" data-close>${t("common.done")}</button>`,
+  });
+}
+
+function onShowConfig(token, name, label, onSafeNetwork) {
   // Tokens created after the plaintext-storage change carry their cleartext, so
   // the full config can be shown again. Older tokens (created when only the hash
   // was stored) have no recoverable cleartext — tell the user to recreate it.
   if (token) {
-    onShowConfigRaw(token, label, false);
+    onShowConfigRaw(token, label, false, onSafeNetwork);
     return;
   }
   showModal({
@@ -313,13 +379,14 @@ function onShowConfig(token, name, label) {
   });
 }
 
-function onShowConfigRaw(token, label, placeholder = false) {
+function onShowConfigRaw(token, label, placeholder = false, onSafeNetwork = false) {
   const remote = state.mcpRemote;
   const localBase = window.location.origin;
-  // The published domain, when an admin has one. Everything below is written
-  // against a base origin so the LAN address and the external domain produce
-  // the same artifacts with nothing but the host swapped.
-  const remoteBase = remote && remote.enabled ? remote.baseUrl || "" : "";
+  // The published domain, when an admin has one AND this token's container is
+  // on the safe network. An external link is only offered when the safe-network
+  // gate would actually let it through; otherwise the toggle would present a
+  // URL that fails at runtime, so this token gets a LAN-only view instead.
+  const remoteBase = remote && remote.enabled && onSafeNetwork ? remote.baseUrl || "" : "";
   const labelSlug = label ? label.replace(/[^a-zA-Z0-9_-]/g, "-") || "mudp-container" : "mudp-container";
   let scope = "local";
   let transport = "sse";
@@ -381,6 +448,14 @@ function onShowConfigRaw(token, label, placeholder = false) {
       `<p class="hint" id="mcpScopeHint">${scopeHint("local")}</p>`
     : "";
 
+  // When a domain is published but this container is not on the safe network,
+  // the toggle above is absent — say why instead of leaving the reader to guess
+  // why an "external" option they saw on another token is missing here.
+  const domainPublished = remote && remote.enabled && remote.baseUrl;
+  const scopeBlocked = domainPublished && !remoteBase
+    ? `<p class="hint">${t("mcp.scopeLocalOnlyHint", { net: escapeHtml(remote?.safeNetwork || "") })}</p>`
+    : "";
+
   const note = placeholder
     ? `<p class="hint">${t("mcp.notePlaceholder")}</p>`
     : `<p class="hint">${t("mcp.noteDone")}</p>`;
@@ -388,6 +463,7 @@ function onShowConfigRaw(token, label, placeholder = false) {
   const body =
     note +
     (scopeToggle ? `<div class="mcp-config-section">${scopeToggle}</div>` : "") +
+    (scopeBlocked ? `<div class="mcp-config-section">${scopeBlocked}</div>` : "") +
     `<div class="mcp-config-section">` +
       `<div class="mcp-transport-row">` +
         `<h4>${t("mcp.mcpConfig")}</h4>` +

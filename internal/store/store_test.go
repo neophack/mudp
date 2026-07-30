@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestDB opens an in-file SQLite DB in the test temp dir. Each test gets its
@@ -1045,5 +1046,130 @@ func TestFeishuUserWithAdminSetPasswordCanLogin(t *testing.T) {
 	}
 	if _, err := db.Authenticate(u.Username, "ou_zzz999"); err == nil {
 		t.Error("open ID must not authenticate")
+	}
+}
+
+// TestAccessLogRecordAndQuery verifies the security monitor records and
+// retrieves access events, including geographic deduplication for the map.
+func TestAccessLogRecordAndQuery(t *testing.T) {
+	db := newTestDB(t)
+
+	db.RecordAccess(AccessLog{Event: AccessEventLoginFailed, Username: "attacker", IP: "203.0.113.9", FailureReason: "invalid credentials", Country: "China", CountryCode: "CN", City: "Beijing", Latitude: 39.9, Longitude: 116.4, Browser: "Chrome 120", OS: "Windows 10"})
+	db.RecordAccess(AccessLog{Event: AccessEventLoginSuccess, Username: "admin", IP: "203.0.113.9", Country: "China", CountryCode: "CN", City: "Beijing", Latitude: 39.9, Longitude: 116.4, Success: true, OS: "Windows 10"})
+	db.RecordAccess(AccessLog{Event: AccessEventPageView, IP: "198.51.100.1", Country: "United States", CountryCode: "US", City: "Ashburn", Latitude: 39.04, Longitude: -77.49})
+	// A flagged VPN attempt: proxy/hosting set, plus a suspicious marker and
+	// client device hints (timezone/screen/etc.) that survive a VPN.
+	db.RecordAccess(AccessLog{Event: AccessEventLoginFailed, Username: "root", IP: "198.51.100.1", FailureReason: "invalid credentials", Latitude: 39.04, Longitude: -77.49, IsProxy: true, IsHosting: true, ProxyType: "vpn/hosting", Suspicious: "vpn/proxy+tz-mismatch", ClientTimezone: "Asia/Shanghai", ClientScreen: "1920x1080", ClientPlatform: "Win32", ClientCPUCore: 8, ClientMemoryGB: 16})
+
+	// Filtering by event.
+	failed, err := db.AccessLogs(AccessLogFilter{Event: AccessEventLoginFailed, Limit: 10})
+	if err != nil {
+		t.Fatalf("AccessLogs: %v", err)
+	}
+	if len(failed) != 2 {
+		t.Fatalf("got %d failed entries, want 2", len(failed))
+	}
+	// The VPN-flagged entry round-trips the new fields.
+	var vpn *AccessLog
+	for i := range failed {
+		if failed[i].Username == "root" {
+			vpn = &failed[i]
+		}
+	}
+	if vpn == nil || !vpn.IsProxy || !vpn.IsHosting || vpn.ProxyType != "vpn/hosting" || vpn.Suspicious == "" || vpn.ClientTimezone != "Asia/Shanghai" || vpn.ClientCPUCore != 8 {
+		t.Errorf("VPN/client fields not persisted: %+v", vpn)
+	}
+
+	// Free-text search matches username/city.
+	byCity, err := db.AccessLogs(AccessLogFilter{Q: "Beijing", Limit: 10})
+	if err != nil {
+		t.Fatalf("AccessLogs Q: %v", err)
+	}
+	if len(byCity) != 2 {
+		t.Fatalf("got %d Beijing entries, want 2", len(byCity))
+	}
+
+	// SuspiciousOnly filter returns only the flagged entry.
+	suspicious, err := db.AccessLogs(AccessLogFilter{SuspiciousOnly: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("AccessLogs suspicious: %v", err)
+	}
+	if len(suspicious) != 1 {
+		t.Fatalf("got %d suspicious entries, want 1", len(suspicious))
+	}
+
+	// Geographic points dedupe by ~0.01° buckets: the two Beijing hits collapse
+	// to one point with count 2.
+	points, err := db.AccessLogGeoPoints(100)
+	if err != nil {
+		t.Fatalf("AccessLogGeoPoints: %v", err)
+	}
+	if len(points) != 2 {
+		t.Fatalf("got %d geo points, want 2 (Beijing, Ashburn)", len(points))
+	}
+	var beijing *GeoPoint
+	for i := range points {
+		if points[i].City == "Beijing" {
+			beijing = &points[i]
+		}
+	}
+	if beijing == nil || beijing.Count != 2 {
+		t.Fatalf("Beijing point count = %v, want 2", beijing)
+	}
+
+	// Stats summary.
+	stats, err := db.AccessStats()
+	if err != nil {
+		t.Fatalf("AccessStats: %v", err)
+	}
+	if stats.TotalVisits != 4 || stats.LoginSuccess != 1 || stats.LoginFailed != 2 || stats.UniqueIPs != 2 {
+		t.Errorf("stats = %+v, want totals visits=4 success=1 failed=2 uniqueIPs=2", stats)
+	}
+	// One IP flagged as VPN/proxy/hosting; one entry carries a suspicious marker.
+	if stats.VPNProxy != 1 || stats.Suspicious != 1 {
+		t.Errorf("stats VPN/suspicious = %d/%d, want 1/1", stats.VPNProxy, stats.Suspicious)
+	}
+
+	// Pruning clears old entries (set a far-future cutoff to delete everything).
+	if err := db.PruneAccessLogs(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("PruneAccessLogs: %v", err)
+	}
+	left, _ := db.AccessLogs(AccessLogFilter{Limit: 100})
+	if len(left) != 0 {
+		t.Errorf("after prune, %d entries remain, want 0", len(left))
+	}
+}
+
+// TestSecuritySettingsRoundTrip verifies the admin security-monitor config is
+// persisted and read back, and that an unset DB yields the safe defaults.
+func TestSecuritySettingsRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+
+	// Unset → defaults (logging on).
+	got, err := db.SecuritySettings()
+	if err != nil {
+		t.Fatalf("SecuritySettings default: %v", err)
+	}
+	if !got.Enabled || !got.GeoIPLookup || !got.VPNDetect || !got.CollectClient || got.RetentionDays != 90 {
+		t.Errorf("defaults = %+v, want logging fully enabled at 90 days", got)
+	}
+
+	// Disable GeoIP and shorten retention.
+	cfg := got
+	cfg.GeoIPLookup = false
+	cfg.RetentionDays = 30
+	if err := db.SaveSecuritySettings(cfg); err != nil {
+		t.Fatalf("SaveSecuritySettings: %v", err)
+	}
+	again, _ := db.SecuritySettings()
+	if again.GeoIPLookup || again.RetentionDays != 30 || !again.Enabled {
+		t.Errorf("after save = %+v, want GeoIPLookup=false retention=30 enabled=true", again)
+	}
+
+	// A fresh DB (separate file) still returns defaults — the setting is per-DB.
+	db2 := newTestDB(t)
+	fresh, _ := db2.SecuritySettings()
+	if !fresh.GeoIPLookup {
+		t.Error("a fresh DB must default to GeoIPLookup=true")
 	}
 }

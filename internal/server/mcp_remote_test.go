@@ -3,8 +3,10 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
+	"mudp/internal/middleware"
 	"mudp/internal/store"
 )
 
@@ -104,5 +106,82 @@ func TestRemoteMCPRoutesSurface(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("GET /healthz = %d, want 200", rec.Code)
+	}
+}
+
+// safeNetworkReached is what the token-list handler uses to decide whether to
+// offer an external link for a token. It must mirror the runtime gate in
+// remoteMCPAllowed, so an offered link never points at a URL the gate rejects.
+func TestSafeNetworkReached(t *testing.T) {
+	pub := store.MCPRemoteConfig{Enabled: true, Domain: "mcp.example.com", SafeNetwork: "openwrt-lan"}
+
+	cases := []struct {
+		name  string
+		names []string
+		cfg   store.MCPRemoteConfig
+		want  bool
+	}{
+		{"on safe network (full name)", []string{"openwrt-lan"}, pub, true},
+		// A mudp-managed network is namespaced on the host ("mudp-<user>-net-<display>")
+		// but admins type the display name they see; the suffix still matches.
+		{"on safe network (managed name)", []string{"mudp-alice-net-openwrt-lan"}, pub, true},
+		{"on safe network among others", []string{"bridge", "openwrt-lan"}, pub, true},
+		{"not on safe network", []string{"bridge", "host"}, pub, false},
+		{"empty attachment", nil, pub, false},
+		// A not-yet-published remote has no safe network to gate against.
+		{"disabled config", []string{"openwrt-lan"}, store.MCPRemoteConfig{Enabled: false, SafeNetwork: "openwrt-lan"}, false},
+		{"no safe network", []string{"openwrt-lan"}, store.MCPRemoteConfig{Enabled: true, Domain: "mcp.example.com"}, false},
+		{"no domain", []string{"openwrt-lan"}, store.MCPRemoteConfig{Enabled: true, SafeNetwork: "openwrt-lan"}, false},
+	}
+	for _, c := range cases {
+		if got := safeNetworkReached(c.names, c.cfg); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// recordMcpAttack must persist one attack row per refused remote request,
+// resolving the client IP from the trusted-proxy headers the tunnel sets. This
+// exercises the full gather→store path against a real database.
+func TestRecordMcpAttack(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "mcp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate("admin", "test-admin-pw"); err != nil {
+		t.Fatal(err)
+	}
+	tp, _ := middleware.ParseTrustedProxies("127.0.0.1,::1")
+	a := &App{db: db, trusted: tp}
+
+	// A request that arrived via the tunnel: loopback peer, real IP in the
+	// Cloudflare header.
+	r := httptest.NewRequest(http.MethodPost, "/mcp/badtoken", nil)
+	r.RemoteAddr = "127.0.0.1:1234"
+	r.Header.Set("CF-Connecting-IP", "203.0.113.9")
+	// A browser-style UA so parseUserAgent returns a recognizable browser label.
+	r.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0")
+	a.recordMcpAttack(r, "invalid or expired token")
+
+	rows, err := db.MCPAttackLogs(store.MCPAttackFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 attack row, got %d", len(rows))
+	}
+	got := rows[0]
+	if got.IP != "203.0.113.9" {
+		t.Errorf("IP not resolved from CF header: got %q", got.IP)
+	}
+	if got.Reason != "invalid or expired token" {
+		t.Errorf("reason mismatch: %q", got.Reason)
+	}
+	if got.Path != "/mcp/badtoken" {
+		t.Errorf("path mismatch: %q", got.Path)
+	}
+	if got.Browser != "Chrome 120.0" {
+		t.Errorf("UA parse mismatch: %q", got.Browser)
 	}
 }

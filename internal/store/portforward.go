@@ -111,6 +111,11 @@ type ManualForward struct {
 	Note      string `json:"note,omitempty"`
 	CreatedAt string `json:"createdAt"`
 	CreatedBy string `json:"createdBy"`
+	// RequireLogin, when true, makes the forward demand a console login before a
+	// browser can reach it — for a port behind an image that has no auth of its
+	// own. Only TCP/HTTP forwards can honour it; a UDP forward carrying it is
+	// rejected at validation.
+	RequireLogin bool `json:"requireLogin"`
 }
 
 // migrateCreatePortForwards creates the table behind the manual forwards. The
@@ -128,7 +133,8 @@ func migrateCreatePortForwards(db executor) error {
 			owner text not null default '',
 			note text not null default '',
 			created_at text not null default '',
-			created_by text not null default ''
+			created_by text not null default '',
+			require_login integer not null default 0
 		)`,
 		`create unique index if not exists idx_port_forwards_socket on port_forwards(host_port, proto)`,
 	}
@@ -140,10 +146,18 @@ func migrateCreatePortForwards(db executor) error {
 	return nil
 }
 
+// migrateAddPortForwardRequireLogin adds the require_login column to existing
+// port_forwards tables created before login-gating existed. New databases get
+// the column from migrateCreatePortForwards; this one brings old ones forward
+// idempotently (the duplicate-column error is swallowed).
+func migrateAddPortForwardRequireLogin(db executor) error {
+	return execIgnoring(db, `alter table port_forwards add column require_login integer not null default 0`, sqliteDuplicateColumn)
+}
+
 // ManualForwards returns every hand-added forward, ordered by host port so the
 // admin page is stable between polls.
 func (db *DB) ManualForwards() ([]ManualForward, error) {
-	rows, err := db.Query(`select id, host_port, proto, container_id, target_ip, target_port, owner, note, created_at, created_by
+	rows, err := db.Query(`select id, host_port, proto, container_id, target_ip, target_port, owner, note, created_at, created_by, require_login
 		from port_forwards order by host_port, proto`)
 	if err != nil {
 		return nil, err
@@ -152,9 +166,11 @@ func (db *DB) ManualForwards() ([]ManualForward, error) {
 	out := []ManualForward{}
 	for rows.Next() {
 		var f ManualForward
-		if err := rows.Scan(&f.ID, &f.HostPort, &f.Proto, &f.ContainerID, &f.TargetIP, &f.TargetPort, &f.Owner, &f.Note, &f.CreatedAt, &f.CreatedBy); err != nil {
+		var requireLogin int
+		if err := rows.Scan(&f.ID, &f.HostPort, &f.Proto, &f.ContainerID, &f.TargetIP, &f.TargetPort, &f.Owner, &f.Note, &f.CreatedAt, &f.CreatedBy, &requireLogin); err != nil {
 			return nil, err
 		}
+		f.RequireLogin = requireLogin != 0
 		out = append(out, f)
 	}
 	return out, rows.Err()
@@ -183,9 +199,13 @@ func (db *DB) AddManualForward(f ManualForward) (ManualForward, error) {
 		return ManualForward{}, fmt.Errorf("a target container or address is required")
 	}
 	f.CreatedAt = time.Now().Format(time.RFC3339)
-	res, err := db.Exec(`insert into port_forwards(host_port, proto, container_id, target_ip, target_port, owner, note, created_at, created_by)
-		values(?,?,?,?,?,?,?,?,?)`,
-		f.HostPort, f.Proto, f.ContainerID, f.TargetIP, f.TargetPort, strings.TrimSpace(f.Owner), strings.TrimSpace(f.Note), f.CreatedAt, f.CreatedBy)
+	requireLogin := 0
+	if f.RequireLogin {
+		requireLogin = 1
+	}
+	res, err := db.Exec(`insert into port_forwards(host_port, proto, container_id, target_ip, target_port, owner, note, created_at, created_by, require_login)
+		values(?,?,?,?,?,?,?,?,?,?)`,
+		f.HostPort, f.Proto, f.ContainerID, f.TargetIP, f.TargetPort, strings.TrimSpace(f.Owner), strings.TrimSpace(f.Note), f.CreatedAt, f.CreatedBy, requireLogin)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return ManualForward{}, fmt.Errorf("host port %d/%s already has a forward", f.HostPort, f.Proto)
@@ -222,4 +242,52 @@ func ParsePortForwardNetworks(raw string) []string {
 		return r == ',' || r == '\n' || r == '\r' || r == ' ' || r == '\t'
 	})
 	return NormalizePortForwardConfig(PortForwardConfig{Networks: fields}).Networks
+}
+
+// ---------------- Forward login-gating settings ----------------
+
+const forwardAuthSettingKey = "forward_auth"
+
+// ForwardAuthConfig is the admin-owned configuration for login-gating on
+// forwarded ports. It applies globally to every forward (container-derived or
+// manual) whose rule carries RequireLogin. The per-image / per-manual-forward
+// flag decides *which* ports are gated; this struct decides *how* the gate
+// redirects.
+type ForwardAuthConfig struct {
+	// Enabled is the master switch. When off, RequireLogin flags are ignored and
+	// forwards behave as plain relays again — a quick way to open everything up
+	// during troubleshooting without editing each rule.
+	Enabled bool `json:"enabled"`
+	// ConsoleURL is the absolute URL of the console login page an unauthenticated
+	// browser is redirected to, e.g. "http://192.168.1.1:9000". When empty the
+	// gate derives it from the request's Host header (same host, console port),
+	// which is right for direct LAN access but wrong behind a tunnel that maps
+	// different hosts — so an admin can pin it here.
+	ConsoleURL string `json:"consoleUrl"`
+}
+
+// ForwardAuthConfig returns the stored configuration. A server that has never
+// been configured reads back disabled, so login-gating is opt-in.
+func (db *DB) ForwardAuthConfig() (ForwardAuthConfig, error) {
+	var cfg ForwardAuthConfig
+	raw, err := db.getSetting(forwardAuthSettingKey)
+	if err != nil {
+		return cfg, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return cfg, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return ForwardAuthConfig{}, err
+	}
+	return cfg, nil
+}
+
+// SaveForwardAuthConfig replaces the stored configuration.
+func (db *DB) SaveForwardAuthConfig(cfg ForwardAuthConfig) error {
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return db.setSetting(forwardAuthSettingKey, string(raw))
 }

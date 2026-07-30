@@ -21,6 +21,16 @@ type MCPToken struct {
 	CreatedAt     string `json:"createdAt"`
 	LastUsedAt    string `json:"lastUsedAt,omitempty"`
 	ExpiresAt     string `json:"expiresAt,omitempty"`
+	// OnSafeNetwork reports whether this token's container is currently attached
+	// to the administrator's designated safe network, so external MCP access is
+	// possible for it. Presentation-only: filled in by the token-list handler at
+	// request time, never stored. When false the console hides the external link
+	// rather than offering a URL the safe-network gate would reject at runtime.
+	OnSafeNetwork bool `json:"onSafeNetwork,omitempty"`
+	// InUse reports whether an MCP client currently has an open SSE session to
+	// this token's container. Presentation-only: filled in by the token-list
+	// handler from the SSE hub. Lights the "in use" green dot on the token's row.
+	InUse bool `json:"inUse,omitempty"`
 }
 
 // Expired reports whether the token has passed its expiry. An empty ExpiresAt

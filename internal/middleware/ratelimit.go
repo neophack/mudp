@@ -3,6 +3,7 @@ package middleware
 import (
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,10 +66,31 @@ func (tp *TrustedProxies) trusts(ip net.IP) bool {
 // unless that peer is a configured trusted proxy, in which case the last
 // untrusted hop in X-Forwarded-For is used. Walking the chain from the right
 // means a client-supplied prefix cannot displace the value the proxy appended.
+//
+// When a CDN/reverse proxy is trusted, its own single-value client-IP header is
+// honoured first because it is set by the CDN itself and is more reliable than
+// parsing the X-Forwarded-For chain: Cloudflare (CF-Connecting-IP), Akamai/
+// Fastly/nginx (True-Client-IP), and the common X-Real-IP. These headers are
+// only read when the socket peer is a trusted proxy, so a direct client cannot
+// spoof them.
 func (tp *TrustedProxies) ClientIP(r *http.Request) string {
 	peer := remoteIP(r)
 	if !tp.trusts(net.ParseIP(peer)) {
 		return peer
+	}
+	// Prefer the single-value CDN headers set by the edge over parsing the
+	// forwarded chain: they carry exactly one client address and can't be
+	// polluted by other hops appending to the list.
+	for _, h := range []string{"CF-Connecting-IP", "True-Client-IP", "X-Real-IP"} {
+		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+			// A header may carry a list in odd configs; take the first entry.
+			if i := strings.IndexByte(v, ','); i >= 0 {
+				v = strings.TrimSpace(v[:i])
+			}
+			if ip := net.ParseIP(v); ip != nil {
+				return ip.String()
+			}
+		}
 	}
 	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
 	for i := len(parts) - 1; i >= 0; i-- {
@@ -94,6 +116,12 @@ func remoteIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// RemoteIP is the exported form of remoteIP for callers outside the package
+// (e.g. the security monitor's fallback when no trusted-proxy set is configured).
+func RemoteIP(r *http.Request) string {
+	return remoteIP(r)
 }
 
 // RateLimiter is a per-IP rate limiter. It is safe for concurrent use.
@@ -165,7 +193,23 @@ func (rl *RateLimiter) gcLocked(now time.Time) {
 // Middleware returns an http.Handler that rate limits by client IP.
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !rl.getLimiter(rl.proxies.ClientIP(r)).Allow() {
+		// Reserve (instead of Allow) so we can tell the client how long to wait
+		// before retrying — a 429 with Retry-After lets the auto-refresh engine
+		// back off gracefully instead of hammering the limiter.
+		res := rl.getLimiter(rl.proxies.ClientIP(r)).Reserve()
+		if !res.OK() {
+			httpx.WriteErr(w, &httpx.HandlerError{
+				Status:  http.StatusTooManyRequests,
+				Message: "too many requests",
+			})
+			return
+		}
+		delay := res.Delay()
+		if delay > 0 {
+			// Over the limit: cancel this reservation so it does not consume a
+			// future token, then tell the client when to come back.
+			res.Cancel()
+			w.Header().Set("Retry-After", strconv.Itoa(int(delay.Seconds())+1))
 			httpx.WriteErr(w, &httpx.HandlerError{
 				Status:  http.StatusTooManyRequests,
 				Message: "too many requests",
@@ -176,9 +220,13 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// DefaultAPIRateLimiter is a reasonable default: 20 req/s with burst 40.
+// DefaultAPIRateLimiter is a reasonable default for the authenticated console:
+// 30 req/s with burst 120. The console fires several parallel fetches on page
+// load (stats + geo + logs) on top of the background auto-refresh loop, so a
+// tight burst trips 429s during normal navigation. Auth already gates these
+// endpoints, so the burst can stay generous without opening an abuse surface.
 func DefaultAPIRateLimiter() *RateLimiter {
-	return NewRateLimiter(20, 40, 10*time.Minute)
+	return NewRateLimiter(30, 120, 10*time.Minute)
 }
 
 // StrictRateLimiter is for login endpoints: 1 req/s with burst 5.

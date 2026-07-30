@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { escapeHtml } from "../../lib/common.js";
 import { renderLogin } from "../../modules/login.js";
 
 // Mock app.js dependencies so the login module can render in isolation.
@@ -17,6 +18,7 @@ vi.mock("../../app.js", () => {
     renderPending: (...args) => mockRenderPending(...args),
     refreshAll: (...args) => mockRefreshAll(...args),
     render: (...args) => mockRender(...args),
+    escapeHtml,
   };
 });
 

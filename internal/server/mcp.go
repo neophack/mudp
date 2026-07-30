@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"mudp/internal/mcp"
+	"mudp/internal/store"
 )
 
 // mcpTokenLen is the byte length of the random cleartext token (32 bytes → 64
@@ -48,7 +50,7 @@ func (a *App) mcpSSE(w http.ResponseWriter, r *http.Request) {
 	}
 	srv := mcp.NewContainerServer(r.Context(), a.docker, tok.ContainerID, tok.ContainerName)
 	srv.SetAuditHook(a.mcpAuditHook(tok))
-	session := a.mcpHub.OpenSession(srv, r.Context())
+	session := a.mcpHub.OpenSession(srv, r.Context(), tok.ContainerID)
 	defer a.mcpHub.Close(session)
 	base := "/mcp/" + chi.URLParam(r, "token") + "/messages"
 	mcp.ServeSSE(w, r, session, base)
@@ -73,15 +75,24 @@ func (a *App) mcpMessages(w http.ResponseWriter, r *http.Request) {
 func (a *App) resolveMcpContainer(w http.ResponseWriter, r *http.Request) (mcpTokenResolved, bool) {
 	token := strings.TrimSpace(chi.URLParam(r, "token"))
 	if token == "" {
+		if isRemoteMCP(r) {
+			a.recordMcpAttack(r, "no token supplied")
+		}
 		writeErr(w, http.StatusUnauthorized, "token required")
 		return mcpTokenResolved{}, false
 	}
 	tok, err := a.resolveMCPToken(r, token)
 	if err != nil {
+		if isRemoteMCP(r) {
+			a.recordMcpAttack(r, "invalid or expired token")
+		}
 		writeErr(w, http.StatusUnauthorized, "invalid or expired token")
 		return mcpTokenResolved{}, false
 	}
 	if owner := a.docker.ManagedOwner(r.Context(), tok.ContainerID); owner == "" {
+		if isRemoteMCP(r) {
+			a.recordMcpAttack(r, "container no longer managed")
+		}
 		writeErr(w, http.StatusNotFound, "container no longer managed")
 		return mcpTokenResolved{}, false
 	}
@@ -92,6 +103,9 @@ func (a *App) resolveMcpContainer(w http.ResponseWriter, r *http.Request) (mcpTo
 	// the container indefinitely.
 	owner, err := a.db.UserByID(tok.OwnerID)
 	if err != nil || owner == nil || owner.Disabled || isPending(owner) || !canMutate(owner) {
+		if isRemoteMCP(r) {
+			a.recordMcpAttack(r, "token owner no longer permitted")
+		}
 		writeErr(w, http.StatusUnauthorized, "invalid or expired token")
 		return mcpTokenResolved{}, false
 	}
@@ -100,9 +114,15 @@ func (a *App) resolveMcpContainer(w http.ResponseWriter, r *http.Request) (mcpTo
 	// administrator's safe network. See mcp_remote.go.
 	if isRemoteMCP(r) {
 		if ok, reason := a.remoteMCPAllowed(r.Context(), tok.ContainerID); !ok {
+			a.recordMcpAttack(r, reason)
 			writeErr(w, http.StatusForbidden, reason)
 			return mcpTokenResolved{}, false
 		}
+		// Capture the caller's origin so each tool call this request dispatches is
+		// plotted on the Security map as a green "access" dot. Only remote
+		// requests carry geo: a LAN caller is the operator, not an access worth
+		// plotting.
+		tok.client = a.mcpClientFromRequest(r)
 	}
 	_ = a.db.MCPTokenTouch(tok.ID)
 	return tok, true
@@ -132,6 +152,22 @@ type mcpTokenResolved struct {
 	ContainerName string
 	OwnerID       int64
 	Label         string
+	// client is the resolved origin of a remote MCP request (IP + geo), captured
+	// at resolve time and carried into the audit/usage hook so each tool call is
+	// plotted on the Security map. Empty for LAN requests — only the external
+	// listener populates it.
+	client mcpClientInfo
+}
+
+// mcpClientInfo is the lightweight origin snapshot stored on a resolved token,
+// reused for both access (green) and attack (yellow/red) map dots.
+type mcpClientInfo struct {
+	IP          string
+	Country     string
+	CountryCode string
+	City        string
+	Latitude    float64
+	Longitude   float64
 }
 
 // mcpAuditHook returns a callback that writes one audit entry per MCP tool
@@ -139,6 +175,10 @@ type mcpTokenResolved struct {
 // no browser session, so this is the only record of who (via which token) ran
 // what tool against a container — without it a leaked/expired-soon token's
 // actions are invisible beyond a last-used-at timestamp.
+//
+// It also writes a structured usage row (mcp_usage_logs) that powers the LOG
+// dialog on each token; the audit_log row is kept for the cross-cutting
+// Activity Log and for compatibility.
 func (a *App) mcpAuditHook(tok mcpTokenResolved) func(toolName string, args json.RawMessage) {
 	actor := "mcp-token#" + strconv.FormatInt(tok.ID, 10)
 	if u, err := a.db.UserByID(tok.OwnerID); err == nil && u != nil {
@@ -151,6 +191,25 @@ func (a *App) mcpAuditHook(tok mcpTokenResolved) func(toolName string, args json
 			preview = preview[:300] + "…"
 		}
 		a.db.Audit(actor, "mcp.tool."+toolName, target+" "+preview)
+		// Structured per-call record for the token's LOG dialog. Best-effort;
+		// RecordMCPUsage never returns an error so a logging miss is silent.
+		a.db.RecordMCPUsage(store.MCPUsageLog{
+			TokenID:       tok.ID,
+			OwnerID:       tok.OwnerID,
+			ContainerID:   tok.ContainerID,
+			ContainerName: tok.ContainerName,
+			TokenLabel:    tok.Label,
+			Tool:          toolName,
+			ArgsPreview:   preview,
+			// Carry the remote caller's origin so the Security map plots this
+			// call as a green access dot. Empty for LAN calls (no geo captured).
+			IP:          tok.client.IP,
+			Country:     tok.client.Country,
+			CountryCode: tok.client.CountryCode,
+			City:        tok.client.City,
+			Latitude:    tok.client.Latitude,
+			Longitude:   tok.client.Longitude,
+		})
 	}
 }
 
@@ -187,12 +246,18 @@ func generateMCPToken() (cleartext, hash string, err error) {
 // mcpTokenList returns the caller's MCP tokens (admin sees all). An optional
 // containerId query param narrows the result to one container.
 //
+// Each token is tagged with onSafeNetwork so the console can show an external
+// link only when the container actually sits on the administrator's safe
+// network — otherwise the link would point at a URL the safe-network gate
+// rejects at runtime. The check is per-container, so several tokens on one
+// container are inspected once.
+//
 // GET /api/mcp/tokens[?containerId=]
 func (a *App) mcpTokenList(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	containerID := strings.TrimSpace(r.URL.Query().Get("containerId"))
 	var (
-		tokens any
+		tokens []store.MCPToken
 		err    error
 	)
 	if containerID != "" {
@@ -200,7 +265,91 @@ func (a *App) mcpTokenList(w http.ResponseWriter, r *http.Request) {
 	} else {
 		tokens, err = a.db.MCPTokensForUser(u.ID, u.Role == "admin")
 	}
-	respond(w, tokens, err)
+	if err != nil {
+		respond(w, tokens, err)
+		return
+	}
+	a.annotateSafeNetwork(r.Context(), tokens)
+	a.annotateInUse(tokens)
+	respond(w, tokens, nil)
+}
+
+// annotateSafeNetwork stamps each token's OnSafeNetwork when external MCP
+// access is published. It inspects each distinct container once and caches the
+// result, so a container carrying several tokens does one Docker call. When no
+// safe network is configured every token keeps OnSafeNetwork=false, leaving the
+// console to show only the LAN link.
+func (a *App) annotateSafeNetwork(ctx context.Context, tokens []store.MCPToken) {
+	cfg, err := a.db.MCPRemoteConfig()
+	if err != nil || !cfg.Public() {
+		return
+	}
+	reached := make(map[string]bool, len(tokens))
+	for i := range tokens {
+		cid := tokens[i].ContainerID
+		if cid == "" {
+			continue
+		}
+		on, ok := reached[cid]
+		if !ok {
+			on = a.containerOnSafeNetwork(ctx, cid, cfg)
+			reached[cid] = on
+		}
+		tokens[i].OnSafeNetwork = on
+	}
+}
+
+// annotateInUse stamps each token's InUse from the SSE hub's live session map.
+// A token is "in use" when at least one MCP client holds an open SSE stream to
+// its container. The hub lookup is O(sessions) and runs once per distinct
+// container, so several tokens on one container do one pass. Streamable-HTTP
+// clients have no persistent session and therefore never read as in use.
+func (a *App) annotateInUse(tokens []store.MCPToken) {
+	if a.mcpHub == nil {
+		return
+	}
+	seen := make(map[string]bool, len(tokens))
+	for i := range tokens {
+		cid := tokens[i].ContainerID
+		if cid == "" {
+			continue
+		}
+		if _, ok := seen[cid]; !ok {
+			seen[cid] = a.mcpHub.ActiveForContainer(cid) > 0
+		}
+		tokens[i].InUse = seen[cid]
+	}
+}
+
+// mcpTokenUsage returns a token's recent tool-call history for the LOG dialog.
+// Owners read their own tokens; admins read any. The owner scoping is enforced
+// server-side (the filter carries OwnerID for non-admins) so a user cannot read
+// another user's usage by guessing a token id.
+//
+// GET /api/mcp/tokens/{id}/usage
+func (a *App) mcpTokenUsage(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	id := parseID(chi.URLParam(r, "id"))
+	if id == 0 {
+		writeErr(w, http.StatusBadRequest, "invalid token id")
+		return
+	}
+	f := store.MCPUsageFilter{TokenID: id}
+	if u.Role != "admin" {
+		f.OwnerID = u.ID
+	}
+	entries, err := a.db.MCPUsageLogs(f)
+	// A non-admin whose filter matched no rows (because the token is not theirs)
+	// gets an empty list rather than a 403, so the existence of others' tokens
+	// is not leaked.
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if entries == nil {
+		entries = []store.MCPUsageLog{}
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 // mcpTokenCreate issues a new MCP token for a container the caller owns.

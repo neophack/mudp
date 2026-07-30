@@ -37,6 +37,11 @@ const (
 	// targets. A container is usually on more than one network; this says which
 	// one's IP the relay must follow.
 	ForwardNetLabel = "mudp.forward.net"
+	// ForwardRequireLoginLabel records that this container's forwarded ports
+	// must be login-gated. Derived from the image preset at create time, it is
+	// read back by ForwardRules so the relay honours it on every reconcile. The
+	// value is the literal "true"; anything else (or absent) means ungated.
+	ForwardRequireLoginLabel = "mudp.forward.require_login"
 )
 
 // ForwardSpec is one host→container mapping served by mudp rather than Docker.
@@ -248,16 +253,25 @@ func (d *Client) ForwardRules(ctx context.Context, forwardNetworks []string) ([]
 		if name == "" && len(c.Names) > 0 {
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
+		// A login-gated image stamps its containers; every forward derived from
+		// it inherits the gate. UDP specs on a gated container are dropped here
+		// rather than left for Validate to reject, so one non-HTTP port does not
+		// fail the whole container's reconcile.
+		requireLogin := c.Labels[ForwardRequireLoginLabel] == "true"
 		for _, s := range specs {
+			if requireLogin && s.Proto == "udp" {
+				continue
+			}
 			out = append(out, portfwd.Rule{
-				HostPort:   s.HostPort,
-				Proto:      s.Proto,
-				TargetIP:   ip,
-				TargetPort: s.ContainerPort,
-				Container:  c.ID,
-				Owner:      c.Labels[UserLabel],
-				Name:       name,
-				Source:     "container",
+				HostPort:     s.HostPort,
+				Proto:        s.Proto,
+				TargetIP:     ip,
+				TargetPort:   s.ContainerPort,
+				Container:    c.ID,
+				Owner:        c.Labels[UserLabel],
+				Name:         name,
+				Source:       "container",
+				RequireLogin: requireLogin,
 			})
 		}
 	}

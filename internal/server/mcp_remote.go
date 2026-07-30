@@ -212,6 +212,100 @@ func (a *App) remoteMCPAllowed(ctx context.Context, containerID string) (bool, s
 	return false, fmt.Sprintf("external access requires the container to be on the safe network %q", cfg.SafeNetwork)
 }
 
+// recordMcpAttack logs one refused request on the external MCP listener, so an
+// administrator can see who is probing the published port. It only ever runs
+// for remote requests (the caller checks isRemoteMCP first): a failed LAN
+// request is an operator typo, not an attack, and would drown out the signal.
+//
+// The client picture (IP, geo, UA) is gathered the same way the login security
+// monitor gathers it, so the two views speak the same language. The write is
+// best-effort and never returns an error — a logging miss must not change the
+// refusal the client already received.
+func (a *App) recordMcpAttack(r *http.Request, reason string) {
+	ip := ""
+	if a.trusted != nil {
+		ip = a.trusted.ClientIP(r)
+	} else {
+		ip = middleware.RemoteIP(r)
+	}
+	ua := r.UserAgent()
+	browser, osName, _ := parseUserAgent(ua)
+	geo := a.geoLookup(ip)
+	a.db.RecordMCPAttack(store.MCPAttackLog{
+		IP:          ip,
+		Country:     geo.Country,
+		CountryCode: geo.CountryCode,
+		Region:      geo.Region,
+		City:        geo.City,
+		Latitude:    geo.Latitude,
+		Longitude:   geo.Longitude,
+		ISP:         geo.ISP,
+		UserAgent:   ua,
+		Browser:     browser,
+		OS:          osName,
+		Reason:      reason,
+		Path:        r.URL.Path,
+	})
+}
+
+// mcpClientFromRequest resolves the caller's IP + geo for a successful remote
+// MCP request, so the usage record (and the Security map's green dot) carries
+// the origin. It mirrors the first half of recordMcpAttack — the same trusted-
+// proxy IP resolution and the same GeoIP cache — but returns a structured value
+// instead of writing a row.
+func (a *App) mcpClientFromRequest(r *http.Request) mcpClientInfo {
+	ip := ""
+	if a.trusted != nil {
+		ip = a.trusted.ClientIP(r)
+	} else {
+		ip = middleware.RemoteIP(r)
+	}
+	geo := a.geoLookup(ip)
+	return mcpClientInfo{
+		IP:          ip,
+		Country:     geo.Country,
+		CountryCode: geo.CountryCode,
+		City:        geo.City,
+		Latitude:    geo.Latitude,
+		Longitude:   geo.Longitude,
+	}
+}
+
+// safeNetworkReached reports whether a container attached to the given Docker
+// network names would clear the safe-network gate for cfg. It is the pure,
+// Docker-free core of remoteMCPAllowed/containerOnSafeNetwork, factored out so
+// the token-list handler can reuse it (and a test can exercise it without a
+// daemon). cfg is assumed to be already-enabled; a disabled or unconfigured
+// remote has nothing to gate against, so it returns false.
+func safeNetworkReached(names []string, cfg store.MCPRemoteConfig) bool {
+	if !cfg.Public() {
+		return false
+	}
+	for _, name := range names {
+		if dockerx.NetworkNameMatches(name, cfg.SafeNetwork) {
+			return true
+		}
+	}
+	return false
+}
+
+// containerOnSafeNetwork is the read-time companion to remoteMCPAllowed: it
+// tells the console whether a token's container currently sits on the safe
+// network, so the UI can show an external link only when it will actually work.
+// It mirrors remoteMCPAllowed but never returns an error message — on any
+// failure to inspect the container the safe default is "not on the safe
+// network" (show the LAN link, not a link the gate would reject).
+func (a *App) containerOnSafeNetwork(ctx context.Context, containerID string, cfg store.MCPRemoteConfig) bool {
+	if containerID == "" {
+		return false
+	}
+	names, err := a.docker.ContainerNetworkNames(ctx, containerID)
+	if err != nil {
+		return false
+	}
+	return safeNetworkReached(names, cfg)
+}
+
 // --- management API ---
 
 // mcpRemoteInfo tells the console what external link to show, if any. Readable
@@ -361,4 +455,83 @@ func listenPort(addr string) int {
 		return 0
 	}
 	return n
+}
+
+// --- admin observability: usage & attack logs ---
+
+// mcpAdminUsage returns MCP tool-call history for an admin. An optional tokenId
+// narrows to one token; otherwise the most recent calls across all tokens are
+// returned. Admin-only: it spans every user's tokens.
+//
+// GET /api/admin/mcp/usage[?tokenId=&limit=]
+func (a *App) mcpAdminUsage(w http.ResponseWriter, r *http.Request) {
+	f := store.MCPUsageFilter{
+		TokenID: parseID(r.URL.Query().Get("tokenId")),
+	}
+	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l > 0 {
+		f.Limit = l
+	}
+	entries, err := a.db.MCPUsageLogs(f)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if entries == nil {
+		entries = []store.MCPUsageLog{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// mcpAttackLogs returns recent rejected external-MCP requests for the Security
+// page, newest first. Supports filtering by ip and a free-text q.
+//
+// GET /api/admin/mcp/attacks[?ip=&q=&limit=&offset=]
+func (a *App) mcpAttackLogs(w http.ResponseWriter, r *http.Request) {
+	f := store.MCPAttackFilter{
+		IP: strings.TrimSpace(r.URL.Query().Get("ip")),
+		Q:  strings.TrimSpace(r.URL.Query().Get("q")),
+	}
+	f.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
+	f.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
+	entries, err := a.db.MCPAttackLogs(f)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if entries == nil {
+		entries = []store.MCPAttackLog{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// mcpAttackStats returns the Security page header summary: total rejected
+// requests, distinct source IPs, last-24h count, and top sources.
+//
+// GET /api/admin/mcp/attacks/stats
+func (a *App) mcpAttackStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := a.db.MCPAttackStats()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// mcpMapPoints returns the aggregated map locations for the Security map:
+// green dots for successful remote MCP access, yellow/red dots for refused
+// external requests. Each distinct lat/lon is one point with a count, a kind,
+// and (for attacks) a severity so the client can colour it.
+//
+// GET /api/admin/mcp/map[?limit=]
+func (a *App) mcpMapPoints(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	points, err := a.db.MCPMapPoints(limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if points == nil {
+		points = []store.MCPMapPoint{}
+	}
+	writeJSON(w, http.StatusOK, points)
 }

@@ -6,6 +6,20 @@ import { showModal, closeModal } from "./ui.js";
 import { createUserLanguageSettings, createAdminLanguageSettings } from "../lib/languageUI.js";
 import { getCurrentLanguage, switchLanguage } from "../lib/i18n.js";
 
+// icon() renders the stroke-style SVG used elsewhere in the console (app.js
+// svgIcon), sized down to fit a card header badge. Keep the stroke geometry so
+// the badges stay legible against the accent-soft background.
+const icon = (body) =>
+  `<svg class="card-head-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+
+// sectionHeader() introduces a group of related cards ("Personal", "Admin")
+// with a label and one-line description, so the page reads as sections rather
+// than an undifferentiated stack of identical cards.
+const sectionHeader = (iconSvg, title, subtitle) =>
+  `<div class="section-head">${iconSvg}<div class="section-head-text">` +
+    `<h3>${title}</h3>${subtitle ? `<p class="hint">${subtitle}</p>` : ""}` +
+  `</div></div>`;
+
 export function renderSettings() {
   if (isAdmin() && !state.siteAdmin.loaded) {
     loadSiteAdmin();
@@ -22,9 +36,19 @@ export function renderSettings() {
 
   const currentLanguage = getCurrentLanguage();
   const defaultLanguage = state.me?.defaultLanguage || "en_US";
-  const adminLanguagePanel = isAdmin() ? createAdminLanguageSettings(defaultLanguage) : "";
-  const siteSettingsPanel = isAdmin()
-    ? `<div class="card"><div class="card-head"><h2>${t("settings.siteSettings")}</h2></div>` +
+  const admin = isAdmin();
+
+  // ---- Card definitions ----
+  // Each card keeps the form ids/handlers it already had; only the header gains
+  // an icon badge + subtitle so the six formerly-identical cards now read as
+  // distinct, scannable sections.
+  const siteIcon = icon('<path d="M3 9.5 12 3l9 6.5"/><path d="M5 10v10h14V10"/>');
+  const regIcon = icon('<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>');
+  const feishuIcon = icon('<path d="M16 7h.01"/><path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/><path d="m20 7 2 .5-2 .5"/><path d="M10 18v3"/><path d="M14 17.75V22"/>');
+
+  const siteSettingsCard = admin
+    ? `<div class="card"><div class="card-head"><h2>${siteIcon}${t("settings.siteSettings")}</h2>` +
+        `<span class="card-head-sub">${t("settings.siteNameSub")}</span></div>` +
         `<div class="card-body"><form id="siteForm" class="compact">` +
           `<p class="hint">${t("settings.siteNameHint")}</p>` +
           `<input name="siteName" placeholder="${t("settings.siteNamePlaceholder")}" value="${escapeHtml(state.siteAdmin.siteName)}">` +
@@ -32,18 +56,22 @@ export function renderSettings() {
         `</form></div>` +
       `</div>`
     : "";
-  const registriesPanel = isAdmin()
-    ? `<div class="card"><div class="card-head"><h2>${t("settings.registries")}</h2>` +
+
+  const registriesCard = admin
+    ? `<div class="card settings-span-2"><div class="card-head"><h2>${regIcon}${t("settings.registries")}</h2>` +
         `<button class="primary" id="newRegistryBtn">${t("settings.addRegistry")}</button>` +
       `</div>` +
+        `<span class="card-head-sub card-head-sub-block">${t("settings.registriesSub")}</span>` +
         `<table class="data">` +
           `<thead><tr><th>${t("common.name")}</th><th>${t("settings.colUrl")}</th><th>${t("settings.colUsername")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
           `<tbody>${(state.registries || []).map(registryRow).join("") || `<tr class="empty-row"><td colspan="4">${t("settings.noRegistries")}</td></tr>`}</tbody>` +
         `</table>` +
       `</div>`
     : "";
-  const feishuSettingsPanel = isAdmin()
-    ? `<div class="card"><div class="card-head"><h2>${t("settings.feishuSso")}</h2></div>` +
+
+  const feishuSettingsCard = admin
+    ? `<div class="card"><div class="card-head"><h2>${feishuIcon}${t("settings.feishuSso")}</h2>` +
+        `<span class="card-head-sub">${t("settings.feishuSsoSub")}</span></div>` +
         `<div class="card-body"><form id="feishuForm" class="compact">` +
           `<p class="hint">${t("settings.feishuHint")}</p>` +
           `<input name="appId" placeholder="${t("settings.appIdPlaceholder")}" value="${escapeHtml(state.feishuAdmin.appId)}">` +
@@ -55,14 +83,33 @@ export function renderSettings() {
       `</div>`
     : "";
 
+  const mcpCard = admin ? mcpRemotePanel() : "";
+
+  // ---- Layout ----
+  // Personal section is always visible; admin section (gridded into two
+  // columns, with the wide registries table spanning both) only for admins.
   $("#view").innerHTML =
     `<div class="stack">` +
+      sectionHeader(
+        icon('<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>'),
+        t("settings.sectionPersonal"),
+        t("settings.sectionPersonalSub")
+      ) +
       createUserLanguageSettings(currentLanguage) +
-      adminLanguagePanel +
-      siteSettingsPanel +
-      registriesPanel +
-      mcpRemotePanel() +
-      feishuSettingsPanel +
+      (admin
+        ? sectionHeader(
+            icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>'),
+            t("settings.sectionAdmin"),
+            t("settings.sectionAdminSub")
+          ) +
+          `<div class="settings-grid">` +
+            createAdminLanguageSettings(defaultLanguage) +
+            siteSettingsCard +
+            registriesCard +
+            mcpCard +
+            feishuSettingsCard +
+          `</div>`
+        : "") +
     `</div>`;
 
   // Handle user language settings
@@ -192,10 +239,12 @@ export function renderSettings() {
 // network is what limits which containers answer on it.
 function mcpRemotePanel() {
   if (!isAdmin()) return "";
+  const mcpIcon = icon('<rect width="16" height="12" x="4" y="8" rx="2"/><path d="M12 8V4H8"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>');
   const cfg = state.mcpRemoteAdmin;
   if (!cfg) {
     return (
-      `<div class="card"><div class="card-head"><h2>${t("settings.mcpExternal")}</h2></div>` +
+      `<div class="card"><div class="card-head"><h2>${mcpIcon}${t("settings.mcpExternal")}</h2>` +
+        `<span class="card-head-sub">${t("settings.mcpExternalSub")}</span></div>` +
         `<div class="card-body"><p class="hint">${t("common.loadingDots")}</p></div>` +
       `</div>`
     );
@@ -207,7 +256,8 @@ function mcpRemotePanel() {
     ? `<p class="hint">${t("settings.mcpUsersSee", { url: `<span class="mono">${escapeHtml(cfg.baseUrl)}</span>` })}</p>`
     : "";
   return (
-    `<div class="card"><div class="card-head"><h2>${t("settings.mcpExternal")}</h2>${status}</div>` +
+    `<div class="card"><div class="card-head"><h2>${mcpIcon}${t("settings.mcpExternal")}</h2>${status}</div>` +
+      `<span class="card-head-sub card-head-sub-block">${t("settings.mcpExternalSub")}</span>` +
       `<div class="card-body"><form id="mcpRemoteForm" class="compact">` +
         `<p class="hint">${t("settings.mcpHint")}</p>` +
         `<input name="domain" placeholder="${t("settings.mcpDomainPlaceholder")}" value="${escapeHtml(cfg.domain || "")}">` +

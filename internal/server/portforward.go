@@ -102,15 +102,16 @@ func (a *App) manualForwardRules(ctx context.Context) ([]portfwd.Rule, error) {
 	out := make([]portfwd.Rule, 0, len(stored))
 	for _, f := range stored {
 		r := portfwd.Rule{
-			HostPort:   f.HostPort,
-			Proto:      f.Proto,
-			TargetIP:   f.TargetIP,
-			TargetPort: f.TargetPort,
-			Owner:      f.Owner,
-			Name:       f.Note,
-			Source:     "manual",
-			ManualID:   f.ID,
-			Note:       f.Note,
+			HostPort:     f.HostPort,
+			Proto:        f.Proto,
+			TargetIP:     f.TargetIP,
+			TargetPort:   f.TargetPort,
+			Owner:        f.Owner,
+			Name:         f.Note,
+			Source:       "manual",
+			ManualID:     f.ID,
+			Note:         f.Note,
+			RequireLogin: f.RequireLogin,
 		}
 		if f.ContainerID != "" {
 			t, ok := findTarget(targets, f.ContainerID)
@@ -286,13 +287,14 @@ func (a *App) forwardAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	u := currentUser(r)
 	var req struct {
-		HostPort    int    `json:"hostPort"`
-		Proto       string `json:"proto"`
-		ContainerID string `json:"containerId"`
-		TargetIP    string `json:"targetIp"`
-		TargetPort  int    `json:"targetPort"`
-		Owner       string `json:"owner"`
-		Note        string `json:"note"`
+		HostPort     int    `json:"hostPort"`
+		Proto        string `json:"proto"`
+		ContainerID  string `json:"containerId"`
+		TargetIP     string `json:"targetIp"`
+		TargetPort   int    `json:"targetPort"`
+		Owner        string `json:"owner"`
+		Note         string `json:"note"`
+		RequireLogin bool   `json:"requireLogin"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -300,12 +302,13 @@ func (a *App) forwardAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	f := store.ManualForward{
 		HostPort: req.HostPort, Proto: req.Proto,
-		ContainerID: strings.TrimSpace(req.ContainerID),
-		TargetIP:    strings.TrimSpace(req.TargetIP),
-		TargetPort:  req.TargetPort,
-		Owner:       strings.TrimSpace(req.Owner),
-		Note:        strings.TrimSpace(req.Note),
-		CreatedBy:   u.Username,
+		ContainerID:  strings.TrimSpace(req.ContainerID),
+		TargetIP:     strings.TrimSpace(req.TargetIP),
+		TargetPort:   req.TargetPort,
+		Owner:        strings.TrimSpace(req.Owner),
+		Note:         strings.TrimSpace(req.Note),
+		CreatedBy:    u.Username,
+		RequireLogin: req.RequireLogin,
 	}
 	if err := a.validateManualForward(r.Context(), &f); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -364,6 +367,13 @@ func (a *App) validateManualForward(ctx context.Context, f *store.ManualForward)
 	}
 	if f.Proto != "tcp" && f.Proto != "udp" {
 		return fmt.Errorf("protocol must be tcp or udp")
+	}
+	// Login-gating peeks an HTTP request, which only a TCP forward can carry.
+	// Refusing the combination here keeps a manual rule from being stored in a
+	// state the relay could never honour — it would otherwise bind and then fail
+	// on every connection when Validate rejects it.
+	if f.RequireLogin && f.Proto != "tcp" {
+		return fmt.Errorf("login verification is only supported for tcp forwards")
 	}
 	if f.HostPort < 1 || f.HostPort > 65535 {
 		return fmt.Errorf("host port must be between 1 and 65535")
@@ -515,4 +525,59 @@ func (a *App) portForwardInfo(w http.ResponseWriter, r *http.Request) {
 		"enabled":  cfg.Enabled(),
 		"networks": cfg.Networks,
 	})
+}
+
+// forwardAuthSettings reads and writes the global login-gating configuration
+// for forwarded ports: a master switch and the console URL an unauthenticated
+// browser is redirected to. The per-image / per-manual-forward RequireLogin
+// flag decides *which* ports are gated; this decides *whether* the gate runs at
+// all and *where* it sends visitors. Admin-only.
+//
+// GET|POST /api/admin/forward/auth
+func (a *App) forwardAuthSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		cfg, err := a.db.ForwardAuthConfig()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, cfg)
+	case http.MethodPost:
+		var req store.ForwardAuthConfig
+		if err := decodeJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// Normalise the console URL: trim whitespace, strip a trailing slash so a
+		// saved "http://h:9000/" and a typed "http://h:9000" compare equal. An
+		// empty value is allowed and means "derive from the request" at gate time.
+		req.ConsoleURL = strings.TrimRight(strings.TrimSpace(req.ConsoleURL), "/")
+		if req.ConsoleURL != "" {
+			// Reject anything that is not an absolute http(s) URL, so a typo does
+			// not silently produce a broken redirect on every gated request.
+			if !strings.HasPrefix(req.ConsoleURL, "http://") && !strings.HasPrefix(req.ConsoleURL, "https://") {
+				writeErr(w, http.StatusBadRequest, "console URL must start with http:// or https://")
+				return
+			}
+		}
+		if err := a.db.SaveForwardAuthConfig(req); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// The gate re-reads config on every connection, so there is nothing to
+		// restart — recording the change for the audit trail is all that is left.
+		verb := "off"
+		if req.Enabled {
+			verb = "on"
+		}
+		target := verb
+		if req.ConsoleURL != "" {
+			target = verb + " → " + req.ConsoleURL
+		}
+		a.record(r, "forward.auth", target)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "config": req})
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }

@@ -105,6 +105,7 @@ export function openPresetModal(imageId) {
           presetCheck("forward80", t("images.forward80"), p.forward80) +
           presetCheck("mountNetdisk", t("images.presetNetdisk"), p.mountNetdisk) +
           presetCheck("mountShm", t("images.presetShm"), p.mountShm) +
+          presetCheck("requireLogin", t("images.requireLogin"), p.requireLogin) +
         `</div>` +
         (networkChecks ? `<label class="field-label">${t("create.networks")}</label><div class="check-grid">${networkChecks}</div>` : "") +
         `<label class="field-label">${t("images.restartPolicy")}</label>` +
@@ -137,6 +138,7 @@ export function openPresetModal(imageId) {
       forward80: form.querySelector('[name=forward80]').checked || undefined,
       mountNetdisk: form.querySelector('[name=mountNetdisk]').checked || undefined,
       mountShm: form.querySelector('[name=mountShm]').checked || undefined,
+      requireLogin: form.querySelector('[name=requireLogin]').checked || undefined,
       networks: [...form.querySelectorAll('input[name=networks]:checked')].map((i) => i.value),
       restartPolicy: (fd.get("restartPolicy") || "").trim(),
       devices: lines(fd.get("devices")),

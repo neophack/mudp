@@ -76,6 +76,13 @@ type Rule struct {
 	ManualID int64 `json:"manualId,omitempty"`
 	// Note carries an administrator's description of a manual rule.
 	Note string `json:"note,omitempty"`
+	// RequireLogin, when true, gates this forward behind the manager's auth gate
+	// (see Manager.SetAuthGate): a client must present a valid console session
+	// before the relay connects through to the container. Only TCP forwards are
+	// honoured — the gate needs an HTTP request to read a cookie — and a UDP rule
+	// carrying this flag is rejected at validation. Honoured only when an auth
+	// gate is installed; otherwise the flag is inert and the relay is open.
+	RequireLogin bool `json:"requireLogin,omitempty"`
 }
 
 // Key identifies the host-side socket a rule occupies. Two rules with the same
@@ -121,6 +128,13 @@ func (r Rule) Validate() error {
 	if strings.TrimSpace(r.TargetIP) == "" {
 		return errors.New("container address is unknown")
 	}
+	// Login-gating works by peeking an HTTP request, so a UDP forward cannot
+	// honour it: rejecting it here keeps a misconfigured rule from silently
+	// passing traffic ungated (the only thing worse than a closed port is one
+	// the admin believes is gated but is not).
+	if r.RequireLogin && r.Proto == "udp" {
+		return errors.New("require_login is only supported for tcp forwards")
+	}
 	return nil
 }
 
@@ -145,6 +159,14 @@ type Manager struct {
 	closed  bool
 	// logf is the log sink, swapped out in tests to keep output quiet.
 	logf func(format string, args ...any)
+	// authGate, when set, is consulted by every TCP relay whose rule carries
+	// RequireLogin. It peeks the client's first bytes (an HTTP request), decides
+	// whether to let the connection through, and — when it does — hands back the
+	// bytes already read so they are not lost to the container. When it declines,
+	// it has already written its own response to the client (a redirect or an
+	// error) and the relay simply closes. Set with SetAuthGate; nil means no
+	// gating, in which case RequireLogin flags are inert and forwards are open.
+	authGate func(rule Rule, client net.Conn) (peeked []byte, allow bool)
 }
 
 // NewManager returns a Manager with no listeners running.
@@ -159,6 +181,16 @@ func (m *Manager) SetLogger(logf func(format string, args ...any)) {
 	if logf != nil {
 		m.logf = logf
 	}
+}
+
+// SetAuthGate installs the function used to login-gate forwards whose rule
+// carries RequireLogin. Passing nil disables gating (RequireLogin then has no
+// effect). Existing listeners pick the gate up on their next accepted
+// connection — they read it fresh each time rather than capturing it at start.
+func (m *Manager) SetAuthGate(fn func(rule Rule, client net.Conn) (peeked []byte, allow bool)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.authGate = fn
 }
 
 // Apply makes the running listeners match rules: it starts what is missing,
@@ -217,7 +249,7 @@ func (m *Manager) Apply(rules []Rule) error {
 		if _, ok := m.entries[key]; ok {
 			continue
 		}
-		e, err := start(r, m.logf)
+		e, err := m.start(r)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -296,11 +328,15 @@ type entry struct {
 	since  time.Time
 	active atomic.Int64
 	total  atomic.Int64
-	// done is closed when the listener is being torn down, so the accept loop
+	// done is closed when the listener is being torn down, so the accept loops
 	// can tell a deliberate stop from a real error.
 	done chan struct{}
 	once sync.Once
 	logf func(format string, args ...any)
+	// manager points back at the owner, so the relay can read the current auth
+	// gate (which may be swapped after this listener started) for each accepted
+	// connection. Nil only in standalone tests that never set a gate.
+	manager *Manager
 }
 
 // stop closes the listener and signals its loops to exit. Open connections are
@@ -324,8 +360,8 @@ func (e *entry) stopping() bool {
 }
 
 // start binds a rule's host socket and runs its relay loop.
-func start(r Rule, logf func(string, ...any)) (*entry, error) {
-	e := &entry{rule: r, since: time.Now(), done: make(chan struct{}), logf: logf}
+func (m *Manager) start(r Rule) (*entry, error) {
+	e := &entry{rule: r, since: time.Now(), done: make(chan struct{}), logf: m.logf, manager: m}
 	if r.Proto == "udp" {
 		pc, err := net.ListenPacket("udp", r.ListenAddr())
 		if err != nil {
@@ -372,14 +408,49 @@ func (e *entry) serveTCP(ln net.Listener) {
 // direction is closed independently so a half-close (the client's "no more
 // input" on an SSH or HTTP/1.0 exchange) reaches the container instead of the
 // connection hanging until one side times out.
+//
+// When the rule is login-gated and an auth gate is installed, the gate runs
+// first: it peeks the opening request, and only if it accepts does the relay
+// connect through. The bytes the gate read are replayed to the container so the
+// upstream sees the complete request; if the gate declines it has already
+// written its own response and the relay closes without ever dialling upstream.
 func (e *entry) relayTCP(src net.Conn) {
 	defer src.Close()
+
+	var peeked []byte
+	if e.rule.RequireLogin && e.manager != nil {
+		gate := e.manager.authGate
+		if gate != nil {
+			ok := false
+			peeked, ok = gate(e.rule, src)
+			if !ok {
+				// The gate wrote its own response (a redirect or an error). Drain
+				// any bytes the client still has in flight before closing: closing
+				// a socket with unread receive data makes the kernel send RST
+				// instead of FIN, which discards the response we just wrote. A
+				// short bounded drain turns that close into an orderly one.
+				drainConn(src)
+				return
+			}
+		}
+	}
+
 	dst, err := net.DialTimeout("tcp", e.rule.Target(), dialTimeout)
 	if err != nil {
 		e.logf("port forward %s: dial %s: %v", e.rule.Key(), e.rule.Target(), err)
 		return
 	}
 	defer dst.Close()
+
+	// Replay the bytes the auth gate already consumed, so the upstream service
+	// receives the request intact. A short write here would corrupt the stream,
+	// so it is flushed fully before the bidirectional copy begins.
+	if len(peeked) > 0 {
+		if _, err := dst.Write(peeked); err != nil {
+			e.logf("port forward %s: replay peeked bytes: %v", e.rule.Key(), err)
+			return
+		}
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -401,6 +472,23 @@ func closeWrite(c net.Conn) {
 	type writeCloser interface{ CloseWrite() error }
 	if cw, ok := c.(writeCloser); ok {
 		_ = cw.CloseWrite()
+	}
+}
+
+// drainConn reads and discards any data the peer still has in flight, with a
+// short deadline, so the caller's subsequent Close becomes an orderly FIN
+// rather than an RST. An RST is sent when a socket with unread receive data is
+// closed, which would throw away a response the caller already wrote (the auth
+// gate's redirect, for instance). Draining a bounded amount covers the typical
+// "client sent a request then waits" case without letting a misbehaving peer
+// hold the goroutine.
+func drainConn(c net.Conn) {
+	_ = c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	buf := make([]byte, 1024)
+	for {
+		if _, err := c.Read(buf); err != nil {
+			return
+		}
 	}
 }
 

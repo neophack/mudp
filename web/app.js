@@ -17,10 +17,12 @@ import { renderUsers } from "./modules/users.js";
 import { renderUsage } from "./modules/usage.js";
 import { renderHelp } from "./modules/help.js";
 import { renderAudit } from "./modules/audit.js";
+import { renderSecurity } from "./modules/security.js";
 import { renderSettings } from "./modules/settings.js";
 import { renderNetdisk } from "./modules/netdisk.js";
 import { renderDisks } from "./modules/disks.js";
 import { renderForwards } from "./modules/forwards.js";
+import { renderDatabase } from "./modules/database.js";
 import { renderHardware, stopPolling as stopHardwarePolling } from "./modules/hardware.js";
 import { renderMCP } from "./modules/mcp.js";
 import { startAutoRefresh, refreshActiveTab } from "./modules/refresh.js";
@@ -65,6 +67,10 @@ export const state = {
   audit: [],
   netdisk: { path: "", items: [], quota: null },
   mcpTokens: [],
+  mcpAttacks: null,
+  mcpAttackStats: null,
+  mcpAttackSearch: {},
+  mcpMapPoints: null,
   disks: [],
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
   siteAdmin: { siteName: "", loaded: false },
@@ -321,7 +327,9 @@ const ICONS = {
   users: svgIcon('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/>'),
   usage: svgIcon('<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>'),
   audit: svgIcon('<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>'),
+  security: svgIcon('<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'),
   disks: svgIcon('<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>'),
+  database: svgIcon('<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>'),
   scripts: svgIcon('<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>'),
   logout: svgIcon('<path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>'),
   collapse: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'),
@@ -348,7 +356,9 @@ function label(tab) {
       usage: t("nav.usage"),
       help: t("nav.help"),
       audit: t("nav.activityLog"),
+      security: t("nav.security"),
       disks: t("nav.disks"),
+      database: t("nav.database"),
       scripts: t("nav.settings"),
       hardware: t("nav.hardware"),
       mcp: t("nav.mcp"),
@@ -371,7 +381,9 @@ function subtitle(tab) {
       usage: t("subtitle.usage"),
       help: t("subtitle.help"),
       audit: t("subtitle.audit"),
+      security: t("subtitle.security"),
       disks: t("subtitle.disks"),
+      database: t("subtitle.database"),
       scripts: t("subtitle.settings"),
       hardware: t("subtitle.hardware"),
       mcp: t("subtitle.mcp"),
@@ -382,7 +394,7 @@ function subtitle(tab) {
 export function render() {
   const admin = isAdmin();
   const tabs = admin
-    ? ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "forwards", "stacks", "hardware", "users", "audit", "disks", "scripts", "help"]
+    ? ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "forwards", "stacks", "hardware", "users", "audit", "security", "disks", "database", "scripts", "help"]
     : ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", "scripts", "help"];
 
   const collapsed = state.sidebarCollapsed;
@@ -511,7 +523,9 @@ export function renderView() {
   if (state.tab === "usage") return renderUsage();
   if (state.tab === "help") return renderHelp();
   if (state.tab === "audit") return renderAudit();
+  if (state.tab === "security") return renderSecurity();
   if (state.tab === "disks") return renderDisks();
+  if (state.tab === "database") return renderDatabase();
   if (state.tab === "forwards") return renderForwards();
   if (state.tab === "scripts") return renderSettings();
   if (state.tab === "hardware") return renderHardware();

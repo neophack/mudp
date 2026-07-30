@@ -174,6 +174,50 @@ func TestClientIPUsesForwardedForFromTrustedProxy(t *testing.T) {
 	}
 }
 
+// TestClientIPPrefersCDNHeaders checks that when the socket peer is a trusted
+// proxy (i.e. a real CDN is in front), the single-value client-IP header set by
+// that CDN wins over the X-Forwarded-For chain. Without this, a Cloudflare
+// deployment attributes every request to the same Cloudflare edge IP.
+func TestClientIPPrefersCDNHeaders(t *testing.T) {
+	tp, err := ParseTrustedProxies("10.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, header, value, xff, want string
+	}{
+		{"CF-Connecting-IP", "CF-Connecting-IP", "198.51.100.7", "9.9.9.9", "198.51.100.7"},
+		{"True-Client-IP", "True-Client-IP", "203.0.113.4", "9.9.9.9", "203.0.113.4"},
+		{"X-Real-IP", "X-Real-IP", "192.0.2.55", "9.9.9.9", "192.0.2.55"},
+		{"header with trailing list", "CF-Connecting-IP", "198.51.100.7, 10.0.0.2", "9.9.9.9", "198.51.100.7"},
+		{"garbage CDN header falls back to XFF", "CF-Connecting-IP", "not-an-ip", "203.0.113.4", "203.0.113.4"},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "10.0.0.1:9000"
+		req.Header.Set(c.header, c.value)
+		req.Header.Set("X-Forwarded-For", c.xff)
+		if got := tp.ClientIP(req); got != c.want {
+			t.Errorf("%s: ClientIP = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A direct (untrusted) client must not be able to spoof the CDN headers.
+func TestClientIPIgnoresCDNHeadersFromUntrustedPeer(t *testing.T) {
+	tp, err := ParseTrustedProxies("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:5555"
+	req.Header.Set("CF-Connecting-IP", "1.2.3.4")
+	req.Header.Set("X-Real-IP", "5.6.7.8")
+	if got := tp.ClientIP(req); got != "203.0.113.9" {
+		t.Errorf("ClientIP = %q, want the socket peer 203.0.113.9", got)
+	}
+}
+
 // Separate clients must get separate buckets, or one noisy source locks out
 // everyone behind the same proxy.
 func TestRateLimiterIsPerClient(t *testing.T) {

@@ -217,6 +217,22 @@ func (a *App) pruneOldData(ctx context.Context) {
 	if err := a.db.PruneResourceSamples(time.Now().Add(-30 * 24 * time.Hour)); err != nil {
 		// Best-effort.
 	}
+	// Access-log retention is admin-configurable; fall back to 90 days when unset.
+	retention := 90
+	if s := a.securitySettings(); s.RetentionDays > 0 {
+		retention = s.RetentionDays
+	}
+	if err := a.db.PruneAccessLogs(time.Now().Add(-time.Duration(retention) * 24 * time.Hour)); err != nil {
+		// Best-effort.
+	}
+	// MCP usage & attack logs are kept for one month: long enough to review what
+	// an agent did and who probed the external port, short enough to bound growth.
+	if err := a.db.PruneMCPUsageLogs(time.Now().Add(-30 * 24 * time.Hour)); err != nil {
+		// Best-effort.
+	}
+	if err := a.db.PruneMCPAttackLogs(time.Now().Add(-30 * 24 * time.Hour)); err != nil {
+		// Best-effort.
+	}
 }
 
 func (a *App) adminProcesses(w http.ResponseWriter, r *http.Request) {

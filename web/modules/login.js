@@ -15,6 +15,74 @@ export async function renderLogin() {
   } catch {}
 
   _renderLoginHTML(feishuOn);
+
+  // Record this page view for the security monitor. Only sent when the admin
+  // has enabled client collection, and fire-and-forget so a slow/blocked
+  // request never blocks the login form.
+  trackLoginView();
+}
+
+// trackLoginView reports the device hints the security monitor can't get from
+// the server side: the browser's local timezone, screen, CPU, memory, platform.
+// These describe the real device and so travel with the user even through a
+// VPN — they're the basis for the timezone-mismatch detection.
+function trackLoginView() {
+  let collect = false;
+  try {
+    // Respect the server-side setting; avoid sending anything if collection
+    // is off.
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", "/api/security/config", true);
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState !== 4) return;
+      try {
+        collect = JSON.parse(xhr.responseText).collectClient === true;
+      } catch {}
+      if (!collect) return;
+      const hints = collectDeviceHints();
+      // sendBeacon fires on page unload too; fall back to fetch if unavailable.
+      if (navigator.sendBeacon) {
+        const ok = navigator.sendBeacon(
+          "/api/login/track",
+          new Blob([JSON.stringify(hints)], { type: "application/json" })
+        );
+        if (ok) return;
+      }
+      api("/api/login/track", { method: "POST", body: JSON.stringify(hints) }).catch(() => {});
+    };
+    xhr.send();
+  } catch {}
+}
+
+// collectDeviceHints gathers the local signals a browser can read. Everything
+// here is non-sensitive device metadata — no cookies, no credentials.
+function collectDeviceHints() {
+  const hints = {};
+  try {
+    hints.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {}
+  try {
+    hints.language = navigator.language || "";
+  } catch {}
+  try {
+    hints.screen = `${window.screen.width}x${window.screen.height}`;
+  } catch {}
+  try {
+    hints.platform = navigator.platform || (navigator.userAgentData && navigator.userAgentData.platform) || "";
+  } catch {}
+  try {
+    hints.cpuCore = navigator.hardwareConcurrency || 0;
+  } catch {}
+  try {
+    hints.memoryGB = navigator.deviceMemory || 0;
+  } catch {}
+  try {
+    hints.touch = navigator.maxTouchPoints > 0 || "ontouchstart" in window;
+  } catch { hints.touch = false; }
+  try {
+    hints.dnt = navigator.doNotTrack === "1" || navigator.doNotTrack === "yes";
+  } catch { hints.dnt = false; }
+  return hints;
 }
 
 function _renderLoginHTML(feishuOn) {
@@ -69,6 +137,15 @@ function _renderLoginHTML(feishuOn) {
       state.csrfToken = login.csrfToken || "";
       if (state.me.pending) {
         renderPending();
+        return;
+      }
+      // A forward-auth redirect sends the browser here with ?next=<original URL>;
+      // once logged in, send it straight back to the forwarded port it came from.
+      // Only same-origin or absolute http(s) URLs are honoured, so the parameter
+      // cannot be abused as an open redirect to an arbitrary scheme.
+      const next = new URLSearchParams(location.search).get("next");
+      if (next && /^https?:\/\//.test(next)) {
+        window.location.href = next;
         return;
       }
       await refreshAll();
