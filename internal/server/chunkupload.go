@@ -1,16 +1,17 @@
 package server
 
 import (
-	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Resumable chunked uploads for large files (>= ~1GB). The protocol is
@@ -23,8 +24,10 @@ import (
 // This keeps everything on the filesystem (no DB table/migration) and lets an
 // interrupted upload resume across process restarts or browser refreshes: the
 // client calls init, learns which chunks the server already has, and only sends
-// the missing ones. Each chunk is MD5-verified on write; the assembled file is
-// MD5-verified again on complete.
+// the missing ones. Each chunk is CRC32-verified on write; the assembled file is
+// CRC32-verified again on complete. CRC32 (not MD5) because this is a
+// corruption check, not a security digest, and it's cheap enough that hashing
+// megabytes of chunks stays essentially free.
 
 const mudppartSuffix = ".mudppart" // state file + segment prefix
 
@@ -33,12 +36,32 @@ type chunkUploadState struct {
 	Size        int64        `json:"size"`        // total file size in bytes
 	ChunkSize   int64        `json:"chunkSize"`   // bytes per chunk (last may be smaller)
 	TotalChunks int          `json:"totalChunks"` // number of chunks
-	FileMD5     string       `json:"fileMD5"`     // expected whole-file md5 ("" if unknown)
+	FileCRC32   string       `json:"fileCRC32"`   // expected whole-file crc32 ("" if unknown)
 	Received    map[int]bool `json:"received"`    // index -> received
 	// RelPath is the user-relative destination (e.g. "docs/big.bin"). It is the
 	// source of truth for where segments and the final file live; the uploadId a
 	// client carries is just an opaque encoding of this path.
 	RelPath string `json:"relPath" ` //nolint:revive
+}
+
+// chunkStateLocks serializes the read-modify-write of one destination's resume
+// state across concurrent chunk uploads for that SAME file (the client
+// uploads chunks with concurrency > 1 by design). Without this, two goroutines
+// can each read the same Received map, mark a different index, and the second
+// write silently clobbers the first — the chunk's bytes are on disk, but the
+// record that it arrived is lost, which later surfaces as a bogus "missing
+// chunks" error on complete. Keyed by destination path; entries are never
+// evicted, but each is just a *sync.Mutex, so the steady-state memory cost is
+// negligible relative to the uploads themselves.
+var chunkStateLocks sync.Map // map[string]*sync.Mutex
+
+// lockChunkState acquires the per-destination lock, returning the unlock func
+// the caller must defer.
+func lockChunkState(dst string) func() {
+	v, _ := chunkStateLocks.LoadOrStore(dst, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // chunkStatePath returns the path of the resume state file for a destination.
@@ -84,6 +107,12 @@ func writeChunkState(dst string, st *chunkUploadState) error {
 	if err != nil {
 		return err
 	}
+	// handleChunkInit calls this before any segment has been written, so for a
+	// brand-new destination folder nothing has created it yet (writeChunkSegment
+	// and assembleChunks each MkdirAll their own target, but init runs first).
+	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
+		return err
+	}
 	statePath := chunkStatePath(dst)
 	tmp := statePath + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
@@ -125,10 +154,11 @@ func chunkByteRange(st *chunkUploadState, index int) (int64, int64) {
 }
 
 // writeChunkSegment writes one chunk's bytes to its segment file, hashing as it
-// goes. expectedMD5 ("") disables per-chunk verification. The segment is always
-// written from offset 0 (a chunk is an independent unit, not appended), so a
-// retransmit cleanly replaces a prior bad segment. Returns the computed MD5.
-func writeChunkSegment(dst string, index int, src io.Reader, expectedMD5 string) (string, error) {
+// goes. expectedCRC32 ("") disables per-chunk verification. The segment is
+// always written from offset 0 (a chunk is an independent unit, not appended),
+// so a retransmit cleanly replaces a prior bad segment. Returns the computed
+// CRC32.
+func writeChunkSegment(dst string, index int, src io.Reader, expectedCRC32 string) (string, error) {
 	segPath := chunkSegmentPath(dst, index)
 	if err := os.MkdirAll(filepath.Dir(segPath), 0o750); err != nil {
 		return "", err
@@ -137,7 +167,7 @@ func writeChunkSegment(dst string, index int, src io.Reader, expectedMD5 string)
 	if err != nil {
 		return "", err
 	}
-	hash := md5.New()
+	hash := crc32.NewIEEE()
 	_, copyErr := io.Copy(io.MultiWriter(f, hash), src)
 	_ = f.Close()
 	if copyErr != nil {
@@ -145,18 +175,18 @@ func writeChunkSegment(dst string, index int, src io.Reader, expectedMD5 string)
 		return "", copyErr
 	}
 	sum := hex.EncodeToString(hash.Sum(nil))
-	if expectedMD5 != "" && !equalFoldHex(sum, expectedMD5) {
+	if expectedCRC32 != "" && !equalFoldHex(sum, expectedCRC32) {
 		_ = os.Remove(segPath)
-		return sum, fmt.Errorf("%w: chunk %d expected %s got %s", ErrChecksumMismatch, index, expectedMD5, sum)
+		return sum, fmt.Errorf("%w: chunk %d expected %s got %s", ErrChecksumMismatch, index, expectedCRC32, sum)
 	}
 	return sum, nil
 }
 
 // assembleChunks concatenates all segment files into dst in order, hashing the
-// whole stream so the final file can be verified against expectedFileMD5. On any
-// error the partial destination is removed. All segments + the state file are
-// cleaned up on success.
-func assembleChunks(dst string, st *chunkUploadState, expectedFileMD5 string) (string, error) {
+// whole stream so the final file can be verified against expectedFileCRC32. On
+// any error the partial destination is removed. All segments + the state file
+// are cleaned up on success.
+func assembleChunks(dst string, st *chunkUploadState, expectedFileCRC32 string) (string, error) {
 	missing := missingChunks(st)
 	if len(missing) > 0 {
 		return "", fmt.Errorf("missing %d chunk(s): %v", len(missing), missing)
@@ -168,7 +198,7 @@ func assembleChunks(dst string, st *chunkUploadState, expectedFileMD5 string) (s
 	if err != nil {
 		return "", err
 	}
-	hash := md5.New()
+	hash := crc32.NewIEEE()
 	mw := io.MultiWriter(out, hash)
 	for i := 0; i < st.TotalChunks; i++ {
 		seg, err := os.Open(chunkSegmentPath(dst, i))
@@ -190,9 +220,9 @@ func assembleChunks(dst string, st *chunkUploadState, expectedFileMD5 string) (s
 		return "", err
 	}
 	sum := hex.EncodeToString(hash.Sum(nil))
-	if expectedFileMD5 != "" && !equalFoldHex(sum, expectedFileMD5) {
+	if expectedFileCRC32 != "" && !equalFoldHex(sum, expectedFileCRC32) {
 		_ = os.Remove(dst)
-		return sum, fmt.Errorf("%w: file expected %s got %s", ErrChecksumMismatch, expectedFileMD5, sum)
+		return sum, fmt.Errorf("%w: file expected %s got %s", ErrChecksumMismatch, expectedFileCRC32, sum)
 	}
 	// Success: remove all segments and the state file. The destination stays.
 	removeChunkArtifacts(dst, st)
@@ -242,7 +272,7 @@ type chunkInitReq struct {
 	Size        int64  `json:"size"`
 	ChunkSize   int64  `json:"chunkSize"`
 	TotalChunks int    `json:"totalChunks"`
-	FileMD5     string `json:"fileMD5"`
+	FileCRC32   string `json:"fileCRC32"`
 }
 
 // handleChunkInit creates or resumes an upload. `quotaCheck(add)` is invoked
@@ -287,7 +317,7 @@ func handleChunkInit(w http.ResponseWriter, dir, rawName string, req chunkInitRe
 			Size:        req.Size,
 			ChunkSize:   req.ChunkSize,
 			TotalChunks: req.TotalChunks,
-			FileMD5:     req.FileMD5,
+			FileCRC32:   req.FileCRC32,
 			Received:    map[int]bool{},
 		}
 	}
@@ -313,8 +343,11 @@ func handleChunkInit(w http.ResponseWriter, dir, rawName string, req chunkInitRe
 
 // handleChunk stores one verified chunk segment.
 func handleChunk(w http.ResponseWriter, r *http.Request, dir string) {
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<20) // chunks are small; cap generously
-	if err := r.ParseMultipartForm(16 << 20); err != nil {
+	// Cap comfortably above the client's chunk size (100 MiB) plus multipart
+	// field overhead, so a chunk POST is never rejected before it even reaches
+	// the checksum check below.
+	r.Body = http.MaxBytesReader(w, r.Body, 160<<20)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -353,7 +386,7 @@ func handleChunk(w http.ResponseWriter, r *http.Request, dir string) {
 	// Idempotent: a chunk already received is reported as done without rewriting
 	// it, so a client retry after a flaky network succeeds instead of 4xx'ing.
 	if st.Received[idx] {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "index": idx, "md5": "", "resumed": true})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "index": idx, "crc32": "", "resumed": true})
 		return
 	}
 	files := r.MultipartForm.File["chunk"]
@@ -372,19 +405,30 @@ func handleChunk(w http.ResponseWriter, r *http.Request, dir string) {
 		writeErr(w, http.StatusBadRequest, werr.Error())
 		return
 	}
+	// Re-read the state under the per-destination lock rather than reusing the
+	// `st` read above: another concurrent chunk request for this same file may
+	// have persisted its own Received update in the meantime, and writing back
+	// our stale copy would silently erase it (see chunkStateLocks doc comment).
+	unlock := lockChunkState(dst)
+	defer unlock()
+	st, err = readChunkState(dst)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "no in-progress upload; call init first")
+		return
+	}
 	st.Received[idx] = true
 	if err := writeChunkState(dst, st); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "index": idx, "md5": sum})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "index": idx, "crc32": sum})
 }
 
 // chunkCompleteReq is the JSON body of /chunk/complete.
 type chunkCompleteReq struct {
-	Name     string `json:"name"`
-	UploadID string `json:"uploadId"`
-	FileMD5  string `json:"fileMD5"`
+	Name      string `json:"name"`
+	UploadID  string `json:"uploadId"`
+	FileCRC32 string `json:"fileCRC32"`
 }
 
 // handleChunkComplete assembles the segments into the final file and verifies it.
@@ -396,7 +440,7 @@ func handleChunkComplete(w http.ResponseWriter, r *http.Request, dir string) {
 	}
 	name := strings.TrimSpace(req.Name)
 	uploadID := req.UploadID
-	fileMD5 := req.FileMD5
+	fileCRC32 := req.FileCRC32
 	if name == "" || uploadID == "" {
 		writeErr(w, http.StatusBadRequest, "name and uploadId are required")
 		return
@@ -424,12 +468,12 @@ func handleChunkComplete(w http.ResponseWriter, r *http.Request, dir string) {
 		})
 		return
 	}
-	sum, aerr := assembleChunks(dst, st, fileMD5)
+	sum, aerr := assembleChunks(dst, st, fileCRC32)
 	if aerr != nil {
 		writeErr(w, http.StatusBadRequest, aerr.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "md5": sum, "path": name})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "crc32": sum, "path": name})
 }
 
 // chunkAbortReq is the JSON body of /chunk/abort.

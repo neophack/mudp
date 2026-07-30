@@ -1,19 +1,19 @@
 // Large-file chunked + resumable upload coordinator.
 //
 // Files at or above the caller's threshold (1 GB by default) are uploaded as a
-// stream of MD5-verified 8 MB chunks instead of one giant multipart request, so:
+// stream of CRC32-verified 100 MB chunks instead of one giant multipart request, so:
 //   - a multi-GB file never builds one FormData blob in memory,
 //   - a dropped connection / browser refresh resumes from the last verified
 //     chunk instead of restarting from byte 0,
 //   - a corrupt chunk is detected and re-sent, never silently accepted.
 //
 // Protocol (server side in internal/server/chunkupload.go):
-//   POST .../chunk/init?path=&name=      { path,name,size,chunkSize,totalChunks,fileMD5 }
+//   POST .../chunk/init?path=&name=      { path,name,size,chunkSize,totalChunks,fileCRC32 }
 //       -> { uploadId, resume, received:[..], chunkSize, totalChunks }
 //   POST .../chunk?path=&name=           multipart: uploadId, name, index, hash, chunk
-//       -> { ok, index, md5 }
-//   POST .../chunk/complete?path=&name=  { uploadId, name, fileMD5 }
-//       -> { ok, md5, path }  | 409 { missing:[..] }
+//       -> { ok, index, crc32 }
+//   POST .../chunk/complete?path=&name=  { uploadId, name, fileCRC32 }
+//       -> { ok, crc32, path }  | 409 { missing:[..] }
 //   POST .../chunk/abort?path=&name=     { uploadId, name }   (cleanup)
 //
 // The `path=` / `name=` query parameters carry the in-folder destination
@@ -22,14 +22,14 @@
 // string rather than the body so the server can resolve the destination
 // directory the same way regardless of whether the body is JSON or multipart.
 //
-// uploadLargeFile returns a Promise<{ok, md5, path}> on success and rejects
+// uploadLargeFile returns a Promise<{ok, crc32, path}> on success and rejects
 // (with the last error) if it cannot make progress. It reports per-file byte
 // progress via onLoaded(bytesNowInFlightDeltasAreHandledByCaller) — actually it
 // calls onProgress({loaded, total}) as chunks land.
 
-import { hashChunkMD5 } from "./hashfile.js";
+import { hashChunkCRC32 } from "./hashfile.js";
 
-export const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB
+export const DEFAULT_CHUNK_SIZE = 100 * 1024 * 1024; // 100 MiB
 export const DEFAULT_CHUNK_CONCURRENCY = 3; // chunks in flight at once
 const CHUNK_MAX_RETRIES = 3;
 
@@ -87,7 +87,7 @@ export async function uploadLargeFile(file, relPath, opts) {
 
   // 1) init — learn uploadId and which chunks the server already has (resume).
   const init = await postJSON(`${base}/chunk/init${qs}`, {
-    path: dir, name: relPath, size, chunkSize, totalChunks, fileMD5: "",
+    path: dir, name: relPath, size, chunkSize, totalChunks, fileCRC32: "",
   }, csrfToken);
   const uploadId = init.uploadId;
   const received = new Set(Array.isArray(init.received) ? init.received : []);
@@ -95,7 +95,7 @@ export async function uploadLargeFile(file, relPath, opts) {
   for (const i of received) loaded += chunkBytes(i, totalChunks, chunkSize, size);
 
   // 2) upload every missing chunk, up to `concurrency` at a time. Each chunk is
-  //    MD5-hashed first; the server verifies and refuses a mismatch.
+  //    CRC32-hashed first; the server verifies and refuses a mismatch.
   const missing = [];
   for (let i = 0; i < totalChunks; i++) if (!received.has(i)) missing.push(i);
 
@@ -104,7 +104,7 @@ export async function uploadLargeFile(file, relPath, opts) {
     while (idx < missing.length) {
       const myIdx = missing[idx++];
       const [start, end] = chunkRange(myIdx, totalChunks, chunkSize, size);
-      const hash = await hashChunkMD5(file, start, end);
+      const hash = await hashChunkCRC32(file, start, end);
       await uploadOneChunkWithRetry(`${base}/chunk${qs}`, {
         uploadId, name: relPath, index: myIdx, hash, blob: file.slice(start, end),
       }, csrfToken);
@@ -117,15 +117,16 @@ export async function uploadLargeFile(file, relPath, opts) {
   for (let i = 0; i < Math.min(concurrency, missing.length); i++) pool.push(worker());
   await Promise.all(pool);
 
-  // 3) complete — assemble + whole-file MD5 verify on the server. If it reports
-  //    missing chunks (a late failure dropped one), re-send them and retry.
+  // 3) complete — assemble + whole-file CRC32 verify on the server. If it
+  //    reports missing chunks (a late failure dropped one), re-send them and
+  //    retry.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const done = await postJSON(`${base}/chunk/complete${qs}`, {
-        uploadId, name: relPath, fileMD5: "",
+        uploadId, name: relPath, fileCRC32: "",
       }, csrfToken);
-      // Treat as delivered only when the server confirms with an md5.
-      return { ok: !!done.ok, md5: done.md5 || "", path: done.path || relPath };
+      // Treat as delivered only when the server confirms with a crc32.
+      return { ok: !!done.ok, crc32: done.crc32 || "", path: done.path || relPath };
     } catch (err) {
       const missing2 = err?.data?.missing;
       if (err.status === 409 && Array.isArray(missing2) && missing2.length) {
@@ -171,7 +172,7 @@ async function uploadOneChunkWithRetry(url, chunk, csrfToken) {
 async function reuploadMissing(chunkUrl, file, relPath, uploadId, list, chunkSize, totalChunks, size, csrfToken, onProgress) {
   for (const i of list) {
     const [start, end] = chunkRange(i, totalChunks, chunkSize, size);
-    const hash = await hashChunkMD5(file, start, end);
+    const hash = await hashChunkCRC32(file, start, end);
     await uploadOneChunkWithRetry(chunkUrl, { uploadId, name: relPath, index: i, hash, blob: file.slice(start, end) }, csrfToken);
     onProgress?.({ loaded: 0, total: size });
   }

@@ -1,17 +1,21 @@
-// hashFileMD5 computes the MD5 of a File/Blob off the main thread using the
-// md5worker.js Web Worker, so hashing millions of files never freezes the UI.
+// hashFileCRC32 computes the CRC32 of a File/Blob off the main thread using the
+// crc32worker.js Web Worker, so hashing millions of files never freezes the UI.
 //
 // Returns a Promise resolving to the lowercase hex digest, or "" if hashing is
 // unavailable (Worker construction failed, or the browser blocks workers). The
 // upload pipeline treats "" as "no client hash": the file is still uploaded and
 // the server checksums/verifies it server-side, so correctness is preserved.
 //
+// CRC32 (not MD5) is used here on purpose: this digest only needs to catch
+// transmission corruption, not resist tampering, and CRC32's per-byte table
+// lookup is far cheaper than MD5's block rounds — see crc32worker.js.
+//
 // Concurrency is capped: at most MAX_WORKERS hashing jobs run at once. Beyond
 // that, requests queue (FIFO). This keeps memory flat — each Worker holds one
 // 4 MiB slice at a time, but unbounded parallelism would still allocate one
 // Worker + transferable per file.
 const MAX_WORKERS = 4;
-const workerUrl = new URL("./md5worker.js", import.meta.url).href;
+const workerUrl = new URL("./crc32worker.js", import.meta.url).href;
 
 let worker = null;
 let nextId = 1;
@@ -23,7 +27,7 @@ function ensureWorker() {
   if (worker) return worker;
   try {
     // A module worker would let us import, but classic workers are more broadly
-    // supported and md5worker.js is self-contained.
+    // supported and crc32worker.js is self-contained.
     worker = new Worker(workerUrl);
     worker.onmessage = (e) => {
       const { id, type } = e.data || {};
@@ -33,7 +37,7 @@ function ensureWorker() {
         slot.onProgress?.(e.data.loaded, e.data.total);
       } else if (type === "done") {
         pending.delete(id);
-        slot.resolve(e.data.md5 || "");
+        slot.resolve(e.data.crc32 || "");
         active--;
         drain();
       }
@@ -68,37 +72,37 @@ function drain() {
     // Post WITHOUT a transfer list: a File is cheap to structured-clone (its
     // bytes are only materialized when the worker reads them), and transferring
     // would neuter the original File the caller still needs for FormData upload.
-    // An optional {start,end} byte range hashes just that slice (per-chunk MD5
+    // An optional {start,end} byte range hashes just that slice (per-chunk CRC32
     // for large-file uploads).
     w.postMessage({ id, file: job.file, start: job.start, end: job.end });
   }
 }
 
-// hashFileMD5(file, onProgress) -> Promise<string>
+// hashFileCRC32(file, onProgress) -> Promise<string>
 // `file` is NOT transferred (see drain): the original stays valid for the
 // FormData upload that follows. Hashes the whole file off the main thread.
-export function hashFileMD5(file, onProgress) {
-  // Fast skip for empty files: MD5("") is the well-known constant, and hashing
+export function hashFileCRC32(file, onProgress) {
+  // Fast skip for empty files: CRC32("") is the well-known constant, and hashing
   // a 0-byte file through the worker is pointless overhead.
-  if (!file || file.size === 0) return Promise.resolve(file ? EMPTY_MD5 : "");
+  if (!file || file.size === 0) return Promise.resolve(file ? EMPTY_CRC32 : "");
   return new Promise((resolve, reject) => {
     queue.push({ file, onProgress, resolve, reject });
     drain();
   });
 }
 
-// hashChunkMD5(file, start, end, onProgress) -> Promise<string>
+// hashChunkCRC32(file, start, end, onProgress) -> Promise<string>
 // Hashes the byte range [start,end) of `file`, for per-chunk verification of a
-// large-file upload. Shares the same capped worker pool as hashFileMD5.
-export function hashChunkMD5(file, start, end, onProgress) {
+// large-file upload. Shares the same capped worker pool as hashFileCRC32.
+export function hashChunkCRC32(file, start, end, onProgress) {
   if (!file) return Promise.resolve("");
   const lo = Math.max(0, start || 0);
   const hi = Math.min(file.size, end != null ? end : file.size);
-  if (lo >= hi) return Promise.resolve(EMPTY_MD5);
+  if (lo >= hi) return Promise.resolve(EMPTY_CRC32);
   return new Promise((resolve, reject) => {
     queue.push({ file, start: lo, end: hi, onProgress, resolve, reject });
     drain();
   });
 }
 
-const EMPTY_MD5 = "d41d8cd98f00b204e9800998ecf8427e";
+const EMPTY_CRC32 = "00000000";

@@ -2,7 +2,7 @@ import { state, api, toast, escapeHtml, fmtBytes, isAdmin, canMutate, displayNam
 import { showModalNoShell, closeModal, onModalClose } from "./ui.js";
 import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
 import { makeFileIterator, prependIterator, makeDropIterator } from "../lib/uploadStream.js";
-import { hashFileMD5 } from "../lib/hashfile.js";
+import { hashFileCRC32 } from "../lib/hashfile.js";
 import { uploadLargeFile } from "../lib/chunkupload.js";
 import { openYuvViewer } from "../lib/yuv.js";
 
@@ -885,15 +885,15 @@ let uploading = false;
 // well under the 2 GiB ParseMultipartForm cap (and any reverse proxy body
 // limit); it can make a batch smaller than the file cap, never larger.
 const UPLOAD_BATCH_BYTES = 256 << 20; // 256 MiB
-const UPLOAD_BATCH_FILES = 5;
+const UPLOAD_BATCH_FILES = 20;
 // How many batches run concurrently. Folder upload used to be strictly serial
 // (one batch, await, next batch) which was slow on big folders. UPLOAD_CONCURRENCY
-// batches (~15 files) are now in flight at once; the pool pulls the next batch
+// batches (~60 files) are now in flight at once; the pool pulls the next batch
 // from the stream as soon as a slot frees.
 const UPLOAD_CONCURRENCY = 3;
 // Files at or above this size use the chunked/resumable protocol instead of one
 // multipart request, so a multi-GB file resumes after a drop and is verified in
-// 8 MB pieces rather than as a single giant blob.
+// 100 MB pieces rather than as a single giant blob.
 const CHUNK_THRESHOLD = 1 << 30; // 1 GiB
 
 // walkEntry recursively reads a FileSystemEntry, calling push(entry) for every
@@ -982,7 +982,7 @@ async function uploadFilesHandler(source, path) {
 
   const nextEntry = () => Promise.resolve(iter.next()).then((r) => (r.done ? null : r.value));
 
-  // failedFiles collects entries the server rejected (write error or MD5
+  // failedFiles collects entries the server rejected (write error or CRC32
   // mismatch) so they can be retried. It is appended to while batches resolve,
   // so it must not be re-traversed concurrently — only after the run completes.
   const failedFiles = [];
@@ -1044,8 +1044,8 @@ async function uploadFilesHandler(source, path) {
           });
         },
       });
-      // The server verified + assembled the file; settle as done. (res.md5 is the
-      // whole-file digest computed during assembly.)
+      // The server verified + assembled the file; settle as done. (res.crc32 is
+      // the whole-file digest computed during assembly.)
       void res;
       overlay.settleActive(slot, "done");
       ok++;
@@ -1066,10 +1066,10 @@ async function uploadFilesHandler(source, path) {
   // sendSmallBatch is the original multipart path, factored out so sendBatch can
   // route large files to the chunked protocol instead.
   async function sendSmallBatch(cur, slots, curBytes) {
-      // Compute each file's MD5 up front (off-main-thread, capped at a few
+      // Compute each file's CRC32 up front (off-main-thread, capped at a few
       // workers) so the server can verify integrity. Files that can't be hashed
       // yield "" and are still uploaded — the server checksums them.
-      const hashes = await Promise.all(cur.map((e) => hashFileMD5(e.file)));
+      const hashes = await Promise.all(cur.map((e) => hashFileCRC32(e.file)));
 
       const fd = new FormData();
       fd.append("path", path);
@@ -1119,23 +1119,23 @@ async function uploadFilesHandler(source, path) {
         }
         return;
       }
-      // The server returns per-file results: each has {path, md5, error?}. A file
-      // is considered delivered only when it has no error AND (the client hash was
-      // empty OR it matches the server md5). Anything else is a corrupt/failed
-      // upload the user can retry.
+      // The server returns per-file results: each has {path, crc32, error?}. A
+      // file is considered delivered only when it has no error AND (the client
+      // hash was empty OR it matches the server crc32). Anything else is a
+      // corrupt/failed upload the user can retry.
       const results = Array.isArray(resp?.results) ? resp.results : [];
       for (let i = 0; i < cur.length; i++) {
         const r = results[i] || {};
-        const serverMd5 = (r.md5 || "").toLowerCase();
-        const clientMd5 = (hashes[i] || "").toLowerCase();
-        const okFile = !r.error && (!clientMd5 || clientMd5 === serverMd5);
+        const serverCrc32 = (r.crc32 || "").toLowerCase();
+        const clientCrc32 = (hashes[i] || "").toLowerCase();
+        const okFile = !r.error && (!clientCrc32 || clientCrc32 === serverCrc32);
         if (okFile) {
           overlay.settleActive(slots[i], "done");
           ok++;
         } else {
           failedFiles.push(cur[i]);
           failed++;
-          const why = r.error || (clientMd5 ? t("netdisk.md5Mismatch") : "Failed");
+          const why = r.error || (clientCrc32 ? t("netdisk.crc32Mismatch") : "Failed");
           armRetry(slots[i], cur[i], why);
         }
       }
@@ -1144,7 +1144,7 @@ async function uploadFilesHandler(source, path) {
 
   // armRetry marks a failed row with a Retry button that re-queues just that
   // file. It reuses the SAME overlay row (flipping it back to uploading) and
-  // re-runs the single file through sendBatch so MD5 verification + result
+  // re-runs the single file through sendBatch so CRC32 verification + result
   // checking apply identically to the original upload.
   function armRetry(slot, entry, msg) {
     overlay.markFailedWithRetry(slot, msg, async () => {
@@ -1219,9 +1219,8 @@ async function uploadFilesHandler(source, path) {
   setCurrentSelection(state.netdisk.selected || new Set());
   renderNetdisk();
   refreshOverall();
-  // Keep the card open longer (and indefinitely-ish) when there are failures, so
-  // the user can click Retry. A clean run dismisses quickly.
-  setTimeout(() => overlay.close(), failed ? 30000 : 1500);
+  // The card stays open until the user closes it (via the × button): an
+  // auto-dismiss can hide a failure before the user gets to click Retry.
   uploading = false;
 }
 

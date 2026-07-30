@@ -79,7 +79,7 @@ describe("showUploadOverlay bounded window", () => {
     const overlay = showUploadOverlay();
     const slot = overlay.addActive({ name: "broken.pdf", size: 5 });
     let retried = 0;
-    overlay.markFailedWithRetry(slot, "md5 mismatch", () => { retried++; });
+    overlay.markFailedWithRetry(slot, "crc32 mismatch", () => { retried++; });
     const row = document.querySelector(".upload-file-row");
     expect(row.classList.contains("is-error")).toBe(true);
     const btn = row.querySelector(".upload-file-retry");

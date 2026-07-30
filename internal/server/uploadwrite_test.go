@@ -2,9 +2,9 @@ package server
 
 import (
 	"bytes"
-	"crypto/md5"
 	"encoding/hex"
 	"errors"
+	"hash/crc32"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -14,7 +14,7 @@ import (
 
 // makeFileHeader builds a real *multipart.FileHeader for `content` named `name`,
 // using the same parser the upload handlers run. This exercises the seekable
-// multipart.File that writeFileWithMD5 relies on for resume.
+// multipart.File that writeFileWithCRC32 relies on for resume.
 func makeFileHeader(t *testing.T, name string, content []byte) *multipart.FileHeader {
 	t.Helper()
 	body := &bytes.Buffer{}
@@ -44,10 +44,17 @@ func makeFileHeader(t *testing.T, name string, content []byte) *multipart.FileHe
 	return files[0]
 }
 
-func TestWriteFileWithMD5_CorrectContent(t *testing.T) {
+// crc32Hex returns the lowercase hex CRC32 (IEEE) of content, matching what
+// writeFileWithCRC32 computes.
+func crc32Hex(content []byte) string {
+	sum := crc32.ChecksumIEEE(content)
+	b := []byte{byte(sum >> 24), byte(sum >> 16), byte(sum >> 8), byte(sum)}
+	return hex.EncodeToString(b)
+}
+
+func TestWriteFileWithCRC32_CorrectContent(t *testing.T) {
 	content := []byte("the quick brown fox jumps over the lazy dog")
-	want := md5.Sum(content)
-	wantHex := hex.EncodeToString(want[:])
+	wantHex := crc32Hex(content)
 
 	fh := makeFileHeader(t, "fox.txt", content)
 	src, err := fh.Open()
@@ -57,12 +64,12 @@ func TestWriteFileWithMD5_CorrectContent(t *testing.T) {
 	defer src.Close()
 
 	dst := filepath.Join(t.TempDir(), "fox.txt")
-	got, err := writeFileWithMD5(dst, src, fh, wantHex)
+	got, err := writeFileWithCRC32(dst, src, fh, wantHex)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if got != wantHex {
-		t.Fatalf("returned md5 = %s, want %s", got, wantHex)
+		t.Fatalf("returned crc32 = %s, want %s", got, wantHex)
 	}
 	// The file on disk must match the digest the server computed.
 	written, err := os.ReadFile(dst)
@@ -74,7 +81,7 @@ func TestWriteFileWithMD5_CorrectContent(t *testing.T) {
 	}
 }
 
-func TestWriteFileWithMD5_MismatchRemovesFile(t *testing.T) {
+func TestWriteFileWithCRC32_MismatchRemovesFile(t *testing.T) {
 	content := []byte("good content")
 	fh := makeFileHeader(t, "bad.txt", content)
 	src, err := fh.Open()
@@ -86,21 +93,20 @@ func TestWriteFileWithMD5_MismatchRemovesFile(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "bad.txt")
 	// A deliberately wrong expected hash must be rejected, and the partially/
 	// fully-written file must be removed so a later resume can't trust it.
-	got, err := writeFileWithMD5(dst, src, fh, "00000000000000000000000000000000")
+	got, err := writeFileWithCRC32(dst, src, fh, "00000000")
 	if err == nil || !errors.Is(err, ErrChecksumMismatch) {
-		t.Fatalf("expected ErrChecksumMismatch, got err=%v md5=%s", err, got)
+		t.Fatalf("expected ErrChecksumMismatch, got err=%v crc32=%s", err, got)
 	}
 	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
 		t.Fatalf("corrupt file should be removed, stat err=%v", statErr)
 	}
 }
 
-func TestWriteFileWithMD5_EmptyExpectedStillWrites(t *testing.T) {
+func TestWriteFileWithCRC32_EmptyExpectedStillWrites(t *testing.T) {
 	// Legacy clients / Worker-unavailable browsers send no hash: the file must
-	// still be written and its real MD5 returned (server-side verification path).
+	// still be written and its real CRC32 returned (server-side verification path).
 	content := []byte("no client hash")
-	want := md5.Sum(content)
-	wantHex := hex.EncodeToString(want[:])
+	wantHex := crc32Hex(content)
 
 	fh := makeFileHeader(t, "plain.bin", content)
 	src, err := fh.Open()
@@ -110,32 +116,31 @@ func TestWriteFileWithMD5_EmptyExpectedStillWrites(t *testing.T) {
 	defer src.Close()
 
 	dst := filepath.Join(t.TempDir(), "plain.bin")
-	got, err := writeFileWithMD5(dst, src, fh, "")
+	got, err := writeFileWithCRC32(dst, src, fh, "")
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if got != wantHex {
-		t.Fatalf("returned md5 = %s, want %s", got, wantHex)
+		t.Fatalf("returned crc32 = %s, want %s", got, wantHex)
 	}
 }
 
-// TestWriteFileWithMD5_OverwritesSmallerExistingFile is a regression test for a
+// TestWriteFileWithCRC32_OverwritesSmallerExistingFile is a regression test for a
 // legacy "resume" optimization that seeked into a pre-existing same-named file
 // and appended only the newly-read bytes past its length. A browser always
 // resends a multipart part in full from byte 0 (it cannot resume a plain file
 // upload mid-stream), so that offset was never real resumption — it just
 // spliced the new upload onto whatever unrelated bytes happened to already be
 // on disk (e.g. an older, smaller file with the same name), silently
-// corrupting the result. writeFileWithMD5 must always start from byte 0.
-func TestWriteFileWithMD5_OverwritesSmallerExistingFile(t *testing.T) {
+// corrupting the result. writeFileWithCRC32 must always start from byte 0.
+func TestWriteFileWithCRC32_OverwritesSmallerExistingFile(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "same-name.bin")
 	if err := os.WriteFile(dst, []byte("OLD-UNRELATED-CONTENT"), 0o640); err != nil {
 		t.Fatalf("seed existing file: %v", err)
 	}
 
 	content := []byte("brand new content")
-	want := md5.Sum(content)
-	wantHex := hex.EncodeToString(want[:])
+	wantHex := crc32Hex(content)
 	fh := makeFileHeader(t, "same-name.bin", content)
 	src, err := fh.Open()
 	if err != nil {
@@ -143,12 +148,12 @@ func TestWriteFileWithMD5_OverwritesSmallerExistingFile(t *testing.T) {
 	}
 	defer src.Close()
 
-	got, err := writeFileWithMD5(dst, src, fh, wantHex)
+	got, err := writeFileWithCRC32(dst, src, fh, wantHex)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if got != wantHex {
-		t.Fatalf("returned md5 = %s, want %s", got, wantHex)
+		t.Fatalf("returned crc32 = %s, want %s", got, wantHex)
 	}
 	written, err := os.ReadFile(dst)
 	if err != nil {
@@ -161,9 +166,9 @@ func TestWriteFileWithMD5_OverwritesSmallerExistingFile(t *testing.T) {
 
 func TestCountFailedResults(t *testing.T) {
 	rs := []uploadResult{
-		{Path: "a", MD5: "00"},
+		{Path: "a", CRC32: "00"},
 		{Path: "b", Error: "boom"},
-		{Path: "c", MD5: "11"},
+		{Path: "c", CRC32: "11"},
 		{Path: "d", Error: "disk full"},
 	}
 	if n := countFailedResults(rs); n != 2 {

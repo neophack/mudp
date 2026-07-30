@@ -2,16 +2,20 @@ package server
 
 import (
 	"bytes"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// crc32Hex (shared with uploadwrite_test.go) returns the lowercase hex CRC32
+// (IEEE) of data, matching what writeChunkSegment/assembleChunks compute.
 
 // stateFor builds a fresh resume state file under dst with all chunks marked
 // received (so complete can assemble), unless skip is set.
@@ -28,7 +32,7 @@ func writeFullState(t *testing.T, dst string, size, chunkSize int64, total int) 
 	}
 }
 
-// segmentsFor writes N segments of `data` split into total chunks, each MD5'd.
+// segmentsFor writes N segments of `data` split into total chunks, each CRC32'd.
 func writeSegments(t *testing.T, dst string, data []byte, chunkSize int64, total int) {
 	t.Helper()
 	for i := 0; i < total; i++ {
@@ -38,8 +42,7 @@ func writeSegments(t *testing.T, dst string, data []byte, chunkSize int64, total
 			end = int64(len(data))
 		}
 		seg := data[start:end]
-		want := md5.Sum(seg)
-		if _, err := writeChunkSegment(dst, i, strings.NewReader(string(seg)), hex.EncodeToString(want[:])); err != nil {
+		if _, err := writeChunkSegment(dst, i, strings.NewReader(string(seg)), crc32Hex(seg)); err != nil {
 			t.Fatalf("writeChunkSegment %d: %v", i, err)
 		}
 	}
@@ -48,8 +51,7 @@ func writeSegments(t *testing.T, dst string, data []byte, chunkSize int64, total
 func TestChunkSegment_WritesAndVerifies(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "big.bin")
 	data := []byte("0123456789ABCDEF") // 16 bytes
-	want := md5.Sum(data)
-	if _, err := writeChunkSegment(dst, 0, strings.NewReader(string(data)), hex.EncodeToString(want[:])); err != nil {
+	if _, err := writeChunkSegment(dst, 0, strings.NewReader(string(data)), crc32Hex(data)); err != nil {
 		t.Fatalf("writeChunkSegment: %v", err)
 	}
 	got, err := os.ReadFile(chunkSegmentPath(dst, 0))
@@ -64,7 +66,7 @@ func TestChunkSegment_WritesAndVerifies(t *testing.T) {
 func TestChunkSegment_MismatchRemovesSegment(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "bad.bin")
 	data := []byte("corrupt me")
-	if _, err := writeChunkSegment(dst, 0, strings.NewReader(string(data)), "00000000000000000000000000000000"); err == nil {
+	if _, err := writeChunkSegment(dst, 0, strings.NewReader(string(data)), "00000000"); err == nil {
 		t.Fatal("expected checksum error, got nil")
 	}
 	if _, err := os.Stat(chunkSegmentPath(dst, 0)); !os.IsNotExist(err) {
@@ -93,13 +95,13 @@ func TestAssembleChunks_VerifiesAndCleans(t *testing.T) {
 		t.Fatalf("writeChunkState: %v", err)
 	}
 
-	want := md5.Sum(data)
-	sum, err := assembleChunks(dst, st, hex.EncodeToString(want[:]))
+	want := crc32Hex(data)
+	sum, err := assembleChunks(dst, st, want)
 	if err != nil {
 		t.Fatalf("assembleChunks: %v", err)
 	}
-	if sum != hex.EncodeToString(want[:]) {
-		t.Fatalf("assembled md5 = %s, want %s", sum, hex.EncodeToString(want[:]))
+	if sum != want {
+		t.Fatalf("assembled crc32 = %s, want %s", sum, want)
 	}
 	got, err := os.ReadFile(dst)
 	if err != nil {
@@ -134,7 +136,7 @@ func TestAssembleChunks_MissingChunkReported(t *testing.T) {
 	}
 }
 
-func TestAssembleChunks_BadFileMD5Removed(t *testing.T) {
+func TestAssembleChunks_BadFileCRC32Removed(t *testing.T) {
 	data := []byte("AAAABBBBCCCC")
 	dst := filepath.Join(t.TempDir(), "verify.bin")
 	writeFullState(t, dst, int64(len(data)), 8, 2)
@@ -144,8 +146,8 @@ func TestAssembleChunks_BadFileMD5Removed(t *testing.T) {
 		st.Received[i] = true
 	}
 	_ = writeChunkState(dst, st)
-	// Wrong whole-file MD5: assembly must refuse and remove the destination.
-	_, err := assembleChunks(dst, st, "00000000000000000000000000000000")
+	// Wrong whole-file CRC32: assembly must refuse and remove the destination.
+	_, err := assembleChunks(dst, st, "00000000")
 	if err == nil {
 		t.Fatal("expected checksum mismatch error")
 	}
@@ -186,7 +188,7 @@ func TestChunkByteRange_LastChunkShort(t *testing.T) {
 }
 
 // TestHandleChunkComplete_ReadsJSONBody is a regression test: the client posts
-// {name,uploadId,fileMD5} as a JSON body (Content-Type: application/json), not
+// {name,uploadId,fileCRC32} as a JSON body (Content-Type: application/json), not
 // a form-urlencoded or multipart body. r.FormValue never parses a JSON body, so
 // reading these fields that way (the original implementation) left name and
 // uploadId permanently empty and every completion 400'd with "name and
@@ -211,11 +213,10 @@ func TestHandleChunkComplete_ReadsJSONBody(t *testing.T) {
 		t.Fatalf("writeChunkState: %v", err)
 	}
 
-	want := md5.Sum(data)
 	body, _ := json.Marshal(map[string]string{
-		"name":     "big.bin",
-		"uploadId": encodeUploadID(dir, "big.bin"),
-		"fileMD5":  hex.EncodeToString(want[:]),
+		"name":      "big.bin",
+		"uploadId":  encodeUploadID(dir, "big.bin"),
+		"fileCRC32": crc32Hex(data),
 	})
 	req := httptest.NewRequest(http.MethodPost, "/chunk/complete", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -271,6 +272,109 @@ func TestHandleChunkAbort_ReadsJSONBody(t *testing.T) {
 	}
 	if _, err := os.Stat(chunkSegmentPath(dst, 0)); !os.IsNotExist(err) {
 		t.Fatalf("segment should be removed after abort, stat=%v", err)
+	}
+}
+
+// TestHandleChunk_ConcurrentUploadsDontLoseUpdates is a regression test for a
+// race in the resume-state read-modify-write: the client uploads chunks with
+// concurrency > 1 by design, so multiple /chunk requests for the SAME file
+// land concurrently. Each used to read the shared Received map, flip its own
+// index, and write the whole map back — so two overlapping requests could
+// each start from the same stale snapshot and the second write would silently
+// erase the first's update, even though that chunk's bytes were already safely
+// on disk. That surfaced later as a bogus "missing chunks" error on complete.
+func TestHandleChunk_ConcurrentUploadsDontLoseUpdates(t *testing.T) {
+	dir := t.TempDir()
+	name := "concurrent.bin"
+	dst := filepath.Join(dir, name)
+	const chunkSize = 8
+	const total = 20
+	size := int64(chunkSize * total)
+	writeFullState(t, dst, size, chunkSize, total)
+	uploadID := encodeUploadID(dir, name)
+
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(i)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < total; i++ {
+		start := i * chunkSize
+		end := start + chunkSize
+		seg := data[start:end]
+
+		body := &bytes.Buffer{}
+		mw := multipart.NewWriter(body)
+		_ = mw.WriteField("name", name)
+		_ = mw.WriteField("uploadId", uploadID)
+		_ = mw.WriteField("index", strconv.Itoa(i))
+		_ = mw.WriteField("hash", crc32Hex(seg))
+		fw, err := mw.CreateFormFile("chunk", name)
+		if err != nil {
+			t.Fatalf("create form file: %v", err)
+		}
+		if _, err := fw.Write(seg); err != nil {
+			t.Fatalf("write chunk: %v", err)
+		}
+		if err := mw.Close(); err != nil {
+			t.Fatalf("close writer: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/chunk", body)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+
+		wg.Add(1)
+		go func(i int, req *http.Request) {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			handleChunk(w, req, dir)
+			if w.Code != http.StatusOK {
+				t.Errorf("chunk %d: status = %d, body = %s", i, w.Code, w.Body.String())
+			}
+		}(i, req)
+	}
+	wg.Wait()
+
+	st, err := readChunkState(dst)
+	if err != nil {
+		t.Fatalf("readChunkState: %v", err)
+	}
+	if missing := missingChunks(st); len(missing) != 0 {
+		t.Fatalf("lost updates: chunks missing after concurrent upload: %v", missing)
+	}
+}
+
+// TestHandleChunkInit_CreatesNewSubfolder is a regression test: uploading a
+// large file as the first thing into a brand-new subfolder must succeed.
+// writeChunkState persists the resume record next to the destination BEFORE
+// any chunk segment has been written, so unlike writeChunkSegment/assembleChunks
+// (which each MkdirAll their own target) it used to assume the parent directory
+// already existed — failing with "the system cannot find the path specified"
+// the moment a chunked upload was the first file ever placed in a new folder.
+func TestHandleChunkInit_CreatesNewSubfolder(t *testing.T) {
+	dir := t.TempDir()
+	name := "brand-new-subfolder/big.bin"
+
+	body, _ := json.Marshal(map[string]any{
+		"path": "", "name": name, "size": 24, "chunkSize": 8, "totalChunks": 3,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/chunk/init", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	var initReq chunkInitReq
+	if err := json.Unmarshal(body, &initReq); err != nil {
+		t.Fatalf("decode init req: %v", err)
+	}
+	handleChunkInit(w, dir, name, initReq, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	dst := filepath.Join(dir, filepath.FromSlash(name))
+	if _, err := os.Stat(chunkStatePath(dst)); err != nil {
+		t.Fatalf("state file should exist in the newly-created subfolder: %v", err)
 	}
 }
 

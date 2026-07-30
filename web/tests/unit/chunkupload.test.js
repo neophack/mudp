@@ -39,10 +39,10 @@ describe("uploadLargeFile", () => {
         };
       }
       if (path.endsWith("/chunk/complete")) {
-        return { ok: true, json: async () => ({ ok: true, md5: "deadbeef", path: "big.bin" }) };
+        return { ok: true, json: async () => ({ ok: true, crc32: "deadbeef", path: "big.bin" }) };
       }
       if (path.endsWith("/chunk")) {
-        return { ok: true, json: async () => ({ ok: true, index: 0, md5: "" }) };
+        return { ok: true, json: async () => ({ ok: true, index: 0, crc32: "" }) };
       }
       return { ok: false, json: async () => ({ error: `unexpected path ${path}` }) };
     });
@@ -97,10 +97,10 @@ describe("uploadLargeFile", () => {
         };
       }
       if (path.endsWith("/chunk/complete")) {
-        return { ok: true, json: async () => ({ ok: true, md5: "x", path: "big.bin" }) };
+        return { ok: true, json: async () => ({ ok: true, crc32: "x", path: "big.bin" }) };
       }
       if (path.endsWith("/chunk")) {
-        return { ok: true, json: async () => ({ ok: true, index: 1, md5: "" }) };
+        return { ok: true, json: async () => ({ ok: true, index: 1, crc32: "" }) };
       }
       return { ok: false, json: async () => ({}) };
     });

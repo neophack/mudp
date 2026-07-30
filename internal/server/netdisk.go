@@ -459,7 +459,7 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 	// multipart parser enforces it by reducing Filename to its base name, which
 	// would flatten "docs/a/b.txt" into "b.txt".
 	relPaths := r.MultipartForm.Value["paths"]
-	// Per-file MD5 digests the client computed (parallel to "paths"/"files").
+	// Per-file CRC32 digests the client computed (parallel to "paths"/"files").
 	// Empty/absent for legacy clients: files are still written + checksummed.
 	hashes := r.MultipartForm.Value["hashes"]
 	var results []uploadResult
@@ -512,19 +512,19 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), Error: err.Error()})
 			continue
 		}
-		// Client-supplied per-file MD5 (parallel to "paths", one per file). Empty
+		// Client-supplied per-file CRC32 (parallel to "paths", one per file). Empty
 		// for legacy clients / browsers without a hashing Worker: the file is
 		// still written and checksummed, just not compared.
 		expected := ""
 		if i < len(hashes) {
 			expected = hashes[i]
 		}
-		sum, werr := writeFileWithMD5(dstPath, src, fh, expected)
+		sum, werr := writeFileWithCRC32(dstPath, src, fh, expected)
 		_ = src.Close()
 		if werr != nil {
-			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), MD5: sum, Error: werr.Error()})
+			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), CRC32: sum, Error: werr.Error()})
 		} else {
-			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), MD5: sum})
+			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), CRC32: sum})
 		}
 	}
 	// ok reflects only fully-saved files so the client can tell a partial failure
@@ -554,7 +554,7 @@ func countFailedResults(results []uploadResult) int {
 }
 
 // ---- Large-file chunked/resumable upload (netdisk) --------------------------
-// Files >= the client's threshold are uploaded in MD5-verified chunks so a
+// Files >= the client's threshold are uploaded in CRC32-verified chunks so a
 // multi-GB transfer can resume after a drop/refresh instead of restarting. The
 // shared protocol logic lives in chunkupload.go; these handlers only resolve the
 // netdisk root + path and (for init) enforce quota.

@@ -7,11 +7,11 @@
 import { api, toast, canMutate, state, readCSRFCookie, t } from "../app.js";
 import { showModalNoShell } from "./ui.js";
 import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
-import { hashFileMD5 } from "../lib/hashfile.js";
+import { hashFileCRC32 } from "../lib/hashfile.js";
 import { uploadLargeFile } from "../lib/chunkupload.js";
 
-// Files at or above this size use the chunked/resumable protocol (per-chunk MD5,
-// resume after a drop) instead of one multipart request.
+// Files at or above this size use the chunked/resumable protocol (per-chunk
+// CRC32, resume after a drop) instead of one multipart request.
 const CHUNK_THRESHOLD = 1 << 30; // 1 GiB
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -236,7 +236,7 @@ async function doUpload(fileList) {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       overlay.setLabel(`${i + 1}/${files.length}: ${file.name}`);
-      // Large files go through the chunked/resumable protocol: per-chunk MD5,
+      // Large files go through the chunked/resumable protocol: per-chunk CRC32,
       // resume after a drop, never one giant request.
       if ((file.size || 0) >= CHUNK_THRESHOLD) {
         const slot = overlay.addActive({ name: file.name, size: file.size });
@@ -278,15 +278,15 @@ async function doUpload(fileList) {
         }
         continue;
       }
-      // Compute the file's MD5 so the server can verify integrity. Unhashable
+      // Compute the file's CRC32 so the server can verify integrity. Unhashable
       // files yield "" and are still uploaded (server checksums them).
-      const clientMd5 = (await hashFileMD5(file)) || "";
+      const clientCrc32 = (await hashFileCRC32(file)) || "";
       const slot = overlay.addActive({ name: file.name, size: file.size });
       const sendOne = async () => {
         const fd = new FormData();
         fd.append("name", session.fullName);
         fd.append("path", session.path || "");
-        fd.append("hashes", clientMd5);
+        fd.append("hashes", clientCrc32);
         fd.append("files", file, file.name);
         let resp;
         try {
@@ -322,16 +322,16 @@ async function doUpload(fileList) {
           return;
         }
         // Verify per-file result: delivered only if no error and (no client hash
-        // or it matches the server md5).
+        // or it matches the server crc32).
         const r = (resp?.results?.[0]) || {};
-        const serverMd5 = (r.md5 || "").toLowerCase();
-        const okFile = !r.error && (!clientMd5 || clientMd5.toLowerCase() === serverMd5);
+        const serverCrc32 = (r.crc32 || "").toLowerCase();
+        const okFile = !r.error && (!clientCrc32 || clientCrc32.toLowerCase() === serverCrc32);
         if (okFile) {
           overlay.settleActive(slot, "done");
           ok++;
         } else {
           failed++;
-          const why = r.error || (clientMd5 ? t("netdisk.md5Mismatch") : "Failed");
+          const why = r.error || (clientCrc32 ? t("netdisk.crc32Mismatch") : "Failed");
           overlay.markFailedWithRetry(slot, why, async () => {
             overlay.reactivate(slot, { name: file.name, size: file.size });
             failed = Math.max(0, failed - 1);
@@ -350,7 +350,8 @@ async function doUpload(fileList) {
     toast(err.message);
     setStatus(err.message);
   } finally {
-    overlay.close();
+    // The card stays open until the user closes it (via the × button): an
+    // auto-dismiss can hide a failure before the user gets to click Retry.
     btns.forEach((b) => (b.disabled = false));
     const input = $("#volUploadInput");
     if (input) input.value = "";

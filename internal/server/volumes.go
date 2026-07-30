@@ -381,7 +381,7 @@ func (a *App) volumeFilesUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	files := r.MultipartForm.File["files"]
-	// Per-file MD5 digests the client computed (parallel to "files"). Absent for
+	// Per-file CRC32 digests the client computed (parallel to "files"). Absent for
 	// legacy clients: files are still written + checksummed, just not compared.
 	hashes := r.MultipartForm.Value["hashes"]
 	var results []uploadResult
@@ -402,12 +402,12 @@ func (a *App) volumeFilesUpload(w http.ResponseWriter, r *http.Request) {
 		if i < len(hashes) {
 			expected = hashes[i]
 		}
-		sum, werr := writeFileWithMD5(dstPath, src, fh, expected)
+		sum, werr := writeFileWithCRC32(dstPath, src, fh, expected)
 		_ = src.Close()
 		if werr != nil {
-			results = append(results, uploadResult{Path: filepath.Base(fh.Filename), MD5: sum, Error: werr.Error()})
+			results = append(results, uploadResult{Path: filepath.Base(fh.Filename), CRC32: sum, Error: werr.Error()})
 		} else {
-			results = append(results, uploadResult{Path: filepath.Base(fh.Filename), MD5: sum})
+			results = append(results, uploadResult{Path: filepath.Base(fh.Filename), CRC32: sum})
 		}
 	}
 	okCount := len(files) - countFailedResults(results)

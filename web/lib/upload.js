@@ -85,16 +85,19 @@ export function fmtSpeed(bps) {
 // Only one overlay exists at a time; calling show again replaces it.
 //
 // Hard caps (kept tiny on purpose):
-const MAX_ACTIVE = 16; // rows on the wire at once (≥ UPLOAD_BATCH_FILES so a
-// batch never has to wait for a free slot)
-const MAX_SETTLED = 24; // recently finished rows kept visible
+const MAX_ACTIVE = 100; // rows on the wire at once (≥ UPLOAD_BATCH_FILES * UPLOAD_CONCURRENCY
+// in netdisk.js, so batches never have to wait for a free slot)
+const MAX_SETTLED = 20; // recently finished rows kept visible
 
 export function showUploadOverlay() {
   hideUploadOverlay();
   const el = document.createElement("div");
   el.className = "upload-overlay";
   el.innerHTML =
-    `<div class="upload-title">Uploading…</div>` +
+    `<div class="upload-head">` +
+      `<div class="upload-title">Uploading…</div>` +
+      `<button type="button" class="upload-close" aria-label="Close" title="Close">&times;</button>` +
+    `</div>` +
     `<div class="bar upload-bar"><div class="bar-fill" style="width:0%"></div></div>` +
     `<div class="upload-meta">0 B / 0 B · 0 B/s</div>` +
     `<div class="upload-counts">0 / 0 · 0 done · 0 failed</div>` +
@@ -106,6 +109,10 @@ export function showUploadOverlay() {
   const meta = el.querySelector(".upload-meta");
   const counts = el.querySelector(".upload-counts");
   const title = el.querySelector(".upload-title");
+  // The card never auto-closes (a fast dismiss could hide a failure the user
+  // still needs to retry, and a slow one just sits there being pointless) — the
+  // caller decides when the batch is over, but only this button ever removes it.
+  el.querySelector(".upload-close").onclick = () => el.remove();
 
   // DOM is partitioned into two fixed sub-containers so an active row never has
   // to be re-parented (which would restart its progress-bar transition):
