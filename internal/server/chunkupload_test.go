@@ -345,6 +345,64 @@ func TestHandleChunk_ConcurrentUploadsDontLoseUpdates(t *testing.T) {
 	}
 }
 
+// TestHandleChunk_URLQueryNameDoesNotShadowFormName is a regression test for
+// the volume upload path: its URL carries a "name" query parameter (the
+// volume identifier, e.g. ?path=&name=myvol) distinct from the multipart
+// body's "name" field (the in-volume file path). r.FormValue merges query and
+// body values under one key and returns the query value first, so reading
+// "name" that way silently substituted the volume identifier for the file
+// path — cleanUserPath/encodeUploadID then disagreed with what /chunk/init
+// returned, and every chunk 400'd with "uploadId does not match name".
+// Netdisk uploads never set a "name" query parameter, so this never surfaced
+// there.
+func TestHandleChunk_URLQueryNameDoesNotShadowFormName(t *testing.T) {
+	dir := t.TempDir()
+	name := "big.bin"
+	dst := filepath.Join(dir, name)
+	const chunkSize = 8
+	const total = 1
+	size := int64(chunkSize)
+	writeFullState(t, dst, size, chunkSize, total)
+	uploadID := encodeUploadID(dir, name)
+
+	seg := []byte("ABCDEFGH")
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	_ = mw.WriteField("name", name)
+	_ = mw.WriteField("uploadId", uploadID)
+	_ = mw.WriteField("index", "0")
+	_ = mw.WriteField("hash", crc32Hex(seg))
+	fw, err := mw.CreateFormFile("chunk", name)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := fw.Write(seg); err != nil {
+		t.Fatalf("write chunk: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	// Mirrors the volume endpoints' URL: ?path=&name=<volume identifier>, which
+	// collides in key name (but not meaning) with the multipart body's "name".
+	req := httptest.NewRequest(http.MethodPost, "/chunk?path=&name=some-docker-volume-name", body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+
+	handleChunk(w, req, dir)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	st, err := readChunkState(dst)
+	if err != nil {
+		t.Fatalf("readChunkState: %v", err)
+	}
+	if !st.Received[0] {
+		t.Fatalf("chunk 0 not recorded as received: %+v", st.Received)
+	}
+}
+
 // TestHandleChunkInit_CreatesNewSubfolder is a regression test: uploading a
 // large file as the first thing into a brand-new subfolder must succeed.
 // writeChunkState persists the resume record next to the destination BEFORE

@@ -341,6 +341,24 @@ func handleChunkInit(w http.ResponseWriter, dir, rawName string, req chunkInitRe
 	})
 }
 
+// multipartValue returns the value of a multipart form field, reading only
+// r.MultipartForm.Value (the parsed body part). Unlike r.FormValue, this never
+// falls back to a same-named URL query parameter — which matters here because
+// the volume endpoints put a *different* "name" (the volume identifier) on the
+// URL query string (?name=), while the body's "name" field is the in-volume
+// file path. r.FormValue merges query + body values under one key and returns
+// the query one first, silently substituting the wrong "name" for volume
+// uploads (netdisk has no such collision, so it never surfaced there).
+func multipartValue(r *http.Request, key string) string {
+	if r.MultipartForm == nil {
+		return ""
+	}
+	if vs := r.MultipartForm.Value[key]; len(vs) > 0 {
+		return vs[0]
+	}
+	return ""
+}
+
 // handleChunk stores one verified chunk segment.
 func handleChunk(w http.ResponseWriter, r *http.Request, dir string) {
 	// Cap comfortably above the client's chunk size (100 MiB) plus multipart
@@ -352,14 +370,14 @@ func handleChunk(w http.ResponseWriter, r *http.Request, dir string) {
 		return
 	}
 	defer r.MultipartForm.RemoveAll()
-	name := strings.TrimSpace(r.FormValue("name"))
-	uploadID := r.FormValue("uploadId")
+	name := strings.TrimSpace(multipartValue(r, "name"))
+	uploadID := multipartValue(r, "uploadId")
 	if name == "" || uploadID == "" {
 		writeErr(w, http.StatusBadRequest, "name and uploadId are required")
 		return
 	}
 	var idx int
-	if _, err := fmt.Sscanf(r.FormValue("index"), "%d", &idx); err != nil {
+	if _, err := fmt.Sscanf(multipartValue(r, "index"), "%d", &idx); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid index")
 		return
 	}
@@ -399,7 +417,7 @@ func handleChunk(w http.ResponseWriter, r *http.Request, dir string) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	sum, werr := writeChunkSegment(dst, idx, src, r.FormValue("hash"))
+	sum, werr := writeChunkSegment(dst, idx, src, multipartValue(r, "hash"))
 	_ = src.Close()
 	if werr != nil {
 		writeErr(w, http.StatusBadRequest, werr.Error())
