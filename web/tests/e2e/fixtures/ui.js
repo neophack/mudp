@@ -3,7 +3,7 @@ import { expect } from "@playwright/test";
 // Tabs the sidebar renders per role, mirroring render() in web/app.js.
 export const ADMIN_TABS = [
   "dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes",
-  "networks", "forwards", "stacks", "hardware", "users", "audit", "disks", "scripts", "help",
+  "networks", "forwards", "stacks", "hardware", "users", "audit", "security", "disks", "database", "scripts", "help",
 ];
 export const USER_TABS = [
   "dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes",
@@ -96,9 +96,12 @@ export async function login(page, username, password) {
   await page.fill("input[name='username']", username);
   await page.fill("input[name='password']", password);
   await page.click("#loginForm button.primary");
-  // The shell only appears once /api/me + refreshAll() resolve; Docker calls in
-  // that batch can be slow on a cold daemon.
-  await expect(page.locator("aside nav")).toBeVisible({ timeout: 45000 });
+  // The shell only appears once /api/me + refreshAll() resolve; refreshAll fans
+  // out 6–9 Docker-backed calls (containers, images, dashboard, …) that, on
+  // Docker Desktop for Windows under load, can each take several seconds. The
+  // earlier 45s ceiling was intermittently too tight and surfaced as a flaky
+  // "aside nav not visible" timeout deep into the netdisk tests.
+  await expect(page.locator("aside nav")).toBeVisible({ timeout: 90000 });
 }
 
 export async function logout(page) {

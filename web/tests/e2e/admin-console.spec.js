@@ -943,5 +943,5 @@ test("logout returns to the login screen and the session is gone", async ({ page
 });
 
 test("admin-only tabs are exactly the ones a plain user cannot see", async () => {
-  expect(ADMIN_ONLY_TABS).toEqual(["forwards", "users", "audit", "disks"]);
+  expect(ADMIN_ONLY_TABS).toEqual(["forwards", "users", "audit", "security", "disks", "database"]);
 });

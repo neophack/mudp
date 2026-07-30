@@ -121,7 +121,9 @@ function drawDots(ctx, project, points, colorFor) {
   const max = points.reduce((m, p) => Math.max(m, p.count || 0), 0) || 1;
   const fallback = ["rgba(56, 130, 255, 0.7)", "#3882ff"];
   for (const p of points) {
-    if (!p.latitude || !p.longitude) continue;
+    // Compare against null/undefined (not falsiness): latitude 0 (the equator)
+    // and longitude 0 (the prime meridian) are valid coordinates and must plot.
+    if (p.latitude == null || p.longitude == null) continue;
     const [x, y] = project(p.longitude, p.latitude);
     const r = 3 + 7 * ((p.count || 0) / max);
     const [glow, dot] = colorFor ? colorFor(p) : fallback;
@@ -149,7 +151,7 @@ function wireHover(canvas, tooltip, project, points, pointLabel) {
     const my = ((e.clientY - rect.top) / rect.height) * H;
     let best = null, bestDist = 18;
     for (const p of points) {
-      if (!p.latitude || !p.longitude) continue;
+      if (p.latitude == null || p.longitude == null) continue;
       const [px, py] = project(p.longitude, p.latitude);
       const d = Math.hypot(px - mx, py - my);
       if (d < bestDist) { bestDist = d; best = p; }

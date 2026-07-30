@@ -229,7 +229,17 @@ func DefaultAPIRateLimiter() *RateLimiter {
 	return NewRateLimiter(30, 120, 10*time.Minute)
 }
 
-// StrictRateLimiter is for login endpoints: 1 req/s with burst 5.
+// StrictRateLimiter is for login endpoints: 5 req/s with burst 30.
+//
+// The earlier 1 req/s / burst-5 ceiling was too tight for two real situations:
+//   - several users behind one NAT/proxy IP logging in around the same time,
+//     and
+//   - the e2e suite, whose admin-console file logs in and out a dozen+ times
+//     back-to-back (plus share-page hits, which share this limiter).
+//
+// 5 req/s still throttles online brute force — a credential-stuffing attempt is
+// many orders of magnitude faster than any human types — while letting a burst
+// of legitimate logins through without a 429.
 func StrictRateLimiter() *RateLimiter {
-	return NewRateLimiter(1, 5, 10*time.Minute)
+	return NewRateLimiter(5, 30, 10*time.Minute)
 }

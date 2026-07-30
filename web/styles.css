@@ -3226,7 +3226,7 @@ audio.viewer-media {
 
 /* ---------------- Security monitor ---------------- */
 
-.sec-tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+.sec-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
 .sec-tab {
   background: none; border: none; cursor: pointer; padding: 8px 16px;
   color: var(--ink-soft); font-size: 14px; font-weight: 600;
@@ -3235,7 +3235,7 @@ audio.viewer-media {
 .sec-tab:hover { color: var(--ink); }
 .sec-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
-.sec-stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.sec-stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .stat-tile.stat-warn .stat-icon { background: rgba(232, 145, 12, 0.14); }
 .stat-tile.stat-ok .stat-icon { background: var(--ok-soft); }
 .stat-tile.stat-muted .stat-icon { background: var(--line-soft); }
@@ -3297,4 +3297,10 @@ audio.viewer-media {
   .sec-stat-row { grid-template-columns: repeat(2, 1fr); }
   .sec-field { flex-direction: column; align-items: flex-start; }
   .sec-field .switch { align-self: flex-end; margin-top: -28px; }
+}
+
+@media (max-width: 380px) {
+  /* Two stat tiles don't fit at phone-se (320px): each tile's icon + padding
+     floors its width above the half-width a 2-col track can offer, so stack. */
+  .sec-stat-row { grid-template-columns: 1fr; }
 }
