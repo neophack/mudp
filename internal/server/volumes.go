@@ -1,8 +1,8 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -381,45 +381,129 @@ func (a *App) volumeFilesUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	files := r.MultipartForm.File["files"]
-	for _, fh := range files {
+	// Per-file MD5 digests the client computed (parallel to "files"). Absent for
+	// legacy clients: files are still written + checksummed, just not compared.
+	hashes := r.MultipartForm.Value["hashes"]
+	var results []uploadResult
+	for i, fh := range files {
 		src, err := fh.Open()
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+			// A single unreadable part no longer aborts the whole batch.
+			results = append(results, uploadResult{Path: filepath.Base(fh.Filename), Error: err.Error()})
+			continue
 		}
 		dstPath, _, err := cleanUserPath(dir, filepath.Base(fh.Filename))
 		if err != nil {
 			_ = src.Close()
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+			results = append(results, uploadResult{Path: filepath.Base(fh.Filename), Error: err.Error()})
+			continue
 		}
-		offset := int64(0)
-		if existing, err := os.Stat(dstPath); err == nil && existing.Size() < fh.Size {
-			offset = existing.Size()
+		expected := ""
+		if i < len(hashes) {
+			expected = hashes[i]
 		}
-		flags := os.O_CREATE | os.O_WRONLY
-		if seeker, ok := src.(io.Seeker); ok && offset > 0 {
-			_, _ = seeker.Seek(offset, io.SeekStart)
-		} else {
-			offset = 0
-			flags |= os.O_TRUNC
-		}
-		dst, err := os.OpenFile(dstPath, flags, 0640)
-		if err != nil {
-			_ = src.Close()
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		_, _ = dst.Seek(offset, io.SeekStart)
-		_ = dst.Truncate(offset)
-		_, err = io.Copy(dst, src)
-		_ = dst.Close()
+		sum, werr := writeFileWithMD5(dstPath, src, fh, expected)
 		_ = src.Close()
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+		if werr != nil {
+			results = append(results, uploadResult{Path: filepath.Base(fh.Filename), MD5: sum, Error: werr.Error()})
+		} else {
+			results = append(results, uploadResult{Path: filepath.Base(fh.Filename), MD5: sum})
 		}
 	}
+	okCount := len(files) - countFailedResults(results)
 	a.record(r, "volume.files.upload", r.FormValue("name"))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(files)})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": okCount == len(files), "count": len(files), "results": results})
+}
+
+// ---- Large-file chunked/resumable upload (volumes) --------------------------
+// Mirrors the netdisk chunk handlers but resolves a Docker volume mountpoint
+// instead of a user netdisk root, and applies no quota (volumes are unbounded).
+
+func (a *App) volumeChunkInit(w http.ResponseWriter, r *http.Request) {
+	if !canMutate(currentUser(r)) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify volumes")
+		return
+	}
+	// The volume identifier travels as a URL query parameter (?name=), distinct
+	// from the JSON body's "name" field, which is the in-volume file name. The
+	// query string is always available via r.URL regardless of the JSON body,
+	// so this mirrors volumeFilesList/Download's ?name= convention.
+	mount, _, err := a.resolveVolumeMount(r, r.URL.Query().Get("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var req chunkInitReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir, _, err := cleanUserPath(mount, req.Path)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	handleChunkInit(w, dir, req.Name, req, nil)
+}
+
+func (a *App) volumeChunk(w http.ResponseWriter, r *http.Request) {
+	if !canMutate(currentUser(r)) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify volumes")
+		return
+	}
+	// Volume identifier is a URL query parameter (?name=); the multipart form's
+	// "name" field is the in-volume file name, consumed by handleChunk below.
+	mount, _, err := a.resolveVolumeMount(r, r.URL.Query().Get("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir, _, err := cleanUserPath(mount, r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	handleChunk(w, r, dir)
+}
+
+func (a *App) volumeChunkComplete(w http.ResponseWriter, r *http.Request) {
+	if !canMutate(currentUser(r)) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify volumes")
+		return
+	}
+	// Volume identifier is a URL query parameter (?name=); the JSON body's
+	// "name" field is the in-volume file name, consumed by handleChunkComplete.
+	mount, _, err := a.resolveVolumeMount(r, r.URL.Query().Get("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir, _, err := cleanUserPath(mount, r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	handleChunkComplete(w, r, dir)
+}
+
+func (a *App) volumeChunkAbort(w http.ResponseWriter, r *http.Request) {
+	if !canMutate(currentUser(r)) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify volumes")
+		return
+	}
+	mount, _, err := a.resolveVolumeMount(r, r.URL.Query().Get("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir, _, err := cleanUserPath(mount, r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	handleChunkAbort(w, r, dir)
 }

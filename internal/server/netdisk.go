@@ -3,6 +3,7 @@ package server
 import (
 	"archive/zip"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -458,6 +459,10 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 	// multipart parser enforces it by reducing Filename to its base name, which
 	// would flatten "docs/a/b.txt" into "b.txt".
 	relPaths := r.MultipartForm.Value["paths"]
+	// Per-file MD5 digests the client computed (parallel to "paths"/"files").
+	// Empty/absent for legacy clients: files are still written + checksummed.
+	hashes := r.MultipartForm.Value["hashes"]
+	var results []uploadResult
 
 	// Pre-compute how much additional space is required, accounting for
 	// partially-uploaded files that may be resumed.
@@ -496,52 +501,162 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 	for i, fh := range files {
 		src, err := fh.Open()
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+			// One unreadable part no longer fails the whole batch: record the
+			// failure for this file and continue, so the other files still land.
+			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), Error: err.Error()})
+			continue
 		}
 		dstPath, err := uploadDestPath(dir, relPaths, i, fh)
 		if err != nil {
 			_ = src.Close()
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), Error: err.Error()})
+			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0750); err != nil {
-			_ = src.Close()
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+		// Client-supplied per-file MD5 (parallel to "paths", one per file). Empty
+		// for legacy clients / browsers without a hashing Worker: the file is
+		// still written and checksummed, just not compared.
+		expected := ""
+		if i < len(hashes) {
+			expected = hashes[i]
 		}
-		offset := int64(0)
-		if existing, err := os.Stat(dstPath); err == nil && existing.Size() < fh.Size {
-			offset = existing.Size()
-		}
-		flags := os.O_CREATE | os.O_WRONLY
-		if seeker, ok := src.(io.Seeker); ok && offset > 0 {
-			_, _ = seeker.Seek(offset, io.SeekStart)
-		} else {
-			// Source cannot resume from an offset: truncate any partial file so
-			// the new upload does not leave stale tail bytes behind.
-			offset = 0
-			flags |= os.O_TRUNC
-		}
-		dst, err := os.OpenFile(dstPath, flags, 0640)
-		if err != nil {
-			_ = src.Close()
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		_, _ = dst.Seek(offset, io.SeekStart)
-		// Truncate to the resume offset so any stale tail from a previous
-		// interrupted upload is removed.
-		_ = dst.Truncate(offset)
-		_, err = io.Copy(dst, src)
-		_ = dst.Close()
+		sum, werr := writeFileWithMD5(dstPath, src, fh, expected)
 		_ = src.Close()
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+		if werr != nil {
+			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), MD5: sum, Error: werr.Error()})
+		} else {
+			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), MD5: sum})
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(files)})
+	// ok reflects only fully-saved files so the client can tell a partial failure
+	// (some files landed, some didn't) from total success.
+	okCount := len(files) - countFailedResults(results)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": okCount == len(files), "count": len(files), "results": results})
+}
+
+// netdiskResultPath picks the user-facing identifier for a result row: the
+// in-folder relative path when present, otherwise the part's filename.
+func netdiskResultPath(relPaths []string, i int, fh *multipart.FileHeader) string {
+	if i < len(relPaths) && relPaths[i] != "" {
+		return relPaths[i]
+	}
+	return fh.Filename
+}
+
+// countFailedResults tallies how many per-file results carry an error.
+func countFailedResults(results []uploadResult) int {
+	n := 0
+	for _, r := range results {
+		if r.Error != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// ---- Large-file chunked/resumable upload (netdisk) --------------------------
+// Files >= the client's threshold are uploaded in MD5-verified chunks so a
+// multi-GB transfer can resume after a drop/refresh instead of restarting. The
+// shared protocol logic lives in chunkupload.go; these handlers only resolve the
+// netdisk root + path and (for init) enforce quota.
+
+func (a *App) netdiskChunkInit(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
+	root, err := a.userNetdiskRoot(u)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var req chunkInitReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// req.Path is the folder the user is currently browsing (e.g. "docs/2024");
+	// resolve it against the root so the file lands there instead of always at
+	// the netdisk root.
+	dir, _, err := cleanUserPath(root, req.Path)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Quota/disk projection: reject if the additional bytes would blow the
+	// user's netdisk quota or leave no free disk space.
+	quotaCheck := func(add int64) error {
+		if u.NetdiskQuotaBytes > 0 {
+			used := dirSize(root)
+			if used+add > u.NetdiskQuotaBytes {
+				return fmt.Errorf("upload would exceed netdisk quota")
+			}
+		}
+		if add > 0 {
+			if free, e := diskFree(root); e == nil && free >= 0 && add > free {
+				return fmt.Errorf("not enough free disk space")
+			}
+		}
+		return nil
+	}
+	handleChunkInit(w, dir, req.Name, req, quotaCheck)
+}
+
+// netdiskChunkDir resolves the folder the client is uploading into (the
+// "path" query parameter, e.g. "docs/2024") against the caller's netdisk root.
+// The /chunk, /chunk/complete and /chunk/abort requests all carry it as a URL
+// query parameter (rather than in the JSON/multipart body) so it can be
+// resolved uniformly before touching the endpoint-specific payload.
+func (a *App) netdiskChunkDir(r *http.Request) (string, error) {
+	root, err := a.userNetdiskRoot(currentUser(r))
+	if err != nil {
+		return "", err
+	}
+	dir, _, err := cleanUserPath(root, r.URL.Query().Get("path"))
+	return dir, err
+}
+
+func (a *App) netdiskChunk(w http.ResponseWriter, r *http.Request) {
+	if !canMutate(currentUser(r)) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
+	dir, err := a.netdiskChunkDir(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	handleChunk(w, r, dir)
+}
+
+func (a *App) netdiskChunkComplete(w http.ResponseWriter, r *http.Request) {
+	if !canMutate(currentUser(r)) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
+	dir, err := a.netdiskChunkDir(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	handleChunkComplete(w, r, dir)
+}
+
+func (a *App) netdiskChunkAbort(w http.ResponseWriter, r *http.Request) {
+	if !canMutate(currentUser(r)) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot modify netdisk")
+		return
+	}
+	dir, err := a.netdiskChunkDir(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	handleChunkAbort(w, r, dir)
 }
 
 func (a *App) netdiskDownload(w http.ResponseWriter, r *http.Request) {

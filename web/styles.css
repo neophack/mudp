@@ -683,14 +683,19 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow);
   padding: 12px 14px;
+  /* Isolate layout/paint so a streaming upload (files being added/removed from
+     the bounded list on every batch) cannot trigger full-page reflow. The list
+     node count is itself capped, this just keeps the per-tick work cheap. */
+  contain: content;
 }
 .upload-title { font-size: 13px; font-weight: 600; }
 .upload-bar { margin: 8px 0 6px; }
 .upload-bar .bar-fill { background: var(--accent); }
-.upload-meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
-/* Flex column so rows can be regrouped with the CSS order property (uploading
-   first, then queued, then finished) without touching the DOM. The list scrolls
-   on its own so a large folder cannot push the active rows past the viewport. */
+.upload-meta { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.upload-counts { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+/* Bounded window: only the active batch + a small ring of recent files are ever
+   rendered, so the DOM node count is constant no matter how large the folder
+   is (this is what stops a million-file upload from crashing the page). */
 .upload-file-list {
   display: flex;
   flex-direction: column;
@@ -700,6 +705,9 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   max-height: 44vh;
   overflow-y: auto;
 }
+.upload-active { display: flex; flex-direction: column; gap: 8px; }
+.upload-settled { display: flex; flex-direction: column; gap: 8px; }
+.upload-overflow { font-size: 11px; color: var(--muted); padding: 2px 0; }
 .upload-file-row { display: flex; flex-direction: column; gap: 3px; }
 .upload-file-head {
   display: flex;
@@ -720,7 +728,13 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 .upload-file-size { font-size: 11px; color: var(--muted); flex-shrink: 0; }
 .upload-file-bar { height: 4px; background: var(--line-soft); border-radius: 2px; overflow: hidden; }
 .upload-file-bar .bar-fill { height: 100%; background: var(--accent); transition: width .2s; }
-.upload-file-meta { font-size: 11px; color: var(--ink-soft); }
+.upload-file-meta { font-size: 11px; color: var(--ink-soft); display: flex; align-items: center; gap: 8px; }
+.upload-file-retry {
+  font-size: 11px; line-height: 1; padding: 3px 8px; cursor: pointer;
+  color: var(--danger); background: transparent;
+  border: 1px solid var(--danger); border-radius: var(--radius-sm);
+}
+.upload-file-retry:hover { background: var(--danger); color: #fff; }
 .upload-file-row.is-done .upload-file-bar .bar-fill { background: var(--ok); }
 .upload-file-row.is-done .upload-file-status { color: var(--ok); }
 .upload-file-row.is-error .upload-file-bar .bar-fill { background: var(--danger); }

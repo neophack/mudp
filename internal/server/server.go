@@ -248,6 +248,10 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/volumes/files/delete", a.volumeFilesDelete)
 		r.Post("/api/volumes/files/rename", a.volumeFilesRename)
 		r.Post("/api/volumes/files/upload", a.volumeFilesUpload)
+		r.Post("/api/volumes/files/chunk/init", a.volumeChunkInit)
+		r.Post("/api/volumes/files/chunk", a.volumeChunk)
+		r.Post("/api/volumes/files/chunk/complete", a.volumeChunkComplete)
+		r.Post("/api/volumes/files/chunk/abort", a.volumeChunkAbort)
 		r.Get("/api/networks", a.networks)
 		r.Post("/api/networks", a.networks)
 		r.Post("/api/networks/delete", a.networkDelete)
@@ -277,6 +281,12 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/netdisk/copy", a.netdiskCopy)
 		r.Post("/api/netdisk/transfer", a.netdiskTransfer)
 		r.Post("/api/netdisk/upload", a.netdiskUpload)
+		// Large-file chunked/resumable uploads (>= ~1GB): init/create-or-resume,
+		// upload one verified chunk, assemble+verify, or abort/clean up.
+		r.Post("/api/netdisk/chunk/init", a.netdiskChunkInit)
+		r.Post("/api/netdisk/chunk", a.netdiskChunk)
+		r.Post("/api/netdisk/chunk/complete", a.netdiskChunkComplete)
+		r.Post("/api/netdisk/chunk/abort", a.netdiskChunkAbort)
 		r.Get("/api/netdisk/download", a.netdiskDownload)
 		r.Get("/api/netdisk/raw", a.netdiskRaw)
 		r.Get("/api/netdisk/quota", a.netdiskQuota)

@@ -7,6 +7,12 @@
 import { api, toast, canMutate, state, readCSRFCookie, t } from "../app.js";
 import { showModalNoShell } from "./ui.js";
 import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
+import { hashFileMD5 } from "../lib/hashfile.js";
+import { uploadLargeFile } from "../lib/chunkupload.js";
+
+// Files at or above this size use the chunked/resumable protocol (per-chunk MD5,
+// resume after a drop) instead of one multipart request.
+const CHUNK_THRESHOLD = 1 << 30; // 1 GiB
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -218,37 +224,123 @@ async function doUpload(fileList) {
   const btns = $$(".files-toolbar button");
   btns.forEach((b) => (b.disabled = true));
   let ok = 0;
-  // Files upload sequentially, one request per file. The overlay shows overall
-  // progress: completed bytes plus the in-flight file's fraction of its size.
+  let failed = 0;
+  // Files upload sequentially, one request per file. The overlay is the bounded
+  // card (one active row at a time), so even a huge pick never builds a DOM row
+  // per file. totalBytes is accumulated as we go rather than reduced up front.
   const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
   let baseBytes = 0;
-  const overlay = showUploadOverlay(t("volfiles.uploading", { n: files.length }));
+  const overlay = showUploadOverlay();
+  const batchStart = performance.now();
   try {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       overlay.setLabel(`${i + 1}/${files.length}: ${file.name}`);
-      const fd = new FormData();
-      fd.append("name", session.fullName);
-      fd.append("path", session.path || "");
-      fd.append("files", file, file.name);
-      try {
-        await uploadWithProgress("/api/volumes/files/upload", fd, {
+      // Large files go through the chunked/resumable protocol: per-chunk MD5,
+      // resume after a drop, never one giant request.
+      if ((file.size || 0) >= CHUNK_THRESHOLD) {
+        const slot = overlay.addActive({ name: file.name, size: file.size });
+        await uploadLargeFile(file, file.name, {
+          base: "/api/volumes/files", dir: session.path || "", volume: session.fullName,
           csrfToken: readCSRFCookie() || state.csrfToken || "",
-          onProgress: (p) => {
-            const frac = p.total > 0 ? p.loaded / p.total : 0;
-            const loaded = baseBytes + frac * (file.size || 0);
-            overlay.update({
-              loaded,
-              total: totalBytes,
-              percent: totalBytes > 0 ? Math.min(100, Math.round((loaded / totalBytes) * 100)) : 0,
-              speedBps: p.speedBps,
+          onProgress: ({ loaded, total }) => {
+            overlay.updateActive(slot, {
+              loaded, total,
+              percent: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0,
+              speedBps: 0,
+            });
+            const elapsed = (performance.now() - batchStart) / 1000;
+            const speedBps = elapsed > 0 ? loaded / elapsed : 0;
+            overlay.updateOverall({
+              done: ok, failed, total: files.length,
+              loaded: baseBytes + loaded, bytesTotal: totalBytes, speedBps,
+              percent: totalBytes > 0 ? Math.min(100, Math.round(((baseBytes + loaded) / totalBytes) * 100)) : 0,
             });
           },
-        });
-        ok++;
-      } catch (err) {
-        toast(err.message);
+        }).then(() => { overlay.settleActive(slot, "done"); ok++; })
+          .catch((err) => {
+            failed++;
+            overlay.markFailedWithRetry(slot, err.message, async () => {
+              overlay.reactivate(slot, { name: file.name, size: file.size });
+              failed = Math.max(0, failed - 1);
+              await sendLargeAgain();
+              await load();
+            });
+          });
+        baseBytes += file.size || 0;
+        async function sendLargeAgain() {
+          await uploadLargeFile(file, file.name, {
+            base: "/api/volumes/files", dir: session.path || "", volume: session.fullName,
+            csrfToken: readCSRFCookie() || state.csrfToken || "",
+          });
+          overlay.settleActive(slot, "done");
+          ok++;
+        }
+        continue;
       }
+      // Compute the file's MD5 so the server can verify integrity. Unhashable
+      // files yield "" and are still uploaded (server checksums them).
+      const clientMd5 = (await hashFileMD5(file)) || "";
+      const slot = overlay.addActive({ name: file.name, size: file.size });
+      const sendOne = async () => {
+        const fd = new FormData();
+        fd.append("name", session.fullName);
+        fd.append("path", session.path || "");
+        fd.append("hashes", clientMd5);
+        fd.append("files", file, file.name);
+        let resp;
+        try {
+          resp = await uploadWithProgress("/api/volumes/files/upload", fd, {
+            csrfToken: readCSRFCookie() || state.csrfToken || "",
+            onProgress: (p) => {
+              const fileTotal = file.size || 0;
+              const fileLoaded = p.total > 0 ? Math.min(fileTotal, Math.round(fileTotal * (p.loaded / p.total))) : 0;
+              overlay.updateActive(slot, {
+                loaded: fileLoaded,
+                total: fileTotal,
+                percent: fileTotal > 0 ? Math.min(100, Math.round((fileLoaded / fileTotal) * 100)) : 100,
+                speedBps: p.speedBps,
+              });
+              const loaded = baseBytes + fileLoaded;
+              const elapsed = (performance.now() - batchStart) / 1000;
+              const speedBps = elapsed > 0 ? loaded / elapsed : 0;
+              overlay.updateOverall({
+                done: ok, failed, total: files.length, loaded, bytesTotal: totalBytes, speedBps,
+                percent: totalBytes > 0 ? Math.min(100, Math.round((loaded / totalBytes) * 100)) : 0,
+              });
+            },
+          });
+        } catch (err) {
+          // Network/HTTP failure: mark retriable.
+          failed++;
+          overlay.markFailedWithRetry(slot, err.message, async () => {
+            overlay.reactivate(slot, { name: file.name, size: file.size });
+            failed = Math.max(0, failed - 1);
+            await sendOne();
+            await load();
+          });
+          return;
+        }
+        // Verify per-file result: delivered only if no error and (no client hash
+        // or it matches the server md5).
+        const r = (resp?.results?.[0]) || {};
+        const serverMd5 = (r.md5 || "").toLowerCase();
+        const okFile = !r.error && (!clientMd5 || clientMd5.toLowerCase() === serverMd5);
+        if (okFile) {
+          overlay.settleActive(slot, "done");
+          ok++;
+        } else {
+          failed++;
+          const why = r.error || (clientMd5 ? t("netdisk.md5Mismatch") : "Failed");
+          overlay.markFailedWithRetry(slot, why, async () => {
+            overlay.reactivate(slot, { name: file.name, size: file.size });
+            failed = Math.max(0, failed - 1);
+            await sendOne();
+            await load();
+          });
+        }
+      };
+      await sendOne();
       baseBytes += file.size || 0;
     }
     toast(t("volfiles.uploadedN", { n: ok }), true);

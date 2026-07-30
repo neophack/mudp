@@ -1,6 +1,9 @@
 import { state, api, toast, escapeHtml, fmtBytes, isAdmin, canMutate, displayNameForUsername, readCSRFCookie, t } from "../app.js";
 import { showModalNoShell, closeModal, onModalClose } from "./ui.js";
 import { uploadWithProgress, showUploadOverlay } from "../lib/upload.js";
+import { makeFileIterator, prependIterator, makeDropIterator } from "../lib/uploadStream.js";
+import { hashFileMD5 } from "../lib/hashfile.js";
+import { uploadLargeFile } from "../lib/chunkupload.js";
 import { openYuvViewer } from "../lib/yuv.js";
 
 // netdiskMode is "netdisk" (primary SSD, the default) or "backup" (the slow
@@ -242,8 +245,9 @@ function bindNetdiskEvents(mutable) {
   if (uploadFiles) {
     uploadFiles.onchange = async (e) => {
       // Plain multi-file pick: each File has no relative path, so it lands flat
-      // in the current directory.
-      await uploadFilesHandler([...e.target.files].map((file) => ({ file, relPath: file.name })), state.netdisk.path || "");
+      // in the current directory. The FileList is iterated lazily by the queue
+      // (no giant array is built), which keeps large picks light.
+      await uploadFilesHandler(makeFileIterator([...e.target.files]), state.netdisk.path || "");
       e.target.value = "";
     };
   }
@@ -253,8 +257,10 @@ function bindNetdiskEvents(mutable) {
       // webkitdirectory populates webkitRelativePath as "TopFolder/sub/.../file",
       // which the backend reconstructs into nested directories. Keep the top
       // folder name so the selected folder appears as a subfolder of the current
-      // directory (matching drag-drop and most file-manager conventions).
-      await uploadFilesHandler([...e.target.files].map((file) => ({ file, relPath: relPathFromWebkit(file) })), state.netdisk.path || "");
+      // directory (matching drag-drop and most file-manager conventions). The
+      // FileList is iterated lazily by the queue so a folder with many files
+      // never materializes one big array.
+      await uploadFilesHandler(makeFileIterator([...e.target.files]), state.netdisk.path || "");
       e.target.value = "";
     };
   }
@@ -262,7 +268,9 @@ function bindNetdiskEvents(mutable) {
   // Drag-drop upload is netdisk-only. Dragged folders are not exposed via
   // dataTransfer.files with usable paths (webkitRelativePath is empty for drops
   // and deep subfolders are often missing entirely), so walk the drop tree via
-  // the FileSystemEntry API to recover the folder structure.
+  // the FileSystemEntry API to recover the folder structure. The walker streams
+  // into a bounded buffer the queue drains, so traversal and upload run in
+  // parallel and only ~one batch of files is held in memory at a time.
   if (!backup) {
     const card = $("#netdiskCard");
     card.ondragover = (e) => { e.preventDefault(); card.classList.add("drag-over"); };
@@ -271,8 +279,9 @@ function bindNetdiskEvents(mutable) {
       e.preventDefault();
       card.classList.remove("drag-over");
       if (!mutable) return toast(t("netdisk.readonlyUpload"));
-      const entries = await collectDroppedFiles(e.dataTransfer?.items);
-      if (entries.length) await uploadFilesHandler(entries, state.netdisk.path || "");
+      const items = e.dataTransfer?.items;
+      if (!items || !items.length) return;
+      await uploadFilesHandler(dropStream(items), state.netdisk.path || "");
     };
   }
 
@@ -871,62 +880,36 @@ async function submitShare() {
 // while one is running would race it.
 let uploading = false;
 
-// Per-batch limits. At most UPLOAD_BATCH_FILES files are in flight at once and
-// the next batch only starts after the current one finishes, so a big folder
-// uploads as a queue rather than one giant request. The byte cap keeps a batch
-// of large files well under the 2 GiB ParseMultipartForm cap (and any reverse
-// proxy body limit); it can make a batch smaller than the file cap, never
-// larger.
+// Per-batch limits. A single multipart request carries at most UPLOAD_BATCH_FILES
+// files / UPLOAD_BATCH_BYTES bytes. The byte cap keeps a batch of large files
+// well under the 2 GiB ParseMultipartForm cap (and any reverse proxy body
+// limit); it can make a batch smaller than the file cap, never larger.
 const UPLOAD_BATCH_BYTES = 256 << 20; // 256 MiB
 const UPLOAD_BATCH_FILES = 5;
+// How many batches run concurrently. Folder upload used to be strictly serial
+// (one batch, await, next batch) which was slow on big folders. UPLOAD_CONCURRENCY
+// batches (~15 files) are now in flight at once; the pool pulls the next batch
+// from the stream as soon as a slot frees.
+const UPLOAD_CONCURRENCY = 3;
+// Files at or above this size use the chunked/resumable protocol instead of one
+// multipart request, so a multi-GB file resumes after a drop and is verified in
+// 8 MB pieces rather than as a single giant blob.
+const CHUNK_THRESHOLD = 1 << 30; // 1 GiB
 
-// relPathFromWebkit maps a File produced by <input webkitdirectory> onto its
-// in-netdisk relative path. Browsers set webkitRelativePath as
-// "PickedFolder/sub/.../file"; the full value is kept so the picked folder
-// materializes as a subfolder of the current directory with its inner
-// structure intact. Files without a relative path (plain picks) use the name.
-function relPathFromWebkit(f) {
-  return f.webkitRelativePath || f.name;
-}
-
-// collectDroppedFiles turns a drag DataTransferItemList into a flat list of
-// { file, relPath } entries by recursively walking directory entries via the
-// FileSystemEntry API. This is the only reliable way to read a dropped folder
-// with its structure: dataTransfer.files carries neither webkitRelativePath
-// nor, in many browsers, the files nested in subfolders.
-async function collectDroppedFiles(itemList) {
-  if (!itemList || !itemList.length) return [];
-  const out = [];
-  // Read each top-level item (file or directory) serially. Entries are
-  // awaited one at a time because a directory reader can only have one
-  // pending readEntries() call per spec.
-  for (let i = 0; i < itemList.length; i++) {
-    const item = itemList[i];
-    // Prefer the entry API so folders can be walked; some browsers only expose
-    // it on items, not on the plain .files collection.
-    if (item.kind === "file") {
-      const entry = item.webkitGetAsEntry?.();
-      if (entry) {
-        await walkEntry(entry, "", out);
-        continue;
-      }
-    }
-    // Fallback: no entry API (or not a file entry) — use the bare File.
-    const file = item.getAsFile?.();
-    if (file) out.push({ file, relPath: file.name });
-  }
-  return out;
-}
-
-// walkEntry recursively reads a FileSystemEntry, accumulating {file, relPath}.
-// `prefix` is the directory path accumulated so far (no trailing slash).
-function walkEntry(entry, prefix, out) {
+// walkEntry recursively reads a FileSystemEntry, calling push(entry) for every
+// file it discovers. push may return a Promise (a gate): when it does, walkEntry
+// awaits it before reading the next entry. The upload queue supplies a gate that
+// resolves only once the in-memory buffer has been drained below its cap, so a
+// million-file folder is traversed at the speed of the wire rather than dumped
+// into memory all at once — this is what stops the walk phase from freezing the
+// page. `prefix` is the directory path accumulated so far (no trailing slash).
+function walkEntry(entry, prefix, push) {
   return new Promise((resolve) => {
     if (!entry) return resolve();
     const fullPath = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isFile) {
       entry.file(
-        (file) => { out.push({ file, relPath: fullPath }); resolve(); },
+        (file) => { Promise.resolve(push({ file, relPath: fullPath })).then(resolve); },
         () => resolve(), // unreadable file: skip rather than abort the batch
       );
       return;
@@ -940,7 +923,7 @@ function walkEntry(entry, prefix, out) {
         reader.readEntries(
           async (page) => {
             if (!page || page.length === 0) return resolve();
-            for (const child of page) await walkEntry(child, fullPath, out);
+            for (const child of page) await walkEntry(child, fullPath, push);
             readAll(); // keep paging until the directory is exhausted
           },
           () => resolve(), // unreadable dir: skip it, keep the rest
@@ -953,129 +936,301 @@ function walkEntry(entry, prefix, out) {
   });
 }
 
-// uploadFilesHandler uploads a batch of files to the netdisk (never the backup
-// disk — uploads are netdisk-only). `entries` is a list of { file, relPath }
-// where relPath is the in-netdisk path relative to `path` (so "sub/f.txt"
-// inside the current dir keeps its folder). Renamed from uploadFiles so the
-// bindEvents scope can use a local `uploadFiles` DOM handle without colliding.
+// uploadFilesHandler uploads files to the netdisk (never the backup disk —
+// uploads are netdisk-only). `source` is an async iterable yielding entries
+// ({ file, relPath }) one at a time: either an async generator walking a dropped
+// folder, or a sync iterator over a picked FileList wrapped by fileIterable().
+// Renamed from uploadFiles so the bindEvents scope can use a local `uploadFiles`
+// DOM handle without colliding.
+//
+// Streaming, not batching-up-front: entries are pulled from `source` only fast
+// enough to fill the next request, so at most one batch (~UPLOAD_BATCH_FILES
+// files) is held in memory at any moment regardless of how large the folder is.
+// For a drop, the walker is gated on the same drain — traversal proceeds at the
+// speed of the wire, so a million-file folder never materializes a giant array.
 //
 // Files are sent in batches of <= UPLOAD_BATCH_FILES (and <= UPLOAD_BATCH_BYTES)
-// and the batches run strictly one after another: a batch is only started once
-// the previous one has been answered, so at most a handful of files are ever in
-// flight no matter how large the picked folder is. The backend reconstructs the
-// nested directories from the "paths" field of each request.
-async function uploadFilesHandler(entries, path) {
-  if (!entries || !entries.length) return;
+// and batches run strictly one after another: a batch is only started once the
+// previous one has been answered, so at most a handful of files are ever in
+// flight. The backend reconstructs nested directories from the "paths" field.
+async function uploadFilesHandler(source, path) {
   if (!canMutate()) return toast(t("netdisk.readonlyUpload"));
   if (uploading) return toast(t("netdisk.uploadInProgress"));
   uploading = true;
-  const list = entries.slice();
-  const overlay = showUploadOverlay(list);
+  const overlay = showUploadOverlay();
 
   const csrfToken = readCSRFCookie() || state.csrfToken || "";
-  const totalBytes = list.reduce((s, e) => s + (e.file.size || 0), 0);
-  // loaded[i] = bytes of file i already on the wire (for per-file progress).
-  const loaded = new Array(list.length).fill(0);
+  // totalBytes is accumulated as files are seen (not pre-reduced over the whole
+  // list), so the progress bar is meaningful even when N is unknown up front
+  // (e.g. while a dropped folder is still being walked).
+  let totalBytes = 0;
   let doneBytes = 0;
   let ok = 0;
   let failed = 0;
-  let batchStart = performance.now();
-
-  // Partition the list into batches by cumulative size and count, preserving
-  // order so a file's index stays stable for the overlay rows.
-  const batches = [];
-  let cur = [];
-  let curBytes = 0;
-  for (let i = 0; i < list.length; i++) {
-    const e = list[i];
-    const size = e.file.size || 0;
-    const overFiles = cur.length >= UPLOAD_BATCH_FILES;
-    // Flush when the batch is full. A single oversized file (larger than the
-    // byte cap) forms its own batch rather than being split — the backend
-    // streams it via ParseMultipartForm and the cap is a soft target.
-    const overBytes = cur.length > 0 && curBytes + size > UPLOAD_BATCH_BYTES;
-    if (overFiles || overBytes) {
-      batches.push(cur);
-      cur = [];
-      curBytes = 0;
-    }
-    cur.push(i);
-    curBytes += size;
+  let seen = 0;
+  const batchStart = performance.now();
+  let iter;
+  try {
+    iter = source[Symbol.asyncIterator]
+      ? source[Symbol.asyncIterator]()
+      : makeFileIterator(source);
+  } catch {
+    uploading = false;
+    overlay.close();
+    return;
   }
-  if (cur.length) batches.push(cur);
 
-  for (const idxs of batches) {
-    // Every previous batch has settled by now (the loop awaits), so ok+failed
-    // is exactly how many files are behind this one in the queue.
-    const first = ok + failed + 1;
-    overlay.setLabel(t("netdisk.uploadingRange", { lo: first, hi: first + idxs.length - 1, total: list.length }));
-    // Flag the batch as active before the request goes out so its rows move to
-    // the top of the card immediately, rather than on the first progress tick
-    // (which never fires for very small files).
-    for (const i of idxs) overlay.setStatus(i, "uploading");
+  const nextEntry = () => Promise.resolve(iter.next()).then((r) => (r.done ? null : r.value));
 
-    const fd = new FormData();
-    fd.append("path", path);
-    for (const i of idxs) {
-      // The relative path travels in its own "paths" field, one value per file
-      // part in the same order: a part's filename cannot carry directories
-      // (RFC 7578 §4.2), and the backend's multipart parser strips them, so
-      // relying on the filename alone would flatten "sub/f.txt" to "f.txt".
-      // The filename is still set so it stays a sensible fallback.
-      fd.append("paths", list[i].relPath);
-      fd.append("files", list[i].file, list[i].relPath);
-    }
+  // failedFiles collects entries the server rejected (write error or MD5
+  // mismatch) so they can be retried. It is appended to while batches resolve,
+  // so it must not be re-traversed concurrently — only after the run completes.
+  const failedFiles = [];
+
+  // uploadBatch claims overlay rows for `cur` and delegates to sendBatch. It is
+  // the unit of concurrency: up to UPLOAD_CONCURRENCY of these run at once.
+  function uploadBatch(cur, curBytes) {
+    // Claim an overlay slot per file in the batch (active rows render up top).
+    const slots = cur.map((e) =>
+      overlay.addActive({ name: e.relPath || e.file.name, size: e.file.size }),
+    );
+    return sendBatch(cur, slots, curBytes);
+  }
+
+  // sendBatch does the real work for an already-claimed set of rows: hash, POST,
+  // and verify per-file results. `slots` parallel `cur` (one row per file). Used
+  // by both the normal pool path (uploadBatch) and single-file retries (which
+  // reactivate an existing failed row instead of allocating a new slot).
+  async function sendBatch(cur, slots, _curBytes) {
+      // Large files (>= CHUNK_THRESHOLD) skip the multipart batch entirely and go
+      // through the chunked/resumable protocol: they never fit a single request
+      // comfortably and benefit from per-chunk resume. Each large file is handled
+      // on its own slot; small files proceed as one multipart batch below.
+      const large = [];
+      const small = [];
+      const smallSlots = [];
+      for (let i = 0; i < cur.length; i++) {
+        if ((cur[i].file.size || 0) >= CHUNK_THRESHOLD) {
+          large.push({ entry: cur[i], slot: slots[i] });
+        } else {
+          small.push(cur[i]);
+          smallSlots.push(slots[i]);
+        }
+      }
+      // Run large files concurrently with the small-file batch. Each large file
+      // drives its own slot's progress; on success/failure it is settled the same
+      // way as a small file (done / armRetry), so retry UX is uniform.
+      const largePromises = large.map(({ entry, slot }) => uploadOneLarge(entry, slot));
+      let smallResp = null;
+      if (small.length) smallResp = await sendSmallBatch(small, smallSlots, sumSizes(small));
+      await Promise.allSettled(largePromises);
+      return smallResp;
+  }
+
+  // uploadOneLarge drives the chunked upload for a single large file on its slot.
+  async function uploadOneLarge(entry, slot) {
+    let lastLoaded = 0;
     try {
-      await uploadWithProgress("/api/netdisk/upload", fd, {
-        csrfToken,
-        onProgress: (p) => {
-          // uploadWithProgress reports bytes for the whole batch request;
-          // attribute them proportionally across the batch's files so each row
-          // still advances instead of freezing on "uploading…".
-          const batchLoaded = p.loaded;
-          const batchTotal = p.total || idxs.reduce((s, i) => s + (list[i].file.size || 0), 0);
-          const ratio = batchTotal > 0 ? batchLoaded / batchTotal : 0;
-          for (const i of idxs) {
-            const fileTotal = list[i].file.size || 0;
-            const fileLoaded = Math.min(fileTotal, Math.round(fileTotal * ratio));
-            doneBytes += Math.max(0, fileLoaded - loaded[i]);
-            loaded[i] = fileLoaded;
-            overlay.updateFile(i, {
-              loaded: fileLoaded,
-              total: fileTotal,
-              percent: fileTotal > 0 ? Math.min(100, Math.round((fileLoaded / fileTotal) * 100)) : 100,
-              speedBps: p.speedBps,
-            });
-            if (fileLoaded >= fileTotal && fileTotal > 0) overlay.setStatus(i, "done");
-            else overlay.setStatus(i, "uploading");
-          }
-          const elapsed = (performance.now() - batchStart) / 1000;
-          const speedBps = elapsed > 0 ? doneBytes / elapsed : 0;
-          const percent = totalBytes > 0 ? Math.min(100, Math.round((doneBytes / totalBytes) * 100)) : 0;
-          const etaSec = speedBps > 0 ? (totalBytes - doneBytes) / speedBps : 0;
-          overlay.updateOverall({ percent, loaded: doneBytes, total: totalBytes, speedBps, etaSec });
+      const res = await uploadLargeFile(entry.file, entry.relPath, {
+        base: "/api/netdisk", dir: path, csrfToken,
+        onProgress: ({ loaded, total }) => {
+          const delta = Math.max(0, loaded - lastLoaded);
+          lastLoaded = loaded;
+          doneBytes += delta;
+          overlay.updateActive(slot, {
+            loaded, total,
+            percent: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0,
+            speedBps: 0,
+          });
         },
       });
-      // The server confirms the whole batch at once; mark any file not yet
-      // marked done (tiny files may never have fired a progress tick).
-      for (const i of idxs) { overlay.setStatus(i, "done"); ok++; }
+      // The server verified + assembled the file; settle as done. (res.md5 is the
+      // whole-file digest computed during assembly.)
+      void res;
+      overlay.settleActive(slot, "done");
+      ok++;
     } catch (err) {
-      // The request failed as a unit: every file in the batch is marked failed
-      // since the server reports a single error for the whole multipart body.
-      for (const i of idxs) { overlay.setStatus(i, "error", err.message); failed++; }
+      failedFiles.push(entry);
+      failed++;
+      armRetry(slot, entry, err.message);
     }
   }
 
-  overlay.setLabel(t("netdisk.uploadedN", { ok, total: list.length }));
+  // sumSizes sums the byte sizes of an entry list (for the small-batch cap).
+  function sumSizes(entries) {
+    let n = 0;
+    for (const e of entries) n += e.file.size || 0;
+    return n;
+  }
+
+  // sendSmallBatch is the original multipart path, factored out so sendBatch can
+  // route large files to the chunked protocol instead.
+  async function sendSmallBatch(cur, slots, curBytes) {
+      // Compute each file's MD5 up front (off-main-thread, capped at a few
+      // workers) so the server can verify integrity. Files that can't be hashed
+      // yield "" and are still uploaded — the server checksums them.
+      const hashes = await Promise.all(cur.map((e) => hashFileMD5(e.file)));
+
+      const fd = new FormData();
+      fd.append("path", path);
+      for (let i = 0; i < cur.length; i++) {
+        // The relative path travels in its own "paths" field, one value per file
+        // part in the same order: a part's filename cannot carry directories
+        // (RFC 7578 §4.2), and the backend's multipart parser strips them, so
+        // relying on the filename alone would flatten "sub/f.txt" to "f.txt".
+        // The filename is still set so it stays a sensible fallback.
+        fd.append("paths", cur[i].relPath);
+        fd.append("hashes", hashes[i] || "");
+        fd.append("files", cur[i].file, cur[i].relPath);
+      }
+      // loaded[i] = bytes of file i already on the wire (for per-file progress).
+      const loaded = new Array(cur.length).fill(0);
+      let resp;
+      try {
+        resp = await uploadWithProgress("/api/netdisk/upload", fd, {
+          csrfToken,
+          onProgress: (p) => {
+            // uploadWithProgress reports bytes for the whole batch request;
+            // attribute them proportionally across the batch's files so each row
+            // still advances instead of freezing on "uploading…".
+            const batchLoaded = p.loaded;
+            const batchTotal = p.total || curBytes;
+            const ratio = batchTotal > 0 ? batchLoaded / batchTotal : 0;
+            for (let i = 0; i < cur.length; i++) {
+              const fileTotal = cur[i].file.size || 0;
+              const fileLoaded = fileTotal > 0 ? Math.min(fileTotal, Math.round(fileTotal * ratio)) : 0;
+              doneBytes += Math.max(0, fileLoaded - loaded[i]);
+              loaded[i] = fileLoaded;
+              overlay.updateActive(slots[i], {
+                loaded: fileLoaded,
+                total: fileTotal,
+                percent: fileTotal > 0 ? Math.min(100, Math.round((fileLoaded / fileTotal) * 100)) : 100,
+                speedBps: p.speedBps,
+              });
+            }
+          },
+        });
+      } catch (err) {
+        // Network/HTTP failure for the whole request: every file is retriable.
+        for (let i = 0; i < cur.length; i++) {
+          failedFiles.push(cur[i]);
+          failed++;
+          armRetry(slots[i], cur[i], err.message);
+        }
+        return;
+      }
+      // The server returns per-file results: each has {path, md5, error?}. A file
+      // is considered delivered only when it has no error AND (the client hash was
+      // empty OR it matches the server md5). Anything else is a corrupt/failed
+      // upload the user can retry.
+      const results = Array.isArray(resp?.results) ? resp.results : [];
+      for (let i = 0; i < cur.length; i++) {
+        const r = results[i] || {};
+        const serverMd5 = (r.md5 || "").toLowerCase();
+        const clientMd5 = (hashes[i] || "").toLowerCase();
+        const okFile = !r.error && (!clientMd5 || clientMd5 === serverMd5);
+        if (okFile) {
+          overlay.settleActive(slots[i], "done");
+          ok++;
+        } else {
+          failedFiles.push(cur[i]);
+          failed++;
+          const why = r.error || (clientMd5 ? t("netdisk.md5Mismatch") : "Failed");
+          armRetry(slots[i], cur[i], why);
+        }
+      }
+      return resp;
+  }
+
+  // armRetry marks a failed row with a Retry button that re-queues just that
+  // file. It reuses the SAME overlay row (flipping it back to uploading) and
+  // re-runs the single file through sendBatch so MD5 verification + result
+  // checking apply identically to the original upload.
+  function armRetry(slot, entry, msg) {
+    overlay.markFailedWithRetry(slot, msg, async () => {
+      // Reactivate the existing row in place rather than spawning a new one.
+      overlay.reactivate(slot, { name: entry.relPath || entry.file.name, size: entry.file.size });
+      // Pull this file out of the failed set while it's being retried; it will
+      // be re-added by sendBatch if it fails again.
+      const idx = failedFiles.indexOf(entry);
+      if (idx >= 0) failedFiles.splice(idx, 1);
+      failed = Math.max(0, failed - 1);
+      refreshOverall();
+      await sendBatch([entry], [slot], entry.file.size || 0);
+      setCurrentSelection(state.netdisk.selected || new Set());
+      renderNetdisk();
+    });
+  }
+
+  function refreshOverall() {
+    const elapsed = (performance.now() - batchStart) / 1000;
+    const speedBps = elapsed > 0 ? doneBytes / elapsed : 0;
+    const percent = totalBytes > 0 ? Math.min(100, (doneBytes / totalBytes) * 100) : 0;
+    const etaSec = speedBps > 0 ? (totalBytes - doneBytes) / speedBps : 0;
+    overlay.updateOverall({
+      done: ok, failed, total: seen, loaded: doneBytes, bytesTotal: totalBytes, speedBps, etaSec, percent,
+    });
+  }
+
+  // Concurrent pool: keep up to UPLOAD_CONCURRENCY batches in flight, pulling the
+  // next batch from the stream whenever a slot frees.
+  const inflight = new Set();
+  for (;;) {
+    while (inflight.size < UPLOAD_CONCURRENCY) {
+      // Assemble the next batch from the stream.
+      const cur = [];
+      let curBytes = 0;
+      while (cur.length < UPLOAD_BATCH_FILES) {
+        const entry = await nextEntry();
+        if (!entry) break;
+        const size = entry.file.size || 0;
+        // A single oversized file (larger than the byte cap) forms its own batch
+        // rather than being split — the backend streams it via ParseMultipartForm.
+        if (cur.length > 0 && curBytes + size > UPLOAD_BATCH_BYTES) {
+          iter = prependIterator(iter, entry); // push back for the next batch
+          break;
+        }
+        cur.push(entry);
+        curBytes += size;
+        totalBytes += size;
+        seen++;
+      }
+      if (!cur.length) break; // stream exhausted
+      overlay.setLabel(t("netdisk.uploadingRange", { lo: ok + failed + 1, hi: ok + failed + cur.length, total: seen }));
+      const p = uploadBatch(cur, curBytes).then(() => {
+        inflight.delete(p);
+        refreshOverall();
+      });
+      inflight.add(p);
+    }
+    if (!inflight.size) break; // no batch assembled and none in flight: done
+    // Wait for at least one in-flight batch to settle before topping up the pool.
+    await Promise.race(inflight);
+    refreshOverall();
+  }
+  // Drain any remaining batches.
+  if (inflight.size) { await Promise.allSettled(inflight); refreshOverall(); }
+
+  overlay.setLabel(t("netdisk.uploadedN", { ok, total: seen }));
   const summary = failed
     ? t("netdisk.uploadedNFailed", { ok, fail: failed })
-    : t("netdisk.uploadedN", { ok, total: list.length });
+    : t("netdisk.uploadedN", { ok, total: seen });
   toast(summary, !failed);
   setCurrentSelection(state.netdisk.selected || new Set());
   renderNetdisk();
-  // Let the user see the final per-file state before the card disappears.
-  setTimeout(() => overlay.close(), failed ? 3000 : 1500);
+  refreshOverall();
+  // Keep the card open longer (and indefinitely-ish) when there are failures, so
+  // the user can click Retry. A clean run dismisses quickly.
+  setTimeout(() => overlay.close(), failed ? 30000 : 1500);
   uploading = false;
+}
+
+// makeFileIterator / prependIterator / makeDropIterator live in lib/uploadStream.js
+// (imported above). The drop iterator is wired to walkEntry here so traversal of
+// a dropped folder back-pressures the upload and only ~one batch of File
+// references is held in memory at a time.
+function dropStream(itemList) {
+  return makeDropIterator(itemList, walkEntry, UPLOAD_BATCH_FILES * 2);
 }
 
 function quotaBar(q) {
