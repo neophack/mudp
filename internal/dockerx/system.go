@@ -3,10 +3,15 @@ package dockerx
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
+	"net"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -38,6 +43,16 @@ type SystemInfo struct {
 	AgentCPU   int            `json:"agentCpu"`
 	AgentMemMB float64        `json:"agentMemMb"`
 	AgentGoRt  string         `json:"agentGoRuntime"`
+	// LANIPs lists the host's own non-loopback, non-link-local interface
+	// addresses (e.g. 192.168.x.x). Surfaced on the dashboard so an operator
+	// can see how to reach the host on the LAN without running ifconfig.
+	LANIPs []string `json:"lanIps,omitempty"`
+	// PublicIP is the host's best-known public/egress IP, discovered by an
+	// outbound probe (see publicIP). It is the server's WAN address — distinct
+	// from the visitor's browser IP, which the client detects via WebRTC.
+	// Empty when the host has no outbound connectivity (intranet/offline) or
+	// the probe hasn't completed yet; the dashboard then renders "—".
+	PublicIP string `json:"publicIp,omitempty"`
 }
 
 // ContainerStats breaks container counts down by lifecycle state.
@@ -85,6 +100,8 @@ func (d *Client) gatherSystemInfo(ctx context.Context, username string) SystemIn
 		AgentGoRt:  runtime.Version(),
 		ServerTime: time.Now().Unix(),
 		AgentCPU:   runtime.NumCPU(),
+		LANIPs:     localIPs(),
+		PublicIP:   publicIP(),
 	}
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
@@ -315,4 +332,152 @@ func hostname() string {
 		return h
 	}
 	return "docker-host"
+}
+
+// localIPs returns the host's own non-loopback, non-link-local interface
+// addresses (IPv4 and IPv6). It mirrors what `ip addr` would show minus the
+// noise, so the dashboard can tell an operator how to reach the host on the LAN.
+// Best-effort: any interface-enumeration error yields an empty list.
+func localIPs() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, ifc := range ifaces {
+		// Skip down interfaces and loopback (we already exclude 127.x/::1
+		// below, but a disabled adapter need not be scanned at all).
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil {
+				continue
+			}
+			// Drop loopback, link-local (fe80::/169.254.x), and unspecified
+			// addresses so only routable host IPs remain.
+			if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+				continue
+			}
+			out = append(out, ip.String())
+		}
+	}
+	return out
+}
+
+// Server public/egress IP discovery.
+//
+// The dashboard polls /api/dashboard every few seconds, and the "Public IP"
+// row used to flicker between "—" and the value because the cache was empty
+// for the first render(s) and re-probed on every poll. A server's egress IP
+// effectively never changes during a process lifetime, so we resolve it once
+// (blocking the very first caller a few seconds) and then serve the sticky
+// value forever. A failed probe is also sticky: an intranet/offline host
+// won't gain outbound connectivity next poll, so we stop hammering the
+// external services and the dashboard shows a stable "—". Restart the agent
+// to retry.
+
+var (
+	publicIPMu       sync.RWMutex
+	publicIPValue    string // sticky cached value; "" means unknown
+	publicIPResolved bool   // true once a probe (success or failure) has completed
+	publicIPProbing  atomic.Bool
+)
+
+// publicIPFirstWait is how long the first-ever caller blocks for the probe.
+// It covers a normal outbound round-trip so the first dashboard render already
+// shows the value; a slower/unreachable host gives up and returns "" while the
+// background probe keeps running and fills the sticky cache for later renders.
+const publicIPFirstWait = 5 * time.Second
+
+// publicIP returns the server's public/egress IP. It blocks briefly on the
+// first call so the first dashboard render has a value; subsequent calls read
+// the sticky cache without any network I/O. See the package comment above for
+// the rationale.
+func publicIP() string {
+	publicIPMu.RLock()
+	val, resolved := publicIPValue, publicIPResolved
+	publicIPMu.RUnlock()
+	if resolved {
+		// Sticky: serve whatever the one probe landed (value or "").
+		return val
+	}
+
+	// First call: kick off the probe (deduped across concurrent callers) and
+	// wait a short while for it. Whoever wins the CAS owns the one probe.
+	owned := false
+	if publicIPProbing.CompareAndSwap(false, true) {
+		owned = true
+		go func() {
+			defer publicIPProbing.Store(false)
+			ip := probeEgressIP()
+			publicIPMu.Lock()
+			publicIPValue = ip
+			publicIPResolved = true
+			publicIPMu.Unlock()
+		}()
+	}
+
+	// Poll the cache for up to publicIPFirstWait. If the probe finishes in
+	// time the caller gets the value; otherwise it returns "" and later
+	// renders pick up the sticky result once the goroutine lands.
+	deadline := time.Now().Add(publicIPFirstWait)
+	for time.Now().Before(deadline) {
+		publicIPMu.RLock()
+		val, resolved = publicIPValue, publicIPResolved
+		publicIPMu.RUnlock()
+		if resolved {
+			return val
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = owned
+	return val
+}
+
+// egressProbeURLs are tried in order; the first that returns a bare IP wins.
+// A small, well-known mix keeps a single blocked host from stalling detection.
+var egressProbeURLs = []string{
+	"https://api.ipify.org",
+	"https://ifconfig.me/ip",
+	"https://ident.me",
+}
+
+// probeEgressIP discovers the server's public-facing IP by asking an external
+// "what is my IP" service. Each request has a short timeout so an unreachable
+// host resolves quickly to "". Returns "" if no service answers with a valid
+// IP (intranet/offline) — the caller treats that as "unknown".
+func probeEgressIP() string {
+	client := &http.Client{Timeout: 3 * time.Second}
+	for _, url := range egressProbeURLs {
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64))
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+		ip := net.ParseIP(strings.TrimSpace(string(body)))
+		if ip != nil {
+			return ip.String()
+		}
+	}
+	return ""
 }

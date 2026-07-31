@@ -962,6 +962,15 @@ const translations = {
     "hardware.minAgo": "{n} 分钟前",
     "hardware.sAgo": "{n} 秒前",
 
+    // Dashboard network/IP hints
+    "dash.lanIp": "内网 IP",
+    "dash.publicIp": "公网 IP",
+    "dash.yourIp": "你的 IP",
+    "dash.yourLan": "你的内网",
+    "dash.vpnProxy": "VPN/代理",
+    "dash.detecting": "检测中…",
+    "dash.detectFailed": "无法检测",
+
     // Usage
     "usage.resourceUsage": "资源使用情况",
     "usage.colContainers": "容器",
@@ -1033,8 +1042,8 @@ const translations = {
     "security.uniqueIPs": "独立 IP",
     "security.accessMap": "访问位置地图",
     "security.accessMapHint": "每个点代表一个访问来源，点的大小映射访问次数。",
-    "security.topCountries": "访问来源国家/地区 Top 5",
-    "security.topIPs": "访问来源 IP Top 5",
+    "security.topCountries": "访问来源国家/地区 Top 5（公网）",
+    "security.topIPs": "访问来源公网 IP Top 5",
     "security.unknown": "未知",
     "security.none": "暂无",
     "security.visits": "次访问",
@@ -1056,6 +1065,7 @@ const translations = {
     "security.colDevice": "设备 / 浏览器",
     "security.colUser": "用户名",
     "security.colFlags": "标记",
+    "security.publicIpShort": "公网",
     "security.settingsTitle": "安全监控设置",
     "security.settingEnabled": "启用安全监控",
     "security.settingEnabledHint": "关闭后将不再记录任何访问与登录事件。",
@@ -1069,6 +1079,24 @@ const translations = {
     "security.days": "天",
     "security.settingNote": "说明：浏览器无法获取操作系统的用户名；记录的用户名为登录时填写的账号名。VPN 会隐藏真实 IP，无法直接获取用户真实物理位置，但可通过机房 IP 标记与时区不匹配检测来识别。",
     "security.saved": "设置已保存。",
+
+    // IP-detection Worker (operator self-hosted Cloudflare Worker)
+    "security.ipWorkerTitle": "IP 检测 Worker",
+    "security.ipWorkerUrl": "Worker 域名",
+    "security.ipWorkerUrlHint": "自建 Cloudflare Worker 的 HTTPS 地址（如 https://xxx.workers.dev）。部署后，浏览器优先用它探测本机 IP 与地理位置；留空则回退到 WebRTC。",
+    "security.ipWorkerDeployHint": "Worker 代码不含密钥，只有 /whoami。点“查看部署代码”复制后，粘进 Cloudflare 即可使用，无需任何额外配置。",
+    "security.ipWorkerViewCode": "查看部署代码",
+    "security.ipWorkerCopyCode": "复制代码",
+    "security.ipWorkerCopied": "Worker 代码已复制到剪贴板。",
+    "security.ipWorkerVerifyTitle": "部署自检",
+    "security.ipWorkerVerifyAll": "全部验证",
+    "security.ipWorkerVerifyRun": "运行",
+    "security.ipWorkerVerifyRunning": "检测中…",
+    "security.ipWorkerVerifyCfg": "① 配置连接",
+    "security.ipWorkerVerifyCfgHint": "mudp 是否已识别一个 https 的 Worker 域名（前提：已保存 Worker URL）。",
+    "security.ipWorkerVerifyCfgFail": "未配置有效的 https Worker 域名，请先填写并保存。",
+    "security.ipWorkerVerifyWho": "② 浏览器探针 (/whoami)",
+    "security.ipWorkerVerifyWhoHint": "浏览器直接请求 Worker 的 /whoami，验证部署、可达性、CORS 放行与地理位置返回。",
 
     // MCP external-port security page
     "mcp.tabMcp": "MCP安全",
@@ -2206,6 +2234,15 @@ const translations = {
     "hardware.minAgo": "{n} min ago",
     "hardware.sAgo": "{n}s ago",
 
+    // Dashboard network/IP hints
+    "dash.lanIp": "LAN IP",
+    "dash.publicIp": "Public IP",
+    "dash.yourIp": "Your IP",
+    "dash.yourLan": "Your LAN",
+    "dash.vpnProxy": "VPN/Proxy",
+    "dash.detecting": "Detecting…",
+    "dash.detectFailed": "Unavailable",
+
     // Usage
     "usage.resourceUsage": "Resource Usage",
     "usage.colContainers": "Containers",
@@ -2277,8 +2314,8 @@ const translations = {
     "security.uniqueIPs": "Unique IPs",
     "security.accessMap": "Access map",
     "security.accessMapHint": "Each dot is one source location; size scales with visit count.",
-    "security.topCountries": "Top countries / regions",
-    "security.topIPs": "Top IPs",
+    "security.topCountries": "Top countries / regions (public)",
+    "security.topIPs": "Top public IPs",
     "security.unknown": "Unknown",
     "security.none": "None",
     "security.visits": "visits",
@@ -2300,6 +2337,7 @@ const translations = {
     "security.colDevice": "Device / browser",
     "security.colUser": "Username",
     "security.colFlags": "Flags",
+    "security.publicIpShort": "WAN",
     "security.settingsTitle": "Security monitor settings",
     "security.settingEnabled": "Enable security monitor",
     "security.settingEnabledHint": "When off, no visits or login attempts are recorded.",
@@ -2313,6 +2351,24 @@ const translations = {
     "security.days": "days",
     "security.settingNote": "Note: browsers cannot read the OS username; the recorded username is the account name entered at login. A VPN hides the real IP, so the true physical location cannot be recovered — but datacenter IPs and timezone mismatches are flagged instead.",
     "security.saved": "Settings saved.",
+
+    // IP-detection Worker (operator self-hosted Cloudflare Worker)
+    "security.ipWorkerTitle": "IP-detection Worker",
+    "security.ipWorkerUrl": "Worker URL",
+    "security.ipWorkerUrlHint": "HTTPS address of your self-hosted Cloudflare Worker (e.g. https://xxx.workers.dev). When set, the browser prefers it to probe the visitor's IP and location; empty falls back to WebRTC.",
+    "security.ipWorkerDeployHint": "The Worker source is secret-free (only an unauthenticated /whoami). Click “View deploy code”, copy it, and paste into Cloudflare — no extra configuration needed.",
+    "security.ipWorkerViewCode": "View deploy code",
+    "security.ipWorkerCopyCode": "Copy code",
+    "security.ipWorkerCopied": "Worker code copied to clipboard.",
+    "security.ipWorkerVerifyTitle": "Deployment self-check",
+    "security.ipWorkerVerifyAll": "Verify all",
+    "security.ipWorkerVerifyRun": "Run",
+    "security.ipWorkerVerifyRunning": "Checking…",
+    "security.ipWorkerVerifyCfg": "① Config wiring",
+    "security.ipWorkerVerifyCfgHint": "Whether mudp recognises an https Worker URL (requires the URL to be saved first).",
+    "security.ipWorkerVerifyCfgFail": "No valid https Worker URL configured — fill in and save one first.",
+    "security.ipWorkerVerifyWho": "② Browser probe (/whoami)",
+    "security.ipWorkerVerifyWhoHint": "The browser fetches the Worker's /whoami directly, checking deployment, reachability, CORS, and geo response.",
 
     // MCP external-port security page
     "mcp.tabMcp": "MCP Security",

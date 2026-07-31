@@ -24,15 +24,15 @@ import (
 // requests leave them blank — an operator on the LAN is not an "access" worth
 // plotting.
 type MCPUsageLog struct {
-	ID             int64  `json:"id"`
-	TokenID        int64  `json:"tokenId"`
-	OwnerID        int64  `json:"ownerId,omitempty"`
-	Owner          string `json:"owner,omitempty"`
-	ContainerID    string `json:"containerId"`
-	ContainerName  string `json:"containerName"`
-	TokenLabel     string `json:"tokenLabel,omitempty"`
-	Tool           string `json:"tool"`
-	ArgsPreview    string `json:"argsPreview,omitempty"`
+	ID            int64  `json:"id"`
+	TokenID       int64  `json:"tokenId"`
+	OwnerID       int64  `json:"ownerId,omitempty"`
+	Owner         string `json:"owner,omitempty"`
+	ContainerID   string `json:"containerId"`
+	ContainerName string `json:"containerName"`
+	TokenLabel    string `json:"tokenLabel,omitempty"`
+	Tool          string `json:"tool"`
+	ArgsPreview   string `json:"argsPreview,omitempty"`
 	// Geo/client fields, for the external-access map (green dots).
 	IP          string  `json:"ip,omitempty"`
 	Country     string  `json:"country,omitempty"`
@@ -401,14 +401,14 @@ func (db *DB) PruneMCPAttackLogs(before time.Time) error {
 // green) or "attack" (a refused external request). Severity ranks attacks so the
 // map can colour a one-off probe yellow and a repeat offender red.
 type MCPMapPoint struct {
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
-	Label     string  `json:"label"`
-	Country   string  `json:"country,omitempty"`
-	CountryCode string `json:"countryCode,omitempty"`
-	City      string  `json:"city,omitempty"`
-	Count     int     `json:"count"`
-	Kind      string  `json:"kind"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+	Label       string  `json:"label"`
+	Country     string  `json:"country,omitempty"`
+	CountryCode string  `json:"countryCode,omitempty"`
+	City        string  `json:"city,omitempty"`
+	Count       int     `json:"count"`
+	Kind        string  `json:"kind"`
 	// Severity: 1 = low (single/low-frequency attack), 2 = high (repeat offender).
 	// Access points carry 0.
 	Severity int `json:"severity,omitempty"`

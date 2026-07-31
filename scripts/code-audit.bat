@@ -230,7 +230,12 @@ REM   G124      -- every cookie sets Secure (conditional on httpx.IsSecureReques
 REM                so cookie-set works over plain HTTP in dev) + HttpOnly +
 REM                SameSite. gosec's static check can't see the conditional Secure,
 REM                and csrf.go's HttpOnly:false is deliberate (JS reads the token).
-gosec -quiet -severity medium -confidence medium -exclude-dir=dist -exclude=G703,G304,G115,G302,G306,G601,G505,G401,G117,G705,G120,G124 ./... > "%OUT%" 2>&1
+REM   G704      -- SSRF taint in geoLookupRemote (security.go): the request host
+REM                is hardcoded to ip-api.com and the path segment is the caller
+REM                IP re-parsed with net.ParseIP + gated on IsGlobalUnicast, so no
+REM                attacker-controlled bytes can reach the request line. gosec's
+REM                taint tracker does not model net.ParseIP as a sanitizer.
+gosec -quiet -severity medium -confidence medium -exclude-dir=dist -exclude=G703,G304,G115,G302,G306,G601,G505,G401,G117,G705,G120,G124,G704 ./... > "%OUT%" 2>&1
 call set "RC=%%errorlevel%%"
 REM gosec exits with: 0=ok, 1=findings, 2=tool error. Treat 2 as a skip.
 if "%RC%"=="2" (

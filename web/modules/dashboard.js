@@ -1,7 +1,8 @@
 // Dashboard: environment overview, resource counts, and the caller's workspace
 // rollup. Rendered from a single /api/dashboard payload (no N+1 fetches).
 
-import { state, escapeHtml, isAdmin, displayName, t } from "../app.js";
+import { state, api, escapeHtml, isAdmin, displayName, t } from "../app.js";
+import { detectClientIP } from "../lib/publicip.js";
 
 export function renderDashboard() {
   const d = state.dashboard;
@@ -42,6 +43,90 @@ export function renderDashboard() {
       // Row 4: recent activity (admin only)
       (admin ? `<div class="dash-row-full">${recentActivityCard(state.audit || [])}</div>` : "") +
     `</div>`;
+  // Kick off the client-side browser-IP probe after the DOM is painted. It
+  // resolves into the #dash-client-ip span in "My Workspace" without touching
+  // the rest of the dashboard, so a refresh mid-probe just restarts it.
+  probeClientIP();
+}
+
+// probeClientIP fills the visitor's own IP, its location, and the visitor's
+// LAN address in the "My Workspace" card. Detection runs several methods in
+// parallel (WebRTC/STUN + HTTPS "what is my IP" services) via detectClientIP,
+// then — once a public IP is known — asks /api/geo for the city/country to show
+// next to it. Each step re-checks that its element is still in the DOM so the
+// 8s dashboard poller (which may rebuild #view) can't clobber a stale result.
+async function probeClientIP() {
+  const ipEl = document.getElementById("dash-client-ip");
+  const locEl = document.getElementById("dash-client-loc");
+  const lanEl = document.getElementById("dash-client-lan");
+  if (!ipEl) return;
+
+  let pub = [];
+  let lan = [];
+  let geo = null;
+  try {
+    ({ public: pub, lan, geo } = await detectClientIP(4000));
+  } catch (_) {
+    // pub/lan stay empty — rendered as "unavailable" below.
+  }
+  if (!document.body.contains(ipEl)) return; // dashboard re-rendered under us
+
+  ipEl.textContent = pub.length ? pub.join(", ") : t("dash.detectFailed");
+  ipEl.classList.toggle("hint", pub.length === 0);
+
+  if (lanEl) {
+    lanEl.textContent = lan.length ? lan.join(", ") : "—";
+    lanEl.classList.toggle("hint", lan.length === 0);
+  }
+
+  // Location chip. When the Worker answered /whoami it already carried geo (in
+  // the same shape /api/geo returns), so we render it directly and skip a
+  // second round-trip. Otherwise fall back to the server's cached GeoIP proxy
+  // (ip-api.com is HTTP-only → the browser can't reach it on HTTPS pages).
+  if (locEl) {
+    if (geo) {
+      if (document.body.contains(locEl)) renderClientLocation(locEl, geo);
+    } else if (pub.length) {
+      try {
+        const g = await api(`/api/geo?ip=${encodeURIComponent(pub[0])}`);
+        if (document.body.contains(locEl)) renderClientLocation(locEl, g);
+      } catch (_) {
+        // Leave the placeholder; location is a nice-to-have, not essential.
+      }
+    }
+  }
+}
+
+// renderClientLocation fills the location chip from a /api/geo response:
+// "🇯🇵 Tokyo, Japan" style, plus an ISP/proxy hint when present. Empty geo
+// (disabled or unresolved) clears the chip so we don't show a bare flag.
+function renderClientLocation(el, geo) {
+  if (!geo || (!geo.city && !geo.country)) {
+    el.textContent = "";
+    el.className = "hint";
+    return;
+  }
+  const flag = countryCodeFlag(geo.countryCode);
+  const place = [geo.city, geo.country].filter(Boolean).join(", ") || "—";
+  const parts = [`${flag} ${escapeHtml(place)}`];
+  if (geo.isp) parts.push(`<span class="hint">· ${escapeHtml(geo.isp)}</span>`);
+  if (geo.proxy || geo.hosting) {
+    parts.push(`<span class="badge badge-warn">${escapeHtml(t("dash.vpnProxy"))}</span>`);
+  }
+  el.innerHTML = parts.join(" ");
+  el.className = "client-loc";
+}
+
+// countryCodeFlag turns a 2-letter country code into its regional-indicator
+// flag emoji. Mirrors the helper in security.js; duplicated here to keep the
+// dashboard module dependency-free (importing security.js would pull the whole
+// security page in).
+function countryCodeFlag(code) {
+  if (!code || code.length !== 2) return "🌍";
+  const A = 0x1f1e6;
+  const base = "A".charCodeAt(0);
+  const cc = code.toUpperCase();
+  return String.fromCodePoint(A + cc.charCodeAt(0) - base, A + cc.charCodeAt(1) - base);
 }
 
 // myContainersCard shows a non-admin their own containers as a compact list.
@@ -63,6 +148,11 @@ function myContainersCard() {
 function envCard(sys, healthy) {
   const rows = [
     [t("hardware.host"), escapeHtml(sys.name || "—")],
+    [t("dash.lanIp"), escapeHtml((sys.lanIps || []).join(", ") || "—")],
+    // Public IP is the server's own egress address, probed outbound by the
+    // agent (sys.publicIp). Distinct from the visitor's browser IP, which is
+    // detected client-side and shown in the "My Workspace" card.
+    [t("dash.publicIp"), escapeHtml(sys.publicIp || "—")],
     ["OS", escapeHtml([sys.osType, sys.osVersion].filter(Boolean).join(" ") || "—")],
     ["Kernel", escapeHtml(sys.kernel || "—")],
     [t("dash.arch"), escapeHtml(sys.arch || "—")],
@@ -150,6 +240,20 @@ function myWorkspaceCard(mine) {
           kv(t("containers.filterRunning"), mine.running ?? 0) +
           kv(t("hardware.memory"), fmtMB(mine.memoryMb)) +
           kv(t("common.disk"), fmtMB(mine.diskMb)) +
+        `</div>` +
+        // Your IP: the visitor's own browser IP + its location, detected
+        // client-side via WebRTC/STUN and HTTPS services after render, then
+        // geo-located through /api/geo. Stable ids let the async probe update
+        // these cells without re-rendering the card. Distinct from the
+        // server's public IP shown in the Environment card.
+        `<div class="client-ip-block">` +
+          `<div class="kv"><span>${t("dash.yourIp")}</span>` +
+            `<span class="client-ip-main">` +
+              `<strong id="dash-client-ip" class="mono hint">${escapeHtml(t("dash.detecting"))}</strong>` +
+              `<span id="dash-client-loc" class="hint"></span>` +
+            `</span>` +
+          `</div>` +
+          `<div class="kv"><span>${t("dash.yourLan")}</span><strong id="dash-client-lan" class="mono hint">${escapeHtml(t("dash.detecting"))}</strong></div>` +
         `</div>` +
       `</div>` +
     `</section>`

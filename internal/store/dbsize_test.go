@@ -58,11 +58,11 @@ func TestPruneLogsDeletesByCutoff(t *testing.T) {
 	now := time.Now().UTC()
 	old := now.AddDate(0, 0, -60)
 	for i := 0; i < 5; i++ {
-		db.Exec(`insert into audit_logs(actor, action, target, created_at) values(?,?,?,?)`,
+		_, _ = db.Exec(`insert into audit_logs(actor, action, target, created_at) values(?,?,?,?)`,
 			"old", "act", "t", old.Format(time.RFC3339))
 	}
 	for i := 0; i < 3; i++ {
-		db.Exec(`insert into audit_logs(actor, action, target, created_at) values(?,?,?,?)`,
+		_, _ = db.Exec(`insert into audit_logs(actor, action, target, created_at) values(?,?,?,?)`,
 			"new", "act", "t", now.Format(time.RFC3339))
 	}
 

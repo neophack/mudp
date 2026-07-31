@@ -1140,6 +1140,55 @@ func TestAccessLogRecordAndQuery(t *testing.T) {
 	}
 }
 
+// TestAccessStatsTopIPsPrefersPublicIP pins the security dashboard's "Top IPs"
+// ranking to the visitor's real WAN address. On an intranet deployment the
+// server-seen ip is a private last-hop address shared by every visitor, so
+// ranking by it collapses the list to one LAN entry. The browser-reported
+// public_ip (WebRTC/STUN) must take precedence when present, falling back to
+// ip only when the WAN address is unavailable — mirroring how recordAccess
+// derives the geography.
+func TestAccessStatsTopIPsPrefersPublicIP(t *testing.T) {
+	db := newTestDB(t)
+
+	// Two visitors share the same server-seen private ip (an intranet proxy)
+	// but report distinct public IPs. A third visitor has no public_ip, so its
+	// private ip is the effective source.
+	db.RecordAccess(AccessLog{Event: AccessEventLoginFailed, IP: "10.0.0.1", PublicIP: "203.0.113.10", CountryCode: "CN"})
+	db.RecordAccess(AccessLog{Event: AccessEventLoginFailed, IP: "10.0.0.1", PublicIP: "203.0.113.10", CountryCode: "CN"})
+	db.RecordAccess(AccessLog{Event: AccessEventLoginFailed, IP: "10.0.0.1", PublicIP: "198.51.100.20", CountryCode: "US"})
+	db.RecordAccess(AccessLog{Event: AccessEventLoginFailed, IP: "192.168.1.5", CountryCode: "GB"})
+
+	stats, err := db.AccessStats()
+	if err != nil {
+		t.Fatalf("AccessStats: %v", err)
+	}
+
+	// Ranked by the effective IP (public_ip first, else ip): the shared LAN
+	// proxy must NOT top the list — its visitors are split by their real WAN
+	// addresses.
+	if len(stats.TopIPs) < 3 || stats.TopIPs[0].Label != "203.0.113.10" || stats.TopIPs[0].Count != 2 {
+		t.Errorf("TopIPs = %+v, want 203.0.113.10 (count 2) first", stats.TopIPs)
+	}
+	// The public IPs appear ahead of the private-only fallback.
+	var privIdx, pubIdx int
+	for i, c := range stats.TopIPs {
+		switch c.Label {
+		case "192.168.1.5":
+			privIdx = i
+		case "198.51.100.20":
+			pubIdx = i
+		}
+	}
+	if pubIdx > privIdx {
+		t.Errorf("public IP 198.51.100.20 (idx %d) must rank above private fallback 192.168.1.5 (idx %d)", pubIdx, privIdx)
+	}
+	// UniqueIPs counts the server-seen ip only; the public split is a ranking
+	// concern, not a counting one, so the two distinct private hops stand.
+	if stats.UniqueIPs != 2 {
+		t.Errorf("UniqueIPs = %d, want 2 (private hops only)", stats.UniqueIPs)
+	}
+}
+
 // TestSecuritySettingsRoundTrip verifies the admin security-monitor config is
 // persisted and read back, and that an unset DB yields the safe defaults.
 func TestSecuritySettingsRoundTrip(t *testing.T) {

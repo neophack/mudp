@@ -114,7 +114,17 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 	// any sync before the first request. The gate re-reads auth config on every
 	// connection, so changes take effect without re-installing.
 	app.forward.SetAuthGate(app.newForwardAuthGate())
+	// Reflect any operator-configured IP-detection Worker into the CSP so the
+	// browser probe is allowed to call it. Re-synced after every settings save.
+	app.syncIPWorkerCSP()
 	return app, nil
+}
+
+// syncIPWorkerCSP publishes the configured worker origin (if any) into the
+// middleware's connect-src allowlist. Safe to call repeatedly; an empty or
+// non-https URL clears the entry so CSP tightens back to the baseline.
+func (a *App) syncIPWorkerCSP() {
+	middleware.SetIPWorkerOrigin(a.securitySettings().IPWorkerURL)
 }
 
 // Close releases resources held by the app, such as the Docker client, the
@@ -199,6 +209,10 @@ func (a *App) Routes() http.Handler {
 	r.With(loginRateLimiter.Middleware).Post("/api/login/track", a.accessTrackHandler)
 	// Tells the login page whether to collect device hints (collectClient).
 	r.Get("/api/security/config", a.securityConfigPublic)
+	// Tells the browser whether an operator IP-detection Worker is configured
+	// (and its base URL). Public because the IP probe runs before login. Never
+	// exposes the worker password/TOTP secret.
+	r.Get("/api/security/ipworker", a.ipWorkerConfigPublic)
 	// Public share links are unauthenticated by design, so they get the same
 	// per-IP throttle as login to blunt share-password brute forcing and
 	// unmetered zip-download DoS.
@@ -207,6 +221,10 @@ func (a *App) Routes() http.Handler {
 	r.With(loginRateLimiter.Middleware).Get("/api/netdisk/share/raw", a.netdiskShareRaw)
 	r.With(loginRateLimiter.Middleware).Get("/pan/{token}", a.netdiskSharePage)
 	r.Handle("/api/dashboard", a.requireRole(rankUser, a.dashboard))
+	// Resolves one IP to a location for the dashboard's "your IP" display;
+	// proxies the cached GeoIP lookup (ip-api.com is HTTP-only, so the browser
+	// can't call it directly from an HTTPS page without mixed-content errors).
+	r.Handle("/api/geo", a.requireRole(rankUser, a.geoLookupHandler))
 
 	// MCP Streamable HTTP endpoint (bearer-token authenticated, independent of
 	// the browser session — registered outside the CSRF group on purpose).
@@ -405,6 +423,9 @@ func (a *App) Routes() http.Handler {
 		// Security monitor configuration (master switch + per-feature toggles).
 		r.Get("/api/admin/security/settings", a.securitySettingsHandler)
 		r.Post("/api/admin/security/settings", a.securitySettingsHandler)
+		// IP-detection Worker deployment aid: serve the (secret-free) Worker
+		// source for one-click copy from the settings page.
+		r.Get("/api/admin/security/worker-source", a.workerSourceHandler)
 		r.Get("/api/settings/feishu", a.feishuSettings)
 		r.Post("/api/settings/feishu", a.feishuSettings)
 		r.Get("/api/admin/settings/site", a.siteSettings)
@@ -1756,7 +1777,8 @@ func (a *App) containerTerminal(w http.ResponseWriter, r *http.Request) {
 	// Perform the WebSocket handshake manually so we don't pull in a dependency.
 	key := r.Header.Get("Sec-WebSocket-Key")
 	if key == "" {
-		writeWSMessage(conn, wsText, []byte("missing websocket key"))
+		// The connection is about to close; a write failure here is not actionable.
+		_ = writeWSMessage(conn, wsText, []byte("missing websocket key"))
 		return
 	}
 	if err := wsHandshake(bufRW, key); err != nil {
@@ -1768,7 +1790,8 @@ func (a *App) containerTerminal(w http.ResponseWriter, r *http.Request) {
 	cols, rows := wsSize(r.URL.Query().Get("cols"), r.URL.Query().Get("rows"))
 	exec, err := a.docker.ExecAttach(r.Context(), id, rows, cols)
 	if err != nil {
-		writeWSMessage(conn, wsText, []byte("Failed to open terminal: "+err.Error()))
+		// The connection is about to close; a write failure here is not actionable.
+		_ = writeWSMessage(conn, wsText, []byte("Failed to open terminal: "+err.Error()))
 		return
 	}
 	defer exec.Hijacked.Close()

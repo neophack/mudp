@@ -19,10 +19,15 @@ const (
 // what they use (browser/OS/device), and whether a login attempt succeeded.
 // Passwords are never stored — only the username and the outcome.
 type AccessLog struct {
-	ID            int64   `json:"id"`
-	Event         string  `json:"event"`
-	Username      string  `json:"username,omitempty"`
-	IP            string  `json:"ip"`
+	ID       int64  `json:"id"`
+	Event    string `json:"event"`
+	Username string `json:"username,omitempty"`
+	IP       string `json:"ip"`
+	// PublicIP is the visitor's own WAN address, probed in-browser via
+	// WebRTC/STUN. On an intranet deployment the server only sees the last-hop
+	// private address (IP), which has no GeoIP answer; this field recovers the
+	// real location for the access map. Empty when WebRTC is unavailable.
+	PublicIP      string  `json:"publicIP,omitempty"`
 	Country       string  `json:"country,omitempty"`
 	CountryCode   string  `json:"countryCode,omitempty"`
 	Region        string  `json:"region,omitempty"`
@@ -49,26 +54,26 @@ type AccessLog struct {
 	Suspicious string `json:"suspicious,omitempty"`
 	// Client-supplied signals (collected in-browser; they bypass a VPN because
 	// they describe the actual device, not the tunnel's exit node).
-	ClientTimezone    string `json:"clientTimezone,omitempty"`
-	ClientLanguage    string  `json:"clientLanguage,omitempty"`
-	ClientScreen      string  `json:"clientScreen,omitempty"`
-	ClientPlatform    string  `json:"clientPlatform,omitempty"`
-	ClientCPUCore     int     `json:"clientCpuCore,omitempty"`
-	ClientMemoryGB    int     `json:"clientMemoryGB,omitempty"`
-	ClientTouch       bool    `json:"clientTouch"`
-	ClientDNT         bool    `json:"clientDnt"`
-	CreatedAt         string  `json:"createdAt"`
+	ClientTimezone string `json:"clientTimezone,omitempty"`
+	ClientLanguage string `json:"clientLanguage,omitempty"`
+	ClientScreen   string `json:"clientScreen,omitempty"`
+	ClientPlatform string `json:"clientPlatform,omitempty"`
+	ClientCPUCore  int    `json:"clientCpuCore,omitempty"`
+	ClientMemoryGB int    `json:"clientMemoryGB,omitempty"`
+	ClientTouch    bool   `json:"clientTouch"`
+	ClientDNT      bool   `json:"clientDnt"`
+	CreatedAt      string `json:"createdAt"`
 }
 
 // AccessLogFilter narrows AccessLogs results. Empty fields match everything.
 type AccessLogFilter struct {
-	Event         string
-	IP            string
-	Username      string
-	Q             string // free-text, matches ip/username/city/country/user_agent
-	SuspiciousOnly bool // restrict to entries flagged vpn/tz-mismatch/proxy
-	Limit         int
-	Offset        int
+	Event          string
+	IP             string
+	Username       string
+	Q              string // free-text, matches ip/username/city/country/user_agent
+	SuspiciousOnly bool   // restrict to entries flagged vpn/tz-mismatch/proxy
+	Limit          int
+	Offset         int
 }
 
 // GeoPoint is a deduplicated access location for map rendering: each distinct
@@ -85,17 +90,17 @@ type GeoPoint struct {
 // AccessStats summarises the access log for the dashboard header cards and the
 // "top sources" breakdowns.
 type AccessStats struct {
-	TotalVisits   int            `json:"totalVisits"`
-	LoginSuccess  int            `json:"loginSuccess"`
-	LoginFailed   int            `json:"loginFailed"`
-	UniqueIPs     int            `json:"uniqueIPs"`
-	VPNProxy      int            `json:"vpnProxy"` // IPs detected as vpn/proxy/hosting
-	Suspicious    int            `json:"suspicious"` // entries with any suspicious marker
-	TopCountries  []AccessCount  `json:"topCountries"`
-	TopIPs        []AccessCount  `json:"topIPs"`
-	TopBrowsers   []AccessCount  `json:"topBrowsers"`
-	TopOS         []AccessCount  `json:"topOS"`
-	HourlyTrend   []AccessTrend  `json:"hourlyTrend"`
+	TotalVisits  int           `json:"totalVisits"`
+	LoginSuccess int           `json:"loginSuccess"`
+	LoginFailed  int           `json:"loginFailed"`
+	UniqueIPs    int           `json:"uniqueIPs"`
+	VPNProxy     int           `json:"vpnProxy"`   // IPs detected as vpn/proxy/hosting
+	Suspicious   int           `json:"suspicious"` // entries with any suspicious marker
+	TopCountries []AccessCount `json:"topCountries"`
+	TopIPs       []AccessCount `json:"topIPs"`
+	TopBrowsers  []AccessCount `json:"topBrowsers"`
+	TopOS        []AccessCount `json:"topOS"`
+	HourlyTrend  []AccessTrend `json:"hourlyTrend"`
 }
 
 // AccessCount is a label/count pair used for the "top N" breakdowns.
@@ -174,6 +179,16 @@ func migrateExtendAccessLogs(db executor) error {
 	return nil
 }
 
+// migrateExtendAccessLogsPublicIP adds the browser-reported WAN address column.
+// On an intranet deployment the server's view of the source IP is a private
+// address with no GeoIP answer, so the access map would be empty; the
+// WebRTC/STUN-reflexive public IP recovers the real location.
+func migrateExtendAccessLogsPublicIP(db executor) error {
+	return execIgnoring(db,
+		`alter table access_logs add column public_ip text not null default ''`,
+		sqliteDuplicateColumn)
+}
+
 // RecordAccess persists one access-log entry. Best-effort: it never returns an
 // error so the surrounding handler is unaffected, mirroring Audit().
 func (db *DB) RecordAccess(log AccessLog) {
@@ -184,7 +199,7 @@ func (db *DB) RecordAccess(log AccessLog) {
 		log.CreatedAt = time.Now().Format(time.RFC3339)
 	}
 	_, _ = db.Exec(`insert into access_logs(
-		event, username, ip, country, country_code, region, city,
+		event, username, ip, public_ip, country, country_code, region, city,
 		latitude, longitude, timezone, isp,
 		browser, os, device_type, user_agent, referer,
 		success, failure_reason,
@@ -192,8 +207,8 @@ func (db *DB) RecordAccess(log AccessLog) {
 		client_timezone, client_language, client_screen, client_platform,
 		client_cpu_core, client_memory_gb, client_touch, client_dnt,
 		created_at
-	) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		log.Event, log.Username, log.IP, log.Country, log.CountryCode, log.Region, log.City,
+	) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		log.Event, log.Username, log.IP, log.PublicIP, log.Country, log.CountryCode, log.Region, log.City,
 		nullFloat(log.Latitude), nullFloat(log.Longitude), log.Timezone, log.ISP,
 		log.Browser, log.OS, log.DeviceType, log.UserAgent, log.Referer,
 		log.Success, log.FailureReason,
@@ -243,7 +258,7 @@ func (db *DB) AccessLogs(f AccessLogFilter) ([]AccessLog, error) {
 		// Any of: detected proxy/hosting, or a non-empty suspicious marker.
 		clauses = append(clauses, "(is_proxy=1 or is_hosting=1 or suspicious != '')")
 	}
-	q := `select id, event, username, ip, country, country_code, region, city,
+	q := `select id, event, username, ip, public_ip, country, country_code, region, city,
 		coalesce(latitude,0), coalesce(longitude,0), timezone, isp,
 		browser, os, device_type, user_agent, referer, success, failure_reason,
 		is_proxy, is_hosting, proxy_type, suspicious,
@@ -264,7 +279,7 @@ func (db *DB) AccessLogs(f AccessLogFilter) ([]AccessLog, error) {
 	var out []AccessLog
 	for rows.Next() {
 		var l AccessLog
-		if err := rows.Scan(&l.ID, &l.Event, &l.Username, &l.IP, &l.Country, &l.CountryCode,
+		if err := rows.Scan(&l.ID, &l.Event, &l.Username, &l.IP, &l.PublicIP, &l.Country, &l.CountryCode,
 			&l.Region, &l.City, &l.Latitude, &l.Longitude, &l.Timezone, &l.ISP,
 			&l.Browser, &l.OS, &l.DeviceType, &l.UserAgent, &l.Referer, &l.Success, &l.FailureReason,
 			&l.IsProxy, &l.IsHosting, &l.ProxyType, &l.Suspicious,
@@ -334,7 +349,15 @@ func (db *DB) AccessStats() (AccessStats, error) {
 		return s, err
 	}
 	s.TopCountries = accessTopCounts(db, `select coalesce(nullif(country_code,''),'Unknown'), count(*) from access_logs where event in ('login_success','login_failed') group by country_code order by count(*) desc limit 5`)
-	s.TopIPs = accessTopCounts(db, `select ip, count(*) from access_logs where ip != '' group by ip order by count(*) desc limit 5`)
+	// Top IPs are ranked by the visitor's real WAN address when available: on an
+	// intranet deployment the server's `ip` is a private last-hop address, so
+	// grouping by it collapses the whole list to one LAN entry. The browser-
+	// reported public_ip (WebRTC/STUN) recovers the actual source — mirroring
+	// how recordAccess already derives the geography. nullif/coalesce give the
+	// "effective IP": public_ip if present, else ip; blank effective IPs are
+	// excluded so the count isn't padded by unlocatable private hops.
+	const effectiveIP = "coalesce(nullif(public_ip,''), ip)"
+	s.TopIPs = accessTopCounts(db, "select "+effectiveIP+", count(*) from access_logs where "+effectiveIP+" != '' group by "+effectiveIP+" order by count(*) desc limit 5")
 	s.TopBrowsers = accessTopCounts(db, `select coalesce(nullif(browser,''),'Unknown'), count(*) from access_logs group by browser order by count(*) desc limit 5`)
 	s.TopOS = accessTopCounts(db, `select coalesce(nullif(os,''),'Unknown'), count(*) from access_logs group by os order by count(*) desc limit 5`)
 	s.HourlyTrend = accessTrend(db)
@@ -411,6 +434,16 @@ type SecuritySettings struct {
 	// RetentionDays bounds how long entries are kept before the background
 	// pruner deletes them. 0 falls back to the built-in 90-day default.
 	RetentionDays int `json:"retentionDays"`
+
+	// IPWorkerURL is the base URL of the operator's self-hosted Cloudflare
+	// Worker that the browser hits (/whoami) to recover the visitor's own
+	// public IP + geo (from Cloudflare's request.cf). Empty = worker not
+	// deployed; the front end then falls back to WebRTC. The Worker is
+	// unauthenticated (it only ever reflects the caller's own address), so
+	// there is no password/secret here — and no server-side /lookup: the
+	// server resolves arbitrary IPs (for access-log geography) directly via
+	// ip-api.com, independent of this Worker.
+	IPWorkerURL string `json:"ipWorkerUrl"`
 }
 
 // DefaultSecuritySettings returns the recommended defaults for a new install.

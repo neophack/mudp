@@ -165,19 +165,19 @@ func (db *DB) tableRowCount(name string) (int64, error) {
 // which the page renders as "—". Keyed on the physical table name.
 var tableDescriptions = map[string]string{
 	// User data & access control
-	"users":          "用户账号、密码哈希、角色、端口前缀、容器与网盘配额、飞书绑定及登录状态",
-	"groups":         "用户组（含内置 pending 待审组、users 默认组）、组网盘与备份根路径、组语言",
-	"user_groups":    "用户与组的关联（多对多），决定用户可见的镜像/网络/网盘路径",
+	"users":       "用户账号、密码哈希、角色、端口前缀、容器与网盘配额、飞书绑定及登录状态",
+	"groups":      "用户组（含内置 pending 待审组、users 默认组）、组网盘与备份根路径、组语言",
+	"user_groups": "用户与组的关联（多对多），决定用户可见的镜像/网络/网盘路径",
 
 	// Images & container defaults
-	"images":         "可用镜像注册表，含管理员预设的默认配置（GPU/端口/环境变量/设备等）",
-	"group_images":   "镜像与组的授权关联；未授权的镜像对所有用户公开，授权的仅组成员可见",
+	"images":       "可用镜像注册表，含管理员预设的默认配置（GPU/端口/环境变量/设备等）",
+	"group_images": "镜像与组的授权关联；未授权的镜像对所有用户公开，授权的仅组成员可见",
 
 	// Networks
 	"group_networks": "组与 Docker 网络的授权，决定哪些用户组可接入某网络",
 
 	// Compose
-	"stacks":         "用户拥有的 Docker Compose 堆栈（compose YAML、环境变量、项目名）",
+	"stacks": "用户拥有的 Docker Compose 堆栈（compose YAML、环境变量、项目名）",
 
 	// Netdisk & sharing
 	"netdisk_shares": "网盘分享链接：令牌、路径、过期/永久、访问密码（哈希+所有者可查看的明文）",
@@ -201,9 +201,9 @@ var tableDescriptions = map[string]string{
 	"notifications": "站内通知（按用户的提醒，含已读状态，可批量通知所有管理员）",
 
 	// Configuration & system
-	"settings":         "通用键值配置：飞书 OAuth、镜像仓库、安全监控、端口转发、磁盘挂载、站点名等",
-	"backup_schedule":  "每日数据库备份计划（单行配置：执行时间、启用、上次运行）",
-	"schema_version":   "数据库迁移版本追踪（系统表，记录已应用的迁移版本）",
+	"settings":        "通用键值配置：飞书 OAuth、镜像仓库、安全监控、端口转发、磁盘挂载、站点名等",
+	"backup_schedule": "每日数据库备份计划（单行配置：执行时间、启用、上次运行）",
+	"schema_version":  "数据库迁移版本追踪（系统表，记录已应用的迁移版本）",
 }
 
 // TableDescription returns the human-readable note for a known table, or "" when

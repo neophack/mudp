@@ -196,9 +196,9 @@ func (a *App) startBackupJob(u *store.User, src, dst, name string, scheduled boo
 // on collision via nextBackupName (date-time stamp). It reports progress per
 // file and bails out as soon as the context is cancelled.
 func (a *App) runBackup(ctx context.Context, job *BackupJob, src, dst string) {
-	// Validate source exists.
-	srcInfo, err := os.Stat(src)
-	if err != nil {
+	// Validate source exists. (We only need to confirm it's reachable; the
+	// directory-vs-file distinction no longer branches the copy below.)
+	if _, err := os.Stat(src); err != nil {
 		job.setStatus("error", "Source not found: "+err.Error())
 		return
 	}
@@ -212,12 +212,10 @@ func (a *App) runBackup(ctx context.Context, job *BackupJob, src, dst string) {
 	// Create the destination directory tree. dst is the user's backup root joined
 	// with the optional sub-path the picker chose; the source basename lands
 	// inside it (nextBackupName handles a name clash with an existing backup).
-	var dstBase string
-	if srcInfo.IsDir() {
-		dstBase = filepath.Join(dst, filepath.Base(src))
-	} else {
-		dstBase = filepath.Join(dst, filepath.Base(src))
-	}
+	// A directory and a file both land at the same path: for a file, the
+	// basename is the file name; for a directory, the basename is the folder
+	// name and its contents are copied into it.
+	dstBase := filepath.Join(dst, filepath.Base(src))
 	dstBase = nextBackupName(filepath.Dir(dstBase), filepath.Base(dstBase))
 	if err := os.MkdirAll(filepath.Dir(dstBase), 0750); err != nil {
 		job.setStatus("error", "Cannot create backup directory: "+err.Error())

@@ -56,6 +56,9 @@ func (a *App) reloadSecuritySettings() {
 	a.secSettingsMu.Lock()
 	a.secLoaded = false
 	a.secSettingsMu.Unlock()
+	// The worker URL feeds the CSP connect-src allowlist; re-sync so a freshly
+	// configured (or removed) worker takes effect immediately.
+	a.syncIPWorkerCSP()
 }
 
 // geoCacheTTL bounds how long a resolved IP→location mapping stays cached.
@@ -84,8 +87,8 @@ type geoInfo struct {
 	// address, so these flag an anonymised connection. We can't recover the
 	// user's real location behind a VPN from the IP alone — but we can flag it,
 	// and compare it against the browser's local timezone to spot mismatches.
-	Proxy   bool   `json:"proxy"`
-	Hosting bool   `json:"hosting"`
+	Proxy     bool   `json:"proxy"`
+	Hosting   bool   `json:"hosting"`
 	ProxyType string `json:"proxyType"` // vpn/proxy/tor/hosting when proxy/hosting
 }
 
@@ -171,10 +174,19 @@ type ipAPIResponse struct {
 func (a *App) geoLookupRemote(ip string) geoInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), geoHTTPTimeout)
 	defer cancel()
+	// Re-parse and re-validate the address before it touches the URL. The host
+	// part of the request is fixed (ip-api.com) and the path is built from this
+	// value, so canonicalising through net.ParseIP both defeats gosec's taint
+	// tracker and guarantees no attacker-controlled bytes can reach the request
+	// line: anything that isn't a valid public IP literal returns early.
+	parsed := net.ParseIP(ip)
+	if parsed == nil || !parsed.IsGlobalUnicast() {
+		return geoInfo{}
+	}
 	// fields=... limits the payload to just what we store; the lang is left to
 	// the service default (English) so country names sort/compare consistently.
 	// proxy/hosting are part of the free block-type dataset and flag VPNs.
-	url := "http://ip-api.com/json/" + ip + "?fields=status,message,country,countryCode,regionName,city,lat,lon,timezone,isp,proxy,hosting"
+	url := "http://ip-api.com/json/" + parsed.String() + "?fields=status,message,country,countryCode,regionName,city,lat,lon,timezone,isp,proxy,hosting"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return geoInfo{}
@@ -237,6 +249,14 @@ type clientInfo struct {
 	Device  string
 	UA      string
 	Referer string
+	// PublicIP is the visitor's own WAN address, probed in-browser via
+	// WebRTC/STUN and carried in a cookie so it rides on the /api/login request.
+	// The server can only see the source of its last network hop, so on an
+	// intranet deployment that hop is a private address with no GeoIP answer;
+	// the browser-reported reflexive address recovers the real location for the
+	// access map. Empty when WebRTC is disabled, STUN is unreachable, or no
+	// cookie was sent (e.g. a scripted login that never loaded the login page).
+	PublicIP string
 	// Client-supplied device hints (collected in-browser; bypass a VPN because
 	// they describe the local device, not the tunnel's exit). Populated only on
 	// the page-view track request; login attempts carry whatever was captured.
@@ -245,14 +265,14 @@ type clientInfo struct {
 
 // clientHints are the device signals the login page can read locally.
 type clientHints struct {
-	Timezone  string `json:"timezone"`
-	Language  string `json:"language"`
-	Screen    string `json:"screen"`
-	Platform  string `json:"platform"`
-	CPUCore   int    `json:"cpuCore"`
-	MemoryGB  int    `json:"memoryGB"`
-	Touch     bool   `json:"touch"`
-	DNT       bool   `json:"dnt"`
+	Timezone string `json:"timezone"`
+	Language string `json:"language"`
+	Screen   string `json:"screen"`
+	Platform string `json:"platform"`
+	CPUCore  int    `json:"cpuCore"`
+	MemoryGB int    `json:"memoryGB"`
+	Touch    bool   `json:"touch"`
+	DNT      bool   `json:"dnt"`
 }
 
 // collectClient resolves everything we know about the caller of r. GeoIP is a
@@ -268,14 +288,35 @@ func (a *App) collectClient(r *http.Request) clientInfo {
 	ua := r.UserAgent()
 	browser, osName, device := parseUserAgent(ua)
 	return clientInfo{
-		IP:      ip,
-		geo:     a.geoLookup(ip),
-		Browser: browser,
-		OS:      osName,
-		Device:  device,
-		UA:      ua,
-		Referer: r.Header.Get("Referer"),
+		IP:       ip,
+		PublicIP: publicIPFromCookie(r),
+		geo:      a.geoLookup(ip),
+		Browser:  browser,
+		OS:       osName,
+		Device:   device,
+		UA:       ua,
+		Referer:  r.Header.Get("Referer"),
 	}
+}
+
+// publicIPCookie is the cookie the login page writes the WebRTC/STUN-reflexive
+// WAN address into. It is a non-sensitive display value used only to geo-locate
+// intranet access (where the server's source IP is private), so it rides on the
+// /api/login request without needing any server-side state.
+const publicIPCookie = "mudp_pubip"
+
+// publicIPFromCookie reads the browser-reported public IP cookie, validating it
+// is a real IP literal before trusting it (so a tampered cookie can't inject an
+// arbitrary string into a URL or the access log). Returns "" when absent or bad.
+func publicIPFromCookie(r *http.Request) string {
+	c, err := r.Cookie(publicIPCookie)
+	if err != nil || c.Value == "" {
+		return ""
+	}
+	if net.ParseIP(c.Value) == nil {
+		return ""
+	}
+	return c.Value
 }
 
 // recordAccess builds and stores an access-log entry from a client snapshot.
@@ -286,18 +327,35 @@ func (a *App) recordAccess(ci clientInfo, event, username, failureReason string,
 	if !s.Enabled {
 		return
 	}
+	// Decide which address drives the recorded geography. The browser-reported
+	// public IP (WebRTC/STUN reflexive address) is the visitor's real WAN
+	// address and is preferred as the location source: on an intranet/WSL
+	// deployment the server only sees the last private hop (ci.IP) which has no
+	// GeoIP answer, and even on a public host a CDN/proxy in front can resolve a
+	// near-empty location (country only, no city/coords). The public IP avoids
+	// both — the map and the address column then reflect where the visitor
+	// actually is. We fall back to the server-IP geo (ci.geo) only when no
+	// public IP was reported or it failed to resolve.
+	publicIP := ci.PublicIP
+	geo := ci.geo
+	if publicIP != "" {
+		if pubGeo := a.geoLookup(publicIP); pubGeo.Country != "" {
+			geo = pubGeo
+		}
+	}
 	log := store.AccessLog{
 		Event:         event,
 		Username:      username,
 		IP:            ci.IP,
-		Country:       ci.geo.Country,
-		CountryCode:   ci.geo.CountryCode,
-		Region:        ci.geo.Region,
-		City:          ci.geo.City,
-		Latitude:      ci.geo.Latitude,
-		Longitude:     ci.geo.Longitude,
-		Timezone:      ci.geo.Timezone,
-		ISP:           ci.geo.ISP,
+		PublicIP:      publicIP,
+		Country:       geo.Country,
+		CountryCode:   geo.CountryCode,
+		Region:        geo.Region,
+		City:          geo.City,
+		Latitude:      geo.Latitude,
+		Longitude:     geo.Longitude,
+		Timezone:      geo.Timezone,
+		ISP:           geo.ISP,
 		Browser:       ci.Browser,
 		OS:            ci.OS,
 		DeviceType:    ci.Device,
@@ -308,9 +366,9 @@ func (a *App) recordAccess(ci clientInfo, event, username, failureReason string,
 		CreatedAt:     time.Now().Format(time.RFC3339),
 	}
 	if s.VPNDetect {
-		log.IsProxy = ci.geo.Proxy
-		log.IsHosting = ci.geo.Hosting
-		log.ProxyType = ci.geo.ProxyType
+		log.IsProxy = geo.Proxy
+		log.IsHosting = geo.Hosting
+		log.ProxyType = geo.ProxyType
 	}
 	if s.CollectClient {
 		log.ClientTimezone = ci.Timezone
@@ -326,7 +384,7 @@ func (a *App) recordAccess(ci clientInfo, event, username, failureReason string,
 	// timezone. A VPN relocates the IP but not the device's clock, so a
 	// mismatch is a strong indicator of a tunnel — more reliable than IP-geo
 	// alone for catching VPN users.
-	log.Suspicious = tzMismatchReason(ci.geo.Timezone, ci.Timezone, ci.geo.Proxy, ci.geo.Hosting)
+	log.Suspicious = tzMismatchReason(geo.Timezone, ci.Timezone, geo.Proxy, geo.Hosting)
 	a.db.RecordAccess(log)
 }
 
@@ -551,14 +609,29 @@ func (a *App) accessTrackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	ci := a.collectClient(r)
 	// The body carries optional client-only device hints (screen, timezone,
-	// language, CPU, memory). These describe the real device and so travel with
-	// the user even through a VPN — the basis for the timezone-mismatch check.
-	// Unreadable bodies are ignored; nothing here is secret.
-	var hints clientHints
-	_ = decodeJSON(r, &hints)
-	ci.clientHints = hints
+	// language, CPU, memory) plus the browser-reported public IP. These describe
+	// the real device and so travel with the user even through a VPN — the basis
+	// for the timezone-mismatch check. Unreadable bodies are ignored; nothing
+	// here is secret.
+	var body trackBody
+	_ = decodeJSON(r, &body)
+	ci.clientHints = body.clientHints
+	// Prefer the cookie (set early on the login page, also carried by /api/login);
+	// fall back to the body value when the cookie is absent.
+	if ci.PublicIP == "" {
+		ci.PublicIP = body.PublicIP
+	}
 	a.recordAccess(ci, store.AccessEventPageView, "", "", false)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// trackBody mirrors the JSON the login page POSTs to /api/login/track. It is the
+// clientHints fields plus publicIP (which lives on clientInfo, not clientHints);
+// decoding into this keeps the public IP the browser just probed on the page-view
+// record even when no cookie was set (e.g. third-party cookies blocked).
+type trackBody struct {
+	clientHints
+	PublicIP string `json:"publicIP"`
 }
 
 // accessExportHandler streams the (filtered) access log as CSV for offline
@@ -633,6 +706,35 @@ func (a *App) securityConfigPublic(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{
 		"collectClient": s.Enabled && s.CollectClient,
 	})
+}
+
+// ipWorkerConfigPublic tells the browser whether an operator-deployed IP/geo
+// detection Worker is configured. The front-end IP probe uses this to decide
+// whether to hit the worker's /whoami (richer geo, HTTPS, globally reachable)
+// before falling back to WebRTC. Only the URL and an enabled flag are exposed:
+// the worker password and TOTP secret never reach the browser, so an attacker
+// reading the page cannot mint authenticated /lookup calls. The endpoint is
+// public (no session) because the IP probe runs on the login page before auth.
+func (a *App) ipWorkerConfigPublic(w http.ResponseWriter, r *http.Request) {
+	s := a.securitySettings()
+	url := strings.TrimSpace(s.IPWorkerURL)
+	enabled := url != "" && strings.HasPrefix(url, "https://")
+	resp := map[string]any{"enabled": enabled}
+	if enabled {
+		resp["url"] = strings.TrimRight(url, "/")
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// geoLookupHandler resolves a single IP to its geographic location for the
+// dashboard's "your IP + location" display. The browser can't call ip-api.com
+// directly (HTTP-only on the free tier → mixed-content block on HTTPS pages),
+// so the server proxies through its cached geoLookup. Available to any logged-
+// in user (same rank as the dashboard). An empty/disabled/invalid IP yields an
+// empty geoInfo — the frontend then shows just the IP without a location chip.
+func (a *App) geoLookupHandler(w http.ResponseWriter, r *http.Request) {
+	ip := strings.TrimSpace(r.URL.Query().Get("ip"))
+	writeJSON(w, http.StatusOK, a.geoLookup(ip))
 }
 
 func boolStr(b bool) string {

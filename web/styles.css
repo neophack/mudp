@@ -1281,6 +1281,14 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 .kv strong { color: var(--ink); }
 .kv-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
 .kv-row .kv { flex-direction: column; align-items: flex-start; gap: 2px; }
+/* "Your IP" block in the My Workspace card: the IP sits next to a location chip,
+   and the LAN row sits beneath. Keeps the label aligned while the value side can
+   wrap an IP + flag/badge on one line. */
+.client-ip-block { display: grid; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.client-ip-block .kv { align-items: center; }
+.client-ip-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; text-align: right; }
+.client-ip-main strong { font-size: 12.5px; }
+.client-loc { color: var(--ink-soft); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .bar { height: 6px; background: var(--line-soft); border-radius: 3px; margin: 8px 0 4px; overflow: hidden; }
 .bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
 .audit-mini { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
@@ -3297,6 +3305,61 @@ audio.viewer-media {
 .sec-retention { display: flex; align-items: center; gap: 8px; }
 .sec-retention input { width: 90px; }
 .sec-note { line-height: 1.6; }
+/* IP-detection Worker settings: a stacked sub-section with text inputs. */
+.sec-subhead {
+  font-weight: 700; font-size: 14px; color: var(--ink);
+  margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--line);
+}
+.sec-field:has(.sec-input) { flex-direction: column; align-items: stretch; gap: 6px; }
+.sec-input {
+  width: 100%; padding: 8px 10px;
+  background: var(--panel, var(--bg)); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px; font-size: 13px;
+  font-family: inherit;
+}
+.sec-input:focus { outline: none; border-color: var(--accent, #5eead4); }
+/* IP-detection Worker deployment aid: generate + view/copy source. */
+.sec-deploy {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px; border: 1px dashed var(--line); border-radius: 8px;
+}
+.sec-deploy-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+}
+.sec-deploy-head .hint { flex: 1 1 220px; }
+/* Deployment self-check: two checks + "verify all". */
+.sec-verify {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px;
+}
+.sec-verify-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sec-verify-head .sec-subhead { margin: 0; padding: 0; border: 0; }
+.sec-verify-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding-top: 8px; border-top: 1px solid var(--line);
+}
+.sec-verify-label strong { font-size: 13.5px; color: var(--ink); display: block; }
+.sec-verify-side { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.sec-verify-result { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+.sec-verify-result.ok { color: var(--ok, #22c55e); }
+.sec-verify-result.fail { color: var(--warn, #f5a623); }
+.sec-verify-result.pending { color: var(--muted); }
+.sec-deploy-code {
+  margin: 0; max-height: 340px; overflow: auto;
+  padding: 12px; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;
+  line-height: 1.5; white-space: pre; color: var(--ink);
+  tab-size: 2;
+}
+.sec-deploy-actions {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+}
+.sec-deploy-actions code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;
+  background: var(--panel, var(--bg)); border: 1px solid var(--line);
+  padding: 1px 6px; border-radius: 4px; color: var(--accent, #5eead4);
+}
 
 /* Toggle switch (used by the settings tab) */
 .switch { position: relative; display: inline-block; width: 42px; height: 24px; flex: none; }

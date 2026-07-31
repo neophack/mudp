@@ -236,7 +236,7 @@ function logRow(e) {
       `<td><div class="secondary-line">${escapeHtml(fmtTime(e.createdAt))}</div></td>` +
       `<td>${evBadge}</td>` +
       `<td><span class="flag">${flag}</span> ${escapeHtml(loc)}${e.isp ? `<div class="secondary-line mono">${escapeHtml(e.isp)}</div>` : ""}</td>` +
-      `<td><span class="mono">${escapeHtml(e.ip || "—")}</span>${e.clientTimezone ? `<div class="secondary-line">${escapeHtml(e.clientTimezone)}</div>` : ""}</td>` +
+      `<td><span class="mono">${escapeHtml(e.ip || "—")}</span>${e.publicIP ? `<div class="secondary-line mono">${escapeHtml(t("security.publicIpShort"))} ${escapeHtml(e.publicIP)}</div>` : ""}${e.clientTimezone ? `<div class="secondary-line">${escapeHtml(e.clientTimezone)}</div>` : ""}</td>` +
       `<td><div>${escapeHtml(deviceBits || "—")}</div>${clientBits ? `<div class="secondary-line">${escapeHtml(clientBits)}</div>` : ""}</td>` +
       `<td><div class="primary-line">${escapeHtml(e.username || "—")}</div>${e.failureReason ? `<div class="secondary-line">${escapeHtml(e.failureReason)}</div>` : ""}</td>` +
       `<td>${flags}</td>` +
@@ -347,6 +347,45 @@ function renderSettings() {
           `</div>` +
         `</div>` +
         `<div class="hint sec-note">${t("security.settingNote")}</div>` +
+
+        // ----- IP-detection Worker (operator self-hosted Cloudflare Worker) -----
+        // The Worker only exposes an unauthenticated /whoami (the visitor's
+        // own IP+geo from request.cf), so configuring it is just the URL.
+        `<div class="sec-subhead">${t("security.ipWorkerTitle")}</div>` +
+        `<div class="sec-field">` +
+          `<label for="secWorkerUrl">${t("security.ipWorkerUrl")}</label>` +
+          `<div class="hint">${t("security.ipWorkerUrlHint")}</div>` +
+          `<input type="text" id="secWorkerUrl" class="sec-input" ` +
+            `value="${escapeHtml(s.ipWorkerUrl || "")}" ` +
+            `placeholder="https://your-worker.workers.dev">` +
+        `</div>` +
+
+        // ----- One-click deployment aid -----
+        // The Worker source is secret-free (no /lookup, no auth), so it's safe
+        // to view/copy and paste into Cloudflare as-is.
+        `<div class="sec-deploy">` +
+          `<div class="sec-deploy-head">` +
+            `<div class="hint">${t("security.ipWorkerDeployHint")}</div>` +
+            `<button class="ghost" id="secWorkerView">${t("security.ipWorkerViewCode")}</button>` +
+          `</div>` +
+          `<pre class="sec-deploy-code" id="secWorkerCode" hidden></pre>` +
+          `<div class="sec-deploy-actions" id="secWorkerCodeActions" hidden>` +
+            `<button class="ghost" id="secWorkerCopyCode">${t("security.ipWorkerCopyCode")}</button>` +
+          `</div>` +
+        `</div>` +
+
+        // ----- Deployment self-check -----
+        // Two independent checks: config wiring + browser→Worker probe. There
+        // is no server→Worker check anymore (the Worker has no /lookup).
+        `<div class="sec-verify">` +
+          `<div class="sec-verify-head">` +
+            `<div class="sec-subhead">${t("security.ipWorkerVerifyTitle")}</div>` +
+            `<button class="primary" id="secWorkerVerifyAll">${t("security.ipWorkerVerifyAll")}</button>` +
+          `</div>` +
+          verifyRow("vCfg", "security.ipWorkerVerifyCfg", "security.ipWorkerVerifyCfgHint") +
+          verifyRow("vWho", "security.ipWorkerVerifyWho", "security.ipWorkerVerifyWhoHint") +
+        `</div>` +
+
         `<button class="primary" id="secSave">${t("common.save")}</button>` +
       `</div>` +
     `</div>`
@@ -365,9 +404,131 @@ function toggleRow(id, labelKey, hintKey, checked) {
   );
 }
 
+// verifyRow renders one self-check line: label + hint, a "run" button, and a
+// result span that the run*() functions fill with ok/fail + detail.
+function verifyRow(id, labelKey, hintKey) {
+  return (
+    `<div class="sec-verify-row" id="vr_${id}">` +
+      `<div class="sec-verify-label">` +
+        `<strong>${t(labelKey)}</strong>` +
+        `<div class="hint">${t(hintKey)}</div>` +
+      `</div>` +
+      `<div class="sec-verify-side">` +
+        `<span class="sec-verify-result hint" id="vres_${id}"></span>` +
+        `<button class="ghost" id="vbtn_${id}">${t("security.ipWorkerVerifyRun")}</button>` +
+      `</div>` +
+    `</div>`
+  );
+}
+
 function wireSettings() {
   const save = $("#secSave");
   if (save) save.onclick = saveSettings;
+  const view = $("#secWorkerView");
+  if (view) view.onclick = toggleWorkerSource;
+  const copyCode = $("#secWorkerCopyCode");
+  if (copyCode) copyCode.onclick = copyWorkerSource;
+  // Deployment self-check buttons. Each maps an id suffix to its runner.
+  const runners = {
+    vCfg: runVerifyConfig,
+    vWho: runVerifyWhoami,
+  };
+  for (const [id, fn] of Object.entries(runners)) {
+    const btn = $("#vbtn_" + id);
+    if (btn) btn.onclick = () => fn(id);
+  }
+  const all = $("#secWorkerVerifyAll");
+  if (all) all.onclick = () => Promise.all(Object.keys(runners).map((id) => runners[id](id)));
+}
+
+// setVerifyResult paints a check's outcome: a green "✓" / red "✗", the detail
+// message, and a running state while the request is in flight.
+function setVerifyResult(id, state, detail) {
+  const el = $("#vres_" + id);
+  if (!el) return;
+  el.className = "sec-verify-result " + state; // ok | fail | pending | ""
+  const mark = state === "ok" ? "✓ " : state === "fail" ? "✗ " : state === "pending" ? "… " : "";
+  el.textContent = mark + (detail || "");
+}
+
+// runVerifyConfig checks the public config endpoint: does mudp know about a
+// configured, https Worker URL? This catches "forgot to save the URL" and
+// "saved an http:// URL" before any network call.
+async function runVerifyConfig(id) {
+  setVerifyResult(id, "pending", t("security.ipWorkerVerifyRunning"));
+  try {
+    const data = await api("/api/security/ipworker");
+    if (data && data.enabled && data.url) {
+      setVerifyResult(id, "ok", data.url);
+    } else {
+      setVerifyResult(id, "fail", t("security.ipWorkerVerifyCfgFail"));
+    }
+  } catch (err) {
+    setVerifyResult(id, "fail", err.message);
+  }
+}
+
+// runVerifyWhoami exercises the browser→Worker path directly: the browser
+// fetches the Worker's /whoami. This proves the Worker is deployed, reachable,
+// CORS-permits the browser origin, and returns valid geo.
+async function runVerifyWhoami(id) {
+  setVerifyResult(id, "pending", t("security.ipWorkerVerifyRunning"));
+  try {
+    const cfg = await api("/api/security/ipworker");
+    if (!cfg || !cfg.enabled || !cfg.url) {
+      setVerifyResult(id, "fail", t("security.ipWorkerVerifyCfgFail"));
+      return;
+    }
+    const res = await fetch(cfg.url + "/whoami", { credentials: "omit", signal: AbortSignal.timeout(8000) });
+    if (!res.ok) {
+      setVerifyResult(id, "fail", "HTTP " + res.status);
+      return;
+    }
+    const data = await res.json();
+    if (!data || data.status !== "success") {
+      setVerifyResult(id, "fail", (data && data.message) || "no success");
+      return;
+    }
+    setVerifyResult(id, "ok", `${data.ip || "?"} · ${data.city || "?"}, ${data.country || "?"}`);
+  } catch (err) {
+    setVerifyResult(id, "fail", err.message || String(err));
+  }
+}
+
+// toggleWorkerSource fetches the embedded Worker source and shows/hides it. The
+// source is secret-free (only an unauthenticated /whoami), so viewing/copying
+// it is safe. Cached on the view to avoid re-fetching on every toggle.
+async function toggleWorkerSource() {
+  const pre = $("#secWorkerCode");
+  const actions = $("#secWorkerCodeActions");
+  if (!pre) return;
+  if (!pre.hidden) {
+    pre.hidden = true;
+    if (actions) actions.hidden = true;
+    return;
+  }
+  try {
+    if (view.workerSource === undefined) {
+      const res = await fetch("/api/admin/security/worker-source", { credentials: "same-origin" });
+      view.workerSource = res.ok ? await res.text() : "";
+    }
+    pre.textContent = view.workerSource || "";
+    pre.hidden = false;
+    if (actions) actions.hidden = false;
+  } catch (err) {
+    toast(err.message || t("common.copyFailed"));
+  }
+}
+
+async function copyWorkerSource() {
+  const src = view.workerSource || "";
+  if (!src) return;
+  try {
+    await navigator.clipboard.writeText(src);
+    toast(t("security.ipWorkerCopied"), true);
+  } catch (_) {
+    toast(t("common.copyFailed"));
+  }
 }
 
 async function loadSettings(force) {
@@ -389,6 +550,9 @@ async function saveSettings() {
     vpnDetect: $("#secVpn")?.checked ?? true,
     collectClient: $("#secClient")?.checked ?? true,
     retentionDays: parseInt($("#secRetention")?.value, 10) || 90,
+    // Worker config: just the URL (blank = disabled). The Worker has no
+    // password/secret — it's an unauthenticated /whoami only.
+    ipWorkerUrl: $("#secWorkerUrl")?.value.trim() || "",
   };
   try {
     await api("/api/admin/security/settings", { method: "POST", body: JSON.stringify(s) });

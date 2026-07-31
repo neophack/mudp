@@ -1140,9 +1140,8 @@ func normalizeRestartPolicy(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "no", "always", "unless-stopped", "on-failure":
 		return strings.ToLower(strings.TrimSpace(s))
-	case "":
-		return "unless-stopped"
 	default:
+		// Empty or unrecognised input defaults to "unless-stopped".
 		return "unless-stopped"
 	}
 }

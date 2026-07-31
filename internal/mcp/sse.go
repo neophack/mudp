@@ -17,7 +17,7 @@ import (
 // routes the response back onto that same channel.
 type SSESession struct {
 	id          string
-	containerID string // the container this session is scoped to (for in-use lights)
+	containerID string      // the container this session is scoped to (for in-use lights)
 	out         chan []byte // JSON-RPC responses, written to the SSE stream
 	server      *Server
 	ctx         context.Context
