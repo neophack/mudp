@@ -62,6 +62,13 @@ func (a *App) ensureUserNetdisk(u *store.User, root string) (string, error) {
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return "", err
 	}
+	// Containers bind-mount this dir as /workspace and typically write into
+	// it as root; every path that touches the netdisk (file ops here as well
+	// as container creation in server.go) runs through this function, so
+	// fixing it here keeps the mudp service's own write access self-healing
+	// even for folders a container created root-owned before or between
+	// panel requests, not just at container-creation time.
+	fixNetdiskACL(dir)
 	return dir, nil
 }
 

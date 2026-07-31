@@ -823,7 +823,7 @@ const translations = {
     "netdisk.estimating": "(估算中，后台更新)",
     "netdisk.usedOfTotal": "已用 <strong>{used}</strong> / {total}",
     "netdisk.usedFree": "已用 <strong>{used}</strong> · 剩余 {free}",
-    "netdisk.viewerFullscreen": "⛶ 全屏",
+    "netdisk.viewerFullscreen": "全屏",
     "netdisk.viewerExitFullscreen": "⛶ 退出全屏",
     "netdisk.viewerLoading": "加载中…",
     "netdisk.viewerRenderPdf": "渲染 PDF 中…",
