@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mudp/internal/middleware"
 	"mudp/internal/store"
 )
 
@@ -141,8 +140,15 @@ func TestSafeNetworkReached(t *testing.T) {
 }
 
 // recordMcpAttack must persist one attack row per refused remote request,
-// resolving the client IP from the trusted-proxy headers the tunnel sets. This
-// exercises the full gather→store path against a real database.
+// resolving the client IP and geography straight from the Cloudflare edge
+// headers the tunnel daemon forwards. This exercises the full gather→store
+// path against a real database.
+//
+// Crucially the App's a.trusted is left unset, mirroring the default deployment
+// where MUDP_TRUSTED_PROXIES is empty: the external listener resolves the
+// visitor IP from its own loopback trust set (loopbackTrusted), NOT from the
+// operator's proxy config. This guards the original bug where every visitor was
+// recorded as 127.0.0.1.
 func TestRecordMcpAttack(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "mcp.db"))
 	if err != nil {
@@ -152,14 +158,18 @@ func TestRecordMcpAttack(t *testing.T) {
 	if err := db.Migrate("admin", "test-admin-pw"); err != nil {
 		t.Fatal(err)
 	}
-	tp, _ := middleware.ParseTrustedProxies("127.0.0.1,::1")
-	a := &App{db: db, trusted: tp}
+	// No a.trusted: the operator did not configure MUDP_TRUSTED_PROXIES.
+	a := &App{db: db}
 
-	// A request that arrived via the tunnel: loopback peer, real IP in the
-	// Cloudflare header.
+	// A request that arrived via the tunnel: loopback peer, real IP + full geo
+	// in the Cloudflare edge headers.
 	r := httptest.NewRequest(http.MethodPost, "/mcp/badtoken", nil)
 	r.RemoteAddr = "127.0.0.1:1234"
 	r.Header.Set("CF-Connecting-IP", "203.0.113.9")
+	r.Header.Set("CF-IPCountry", "JP")
+	r.Header.Set("CF-IPCity", "Tokyo")
+	r.Header.Set("CF-IPRegion", "Tokyo")
+	r.Header.Set("CF-IPTimezone", "Asia/Tokyo")
 	// A browser-style UA so parseUserAgent returns a recognizable browser label.
 	r.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0")
 	a.recordMcpAttack(r, "invalid or expired token")
@@ -184,4 +194,20 @@ func TestRecordMcpAttack(t *testing.T) {
 	if got.Browser != "Chrome 120.0" {
 		t.Errorf("UA parse mismatch: %q", got.Browser)
 	}
+	// Geography must come from the CF edge headers, not from a third-party
+	// GeoIP round-trip.
+	if got.CountryCode != "JP" {
+		t.Errorf("country code not read from CF header: got %q", got.CountryCode)
+	}
+	if got.City != "Tokyo" {
+		t.Errorf("city not read from CF header: got %q", got.City)
+	}
+	if got.Timezone != "Asia/Tokyo" {
+		t.Errorf("timezone not read from CF header: got %q", got.Timezone)
+	}
+	// A public source IP classifies as extranet.
+	if got.SourceKind != "extranet" {
+		t.Errorf("source kind mismatch: got %q want extranet", got.SourceKind)
+	}
 }
+

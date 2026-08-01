@@ -37,6 +37,29 @@ import (
 // safe-network rule is the only thing between it and the network.
 const remoteMCPBindHost = "127.0.0.1"
 
+// loopbackTrusted is the trusted-proxy set every request on the external
+// listener resolves its client IP against. The listener binds loopback-only, so
+// the tunnel daemon (the sole peer that can connect) is always at 127.0.0.1/::1;
+// without trusting that peer the forwarding headers it sets (CF-Connecting-IP /
+// X-Forwarded-For) would be ignored and every visitor would be recorded as
+// 127.0.0.1. A process already on the host has better options than forging the
+// header, so trusting loopback here gives up nothing. It is shared by the rate
+// limiter and by the access/attack IP resolution so both see the same origin.
+//
+// The console listener is unaffected: it keeps using a.trusted, which the
+// operator configures via MUDP_TRUSTED_PROXIES and which defaults to "trust
+// nobody" so a direct client cannot spoof a forwarding header.
+var loopbackTrusted = func() *middleware.TrustedProxies {
+	tp, err := middleware.ParseTrustedProxies("127.0.0.1,::1")
+	if err != nil {
+		// "127.0.0.1,::1" always parses; the fallback only guards against a
+		// future refactor that breaks the literal. An empty set degrades to
+		// socket-peer attribution rather than panicking at import time.
+		tp, _ = middleware.ParseTrustedProxies("")
+	}
+	return tp
+}()
+
 // remoteMCPKey marks a request as having arrived on the external listener, so
 // resolveMcpContainer can apply the safe-network rule to it. It is set by
 // middleware on the remote router only — a request on the main listener can
@@ -70,12 +93,9 @@ func (a *App) remoteMCPRoutes() http.Handler {
 	// single rate-limit bucket and one busy agent would 429 the rest. Loopback is
 	// the only peer that can connect at all, and a process already running on the
 	// host has better options than forging X-Forwarded-For, so trusting it here
-	// gives up nothing.
-	loopback, err := middleware.ParseTrustedProxies("127.0.0.1,::1")
-	if err != nil {
-		loopback, _ = middleware.ParseTrustedProxies("")
-	}
-	limiter := middleware.DefaultAPIRateLimiter().TrustProxies(loopback)
+	// gives up nothing. The same loopback set resolves the visitor's real IP (and
+	// the Cloudflare geo headers travel on the same request); see loopbackTrusted.
+	limiter := middleware.DefaultAPIRateLimiter().TrustProxies(loopbackTrusted)
 
 	r.Get("/healthz", a.healthz)
 	r.Group(func(r chi.Router) {
@@ -222,15 +242,10 @@ func (a *App) remoteMCPAllowed(ctx context.Context, containerID string) (bool, s
 // best-effort and never returns an error — a logging miss must not change the
 // refusal the client already received.
 func (a *App) recordMcpAttack(r *http.Request, reason string) {
-	ip := ""
-	if a.trusted != nil {
-		ip = a.trusted.ClientIP(r)
-	} else {
-		ip = middleware.RemoteIP(r)
-	}
+	ip := loopbackTrusted.ClientIP(r)
 	ua := r.UserAgent()
 	browser, osName, _ := parseUserAgent(ua)
-	geo := a.geoLookup(ip)
+	geo := a.mcpClientGeo(r, ip)
 	a.db.RecordMCPAttack(store.MCPAttackLog{
 		IP:          ip,
 		Country:     geo.Country,
@@ -240,6 +255,8 @@ func (a *App) recordMcpAttack(r *http.Request, reason string) {
 		Latitude:    geo.Latitude,
 		Longitude:   geo.Longitude,
 		ISP:         geo.ISP,
+		Timezone:    geo.Timezone,
+		SourceKind:  ipSourceKind(ip),
 		UserAgent:   ua,
 		Browser:     browser,
 		OS:          osName,
@@ -254,21 +271,33 @@ func (a *App) recordMcpAttack(r *http.Request, reason string) {
 // proxy IP resolution and the same GeoIP cache — but returns a structured value
 // instead of writing a row.
 func (a *App) mcpClientFromRequest(r *http.Request) mcpClientInfo {
-	ip := ""
-	if a.trusted != nil {
-		ip = a.trusted.ClientIP(r)
-	} else {
-		ip = middleware.RemoteIP(r)
-	}
-	geo := a.geoLookup(ip)
+	ip := loopbackTrusted.ClientIP(r)
+	geo := a.mcpClientGeo(r, ip)
 	return mcpClientInfo{
 		IP:          ip,
 		Country:     geo.Country,
 		CountryCode: geo.CountryCode,
+		Region:      geo.Region,
 		City:        geo.City,
 		Latitude:    geo.Latitude,
 		Longitude:   geo.Longitude,
+		ISP:         geo.ISP,
+		Timezone:    geo.Timezone,
+		SourceKind:  ipSourceKind(ip),
 	}
+}
+
+// mcpClientGeo resolves the location of a remote MCP caller, preferring the
+// Cloudflare edge headers (set by cloudflared on every tunneled request — no
+// third-party lookup, no latency, no leak) and falling back to the cached
+// ip-api.com provider when the deployment is not behind a tunnel. Used by both
+// recordMcpAttack and mcpClientFromRequest so the access and attack views share
+// one source of truth for geography.
+func (a *App) mcpClientGeo(r *http.Request, ip string) geoInfo {
+	if g := geoFromCFHeaders(r); g != (geoInfo{}) {
+		return g
+	}
+	return a.geoLookup(ip)
 }
 
 // safeNetworkReached reports whether a container attached to the given Docker

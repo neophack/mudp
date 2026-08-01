@@ -165,9 +165,16 @@ type mcpClientInfo struct {
 	IP          string
 	Country     string
 	CountryCode string
+	Region      string
 	City        string
 	Latitude    float64
 	Longitude   float64
+	ISP         string
+	Timezone    string
+	// SourceKind is "extranet" (public IP) or "intranet" (private/loopback),
+	// shown in the Security page's source column so an admin can tell at a glance
+	// whether a request reached the tunnel from the public internet or a LAN.
+	SourceKind string
 }
 
 // mcpAuditHook returns a callback that writes one audit entry per MCP tool
@@ -206,9 +213,13 @@ func (a *App) mcpAuditHook(tok mcpTokenResolved) func(toolName string, args json
 			IP:          tok.client.IP,
 			Country:     tok.client.Country,
 			CountryCode: tok.client.CountryCode,
+			Region:      tok.client.Region,
 			City:        tok.client.City,
 			Latitude:    tok.client.Latitude,
 			Longitude:   tok.client.Longitude,
+			ISP:         tok.client.ISP,
+			Timezone:    tok.client.Timezone,
+			SourceKind:  tok.client.SourceKind,
 		})
 	}
 }

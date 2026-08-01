@@ -579,7 +579,7 @@ function renderMcp() {
   const stats = state.mcpAttackStats || emptyStats();
   const q = state.mcpAttackSearch || {};
   const rows = (state.mcpAttacks || []).map(attackRow).join("") ||
-    `<tr class="empty-row"><td colspan="6">${t("mcp.noAttacks")}</td></tr>`;
+    `<tr class="empty-row"><td colspan="9">${t("mcp.noAttacks")}</td></tr>`;
 
   const topCountries = (stats.topCountries || [])
     .map((c) => `<span class="chip">${escapeHtml(c.label)} <b>${c.count}</b></span>`)
@@ -625,7 +625,7 @@ function renderMcp() {
 
       `<section class="card">` +
         `<div class="card-head">` +
-          `<h2>${t("mcp.attackList")}</h2>` +
+          `<div><h2>${t("mcp.attackList")}</h2><p class="hint">${t("mcp.geoFromCloudflare")}</p></div>` +
           `<div class="filters">` +
             `<input id="fAttackIP" placeholder="${t("mcp.filterIP")}" value="${escapeHtml(q.ip || "")}">` +
             `<input id="fAttackQ" placeholder="${t("mcp.filterKeyword")}" value="${escapeHtml(q.q || "")}">` +
@@ -635,7 +635,7 @@ function renderMcp() {
         `<div class="mcp-table-wrap">` +
           `<table class="data">` +
             `<thead><tr>` +
-              `<th>${t("mcp.colAttackTime")}</th><th>${t("mcp.colIP")}</th><th>${t("mcp.colCountry")}</th><th>${t("mcp.colReason")}</th><th>${t("mcp.colPath")}</th><th>${t("mcp.colUA")}</th>` +
+              `<th>${t("mcp.colAttackTime")}</th><th>${t("mcp.colSource")}</th><th>${t("mcp.colIP")}</th><th>${t("mcp.colLocation")}</th><th>${t("mcp.colIsp")}</th><th>${t("mcp.colTimezone")}</th><th>${t("mcp.colReason")}</th><th>${t("mcp.colPath")}</th><th>${t("mcp.colUA")}</th>` +
             `</tr></thead>` +
             `<tbody>${rows}</tbody>` +
           `</table>` +
@@ -693,19 +693,40 @@ function emptyStats() {
 }
 
 function attackRow(a) {
-  const country = a.countryCode
-    ? `<span class="badge badge-accent">${escapeHtml(a.countryCode)}</span> <span class="secondary-line">${escapeHtml(a.country || "")}</span>`
-    : `<span class="secondary-line">${escapeHtml(a.country || "—")}</span>`;
+  // Location: flag + "city, region" on the first line, country on the second.
+  // Falls back gracefully when only a country (or nothing) is known.
+  const place = [a.city, a.region].filter(Boolean).join(", ");
+  const location = a.countryCode || place || a.country
+    ? `<span class="flag">${countryCodeFlag(a.countryCode)}</span> ` +
+      `<span class="primary-line">${escapeHtml(place || a.country || "")}</span>` +
+      (a.countryCode ? `<br><span class="secondary-line">${escapeHtml(a.countryCode)}</span>` : "")
+    : `<span class="secondary-line">—</span>`;
   return (
     `<tr>` +
       `<td><div class="secondary-line">${escapeHtml(formatDate(a.createdAt))}</div></td>` +
+      `<td>${sourceBadge(a.sourceKind)}</td>` +
       `<td><span class="mono">${escapeHtml(a.ip || "—")}</span></td>` +
-      `<td>${country}</td>` +
+      `<td>${location}</td>` +
+      `<td><span class="secondary-line">${escapeHtml(a.isp || "—")}</span></td>` +
+      `<td><span class="secondary-line">${escapeHtml(a.timezone || "—")}</span></td>` +
       `<td><span class="secondary-line">${escapeHtml(a.reason || "—")}</span></td>` +
       `<td><span class="secondary-line mono">${escapeHtml(a.path || "—")}</span></td>` +
       `<td><span class="secondary-line">${escapeHtml(uaSummary(a))}</span></td>` +
     `</tr>`
   );
+}
+
+// sourceBadge renders the "外网/内网" tag for a request, derived from the
+// visitor's IP (extranet = public, intranet = private/loopback). Unknown rows
+// (pre-dating the field) render as a muted dash so the column still aligns.
+function sourceBadge(kind) {
+  if (kind === "extranet") {
+    return `<span class="badge badge-accent">${t("mcp.sourceExtranet")}</span>`;
+  }
+  if (kind === "intranet") {
+    return `<span class="badge badge-warn">${t("mcp.sourceIntranet")}</span>`;
+  }
+  return `<span class="secondary-line">—</span>`;
 }
 
 // uaSummary condenses the stored browser/os/UA into one readable label.
@@ -753,10 +774,10 @@ async function reloadAttacks() {
 
 function exportAttacks() {
   const rows = state.mcpAttacks || [];
-  const lines = ["time,ip,country,country_code,reason,path,browser,os,user_agent"];
+  const lines = ["time,source,ip,country,country_code,region,city,isp,timezone,reason,path,browser,os,user_agent"];
   for (const a of rows) {
     lines.push(
-      [a.createdAt, a.ip, a.country, a.countryCode, a.reason, a.path, a.browser, a.os, a.userAgent]
+      [a.createdAt, a.sourceKind, a.ip, a.country, a.countryCode, a.region, a.city, a.isp, a.timezone, a.reason, a.path, a.browser, a.os, a.userAgent]
         .map(csvCell)
         .join(","),
     );

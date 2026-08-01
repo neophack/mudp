@@ -239,6 +239,65 @@ func proxyTypeLabel(proxy, hosting bool) string {
 	return ""
 }
 
+// geoFromCFHeaders builds a geoInfo straight from the Cloudflare edge headers
+// that cloudflared attaches to every request passing through a tunnel:
+//
+//	CF-Connecting-IP   visitor's real client IP (set by CF, trusted on loopback)
+//	CF-IPCountry       ISO-3166 alpha-2 country code ("US", "JP", …)
+//	CF-IPRegion        subdivision (state/province), free text
+//	CF-IPCity          city, free text
+//	CF-IPLatitude      float, e.g. "35.68950"
+//	CF-IPLongitude     float, e.g. "139.69170"
+//	CF-IPTimezone      IANA tz, e.g. "Asia/Tokyo"
+//
+// This is the authoritative source when the deployment fronts mudp with a
+// Cloudflare Tunnel: the edge already resolved the IP to a location, so we skip
+// the ip-api.com round-trip entirely (no third-party leak, no rate limit, no
+// latency). It reads only the geo headers — the IP itself is resolved by the
+// caller so it stays consistent with the trusted-proxy logic.
+//
+// Returns a zero geoInfo (all fields empty) when no CF geo header is present,
+// signalling "not behind Cloudflare" so the caller falls back to geoLookup.
+func geoFromCFHeaders(r *http.Request) geoInfo {
+	has := func(h string) bool { return r.Header.Get(h) != "" }
+	if !has("CF-IPCountry") && !has("CF-IPCity") && !has("CF-IPRegion") &&
+		!has("CF-IPLatitude") && !has("CF-IPTimezone") {
+		return geoInfo{}
+	}
+	lat, _ := strconv.ParseFloat(strings.TrimSpace(r.Header.Get("CF-IPLatitude")), 64)
+	lon, _ := strconv.ParseFloat(strings.TrimSpace(r.Header.Get("CF-IPLongitude")), 64)
+	return geoInfo{
+		// Cloudflare only exposes the ISO country code as a header (CF-IPCountry);
+		// there is no full-name header, so Country mirrors the code and the
+		// frontend renders the localized name from the code (as it already does
+		// for the flag chip).
+		Country:     strings.ToUpper(strings.TrimSpace(r.Header.Get("CF-IPCountry"))),
+		CountryCode: strings.ToUpper(strings.TrimSpace(r.Header.Get("CF-IPCountry"))),
+		Region:      r.Header.Get("CF-IPRegion"),
+		City:        r.Header.Get("CF-IPCity"),
+		Latitude:    lat,
+		Longitude:   lon,
+		Timezone:    r.Header.Get("CF-IPTimezone"),
+		// Cloudflare's free tier does not surface ISP/ASN or proxy/hosting flags
+		// as request headers, so those stay empty here and are only filled when
+		// the ip-api.com fallback runs (geoLookup).
+	}
+}
+
+// ipSourceKind classifies an address as "intranet" (private/loopback/link-local)
+// or "extranet" (publicly routable), for the Security page's source column.
+// An empty/unparseable address returns "" ("unknown").
+func ipSourceKind(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ""
+	}
+	if !parsed.IsGlobalUnicast() {
+		return "intranet"
+	}
+	return "extranet"
+}
+
 // clientInfo bundles the server-derived identity of a request for logging: the
 // real client IP (CDN-aware), its resolved location, and the parsed browser/OS.
 type clientInfo struct {

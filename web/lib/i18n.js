@@ -1127,6 +1127,13 @@ const translations = {
     "mcp.legendAttack": "攻击",
     "mcp.events": "次",
     "mcp.unknown": "未知",
+    "mcp.colSource": "来源",
+    "mcp.colLocation": "地理位置",
+    "mcp.colIsp": "ISP",
+    "mcp.colTimezone": "时区",
+    "mcp.sourceExtranet": "外网",
+    "mcp.sourceIntranet": "内网",
+    "mcp.geoFromCloudflare": "地理位置由 Cloudflare 边缘提供",
 
     // Terminal
     "terminal.title": "🖥 控制台",
@@ -2399,6 +2406,13 @@ const translations = {
     "mcp.legendAttack": "Attack",
     "mcp.events": "events",
     "mcp.unknown": "Unknown",
+    "mcp.colSource": "Source",
+    "mcp.colLocation": "Location",
+    "mcp.colIsp": "ISP",
+    "mcp.colTimezone": "Timezone",
+    "mcp.sourceExtranet": "External",
+    "mcp.sourceIntranet": "Internal",
+    "mcp.geoFromCloudflare": "Geography provided by the Cloudflare edge",
 
     // Terminal
     "terminal.title": "🖥 Console",
