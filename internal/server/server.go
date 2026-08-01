@@ -1012,6 +1012,77 @@ func appendUnique(base, extra []string) []string {
 	return base
 }
 
+// allowedNetworksForImage narrows the set of networks a user may attach for a
+// given image. If the image's preset defines a SelectableNetworks candidate
+// pool, only the attachable networks that also appear in that pool are kept; an
+// empty pool (or a nil preset) returns attachable unchanged. Network names are
+// trimmed before matching so a stray space in the preset can't silently hide an
+// otherwise-valid network.
+func allowedNetworksForImage(p *store.ImagePreset, attachable []string) []string {
+	if p == nil || len(p.SelectableNetworks) == 0 {
+		return attachable
+	}
+	pool := make(map[string]bool, len(p.SelectableNetworks))
+	for _, n := range p.SelectableNetworks {
+		pool[strings.TrimSpace(n)] = true
+	}
+	out := make([]string, 0, len(attachable))
+	for _, n := range attachable {
+		if pool[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// presetForContainer looks up the admin-defined preset of the image a container
+// was built from, so the post-create edit path (containerUpdate) can apply the
+// same SelectableNetworks restriction as the create path. A container whose
+// image has since been deleted, or whose image carried no preset, yields nil —
+// the caller then treats that as "no restriction". Errors are swallowed to nil
+// for the same reason attachableNetworks swallows them: a lookup failure must
+// not break the edit, it only relaxes the narrowing.
+func (a *App) presetForContainer(ctx context.Context, u *store.User, id string) *store.ImagePreset {
+	items, err := a.docker.ListContainers(ctx, u.Username, u.Role == store.RoleAdmin, a.forwardNetworks())
+	if err != nil {
+		return nil
+	}
+	var imageName string
+	for _, c := range items {
+		if c.ID == id || strings.HasPrefix(c.ID, id) {
+			imageName = c.Image
+			break
+		}
+	}
+	if imageName == "" {
+		return nil
+	}
+	img, err := a.db.ImageByDisplayNameForUser(imageName, u.ID, u.Role == store.RoleAdmin)
+	if err != nil {
+		return nil
+	}
+	return img.Preset
+}
+
+// currentNetworkNames returns the full Docker network names a container is
+// presently attached to. Used by containerUpdate so a network the container
+// already joined is permitted to remain even if it falls outside the image's
+// selectable pool — the pool restricts new attachments, not retroactive
+// detaches. Errors swallow to nil: a lookup failure only loosens the narrowing.
+func (a *App) currentNetworkNames(ctx context.Context, id string) []string {
+	info, err := a.docker.Inspect(ctx, id)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(info.Networks))
+	for _, n := range info.Networks {
+		if n.Name != "" {
+			out = append(out, n.Name)
+		}
+	}
+	return out
+}
+
 // validateCreate normalises a create request and resolves the image + scripts.
 // It does not perform the docker create; callers do that themselves so the SSE
 // handler can stream progress.
@@ -1072,7 +1143,13 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	}
 	return dockerx.CreateOptions{
 		Username: u.Username, Name: req.Name, ImageRef: img.DockerRef, ImageName: img.DisplayName,
-		AllowedNetworks: a.attachableNetworks(ctx, u),
+		// An image preset may define a candidate pool of networks (SelectableNetworks)
+		// that narrows what a user can pick for this image. Intersect that pool with
+		// the networks the user can actually attach, so a request that names anything
+		// outside the intersection is rejected by validateNetworkAttachment below —
+		// the same enforcement path used when there is no preset. An empty pool keeps
+		// the full attachable list, preserving the pre-preset behaviour.
+		AllowedNetworks: allowedNetworksForImage(img.Preset, a.attachableNetworks(ctx, u)),
 		// Which networks mudp forwards for is an administrator's setting about
 		// the host, never anything the request can influence.
 		ForwardNetworks: a.forwardNetworks(),
@@ -1831,8 +1908,18 @@ func (a *App) containerUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	// UpdateContainerSettings connects the requested networks as given, so the
 	// permission check has to happen here: without it this endpoint would be a
-	// way around every grant the create path enforces.
-	networks, err := a.resolveAttachableNetworks(r.Context(), u, req.Networks)
+	// way around every grant the create path enforces. The image's preset also
+	// narrows the allowed pool, so a user can't side-step a SelectableNetworks
+	// restriction by editing an already-running container's networks.
+	preset := a.presetForContainer(r.Context(), u, req.ID)
+	// The selectable pool constrains which networks may be NEWLY attached, but a
+	// network the container already joined (perhaps before the pool was tightened)
+	// is allowed to stay — otherwise saving an unrelated change like the restart
+	// policy would silently detach it. Those current networks are folded into the
+	// allow list here, so only genuinely-unreachable additions are rejected.
+	currentNets := a.currentNetworkNames(r.Context(), req.ID)
+	allowed := allowedNetworksForImage(preset, a.attachableNetworks(r.Context(), u))
+	networks, err := a.resolveNetworksAgainst(r.Context(), u, req.Networks, append(allowed, currentNets...))
 	if err != nil {
 		writeErr(w, http.StatusForbidden, err.Error())
 		return

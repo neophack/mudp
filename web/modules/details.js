@@ -2,7 +2,7 @@
 // with editable restart policy and attached networks. Also exposes duplicate,
 // commit-to-image (admin), and the raw Docker JSON inspect.
 
-import { api, toast, state, canMutate, isAdmin, refreshSection, renderView } from "../app.js";
+import { api, toast, state, canMutate, isAdmin, refreshSection, renderView, t } from "../app.js";
 import { showModalNoShell, closeModal } from "./ui.js";
 
 export async function openDetails(id, name) {
@@ -100,6 +100,14 @@ function rawJsonCard() {
 function settingsCard(i) {
   const policy = (i.restartPolicy || "unless-stopped").toLowerCase();
   const currentNets = new Set((i.networks || []).map((n) => n.name));
+  // The image's admin-defined selectable-network pool, looked up from the image
+  // list the app already loaded. When set, networks outside it can't be newly
+  // attached to this container — mirroring the create form, so an already-running
+  // container can't be used to sidestep the restriction. Empty/absent means the
+  // image imposes no restriction.
+  const img = (state.images || []).find((im) => im.name === (i.imageName || i.image));
+  const pool = img && img.preset && img.preset.selectableNetworks && img.preset.selectableNetworks.length
+    ? new Set(img.preset.selectableNetworks) : null;
   // Only the networks the server marked attachable: the user's own, anything an
   // admin granted to one of their groups, and "bridge" unless it has been
   // restricted to other groups. host/none are listed read-only on the Networks
@@ -110,10 +118,23 @@ function settingsCard(i) {
   const netChecks = avail.length
     ? avail.map((n) => {
         const key = n.fullName || n.name;
-        const checked = currentNets.has(n.name) || currentNets.has(key) ? "checked" : "";
-        const disabled = editable ? "" : "disabled";
+        const isConnected = currentNets.has(n.name) || currentNets.has(key);
+        const checked = isConnected ? "checked" : "";
         const origin = n.system ? "system" : n.external ? "host" : n.shared ? "shared" : "";
-        return `<label class="check"><input type="checkbox" name="editNetworks" value="${escapeHtml(key)}" ${checked} ${disabled}> ${escapeHtml(n.name)}${origin ? ` <span class="hint">(${origin})</span>` : ""}</label>`;
+        // A network outside the image's pool is locked: shown but unselectable.
+        // One the container already joined stays checked-but-disabled so the user
+        // sees the real state without being able to re-add it after detaching.
+        let lockedNote = "";
+        let locked = "";
+        if (pool && !pool.has(key)) {
+          locked = "disabled";
+          lockedNote = ` <span class="hint">(${origin || "net"}) · ${escapeHtml(t("create.networkNotInPool"))}</span>`;
+        } else if (origin) {
+          lockedNote = ` <span class="hint">(${origin})</span>`;
+        }
+        const disabledAttr = !editable || locked ? "disabled" : "";
+        const labelCls = locked ? " locked" : "";
+        return `<label class="check${labelCls}"><input type="checkbox" name="editNetworks" value="${escapeHtml(key)}" ${checked} ${disabledAttr}> ${escapeHtml(n.name)}${lockedNote}</label>`;
       }).join("")
     : `<p class="hint">No custom networks yet — create one from the Networks tab to attach this container.</p>`;
   const policySelect = editable

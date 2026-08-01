@@ -206,6 +206,11 @@ label.check input:checked ~ ::before,
 label.check:has(input:checked)::before { background: var(--accent); border-color: var(--accent); }
 label.check:has(input:checked)::after { transform: translateY(-65%) rotate(45deg) scale(1); }
 label.check input:focus-visible::before { box-shadow: 0 0 0 3px var(--accent-soft); }
+/* A network checkbox the current image's preset doesn't expose: shown but
+   unselectable so the list doesn't shrink confusingly when an image is picked. */
+label.check.locked { opacity: 0.45; cursor: not-allowed; }
+label.check.locked input { cursor: not-allowed; }
+label.check .net-locked-note { font-size: 11px; opacity: 0.8; }
 
 /* Bare checkbox inputs inside tables (e.g. the select-all header and per-row
    pickers on the admin "All External Links" card). Styled to match label.check. */

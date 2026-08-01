@@ -173,7 +173,14 @@ function gpuSelectHtml() {
 async function applyPreset(imageName) {
   const img = state.images.find((i) => i.name === imageName);
   const form = $("#newContainer");
-  if (!form || !img || !img.preset) return;
+  if (!form || !img) return;
+  // Switching to an image without a preset (or whose preset carries no network
+  // pool) must clear any constraints a previously-selected image imposed, so the
+  // network list reflects the new image's rules rather than the old one's.
+  if (!img.preset) {
+    applyPresetNetworks(form, null);
+    return;
+  }
   const p = img.preset;
   if (p.gpus) form.querySelector('[name="gpus"]').value = p.gpus;
   if (p.env && p.env.length) {
@@ -200,11 +207,44 @@ async function applyPreset(imageName) {
   form.querySelector('[name="forward80"]').checked = !!p.forward80;
   if (p.mountNetdisk !== undefined) form.querySelector('[name="mountNetdisk"]').checked = p.mountNetdisk;
   if (p.mountShm !== undefined) form.querySelector('[name="mountShm"]').checked = p.mountShm;
-  if (p.networks && p.networks.length) {
-    form.querySelectorAll('input[name="networks"]').forEach((cb) => {
-      if (p.networks.includes(cb.value)) cb.checked = true;
+  applyPresetNetworks(form, p);
+}
+
+// applyPresetNetworks constrains the create form's network list to the image's
+// selectable pool (intersected with the networks the user can attach) and
+// pre-checks the preset's default networks. With no pool every checkbox is
+// re-enabled and cleared, restoring the unrestricted default. A network outside
+// the pool is disabled (greyed) rather than removed so the user sees it exists
+// but can't pick it for this image — the backend enforces the same rule, so
+// keeping it visible-but-locked avoids a confusing silent shrink.
+function applyPresetNetworks(form, p) {
+  const boxes = [...form.querySelectorAll('input[name="networks"]')];
+  boxes.forEach((cb) => {
+    cb.disabled = false;
+    cb.checked = false;
+    cb.parentElement.classList.remove("locked");
+    const note = cb.parentElement.querySelector(".net-locked-note");
+    if (note) note.remove();
+  });
+  const pool = (p && p.selectableNetworks && p.selectableNetworks.length) ? new Set(p.selectableNetworks) : null;
+  if (pool) {
+    boxes.forEach((cb) => {
+      if (!pool.has(cb.value)) {
+        cb.disabled = true;
+        cb.checked = false;
+        cb.parentElement.classList.add("locked");
+        const note = document.createElement("span");
+        note.className = "net-locked-note hint";
+        note.textContent = " · " + t("create.networkNotInPool");
+        cb.parentElement.appendChild(note);
+      }
     });
   }
+  // Default networks are pre-checked only where they survived the pool filter.
+  const defaults = (p && p.networks) || [];
+  boxes.forEach((cb) => {
+    if (!cb.disabled && defaults.includes(cb.value)) cb.checked = true;
+  });
 }
 
 export function renderCreateProgress() {

@@ -38,7 +38,16 @@ type ImagePreset struct {
 	// container. Pointer so nil leaves the create form's own default (checked) in
 	// place instead of forcing it off.
 	MountShm *bool `json:"mountShm,omitempty"`
-	// Networks are managed network names to attach by default.
+	// SelectableNetworks is the candidate pool of network names an admin exposes
+	// for this image. When set, a user creating a container from this image may
+	// only pick networks that are both in this list AND ones they can attach
+	// (their own managed networks + group grants + open bridge). Empty/nil means
+	// "no restriction" — the user sees every network they can attach, matching the
+	// behaviour of an image without a preset. Names are full Docker names.
+	SelectableNetworks []string `json:"selectableNetworks,omitempty"`
+	// Networks are managed network names pre-checked (attached by default) when a
+	// user creates a container from this image. They must be a subset of
+	// SelectableNetworks when that pool is non-empty; ValidatePreset enforces it.
 	Networks []string `json:"networks,omitempty"`
 	// RestartPolicy is one of unless-stopped|always|on-failure|no.
 	RestartPolicy string `json:"restartPolicy,omitempty"`
@@ -112,7 +121,8 @@ func isEmptyPreset(p *ImagePreset) bool {
 	}
 	return p.GPUs == "" && len(p.Env) == 0 && len(p.Ports) == 0 &&
 		p.Forward8080 == nil && p.Forward80 == nil &&
-		p.MountNetdisk == nil && p.MountShm == nil && len(p.Networks) == 0 && p.RestartPolicy == "" &&
+		p.MountNetdisk == nil && p.MountShm == nil && len(p.Networks) == 0 && len(p.SelectableNetworks) == 0 &&
+		p.RestartPolicy == "" &&
 		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == "" && p.RequireLogin == nil &&
 		p.NoVNCPasswordEnv == ""
 }
@@ -154,6 +164,21 @@ func ValidatePreset(p *ImagePreset) error {
 	for _, c := range p.CDIDevices {
 		if strings.TrimSpace(c) == "" {
 			return fmt.Errorf("cdi device entry is empty")
+		}
+	}
+	// When an admin has defined a candidate pool of selectable networks, every
+	// default network must live inside it — otherwise the default would point at
+	// a network the user is not allowed to pick for this image. An empty pool
+	// means "no restriction", so the check is skipped and defaults pass through.
+	if len(p.SelectableNetworks) > 0 {
+		selectable := make(map[string]bool, len(p.SelectableNetworks))
+		for _, n := range p.SelectableNetworks {
+			selectable[strings.TrimSpace(n)] = true
+		}
+		for _, d := range p.Networks {
+			if !selectable[strings.TrimSpace(d)] {
+				return fmt.Errorf("default network %q must be within the selectable networks list", d)
+			}
 		}
 	}
 	return nil

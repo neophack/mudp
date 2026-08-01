@@ -78,10 +78,37 @@ export function openPresetModal(imageId) {
   const image = state.images.find((i) => String(i.id) === String(imageId));
   if (!image) return;
   const p = image.preset || {};
-  const networkChecks = state.networks
-    .filter((n) => !n.system)
-    .map((n) => `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(n.fullName || n.name)}" ${(p.networks || []).includes(n.fullName || n.name) ? "checked" : ""}> ${escapeHtml(n.name)}</label>`)
+  // Selectable networks form the candidate pool an admin exposes for this image.
+  // The user creating a container from it can only pick networks in this pool
+  // (intersected with what they can attach). Default networks below are the
+  // subset pre-checked on create — they must live inside this pool.
+  const poolNets = state.networks.filter((n) => !n.system);
+  const selectableChecks = poolNets
+    .map((n) => {
+      const val = escapeHtml(n.fullName || n.name);
+      const checked = (p.selectableNetworks || []).includes(n.fullName || n.name) ? "checked" : "";
+      return `<label class="check"><input type="checkbox" name="selectableNetworks" value="${val}" ${checked}> ${escapeHtml(n.name)}</label>`;
+    })
     .join("");
+  // renderDefaultNetworks rebuilds the "default networks" grid from the values
+  // currently checked in the selectable pool. It is called once for the initial
+  // body (with the preset's saved selectable set) and again on every change so
+  // the two lists can't drift — a default can never point at a network the admin
+  // didn't expose as selectable. A network stays checked across a rebuild when it
+  // was either a saved preset default or checked by the admin since opening.
+  const renderDefaultNetworks = (selectedValues, alsoChecked) => {
+    const extra = alsoChecked || new Set();
+    const saved = new Set(p.networks || []);
+    const items = selectedValues.map((val) => {
+      const n = state.networks.find((x) => (x.fullName || x.name) === val);
+      const checked = saved.has(val) || extra.has(val) ? "checked" : "";
+      return `<label class="check"><input type="checkbox" name="networks" value="${escapeHtml(val)}" ${checked}> ${escapeHtml(n ? n.name : val)}</label>`;
+    });
+    return items.join("") || `<span class="hint">${t("images.defaultNetworksHint")}</span>`;
+  };
+  // The initially selectable set comes straight from the saved preset, since the
+  // form isn't in the DOM yet when the body string is built.
+  const initialSelectable = (p.selectableNetworks || []).slice();
   const groupChecks = (state.groups || [])
     .map((g) => {
       const checked = (image.groups || []).includes(g.name) ? "checked" : "";
@@ -121,7 +148,12 @@ export function openPresetModal(imageId) {
         `<label class="field-label">${t("images.novncPasswordLabel")}</label>` +
         `<input name="novncPasswordEnv" placeholder="VNC_PW" value="${escapeHtml(p.novncPasswordEnv || "")}">` +
         `<p class="hint">${t("images.novncPasswordHint")}</p>` +
-        (networkChecks ? `<label class="field-label">${t("create.networks")}</label><div class="check-grid">${networkChecks}</div>` : "") +
+        (selectableChecks
+          ? `<label class="field-label">${t("images.selectableNetworks")}</label><div class="check-grid" id="selectableNetworksGrid">${selectableChecks}</div>` +
+            `<p class="hint">${t("images.selectableNetworksHint")}</p>` +
+            `<label class="field-label">${t("images.defaultNetworks")}</label><div class="check-grid" id="defaultNetworksGrid">${renderDefaultNetworks(initialSelectable)}</div>` +
+            `<p class="hint">${t("images.defaultNetworksHint")}</p>`
+          : "") +
         `<label class="field-label">${t("images.restartPolicy")}</label>` +
         `<select name="restartPolicy">` +
           `<option value="">${t("images.gpusUserDecides")}</option>` +
@@ -143,9 +175,31 @@ export function openPresetModal(imageId) {
   $("#envGenInsert").onclick = () => {
     insertAtCursor($("#presetEnvField"), "{{" + $("#envGenType").value + "}}");
   };
+  // Keep the default-networks grid in lockstep with the selectable pool: any
+  // change to the pool rebuilds the defaults list so a default can never reference
+  // a network that is no longer selectable. The previously-checked defaults for
+  // networks still in the pool are preserved across the rebuild.
+  const refreshDefaultNetworks = () => {
+    const grid = $("#defaultNetworksGrid");
+    if (!grid) return;
+    const previouslyChecked = new Set([...document.querySelectorAll('input[name=networks]:checked')].map((i) => i.value));
+    const selected = [...document.querySelectorAll('input[name=selectableNetworks]:checked')].map((i) => i.value);
+    grid.innerHTML = renderDefaultNetworks(selected, previouslyChecked);
+  };
+  const selGrid = $("#selectableNetworksGrid");
+  if (selGrid) selGrid.addEventListener("change", refreshDefaultNetworks);
   $("#presetSubmit").onclick = async () => {
     const form = $("#presetForm");
     const fd = new FormData(form);
+    const selectableNetworks = [...form.querySelectorAll('input[name=selectableNetworks]:checked')].map((i) => i.value);
+    const networks = [...form.querySelectorAll('input[name=networks]:checked')].map((i) => i.value);
+    // Client-side mirror of the backend ValidatePreset check: a default network
+    // must be among the selectable pool. The backend rejects it anyway, but
+    // failing here gives immediate feedback without a round-trip.
+    if (selectableNetworks.length && networks.some((n) => !selectableNetworks.includes(n))) {
+      toast(t("images.defaultNetworkNotSelectable"));
+      return;
+    }
     const preset = {
       description: (fd.get("description") || "").trim(),
       gpus: (fd.get("gpus") || "").trim(),
@@ -157,7 +211,8 @@ export function openPresetModal(imageId) {
       mountShm: form.querySelector('[name=mountShm]').checked || undefined,
       requireLogin: form.querySelector('[name=requireLogin]').checked || undefined,
       novncPasswordEnv: (fd.get("novncPasswordEnv") || "").trim(),
-      networks: [...form.querySelectorAll('input[name=networks]:checked')].map((i) => i.value),
+      selectableNetworks,
+      networks,
       restartPolicy: (fd.get("restartPolicy") || "").trim(),
       devices: lines(fd.get("devices")),
       cdiDevices: lines(fd.get("cdiDevices")),

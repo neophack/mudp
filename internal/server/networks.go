@@ -71,11 +71,19 @@ func (a *App) attachableNetworks(ctx context.Context, u *store.User) []string {
 // A nil input stays nil: "networks" omitted means "leave them alone", which is
 // not the same as "detach everything".
 func (a *App) resolveAttachableNetworks(ctx context.Context, u *store.User, names []string) ([]string, error) {
+	return a.resolveNetworksAgainst(ctx, u, names, a.attachableNetworks(ctx, u))
+}
+
+// resolveNetworksAgainst is the shared core: it resolves names against the
+// caller's grants and rejects any whose full name isn't in the supplied allow
+// list. The allow list is the only thing that differs between the create path
+// (narrowed by an image preset) and the generic path.
+func (a *App) resolveNetworksAgainst(ctx context.Context, u *store.User, names, allowedList []string) ([]string, error) {
 	if names == nil {
 		return nil, nil
 	}
 	allowed := make(map[string]bool)
-	for _, n := range a.attachableNetworks(ctx, u) {
+	for _, n := range allowedList {
 		allowed[n] = true
 	}
 	access := a.networkGrants(u)
