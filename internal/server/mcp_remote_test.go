@@ -170,6 +170,7 @@ func TestRecordMcpAttack(t *testing.T) {
 	r.Header.Set("CF-IPCity", "Tokyo")
 	r.Header.Set("CF-IPRegion", "Tokyo")
 	r.Header.Set("CF-IPTimezone", "Asia/Tokyo")
+	r.Header.Set("CF-Device-Type", "mobile")
 	// A browser-style UA so parseUserAgent returns a recognizable browser label.
 	r.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0")
 	a.recordMcpAttack(r, "invalid or expired token")
@@ -208,6 +209,11 @@ func TestRecordMcpAttack(t *testing.T) {
 	// A public source IP classifies as extranet.
 	if got.SourceKind != "extranet" {
 		t.Errorf("source kind mismatch: got %q want extranet", got.SourceKind)
+	}
+	// Device class must come from the CF-Device-Type header, overriding the
+	// desktop-ish UA we set.
+	if got.Device != "mobile" {
+		t.Errorf("device not read from CF-Device-Type: got %q want mobile", got.Device)
 	}
 }
 

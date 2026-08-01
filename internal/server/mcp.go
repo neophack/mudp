@@ -175,6 +175,9 @@ type mcpClientInfo struct {
 	// shown in the Security page's source column so an admin can tell at a glance
 	// whether a request reached the tunnel from the public internet or a LAN.
 	SourceKind string
+	// Device is the client class ("desktop"/"mobile"/"tablet"/"bot"), from
+	// CF-Device-Type when behind a tunnel, else parsed from the User-Agent.
+	Device string
 }
 
 // mcpAuditHook returns a callback that writes one audit entry per MCP tool
@@ -220,6 +223,7 @@ func (a *App) mcpAuditHook(tok mcpTokenResolved) func(toolName string, args json
 			ISP:         tok.client.ISP,
 			Timezone:    tok.client.Timezone,
 			SourceKind:  tok.client.SourceKind,
+			Device:      tok.client.Device,
 		})
 	}
 }

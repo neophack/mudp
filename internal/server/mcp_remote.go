@@ -260,6 +260,7 @@ func (a *App) recordMcpAttack(r *http.Request, reason string) {
 		UserAgent:   ua,
 		Browser:     browser,
 		OS:          osName,
+		Device:      deviceFromRequest(r),
 		Reason:      reason,
 		Path:        r.URL.Path,
 	})
@@ -284,6 +285,7 @@ func (a *App) mcpClientFromRequest(r *http.Request) mcpClientInfo {
 		ISP:         geo.ISP,
 		Timezone:    geo.Timezone,
 		SourceKind:  ipSourceKind(ip),
+		Device:      deviceFromRequest(r),
 	}
 }
 

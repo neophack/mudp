@@ -1134,6 +1134,11 @@ const translations = {
     "mcp.sourceExtranet": "外网",
     "mcp.sourceIntranet": "内网",
     "mcp.geoFromCloudflare": "地理位置由 Cloudflare 边缘提供",
+    "mcp.colDevice": "设备",
+    "mcp.deviceDesktop": "桌面",
+    "mcp.deviceMobile": "手机",
+    "mcp.deviceTablet": "平板",
+    "mcp.deviceBot": "爬虫/脚本",
 
     // Terminal
     "terminal.title": "🖥 控制台",
@@ -2413,6 +2418,11 @@ const translations = {
     "mcp.sourceExtranet": "External",
     "mcp.sourceIntranet": "Internal",
     "mcp.geoFromCloudflare": "Geography provided by the Cloudflare edge",
+    "mcp.colDevice": "Device",
+    "mcp.deviceDesktop": "Desktop",
+    "mcp.deviceMobile": "Mobile",
+    "mcp.deviceTablet": "Tablet",
+    "mcp.deviceBot": "Bot/Script",
 
     // Terminal
     "terminal.title": "🖥 Console",

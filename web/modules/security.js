@@ -579,7 +579,7 @@ function renderMcp() {
   const stats = state.mcpAttackStats || emptyStats();
   const q = state.mcpAttackSearch || {};
   const rows = (state.mcpAttacks || []).map(attackRow).join("") ||
-    `<tr class="empty-row"><td colspan="9">${t("mcp.noAttacks")}</td></tr>`;
+    `<tr class="empty-row"><td colspan="10">${t("mcp.noAttacks")}</td></tr>`;
 
   const topCountries = (stats.topCountries || [])
     .map((c) => `<span class="chip">${escapeHtml(c.label)} <b>${c.count}</b></span>`)
@@ -635,7 +635,7 @@ function renderMcp() {
         `<div class="mcp-table-wrap">` +
           `<table class="data">` +
             `<thead><tr>` +
-              `<th>${t("mcp.colAttackTime")}</th><th>${t("mcp.colSource")}</th><th>${t("mcp.colIP")}</th><th>${t("mcp.colLocation")}</th><th>${t("mcp.colIsp")}</th><th>${t("mcp.colTimezone")}</th><th>${t("mcp.colReason")}</th><th>${t("mcp.colPath")}</th><th>${t("mcp.colUA")}</th>` +
+              `<th>${t("mcp.colAttackTime")}</th><th>${t("mcp.colSource")}</th><th>${t("mcp.colIP")}</th><th>${t("mcp.colLocation")}</th><th>${t("mcp.colIsp")}</th><th>${t("mcp.colTimezone")}</th><th>${t("mcp.colDevice")}</th><th>${t("mcp.colReason")}</th><th>${t("mcp.colPath")}</th><th>${t("mcp.colUA")}</th>` +
             `</tr></thead>` +
             `<tbody>${rows}</tbody>` +
           `</table>` +
@@ -709,11 +709,30 @@ function attackRow(a) {
       `<td>${location}</td>` +
       `<td><span class="secondary-line">${escapeHtml(a.isp || "—")}</span></td>` +
       `<td><span class="secondary-line">${escapeHtml(a.timezone || "—")}</span></td>` +
+      `<td>${deviceBadge(a.device)}</td>` +
       `<td><span class="secondary-line">${escapeHtml(a.reason || "—")}</span></td>` +
       `<td><span class="secondary-line mono">${escapeHtml(a.path || "—")}</span></td>` +
       `<td><span class="secondary-line">${escapeHtml(uaSummary(a))}</span></td>` +
     `</tr>`
   );
+}
+
+// deviceBadge renders an icon + label for the client device class
+// (desktop/mobile/tablet/bot), classified from CF-Device-Type or the UA.
+// Unknown rows (pre-dating the field) render as a muted dash.
+function deviceBadge(device) {
+  switch (device) {
+    case "desktop":
+      return `<span class="badge">🖥 ${escapeHtml(t("mcp.deviceDesktop"))}</span>`;
+    case "mobile":
+      return `<span class="badge">📱 ${escapeHtml(t("mcp.deviceMobile"))}</span>`;
+    case "tablet":
+      return `<span class="badge">🔡 ${escapeHtml(t("mcp.deviceTablet"))}</span>`;
+    case "bot":
+      return `<span class="badge badge-warn">🤖 ${escapeHtml(t("mcp.deviceBot"))}</span>`;
+    default:
+      return `<span class="secondary-line">—</span>`;
+  }
 }
 
 // sourceBadge renders the "外网/内网" tag for a request, derived from the
@@ -774,10 +793,10 @@ async function reloadAttacks() {
 
 function exportAttacks() {
   const rows = state.mcpAttacks || [];
-  const lines = ["time,source,ip,country,country_code,region,city,isp,timezone,reason,path,browser,os,user_agent"];
+  const lines = ["time,source,ip,country,country_code,region,city,isp,timezone,device,reason,path,browser,os,user_agent"];
   for (const a of rows) {
     lines.push(
-      [a.createdAt, a.sourceKind, a.ip, a.country, a.countryCode, a.region, a.city, a.isp, a.timezone, a.reason, a.path, a.browser, a.os, a.userAgent]
+      [a.createdAt, a.sourceKind, a.ip, a.country, a.countryCode, a.region, a.city, a.isp, a.timezone, a.device, a.reason, a.path, a.browser, a.os, a.userAgent]
         .map(csvCell)
         .join(","),
     );

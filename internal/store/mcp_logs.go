@@ -44,6 +44,7 @@ type MCPUsageLog struct {
 	ISP         string  `json:"isp,omitempty"`
 	Timezone    string  `json:"timezone,omitempty"`
 	SourceKind  string  `json:"sourceKind,omitempty"`
+	Device      string  `json:"device,omitempty"`
 	CreatedAt   string  `json:"createdAt"`
 }
 
@@ -120,10 +121,10 @@ func (db *DB) RecordMCPUsage(log MCPUsageLog) {
 	}
 	_, _ = db.Exec(`insert into mcp_usage_logs(
 		token_id, owner_id, container_id, container_name, token_label, tool, args_preview,
-		ip, country, country_code, region, city, latitude, longitude, isp, timezone, source_kind, created_at
-	) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		ip, country, country_code, region, city, latitude, longitude, isp, timezone, source_kind, device, created_at
+	) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		log.TokenID, log.OwnerID, log.ContainerID, log.ContainerName, log.TokenLabel, log.Tool, log.ArgsPreview,
-		log.IP, log.Country, log.CountryCode, log.Region, log.City, nullFloat(log.Latitude), nullFloat(log.Longitude), log.ISP, log.Timezone, log.SourceKind, log.CreatedAt,
+		log.IP, log.Country, log.CountryCode, log.Region, log.City, nullFloat(log.Latitude), nullFloat(log.Longitude), log.ISP, log.Timezone, log.SourceKind, log.Device, log.CreatedAt,
 	)
 }
 
@@ -153,7 +154,7 @@ func (db *DB) MCPUsageLogs(f MCPUsageFilter) ([]MCPUsageLog, error) {
 	q := `select u.id, u.token_id, u.owner_id, u.container_id, u.container_name, u.token_label,
 		u.tool, u.args_preview,
 		u.ip, u.country, u.country_code, u.region, u.city, coalesce(u.latitude,0), coalesce(u.longitude,0),
-		u.isp, u.timezone, u.source_kind,
+		u.isp, u.timezone, u.source_kind, u.device,
 		u.created_at,
 		coalesce(nullif(us.display_name,''), us.username, '')
 		from mcp_usage_logs u
@@ -178,7 +179,7 @@ func scanMCPUsage(rows *sql.Rows) ([]MCPUsageLog, error) {
 		if err := rows.Scan(&u.ID, &u.TokenID, &u.OwnerID, &u.ContainerID, &u.ContainerName, &u.TokenLabel,
 			&u.Tool, &u.ArgsPreview,
 			&u.IP, &u.Country, &u.CountryCode, &u.Region, &u.City, &u.Latitude, &u.Longitude,
-			&u.ISP, &u.Timezone, &u.SourceKind,
+			&u.ISP, &u.Timezone, &u.SourceKind, &u.Device,
 			&u.CreatedAt, &u.Owner); err != nil {
 			return nil, err
 		}
@@ -214,6 +215,7 @@ type MCPAttackLog struct {
 	UserAgent  string `json:"userAgent,omitempty"`
 	Browser    string `json:"browser,omitempty"`
 	OS         string `json:"os,omitempty"`
+	Device     string `json:"device,omitempty"`
 	Reason     string `json:"reason"`
 	Path       string `json:"path,omitempty"`
 	CreatedAt  string `json:"createdAt"`
@@ -282,20 +284,24 @@ func migrateCreateMCPAttackLogs(db executor) error {
 	return nil
 }
 
-// migrateWidenMCPLogs adds the Cloudflare-derived geography columns to the MCP
-// usage and attack tables: timezone (IANA, from CF-IPTimezone) and source_kind
-// ("extranet"/"intranet", classified from the visitor's IP). The usage table
-// also gains region/isp, which the attack table already had. Existing rows keep
-// their defaults (''), which the Security page treats as "pre-dating this
-// field". Idempotent via execIgnoring + sqliteDuplicateColumn.
+// migrateWidenMCPLogs adds the Cloudflare-derived geography and client columns
+// to the MCP usage and attack tables: timezone (IANA, from CF-IPTimezone),
+// source_kind ("extranet"/"intranet", classified from the visitor's IP), and
+// device (desktop/mobile/tablet/bot — from CF-Device-Type when behind a tunnel,
+// else parsed from the User-Agent). The usage table also gains region/isp, which
+// the attack table already had. Existing rows keep their defaults (''), which
+// the Security page treats as "pre-dating this field". Idempotent via
+// execIgnoring + sqliteDuplicateColumn.
 func migrateWidenMCPLogs(db executor) error {
 	cols := []string{
 		`alter table mcp_usage_logs add column timezone text not null default ''`,
 		`alter table mcp_usage_logs add column source_kind text not null default ''`,
 		`alter table mcp_usage_logs add column region text not null default ''`,
 		`alter table mcp_usage_logs add column isp text not null default ''`,
+		`alter table mcp_usage_logs add column device text not null default ''`,
 		`alter table mcp_attack_logs add column timezone text not null default ''`,
 		`alter table mcp_attack_logs add column source_kind text not null default ''`,
+		`alter table mcp_attack_logs add column device text not null default ''`,
 	}
 	for _, c := range cols {
 		if err := execIgnoring(db, c, sqliteDuplicateColumn); err != nil {
@@ -316,10 +322,10 @@ func (db *DB) RecordMCPAttack(log MCPAttackLog) {
 	}
 	_, _ = db.Exec(`insert into mcp_attack_logs(
 		ip, country, country_code, region, city, latitude, longitude, isp,
-		timezone, source_kind, user_agent, browser, os, reason, path, created_at
-	) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		timezone, source_kind, device, user_agent, browser, os, reason, path, created_at
+	) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		log.IP, log.Country, log.CountryCode, log.Region, log.City, nullFloat(log.Latitude), nullFloat(log.Longitude), log.ISP,
-		log.Timezone, log.SourceKind,
+		log.Timezone, log.SourceKind, log.Device,
 		log.UserAgent, log.Browser, log.OS, log.Reason, log.Path, log.CreatedAt,
 	)
 }
@@ -343,7 +349,7 @@ func (db *DB) MCPAttackLogs(f MCPAttackFilter) ([]MCPAttackLog, error) {
 		args = append(args, q, q, q, q, q)
 	}
 	q := `select id, ip, country, country_code, region, city,
-		coalesce(latitude,0), coalesce(longitude,0), isp, timezone, source_kind,
+		coalesce(latitude,0), coalesce(longitude,0), isp, timezone, source_kind, device,
 		user_agent, browser, os, reason, path, created_at
 		from mcp_attack_logs`
 	if len(clauses) > 0 {
@@ -360,7 +366,7 @@ func (db *DB) MCPAttackLogs(f MCPAttackFilter) ([]MCPAttackLog, error) {
 	for rows.Next() {
 		var l MCPAttackLog
 		if err := rows.Scan(&l.ID, &l.IP, &l.Country, &l.CountryCode, &l.Region, &l.City,
-			&l.Latitude, &l.Longitude, &l.ISP, &l.Timezone, &l.SourceKind,
+			&l.Latitude, &l.Longitude, &l.ISP, &l.Timezone, &l.SourceKind, &l.Device,
 			&l.UserAgent, &l.Browser, &l.OS, &l.Reason, &l.Path, &l.CreatedAt); err != nil {
 			return nil, err
 		}

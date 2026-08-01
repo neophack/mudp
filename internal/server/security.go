@@ -298,6 +298,24 @@ func ipSourceKind(ip string) string {
 	return "extranet"
 }
 
+// deviceFromRequest resolves the client's device class ("desktop"/"mobile"/
+// "tablet"/"bot") for the Security page. When the request arrives through a
+// Cloudflare tunnel the edge already classified it via CF-Device-Type (one of
+// "desktop", "mobile", "tablet") — that header is authoritative and avoids the
+// guessing the local UA parser has to do. Otherwise it falls back to parsing
+// the User-Agent via deviceFromUA. An empty result means "unknown".
+func deviceFromRequest(r *http.Request) string {
+	if cf := strings.ToLower(strings.TrimSpace(r.Header.Get("CF-Device-Type"))); cf != "" {
+		// Cloudflare emits one of desktop/mobile/tablet verbatim; guard against
+		// any unexpected value by mapping only the known set.
+		switch cf {
+		case "desktop", "mobile", "tablet":
+			return cf
+		}
+	}
+	return deviceFromUA(strings.ToLower(r.UserAgent()))
+}
+
 // clientInfo bundles the server-derived identity of a request for logging: the
 // real client IP (CDN-aware), its resolved location, and the parsed browser/OS.
 type clientInfo struct {
