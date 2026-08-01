@@ -30,6 +30,9 @@ export function renderImages() {
   document.querySelectorAll("[data-image-preset]").forEach((btn) => {
     btn.onclick = () => openPresetModal(btn.dataset.imagePreset);
   });
+  document.querySelectorAll("[data-image-reregister]").forEach((btn) => {
+    btn.onclick = () => openReRegisterModal(btn.dataset.imageReregister);
+  });
   const buildBtn = $("#buildImageBtn");
   if (buildBtn) buildBtn.onclick = openBuildModal;
   const importBtn = $("#importImageBtn");
@@ -44,14 +47,23 @@ function imageRow(image, canEdit) {
   const admin = isAdmin();
   const preset = image.preset || {};
   const summary = presetSummary(preset);
+  // A stale row's name is a raw Docker image ID (registered/committed by id);
+  // badge it and offer a re-register action so it can be given a real name.
+  const stale = image.isStale;
+  const staleBadge = stale
+    ? ` <span class="badge badge-warn" title="${t("images.staleTitle")}">${t("images.staleBadge")}</span>`
+    : "";
   return (
     `<tr>` +
-      `<td><div class="primary-line">${escapeHtml(image.name)}</div><div class="secondary-line mono">${escapeHtml(image.dockerRef)}</div>${preset.description ? `<div class="secondary-line">📝 ${escapeHtml(preset.description)}</div>` : ""}</td>` +
+      `<td><div class="primary-line">${escapeHtml(image.name)}${staleBadge}</div><div class="secondary-line mono">${escapeHtml(image.dockerRef)}</div>${preset.description ? `<div class="secondary-line">📝 ${escapeHtml(preset.description)}</div>` : ""}</td>` +
       `<td><div class="secondary-line">${escapeHtml(image.sourceRef)}</div></td>` +
       (admin ? `<td><div class="secondary-line">${escapeHtml((image.groups || []).join(", ") || t("images.allUsers"))}</div></td>` : "") +
       `<td><div class="secondary-line">${summary}</div></td>` +
       `<td class="actions">` +
-        (canEdit ? `<button class="icon" title="${t("images.presetHint")}" data-image-preset="${escapeHtml(image.id)}">⚙</button><button class="icon danger" title="${t("common.delete")}" data-image-delete="${escapeHtml(image.id)}" data-image-ref="${escapeHtml(image.dockerRef)}">✕</button>` : "—") +
+        (canEdit
+          ? (stale ? `<button class="icon" title="${t("images.reRegisterTitle")}" data-image-reregister="${escapeHtml(image.id)}">⟳</button>` : "") +
+            `<button class="icon" title="${t("images.presetHint")}" data-image-preset="${escapeHtml(image.id)}">⚙</button><button class="icon danger" title="${t("common.delete")}" data-image-delete="${escapeHtml(image.id)}" data-image-ref="${escapeHtml(image.dockerRef)}">✕</button>`
+          : "—") +
       `</td>` +
     `</tr>`
   );
@@ -644,6 +656,53 @@ export function openRegisterModal() {
     } catch (err) {
       toast(err.message);
       $("#registerSubmit").disabled = false;
+    }
+  };
+}
+
+// openReRegisterModal re-tags an existing catalog row under a new display name.
+// It is the fix-up for stale rows whose name is a raw image ID: pre-fill a
+// sensible name from the source ref when possible, otherwise leave it blank.
+export function openReRegisterModal(imageId) {
+  const image = state.images.find((i) => String(i.id) === String(imageId));
+  if (!image) return;
+  // Suggest a name from the source ref unless that itself looks like a hash.
+  let suggested = "";
+  if (image.sourceRef) {
+    const base = String(image.sourceRef).split("/").pop().split(":")[0];
+    suggested = /^[0-9a-f]{12,}$/i.test(base) ? "" : base;
+  }
+  showModal({
+    kind: "reregister",
+    title: t("images.reRegisterTitle"),
+    body:
+      `<form id="reRegisterForm" class="compact">` +
+        `<p class="hint">${escapeHtml(t("images.reRegisterHint", { name: image.name }))}</p>` +
+        `<input name="name" placeholder="${t("images.reRegisterNamePlaceholder")}" value="${escapeHtml(suggested)}" required>` +
+      `</form>`,
+    foot: `<button class="ghost" data-close>${t("common.cancel")}</button><button class="primary" id="reRegisterSubmit">${t("images.reRegister")}</button>`,
+  });
+  $("#reRegisterSubmit").onclick = async () => {
+    const form = $("#reRegisterForm");
+    const fd = new FormData(form);
+    const name = (fd.get("name") || "").trim();
+    if (!name) {
+      toast(t("images.reRegisterNameRequired"));
+      return;
+    }
+    $("#reRegisterSubmit").disabled = true;
+    try {
+      await api("/api/images/reregister", {
+        method: "POST",
+        body: JSON.stringify({ imageId: Number(imageId), name }),
+      });
+      closeModal();
+      await refreshSection("images");
+      renderView();
+      toast(t("images.imageReRegistered"), true);
+    } catch (err) {
+      toast(err.message);
+      $("#reRegisterSubmit").disabled = false;
     }
   };
 }

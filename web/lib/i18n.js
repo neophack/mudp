@@ -337,6 +337,14 @@ const translations = {
     "images.register2": "注册",
     "images.tagRequired": "镜像标签为必填项",
     "images.imageRegistered": "镜像已注册",
+    "images.staleBadge": "镜像ID",
+    "images.staleTitle": "显示名为镜像ID哈希，建议重新注册为正常名称",
+    "images.reRegister": "重新注册",
+    "images.reRegisterTitle": "重新注册镜像",
+    "images.reRegisterHint": "当前名称为 {name}，输入一个新的显示名称重新打标签",
+    "images.reRegisterNamePlaceholder": "新的显示名称，例如 my-app",
+    "images.reRegisterNameRequired": "请输入显示名称",
+    "images.imageReRegistered": "镜像已重新注册",
 
     // Volumes
     "volumes.title": "卷",
@@ -1627,6 +1635,14 @@ const translations = {
     "images.register2": "Register",
     "images.tagRequired": "Image tag is required",
     "images.imageRegistered": "Image registered",
+    "images.staleBadge": "image ID",
+    "images.staleTitle": "Name is a raw image ID hash — re-register under a real name",
+    "images.reRegister": "Re-register",
+    "images.reRegisterTitle": "Re-register image",
+    "images.reRegisterHint": "Current name is {name} — enter a new display name to re-tag it",
+    "images.reRegisterNamePlaceholder": "New display name, e.g. my-app",
+    "images.reRegisterNameRequired": "Display name is required",
+    "images.imageReRegistered": "Image re-registered",
 
     // Volumes
     "volumes.title": "Volumes",

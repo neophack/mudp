@@ -318,6 +318,12 @@ func rewriteArchive(rc io.Reader, srcName, destName string) ([]byte, error) {
 		}
 		nh := *hdr
 		nh.Name = newName
+		// Overwrite ownership with the service uid/gid: copy_file re-uploads a
+		// header copied from the container (typically root-owned), and when the
+		// destination is under the bind-mounted /workspace that would leave
+		// root-owned files on the host netdisk.
+		nh.Uid = serviceUid
+		nh.Gid = serviceGid
 		if hdr.Typeflag == tar.TypeDir {
 			nh.Name = strings.TrimSuffix(newName, "/") + "/"
 		}

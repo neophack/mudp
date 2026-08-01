@@ -329,6 +329,62 @@ func (a *App) imageRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"dockerRef": mudpRef, "name": displayName})
 }
 
+// imageReRegister re-tags an existing catalog row under a new display name. It is
+// the fix-up path for images that were registered or committed using their raw
+// image ID as the name (shown stale in the UI). The row's preset, group links,
+// and source ref are preserved; only the display name and docker ref change.
+func (a *App) imageReRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot re-register images")
+		return
+	}
+	var req struct {
+		ImageID int64  `json:"imageId"`
+		Name    string `json:"name"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ImageID == 0 {
+		writeErr(w, http.StatusBadRequest, "imageId is required")
+		return
+	}
+	displayName := dockerx.PublicImageName(req.Name)
+	if displayName == "" {
+		writeErr(w, http.StatusBadRequest, "a valid display name is required")
+		return
+	}
+	img, err := a.db.ImageByID(req.ImageID)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "image not found: "+err.Error())
+		return
+	}
+	mudpRef := dockerx.MUDPImageRef(displayName)
+	// Source the content from the current docker ref; if that tag was removed
+	// (e.g. the image was rebuilt and lost its tag) fall back to the original
+	// source ref, the same way a fresh register would.
+	src := img.DockerRef
+	if ok, _ := a.docker.ImageExists(r.Context(), src); !ok {
+		src = img.SourceRef
+	}
+	if err := a.docker.TagImage(r.Context(), src, mudpRef); err != nil {
+		writeErr(w, http.StatusBadRequest, "image not found locally: "+err.Error())
+		return
+	}
+	if err := a.db.RenameImage(req.ImageID, displayName, mudpRef); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.record(r, "image.reregister", img.DisplayName+"→"+displayName)
+	writeJSON(w, http.StatusOK, map[string]string{"dockerRef": mudpRef, "name": displayName})
+}
+
 // registryAuthForRef resolves the registry auth blob for an image ref from the
 // stored credentials. Empty when no match (public pulls).
 func (a *App) registryAuthForRef(ref string) string {

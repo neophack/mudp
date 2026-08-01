@@ -391,3 +391,45 @@ func (d *Client) CommitContainer(ctx context.Context, id, repo, tag, comment str
 	_ = d.c.ImageTag(ctx, commitResp.ID, ref)
 	return ref, nil
 }
+
+// IsRawImageID reports whether name looks like a raw Docker image ID rather than
+// a curated display name. Docker image IDs are hex hashes (the short form shown
+// by the API is 12 hex chars; the full form is 64 hex chars), optionally with a
+// digest algorithm prefix such as "sha256:". When an image is registered or
+// committed using its image ID as the name, that ID leaks into the catalog as
+// the display name — those rows are flagged stale so an admin can re-register
+// them under a real name.
+func IsRawImageID(name string) bool {
+	s := name
+	// A registry/tag colon (e.g. "registry/repo:tag" or "ubuntu:22.04") is part
+	// of a real reference, not a digest — those are never raw IDs.
+	if i := strings.Index(s, ":"); i >= 0 {
+		head := s[:i]
+		tail := s[i+1:]
+		// Strip a digest algorithm prefix only when the head is a plain algorithm
+		// token (no slash, not a tag) and what follows is hex (the digest). Any
+		// other colon means it's a name[:tag] reference.
+		if !strings.Contains(head, "/") && isHex(tail) {
+			s = tail
+		} else {
+			return false
+		}
+	}
+	// Docker's short image ID is 12 hex chars; the full ID is 64. Anything that
+	// is pure hex and at least as long as the short form is treated as an ID.
+	return len(s) >= 12 && isHex(s)
+}
+
+// isHex reports whether s is non-empty and contains only ASCII hex digits.
+func isHex(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		ok := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+		if !ok {
+			return false
+		}
+	}
+	return true
+}

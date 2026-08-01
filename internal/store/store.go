@@ -1051,6 +1051,24 @@ func (db *DB) SaveImage(displayName, dockerRef, sourceRef string) error {
 	return err
 }
 
+// RenameImage updates a catalog row's display name and docker ref in place, keyed
+// by id (unlike SaveImage, which upserts by display_name and so would leave an
+// orphaned row behind on a rename). The preset, group links, source ref, and
+// created_at are all preserved. A UNIQUE constraint violation (the new name or
+// ref colliding with another row) surfaces as the underlying error so callers
+// can reject the rename.
+func (db *DB) RenameImage(id int64, displayName, dockerRef string) error {
+	res, err := db.Exec(`update images set display_name=?, docker_ref=? where id=?`, displayName, dockerRef, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("image %d not found", id)
+	}
+	return nil
+}
+
 func (db *DB) ImagesForUser(userID int64, admin bool) ([]Image, error) {
 	q := `select distinct i.id,i.display_name,i.docker_ref,i.source_ref,i.created_at,i.preset_json
 		from images i order by i.display_name`

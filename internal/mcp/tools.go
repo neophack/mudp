@@ -6,12 +6,37 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
 	"sort"
 	"strings"
 	"time"
 
 	"mudp/internal/dockerx"
+)
+
+// serviceUid/serviceGid are the mudp process's own uid/gid, captured once.
+// MCP write tools stamp these onto every tar header they build, so that when
+// Docker extracts the archive into the bind-mounted /workspace (the host
+// netdisk), the files/dirs land owned by the mudp service user rather than
+// root. Without this, write_file/edit_file/upload_file/copy_file leave
+// root-owned files on the host (the headers default to 0), which breaks panel
+// netdisk ops and quotas. On Windows these report -1, but Windows builds never
+// serve a Linux bind-mount, so the values are moot there; we clamp -1 to 0 to
+// keep the tar header encodable (USTAR cannot encode negative uid/gid).
+func nonNegativeUidGid() (int, int) {
+	uid, gid := os.Getuid(), os.Getgid()
+	if uid < 0 {
+		uid = 0
+	}
+	if gid < 0 {
+		gid = 0
+	}
+	return uid, gid
+}
+
+var (
+	serviceUid, serviceGid = nonNegativeUidGid()
 )
 
 // maxReadFileBytes caps how much a single read_file call returns. Larger files
@@ -479,13 +504,15 @@ func buildPathTar(fullPath string, content []byte) []byte {
 	tw := tar.NewWriter(&buf)
 	segments := strings.Split(cleaned, "/")
 	// Emit each ancestor directory so intermediate folders exist at the dest.
+	// Headers carry the service uid/gid so files created under the bind-mounted
+	// /workspace land owned by the mudp user on the host, not root.
 	for i := 1; i < len(segments); i++ {
 		dirName := strings.Join(segments[:i], "/") + "/"
-		_ = tw.WriteHeader(&tar.Header{Name: dirName, Mode: 0755, Typeflag: tar.TypeDir})
+		_ = tw.WriteHeader(&tar.Header{Name: dirName, Mode: 0755, Typeflag: tar.TypeDir, Uid: serviceUid, Gid: serviceGid})
 	}
 	// The file entry's Name is its full path relative to the upload root; using
 	// just the basename would drop every parent segment and land the file at "/".
-	_ = tw.WriteHeader(&tar.Header{Name: cleaned, Mode: 0644, Size: int64(len(content))})
+	_ = tw.WriteHeader(&tar.Header{Name: cleaned, Mode: 0644, Size: int64(len(content)), Uid: serviceUid, Gid: serviceGid})
 	_, _ = tw.Write(content)
 	_ = tw.Close()
 	return buf.Bytes()

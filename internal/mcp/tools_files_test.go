@@ -174,6 +174,55 @@ func TestRewriteArchive_DropsSymlinks(t *testing.T) {
 	}
 }
 
+func TestRewriteArchive_StampedServiceOwnership(t *testing.T) {
+	// copy_file re-uploads headers copied from the container, which are
+	// typically root-owned (uid/gid 0). When the destination is under the
+	// bind-mounted /workspace that would leave root-owned files on the host,
+	// so rewriteArchive must overwrite ownership with the service uid/gid.
+	const rootUid, rootGid = 0, 0
+	src := bytes.NewBuffer(nil)
+	tw := tar.NewWriter(src)
+	entries := []struct {
+		name     string
+		typeflag byte
+	}{
+		{"src", tar.TypeDir},
+		{"src/a.txt", tar.TypeReg},
+	}
+	for _, e := range entries {
+		hdr := &tar.Header{Name: e.name, Mode: 0644, Typeflag: e.typeflag, Uid: rootUid, Gid: rootGid}
+		if e.typeflag == tar.TypeDir {
+			hdr.Name = strings.TrimSuffix(e.name, "/") + "/"
+		} else {
+			hdr.Size = int64(len("hello"))
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if e.typeflag == tar.TypeReg {
+			_, _ = tw.Write([]byte("hello"))
+		}
+	}
+	_ = tw.Close()
+
+	out, err := rewriteArchive(bytes.NewReader(src.Bytes()), "src", "dst")
+	if err != nil {
+		t.Fatalf("rewriteArchive: %v", err)
+	}
+	uid, gid := serviceUid, serviceGid
+	tr := tar.NewReader(bytes.NewReader(out))
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if hdr.Uid != uid || hdr.Gid != gid {
+			t.Errorf("entry %q ownership = uid:%d gid:%d (source was root-owned), want uid:%d gid:%d",
+				hdr.Name, hdr.Uid, hdr.Gid, uid, gid)
+		}
+	}
+}
+
 func TestBase64RoundTrip(t *testing.T) {
 	payloads := [][]byte{
 		[]byte("plain text"),
@@ -199,10 +248,17 @@ func TestBuildPathTar_CreatesDirEntries(t *testing.T) {
 	var dirs []string
 	var fileName string
 	var fileBody string
+	uid, gid := serviceUid, serviceGid
 	for {
 		hdr, err := tr.Next()
 		if err != nil {
 			break
+		}
+		// Every entry must carry the service uid/gid, not the 0 default, so
+		// files written into the bind-mounted /workspace land owned by the
+		// mudp user on the host instead of root.
+		if hdr.Uid != uid || hdr.Gid != gid {
+			t.Errorf("entry %q ownership = uid:%d gid:%d, want uid:%d gid:%d", hdr.Name, hdr.Uid, hdr.Gid, uid, gid)
 		}
 		if hdr.Typeflag == tar.TypeDir {
 			dirs = append(dirs, hdr.Name)
@@ -240,10 +296,15 @@ func TestBuildPathTar_TopLevelFile(t *testing.T) {
 	tr := tar.NewReader(bytes.NewReader(out))
 	dirCount := 0
 	fileCount := 0
+	uid, gid := serviceUid, serviceGid
 	for {
 		hdr, err := tr.Next()
 		if err != nil {
 			break
+		}
+		// Even a top-level file must be stamped with the service ownership.
+		if hdr.Uid != uid || hdr.Gid != gid {
+			t.Errorf("entry %q ownership = uid:%d gid:%d, want uid:%d gid:%d", hdr.Name, hdr.Uid, hdr.Gid, uid, gid)
 		}
 		if hdr.Typeflag == tar.TypeDir {
 			dirCount++

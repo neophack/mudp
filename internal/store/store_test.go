@@ -120,6 +120,87 @@ func TestImagePresetRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRenameImage covers the re-register path: RenameImage updates the display
+// name and docker ref by id while preserving the preset, group links, and source
+// ref; it also rejects a name that collides with another row.
+func TestRenameImage(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.SaveImage("hash-name", "mudp-hash-name", "ubuntu:22.04"); err != nil {
+		t.Fatalf("SaveImage: %v", err)
+	}
+	if err := db.SaveImage("taken", "mudp-taken", "taken:latest"); err != nil {
+		t.Fatalf("SaveImage taken: %v", err)
+	}
+
+	// Attach a preset + a group link to the row we'll rename, to prove RenameImage
+	// keeps them.
+	imgs, _ := db.ImagesForUser(1, true)
+	var target Image
+	for _, im := range imgs {
+		if im.DisplayName == "hash-name" {
+			target = im
+		}
+	}
+	if target.ID == 0 {
+		t.Fatalf("target image not found: %+v", imgs)
+	}
+	if err := db.CreateGroup("g"); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	groups, err := db.Groups()
+	if err != nil {
+		t.Fatalf("Groups: %v", err)
+	}
+	var gid int64
+	for _, g := range groups {
+		if g.Name == "g" {
+			gid = g.ID
+		}
+	}
+	if gid == 0 {
+		t.Fatal("group id not resolved")
+	}
+	if err := db.SetImageGroups(target.ID, []int64{gid}); err != nil {
+		t.Fatalf("SetImageGroups: %v", err)
+	}
+	if err := db.SetImagePreset(target.ID, &ImagePreset{GPUs: "all"}); err != nil {
+		t.Fatalf("SetImagePreset: %v", err)
+	}
+
+	// Rename: new display name + new docker ref.
+	if err := db.RenameImage(target.ID, "asr2pass", "mudp-asr2pass:latest"); err != nil {
+		t.Fatalf("RenameImage: %v", err)
+	}
+
+	// Row now shows the new identity but keeps its preset/group/source.
+	after, err := db.ImageByID(target.ID)
+	if err != nil {
+		t.Fatalf("ImageByID: %v", err)
+	}
+	if after.DisplayName != "asr2pass" || after.DockerRef != "mudp-asr2pass:latest" {
+		t.Fatalf("rename did not apply: %+v", after)
+	}
+	if after.SourceRef != "ubuntu:22.04" {
+		t.Fatalf("source ref not preserved: %q", after.SourceRef)
+	}
+	if after.Preset == nil || after.Preset.GPUs != "all" {
+		t.Fatalf("preset not preserved: %+v", after.Preset)
+	}
+	if names := after.Groups; len(names) != 1 || names[0] != "g" {
+		t.Fatalf("group link not preserved: %v", names)
+	}
+
+	// Renaming to a display name already used by another row must fail (UNIQUE).
+	if err := db.RenameImage(target.ID, "taken", "mudp-other:latest"); err == nil {
+		t.Fatal("expected UNIQUE violation renaming to a taken name")
+	}
+
+	// Renaming a non-existent id is rejected.
+	if err := db.RenameImage(999999, "ghost", "mudp-ghost:latest"); err == nil {
+		t.Fatal("expected error renaming missing image")
+	}
+}
+
 // TestImagesForUserVisibility verifies that unassigned images are visible to
 // every activated user, while images assigned to groups are only visible to
 // members of those groups.

@@ -381,6 +381,7 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/images/pull", a.pullImage)
 		r.Post("/api/images/pull/stream", a.pullImageStream)
 		r.Post("/api/images/register", a.imageRegister)
+		r.Post("/api/images/reregister", a.imageReRegister)
 		r.Post("/api/images/build/stream", a.imageBuildStream)
 		r.Post("/api/images/import", a.imageImport)
 		r.Get("/api/images/save", a.imageSave)
@@ -730,7 +731,31 @@ func (a *App) images(w http.ResponseWriter, r *http.Request) {
 	}
 	u := currentUser(r)
 	imgs, err := a.db.ImagesForUser(u.ID, u.Role == "admin")
-	respond(w, imgs, err)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	// Enrich each row with isStale: an image whose display name is a raw Docker
+	// image ID (registered/committed by id) is flagged so the UI can show a
+	// re-register affordance. Wrapped in a local struct to keep the dockerx
+	// dependency out of store.Image.
+	out := make([]map[string]any, 0, len(imgs))
+	for _, im := range imgs {
+		row := map[string]any{
+			"id":        im.ID,
+			"name":      im.DisplayName,
+			"dockerRef": im.DockerRef,
+			"sourceRef": im.SourceRef,
+			"groups":    im.Groups,
+			"createdAt": im.CreatedAt,
+			"isStale":   dockerx.IsRawImageID(im.DisplayName),
+		}
+		if im.Preset != nil {
+			row["preset"] = im.Preset
+		}
+		out = append(out, row)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type pullRequest struct {
