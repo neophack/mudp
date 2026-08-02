@@ -79,6 +79,54 @@ func TestNetdiskCopyOneIntoDirectory(t *testing.T) {
 	}
 }
 
+// TestCopyPathWithPolicySkipsExistingSingleFile is a regression test:
+// copyPathWithPolicy's directory-walk branch honoured the "skip" policy (an
+// existing destination file is left untouched), but the single-file branch
+// fell straight through to copyFile regardless of policy, silently
+// overwriting an existing destination. netdiskBackupRestore relies on this
+// for a non-destructive single-file restore.
+func TestCopyPathWithPolicySkipsExistingSingleFile(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src.txt")
+	if err := os.WriteFile(src, []byte("new content"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(tmp, "dst.txt")
+	if err := os.WriteFile(dst, []byte("original content"), 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyPathWithPolicy(src, dst, "skip"); err != nil {
+		t.Fatalf("copyPathWithPolicy skip: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != "original content" {
+		t.Fatalf("skip policy overwrote the existing file: got %q, want %q", got, "original content")
+	}
+
+	// Sanity check the same call without an existing destination still copies
+	// (skip only applies when there is something to preserve).
+	dst2 := filepath.Join(tmp, "dst2.txt")
+	if err := copyPathWithPolicy(src, dst2, "skip"); err != nil {
+		t.Fatalf("copyPathWithPolicy skip (no existing dst): %v", err)
+	}
+	if got, err := os.ReadFile(dst2); err != nil || string(got) != "new content" {
+		t.Fatalf("copy to a fresh destination = %q, %v; want %q", got, err, "new content")
+	}
+
+	// overwrite policy must still replace the file, so skip's new check
+	// didn't accidentally make copyPathWithPolicy always-preserve.
+	if err := copyPathWithPolicy(src, dst, "overwrite"); err != nil {
+		t.Fatalf("copyPathWithPolicy overwrite: %v", err)
+	}
+	if got, err := os.ReadFile(dst); err != nil || string(got) != "new content" {
+		t.Fatalf("overwrite policy result = %q, %v; want %q", got, err, "new content")
+	}
+}
+
 // TestUploadDestPath covers the folder-upload regression: Go strips directory
 // information from a multipart part's filename, so the nested path has to come
 // from the parallel "paths" field or the whole tree lands flat in one folder.

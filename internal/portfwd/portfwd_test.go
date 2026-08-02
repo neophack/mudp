@@ -180,6 +180,46 @@ func TestApplyRetargetsWhenContainerMoves(t *testing.T) {
 	}
 }
 
+// TestApplyRefreshesRequireLoginOnKeptListener is a regression test: when a
+// reconcile keeps an existing listener (same target), it used to copy over
+// only the informational fields (Container/Owner/Name) and leave
+// RequireLogin stale on the live entry. relayTCP reads RequireLogin off that
+// entry on every accepted connection, so toggling "require login" on an
+// already-forwarded port had no effect until the target address also
+// happened to change out from under it.
+func TestApplyRefreshesRequireLoginOnKeptListener(t *testing.T) {
+	targetIP, targetPort := echoTCP(t, "x:")
+	hostPort := freePort(t)
+	m := quietManager(t)
+	rule := Rule{HostIP: "127.0.0.1", HostPort: hostPort, Proto: "tcp", TargetIP: targetIP, TargetPort: targetPort, Name: "dev01"}
+
+	if err := m.Apply([]Rule{rule}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if st := m.Status(); len(st) != 1 || st[0].RequireLogin {
+		t.Fatalf("initial RequireLogin should be false: %+v", st)
+	}
+	before := m.Status()[0].Since
+
+	// Same target, RequireLogin flipped on: the listener must be kept (no
+	// restart, so in-flight connections survive) but the flag itself must
+	// still take effect.
+	rule.RequireLogin = true
+	if err := m.Apply([]Rule{rule}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	st := m.Status()
+	if len(st) != 1 {
+		t.Fatalf("expected exactly one listener, got %+v", st)
+	}
+	if st[0].Since != before {
+		t.Fatalf("listener restarted on a RequireLogin-only change: %+v", st)
+	}
+	if !st[0].RequireLogin {
+		t.Fatalf("RequireLogin was not refreshed on the kept listener: %+v", st[0])
+	}
+}
+
 // Reconciling with the same rule twice must not restart the listener, or every
 // 15-second sweep would drop every open SSH session.
 func TestApplyIsIdempotent(t *testing.T) {

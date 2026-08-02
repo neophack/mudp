@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // crc32Hex (shared with uploadwrite_test.go) returns the lowercase hex CRC32
@@ -433,6 +434,57 @@ func TestHandleChunkInit_CreatesNewSubfolder(t *testing.T) {
 	dst := filepath.Join(dir, filepath.FromSlash(name))
 	if _, err := os.Stat(chunkStatePath(dst)); err != nil {
 		t.Fatalf("state file should exist in the newly-created subfolder: %v", err)
+	}
+}
+
+// TestLockChunkSegment_SerializesSameIndexButNotDifferent is a regression test
+// for a race where two concurrent requests for the SAME chunk index (a client
+// retry racing the original request) could both run writeChunkSegment at once
+// and interleave bytes into a corrupt segment -- neither request's own CRC
+// check would catch it, since each computes its hash from the bytes it read,
+// not from what actually ends up on disk. handleChunk now holds
+// lockChunkSegment(dst, idx) across the write. This verifies the lock's
+// mutual-exclusion contract directly: the same (dst, index) key blocks a
+// second acquire, but a different index does not.
+func TestLockChunkSegment_SerializesSameIndexButNotDifferent(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "f.bin")
+
+	// Same key: a second acquire must block until the first releases.
+	unlock1 := lockChunkSegment(dst, 0)
+	acquired := make(chan struct{})
+	go func() {
+		unlock2 := lockChunkSegment(dst, 0)
+		close(acquired)
+		unlock2()
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("lockChunkSegment(dst,0) acquired while already held for the same index")
+	case <-time.After(50 * time.Millisecond):
+		// still blocked, as expected
+	}
+	unlock1()
+	select {
+	case <-acquired:
+		// released once the holder unlocked, as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("lockChunkSegment(dst,0) never acquired after the holder unlocked")
+	}
+
+	// Different index: must not block on an unrelated index's lock.
+	unlock3 := lockChunkSegment(dst, 0)
+	defer unlock3()
+	done := make(chan struct{})
+	go func() {
+		unlock4 := lockChunkSegment(dst, 1)
+		close(done)
+		unlock4()
+	}()
+	select {
+	case <-done:
+		// expected: a different index is independent of index 0's lock
+	case <-time.After(2 * time.Second):
+		t.Fatal("lockChunkSegment(dst,1) blocked by an unrelated index's lock")
 	}
 }
 

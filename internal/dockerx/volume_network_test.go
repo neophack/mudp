@@ -88,6 +88,48 @@ func TestNetLabelToDisplay(t *testing.T) {
 	}
 }
 
+// TestDequalifyVolumeName is a regression test: dequalifyVolumeName is
+// documented to return "" when full doesn't belong to username's volume
+// namespace, but strings.TrimPrefix alone returns its input unchanged on a
+// non-match instead of "". DuplicateContainer relies on the empty string to
+// skip a volume outside the target user's namespace (e.g. an admin
+// duplicating another user's container) -- without the fix, such a volume's
+// raw qualified name would be fed back into CreateOptions.Mounts as if it
+// were a valid display name, and fail downstream with a confusing "volume
+// not found" once re-qualified under the wrong user.
+func TestDequalifyVolumeName(t *testing.T) {
+	cases := []struct{ full, user, want string }{
+		{"mudp-alice-vol-data", "alice", "data"},
+		{"mudp-alice-vol-my-data", "alice", "my-data"},
+		// Belongs to a different user's namespace: must not pass through.
+		{"mudp-alice-vol-data", "admin", ""},
+		{"mudp-bob-vol-pg", "alice", ""},
+		{"notprefixed", "alice", ""},
+		{"", "alice", ""},
+	}
+	for _, c := range cases {
+		if got := dequalifyVolumeName(c.full, c.user); got != c.want {
+			t.Errorf("dequalifyVolumeName(%q,%q) = %q, want %q", c.full, c.user, got, c.want)
+		}
+	}
+}
+
+// TestDequalifyNetworkName mirrors TestDequalifyVolumeName for networks.
+func TestDequalifyNetworkName(t *testing.T) {
+	cases := []struct{ full, user, want string }{
+		{"mudp-alice-net-frontend", "alice", "frontend"},
+		{"mudp-alice-net-frontend", "admin", ""},
+		{"mudp-bob-net-backend", "alice", ""},
+		{"bridge", "alice", ""},
+		{"", "alice", ""},
+	}
+	for _, c := range cases {
+		if got := dequalifyNetworkName(c.full, c.user); got != c.want {
+			t.Errorf("dequalifyNetworkName(%q,%q) = %q, want %q", c.full, c.user, got, c.want)
+		}
+	}
+}
+
 // NetworkNameMatches gates external MCP access, so both a false negative (a
 // correctly-placed container refused) and a false positive (a container on some
 // other network reachable from the internet) matter.

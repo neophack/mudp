@@ -207,3 +207,51 @@ func TestMCPMapPoints(t *testing.T) {
 		t.Errorf("repeat offender (6) should be severity 2: %+v", high)
 	}
 }
+
+// TestMCPAttackStatsLast24hExcludesStaleSameDateRow is a regression test for a
+// format mismatch: created_at is stored as RFC3339 ("...T...+08:00"), but the
+// Last24h/HourlyTrend filters compared it directly against SQLite's
+// datetime('now','-24 hours'), which returns a differently-formatted,
+// space-separated UTC string. Because 'T' (0x54) sorts after ' ' (0x20), any
+// row whose calendar date matched the cutoff's calendar date was judged >=
+// the cutoff regardless of its actual time of day, so a genuinely-stale row
+// from earlier that same date leaked into "last 24h". Mirrors
+// TestAccessTrendExcludesStaleSameDateRow for the attack-log table.
+func TestMCPAttackStatsLast24hExcludesStaleSameDateRow(t *testing.T) {
+	db := newTestDB(t)
+
+	// Control row: recorded "now" via RecordMCPAttack's own default, always
+	// within the last 24h.
+	db.RecordMCPAttack(MCPAttackLog{IP: "1.1.1.1", Reason: "recent"})
+
+	// Derive the exact cutoff instant the production query uses, then build a
+	// row genuinely BEFORE it (must be excluded) that shares its calendar
+	// date -- the precise condition that triggered the bug.
+	var cutoff string
+	if err := db.QueryRow(`select datetime('now','-24 hours')`).Scan(&cutoff); err != nil {
+		t.Fatalf("query cutoff: %v", err)
+	}
+	if len(cutoff) < 10 {
+		t.Fatalf("unexpected cutoff format: %q", cutoff)
+	}
+	stale := cutoff[:10] + "T00:00:01+00:00"
+	db.RecordMCPAttack(MCPAttackLog{IP: "2.2.2.2", Reason: "stale", CreatedAt: stale})
+
+	stats, err := db.MCPAttackStats()
+	if err != nil {
+		t.Fatalf("MCPAttackStats: %v", err)
+	}
+	if stats.TotalAttacks != 2 {
+		t.Fatalf("TotalAttacks = %d, want 2 (both rows exist)", stats.TotalAttacks)
+	}
+	if stats.Last24h != 1 {
+		t.Errorf("Last24h = %d, want 1 (the stale same-date row must be excluded)", stats.Last24h)
+	}
+	var trendTotal int
+	for _, b := range stats.HourlyTrend {
+		trendTotal += b.Count
+	}
+	if trendTotal != 1 {
+		t.Errorf("HourlyTrend total = %d, want 1 (the stale same-date row must be excluded): %+v", trendTotal, stats.HourlyTrend)
+	}
+}

@@ -3,6 +3,7 @@
 import { state, api, renderPending, refreshAll, render, escapeHtml } from "../app.js";
 import { LANG_CHINESE, SUPPORTED_LANGS, getCurrentLanguage, switchLanguage, t, initI18n } from "../lib/i18n.js";
 import { detectPublicIP } from "../lib/publicip.js";
+import { resolveNextRedirect } from "../lib/common.js";
 
 export async function renderLogin() {
   // Apply saved language for the login page (no user session yet)
@@ -209,22 +210,11 @@ function _renderLoginHTML(feishuOn) {
       }
       // A forward-auth redirect sends the browser here with ?next=<original URL>;
       // once logged in, send it straight back to the forwarded port it came from.
-      // The forwarded port lives on the same host as the console but on a
-      // different port (see forward_auth.go's forwardLoginTarget), so the check
-      // is against hostname, not full origin -- but it still has to check the
-      // hostname: checking only the scheme, as before, let ?next= redirect to
-      // any http(s) URL at all, including an attacker's own domain.
       const next = new URLSearchParams(location.search).get("next");
-      if (next) {
-        try {
-          const target = new URL(next, location.origin);
-          if ((target.protocol === "http:" || target.protocol === "https:") && target.hostname === location.hostname) {
-            window.location.href = target.href;
-            return;
-          }
-        } catch {
-          // Malformed URL: fall through to the normal post-login render.
-        }
+      const target = resolveNextRedirect(next, location.origin);
+      if (target) {
+        window.location.href = target;
+        return;
       }
       await refreshAll();
       render();

@@ -33,6 +33,29 @@ export function escapeHtml(v) {
   }[m]));
 }
 
+// resolveNextRedirect validates a forward-auth redirect target before
+// honouring it (used by the login page). A forward-auth redirect sends the
+// browser to login with ?next=<original URL> so login can send it back to
+// the forwarded port it came from; that port lives on the same host as the
+// console but a different port (see forward_auth.go's forwardLoginTarget),
+// so the check is against hostname, not full origin. Checking only the
+// scheme (as an earlier version of this code did) let ?next= redirect to any
+// http(s) URL at all, including an attacker's own domain -- an open
+// redirect. Returns the safe absolute URL to redirect to, or null if next is
+// absent, malformed, or points off-host.
+export function resolveNextRedirect(next, origin) {
+  if (!next) return null;
+  try {
+    const target = new URL(next, origin);
+    if ((target.protocol === "http:" || target.protocol === "https:") && target.hostname === new URL(origin).hostname) {
+      return target.href;
+    }
+  } catch {
+    // Malformed URL: not a redirect target.
+  }
+  return null;
+}
+
 export function fmtBytes(n) {
   if (n == null || Number.isNaN(n) || n < 0) return "-";
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
