@@ -91,6 +91,15 @@ Admins can open **Disks** to view host disk information, run mount/unmount helpe
 
 The backup currently includes the MUDP SQLite database. Netdisk data can be copied or archived from the assigned netdisk root paths using the Netdisk file manager or host-level tools.
 
+The database is running in WAL mode, so the backup does not copy the live file directly (recent commits can still be sitting in the `-wal` file and would be missing from a raw copy). Instead it runs `VACUUM INTO` to produce a fully checkpointed, consistent snapshot, zips that snapshot, and deletes the temporary snapshot file afterward. The resulting zip is written with `0600` permissions.
+
+### Restoring from a backup
+
+1. Stop the MUDP server process.
+2. Unzip the backup: it contains a single file named the same as the configured `MUDP_DB` (default `mudp.db`).
+3. Move the current `mudp.db` (and any `mudp.db-wal` / `mudp.db-shm`) aside, then copy the extracted file into its place.
+4. Start the MUDP server. On first connection it will recreate a fresh `-wal`/`-shm` pair; no further migration step is needed since the snapshot already reflects the schema at backup time.
+
 ## MCP External Access
 
 MCP tokens normally only work from the network the console is on. To let an agent connect from outside, an admin can publish a second listener that serves **only** the MCP endpoints, and point a Cloudflare tunnel hostname at it.
