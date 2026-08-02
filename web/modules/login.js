@@ -4,6 +4,8 @@ import { state, api, renderPending, refreshAll, render, escapeHtml } from "../ap
 import { LANG_CHINESE, SUPPORTED_LANGS, getCurrentLanguage, switchLanguage, t, initI18n } from "../lib/i18n.js";
 import { detectPublicIP } from "../lib/publicip.js";
 import { resolveNextRedirect } from "../lib/common.js";
+import { startAutoRefresh } from "./refresh.js";
+import { startBackupJobsPolling } from "./jobs.js";
 
 export async function renderLogin() {
   // Apply saved language for the login page (no user session yet)
@@ -218,6 +220,12 @@ function _renderLoginHTML(feishuOn) {
       }
       await refreshAll();
       render();
+      // A page reload after login goes through app.js's load(), which starts
+      // both of these; submitting the form in-page bypasses that path
+      // entirely, so without this call background freshness (refresh.js) and
+      // the jobs badge never turn on until the user manually reloads.
+      startAutoRefresh();
+      startBackupJobsPolling();
     } catch (err) {
       showError(err.message);
     }

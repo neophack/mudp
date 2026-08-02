@@ -10,6 +10,10 @@ setlocal enabledelayedexpansion
 set "SCOPE=%~1"
 set "FAILED=0"
 
+:: Anchor to the repo root regardless of the caller's cwd, since every path
+:: below (go test ./..., pushd web) is relative to it.
+cd /d "%~dp0"
+
 where go >nul 2>nul
 if errorlevel 1 (
     echo [test] go is not installed or not in PATH

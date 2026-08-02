@@ -21,6 +21,11 @@ vi.mock("../../app.js", () => {
     escapeHtml,
   };
 });
+// A successful in-page login also starts the background auto-refresh loop
+// and the backup-jobs poller (see modules/login.js) — stub both so a login
+// test doesn't schedule a real setTimeout/network loop that outlives it.
+vi.mock("../../modules/refresh.js", () => ({ startAutoRefresh: vi.fn() }));
+vi.mock("../../modules/jobs.js", () => ({ startBackupJobsPolling: vi.fn() }));
 
 const getMocks = () => globalThis.__loginMocks;
 
