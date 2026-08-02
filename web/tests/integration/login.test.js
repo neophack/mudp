@@ -39,6 +39,27 @@ describe("renderLogin", () => {
     mockRenderPending.mockClear();
     mockRefreshAll.mockClear();
     mockRender.mockClear();
+
+    // Stub out the fire-and-forget network probes inside renderLogin() so they
+    // don't try to hit real endpoints under JSDOM and spam stderr.
+    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    globalThis.XMLHttpRequest = class MockXHR {
+      constructor() {
+        this.readyState = 0;
+        this.status = 0;
+        this.responseText = '{"collectClient":false}';
+        this.onreadystatechange = null;
+      }
+      open() { this.readyState = 1; }
+      send() {
+        this.readyState = 4;
+        this.status = 200;
+        if (this.onreadystatechange) this.onreadystatechange();
+      }
+      setRequestHeader() {}
+      getResponseHeader() { return null; }
+      getAllResponseHeaders() { return ""; }
+    };
   });
 
   it("renders the login form", async () => {
