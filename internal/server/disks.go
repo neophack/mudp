@@ -105,7 +105,54 @@ func (a *App) disks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, []diskInfo{{Name: "root", Path: "/", TotalBytes: 0, FreeBytes: 0, UsedPct: 0}})
+	writeJSON(w, http.StatusOK, hostDisks())
+}
+
+// hostDisks enumerates disks on non-Windows hosts. Linux mounts are read from
+// /proc/mounts, keeping only entries backed by a real block device (loop
+// devices excluded) so pseudo filesystems (proc, tmpfs, overlay, ...) stay
+// hidden; several mounts of one device collapse into its first entry. When
+// /proc/mounts is unreadable or yields nothing (e.g. macOS) it falls back to
+// reporting the root filesystem alone.
+func hostDisks() []diskInfo {
+	seen := map[string]bool{}
+	var out []diskInfo
+	if data, err := os.ReadFile("/proc/mounts"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			source, target := fields[0], fields[1]
+			if !strings.HasPrefix(source, "/dev/") || strings.HasPrefix(source, "/dev/loop") || seen[source] {
+				continue
+			}
+			seen[source] = true
+			if d, ok := diskStat(source, target); ok {
+				out = append(out, d)
+			}
+		}
+	}
+	if len(out) == 0 {
+		if d, ok := diskStat("root", "/"); ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func diskStat(name, path string) (diskInfo, bool) {
+	total, free, err := diskUsage(path)
+	if err != nil || total == 0 {
+		return diskInfo{}, false
+	}
+	return diskInfo{
+		Name:       name,
+		Path:       path,
+		TotalBytes: total,
+		FreeBytes:  free,
+		UsedPct:    float64(total-free) / float64(total) * 100,
+	}, true
 }
 
 func bytesTrimBOM(b []byte) []byte {

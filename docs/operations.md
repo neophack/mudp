@@ -121,3 +121,33 @@ Notes:
 ## Feishu Login
 
 When Feishu SSO is enabled and has both App ID and App Secret configured, the login page shows a Feishu login entry. New Feishu users are placed in the `pending` group until an admin assigns them to a normal group.
+
+## Running as a Service
+
+Linux (systemd):
+
+```bash
+sudo ./scripts/install-service.sh [/path/to/mudp]
+```
+
+The script installs the binary to `/opt/mudp`, writes `/etc/systemd/system/mudp.service` plus an environment file at `/etc/mudp/mudp.env` (generating a stable `MUDP_SESSION_SECRET` when none is supplied), adds the service user to the `docker` group, and enables and starts the service. Re-running it performs an in-place upgrade that preserves the database and data directory (`~/.mudp`), and it prints safe-uninstall and full-uninstall commands at the end.
+
+Windows has no built-in service wrapper; register the binary with a service manager such as [NSSM](https://nssm.cc) or `sc.exe`:
+
+```powershell
+nssm install mudp C:\mudp\mudp.exe
+nssm set mudp AppDirectory C:\mudp
+nssm set mudp AppEnvironmentExtra MUDP_ADDR=0.0.0.0:9000 MUDP_DB=C:\mudp\mudp.db MUDP_SESSION_SECRET=<random-hex>
+nssm start mudp
+```
+
+Setting `AppDirectory` (or an absolute `MUDP_DB`) matters: a Windows service starts with `C:\Windows\System32` as its working directory while the default `MUDP_DB` is relative. Also note that graceful shutdown on Windows only happens via Ctrl+C on a console — a service stop or `taskkill` terminates the process immediately (SQLite's WAL recovers on the next start), one more reason to pin `MUDP_SESSION_SECRET`.
+
+## Platform Notes (Windows vs Linux)
+
+- **Docker endpoint**: with neither `MUDP_DOCKER_HOST` nor `DOCKER_HOST` set, mudp uses the platform default — `unix:///var/run/docker.sock` on Linux, `npipe:////./pipe/docker_engine` on Windows (Docker Desktop). Both variables accept `unix://`, `npipe://`, and `tcp://` URLs.
+- **Disks page**: Windows enumerates all logical disks via PowerShell; Linux lists mounts backed by real block devices from `/proc/mounts` (loop devices hidden), falling back to the root filesystem.
+- **Netdisk on Windows**: bind-mounting host paths (`C:\...`) into containers requires the drive to be shared in Docker Desktop settings (automatic with the WSL2 backend); GPU passthrough requires the WSL2 backend with NVIDIA support.
+- **Timezone data**: the binary embeds the IANA timezone database (`time/tzdata`), so the GeoIP/browser timezone comparison in the security log works on Windows hosts without a Go installation.
+- **Host metrics**: CPU/memory/load come from `/proc` on Linux and from the Windows API on Windows; other platforms report zeroes.
+- **Shell-outs**: disk mount/unmount uses PowerShell on Windows and `mount`/`umount` on Linux; netdisk ACLs use `setfacl` on Linux only; Stacks needs the `docker compose` CLI plugin on either platform.

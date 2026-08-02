@@ -90,7 +90,7 @@ Open <http://127.0.0.1:9000>. On the first start without `MUDP_ADMIN_PASSWORD`, 
 
 ## Build
 
-Requires **Go 1.20+**.
+Requires **Go 1.21+** (see `go.mod`).
 
 ```bash
 # Linux / macOS (native binary)
@@ -105,9 +105,18 @@ GOOS=darwin GOARCH=arm64 ./build.sh
 ```powershell
 # Windows
 go build -o dist/mudp.exe ./cmd/mudp
-# or:
-.\build.bat
+# or, to produce both dist/mudp.exe and dist/mudp (Linux) at once:
+.\build.bat   # scripts\build.ps1 is equivalent
 ```
+
+## Run as a service
+
+```bash
+# Linux (systemd) — installs to /opt/mudp, preserves data on re-run
+sudo ./scripts/install-service.sh [/path/to/mudp]
+```
+
+On Windows, register `mudp.exe` with [NSSM](https://nssm.cc) or `sc.exe` — see [docs/operations.md](docs/operations.md#running-as-a-service) for both platforms' details and platform notes.
 
 ## Test
 
@@ -132,6 +141,8 @@ npm run test:e2e  # requires the Go binary at dist/mudp.exe (or dist/mudp)
 End-to-end tests start the real MUDP binary, log in via Chromium, and navigate the major tabs. They fail automatically on any page JS error or HTTP 5xx response.
 
 Docker-touching Go tests auto-skip when no daemon is reachable, so CI without Docker still passes.
+
+For a single command that runs both suites, use the all-in-one runners: `test.bat [go|web]` on Windows, `./test.sh [go|web]` on Linux/macOS.
 
 ## Notes & requirements
 

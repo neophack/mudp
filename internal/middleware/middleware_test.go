@@ -108,6 +108,20 @@ func TestCSRFTokenRoundTrip(t *testing.T) {
 	}
 }
 
+// CSRFTokenFromRequest reads the token from the cookie only — the header and
+// form/query paths are extraction points for CSRFProtect's comparison, not
+// for this getter.
+func TestCSRFTokenFromRequest(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	if got := CSRFTokenFromRequest(req); got != "" {
+		t.Errorf("no cookie: CSRFTokenFromRequest = %q, want empty", got)
+	}
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "tok123"})
+	if got := CSRFTokenFromRequest(req); got != "tok123" {
+		t.Errorf("with cookie: CSRFTokenFromRequest = %q, want %q", got, "tok123")
+	}
+}
+
 // TestCSRFCookieOutlivesTheBrowserSession guards the regression where the CSRF
 // cookie had no expiry: it was dropped when the browser closed while the 24h
 // session cookie survived, so the user returned still logged in and every

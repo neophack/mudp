@@ -10,6 +10,11 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	// Embed the IANA timezone database: Windows hosts have no system zoneinfo,
+	// so without this time.LoadLocation fails for every named timezone and the
+	// GeoIP/browser timezone comparison in security.go always reports a
+	// mismatch.
+	_ "time/tzdata"
 
 	"mudp/internal/config"
 	"mudp/internal/server"
