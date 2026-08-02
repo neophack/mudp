@@ -299,6 +299,25 @@ func TestImagesForUserVisibility(t *testing.T) {
 	if !bobImgs["public-img"] || bobImgs["team-a-img"] || !bobImgs["team-b-img"] {
 		t.Fatalf("bob visibility wrong: %v", bobImgs)
 	}
+
+	// ImageByIDForUser must apply the exact same group-visibility rule as
+	// ImagesForUser: bob may resolve the public and team-b images by id, but
+	// resolving team-a's id must fail even though it exists in the catalog.
+	// This is the guard behind imagePresetResolve (P0-3): without it, any
+	// activated user could pass another team's image id and read its preset.
+	if _, err := db.ImageByIDForUser(publicID, bob.ID, false); err != nil {
+		t.Errorf("bob ImageByIDForUser(public) = %v, want nil error", err)
+	}
+	if _, err := db.ImageByIDForUser(teamBID, bob.ID, false); err != nil {
+		t.Errorf("bob ImageByIDForUser(team-b) = %v, want nil error", err)
+	}
+	if _, err := db.ImageByIDForUser(teamAID, bob.ID, false); err == nil {
+		t.Error("bob ImageByIDForUser(team-a) succeeded; must be forbidden")
+	}
+	// An admin may resolve any image regardless of group assignment.
+	if _, err := db.ImageByIDForUser(teamAID, admin.ID, true); err != nil {
+		t.Errorf("admin ImageByIDForUser(team-a) = %v, want nil error", err)
+	}
 }
 
 // TestValidatePreset guards the server-side preset validation: well-formed presets
@@ -422,6 +441,44 @@ func TestUpdateUser(t *testing.T) {
 	}
 	if _, err := db.Authenticate("carol", "pw2-valid-123"); err != nil {
 		t.Fatalf("re-enabled user failed: %v", err)
+	}
+}
+
+// TestUserCapacityLimit verifies that CreateUser and CreateFeishuUser respect
+// the configured maximum user count, and that UserCapacityLimit defaults to
+// DefaultUserCapacity.
+func TestUserCapacityLimit(t *testing.T) {
+	db := newTestDB(t)
+
+	if limit, err := db.UserCapacityLimit(); err != nil || limit != DefaultUserCapacity {
+		t.Fatalf("UserCapacityLimit default = %d, err=%v, want %d", limit, err, DefaultUserCapacity)
+	}
+	if err := db.SaveUserCapacityLimit(3); err != nil {
+		t.Fatalf("SaveUserCapacityLimit: %v", err)
+	}
+	if limit, err := db.UserCapacityLimit(); err != nil || limit != 3 {
+		t.Fatalf("UserCapacityLimit after save = %d, err=%v, want 3", limit, err)
+	}
+
+	// newTestDB already creates an admin user during Migrate, so two more users
+	// should fit exactly and a third must be rejected.
+	if err := db.CreateUser("one", "pw1-valid-123", RoleUser, nil, 5, 0); err != nil {
+		t.Fatalf("create first user: %v", err)
+	}
+	if err := db.CreateUser("two", "pw2-valid-123", RoleUser, nil, 5, 0); err != nil {
+		t.Fatalf("create second user: %v", err)
+	}
+	if err := db.CreateUser("three", "pw3-valid-123", RoleUser, nil, 5, 0); !errors.Is(err, ErrUserCapacityFull) {
+		t.Fatalf("create third user error = %v, want ErrUserCapacityFull", err)
+	}
+
+	if _, err := db.CreateFeishuUser("ou-feishu-1", "feishu-one", "Feishu One"); !errors.Is(err, ErrUserCapacityFull) {
+		t.Fatalf("create feishu user error = %v, want ErrUserCapacityFull", err)
+	}
+
+	count, err := db.UserCount()
+	if err != nil || count != 3 {
+		t.Fatalf("UserCount = %d, err=%v, want 3", count, err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +66,14 @@ const (
 	RoleReadonly = "readonly"
 	RoleUser     = "user"
 )
+
+// DefaultUserCapacity is the maximum number of user accounts allowed when the
+// administrator has not configured a different limit.
+const DefaultUserCapacity = 50
+
+// ErrUserCapacityFull is returned by CreateUser and CreateFeishuUser when the
+// number of existing users has already reached the configured limit.
+var ErrUserCapacityFull = errors.New("user capacity full")
 
 // PendingGroup is the name of the holding group new Feishu users land in until
 // an admin assigns them to a real group.
@@ -802,6 +811,9 @@ func (db *DB) createUserTx(username, passwordHash, role string, groupIDs []int64
 		return err
 	}
 	defer tx.Rollback()
+	if err := db.checkUserCapacity(tx); err != nil {
+		return err
+	}
 	prefix, err := db.nextPortPrefix(tx)
 	if err != nil {
 		return err
@@ -907,6 +919,76 @@ func (db *DB) UserByUsername(username string) (*User, error) {
 		return nil, err
 	}
 	return db.UserByID(id)
+}
+
+// userCount returns the number of rows in the users table using the provided
+// executor so the count can be evaluated inside a transaction.
+func (db *DB) userCount(e executor) (int, error) {
+	var n int
+	if err := e.QueryRow(`select count(*) from users`).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// UserCount returns the total number of user accounts (including pending and
+// disabled users).
+func (db *DB) UserCount() (int, error) {
+	return db.userCount(db)
+}
+
+// UserCapacityLimit returns the configured user capacity, defaulting to
+// DefaultUserCapacity when no value has been stored or the stored value is
+// invalid.
+func (db *DB) UserCapacityLimit() (int, error) {
+	return userCapacityLimitTx(db)
+}
+
+// userCapacityLimitTx is UserCapacityLimit evaluated against the given
+// executor; see checkUserCapacity.
+func userCapacityLimitTx(e executor) (int, error) {
+	raw, err := getSettingTx(e, "user_capacity_limit")
+	if err != nil {
+		return DefaultUserCapacity, err
+	}
+	if raw == "" {
+		return DefaultUserCapacity, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return DefaultUserCapacity, nil
+	}
+	return n, nil
+}
+
+// SaveUserCapacityLimit persists the maximum number of user accounts. Values
+// below 1 are rejected.
+func (db *DB) SaveUserCapacityLimit(limit int) error {
+	if limit < 1 {
+		return errors.New("capacity must be at least 1")
+	}
+	return db.setSetting("user_capacity_limit", strconv.Itoa(limit))
+}
+
+// checkUserCapacity returns ErrUserCapacityFull when the number of users has
+// reached the configured limit. It is evaluated inside the provided
+// transaction: both the limit lookup and the count must go through tx, not
+// db, or they would each need a second pooled connection while the caller's
+// transaction is still holding the first — a guaranteed deadlock once the
+// pool is sized down to the transaction's own connection.
+func (db *DB) checkUserCapacity(tx executor) error {
+	limit, err := userCapacityLimitTx(tx)
+	if err != nil {
+		return err
+	}
+	count, err := db.userCount(tx)
+	if err != nil {
+		return err
+	}
+	if count >= limit {
+		return ErrUserCapacityFull
+	}
+	return nil
 }
 
 func (db *DB) Users() ([]User, error) {
@@ -1236,6 +1318,24 @@ func (db *DB) ImageByDisplayNameForUser(displayName string, userID int64, admin 
 	return Image{}, fmt.Errorf("image %q is not visible", displayName)
 }
 
+// ImageByIDForUser is ImageByID narrowed to the same group-visibility rule as
+// ImagesForUser: an image assigned to one or more groups is only visible to
+// members of those groups (admins see everything). Any endpoint reachable by
+// a non-admin that accepts a caller-supplied image id must resolve through
+// this instead of the unguarded ImageByID.
+func (db *DB) ImageByIDForUser(imageID, userID int64, admin bool) (Image, error) {
+	imgs, err := db.ImagesForUser(userID, admin)
+	if err != nil {
+		return Image{}, err
+	}
+	for _, img := range imgs {
+		if img.ID == imageID {
+			return img, nil
+		}
+	}
+	return Image{}, fmt.Errorf("image %d is not visible", imageID)
+}
+
 // EnsurePendingGroup creates the holding group used for new Feishu users if it
 // does not yet exist. Safe to call repeatedly.
 func (db *DB) EnsurePendingGroup() error {
@@ -1329,6 +1429,9 @@ func (db *DB) createFeishuUserTx(openID, username, displayName string) (*User, e
 		return nil, beginErr
 	}
 	defer tx.Rollback()
+	if err := db.checkUserCapacity(tx); err != nil {
+		return nil, err
+	}
 	var existing int
 	if err := tx.QueryRow(`select count(*) from users where username=?`, username).Scan(&existing); err != nil {
 		return nil, err
@@ -2108,8 +2211,17 @@ func (db *DB) SaveSetting(key, value string) error {
 
 // getSetting returns a single settings value, or "" if the key is absent.
 func (db *DB) getSetting(key string) (string, error) {
+	return getSettingTx(db, key)
+}
+
+// getSettingTx is getSetting evaluated against the given executor, so it can
+// run inside an existing transaction (e.g. checkUserCapacity, called from
+// inside createUserTx) instead of taking a second connection from the pool —
+// which would self-deadlock a pool sized for exactly the one connection the
+// enclosing transaction is already holding.
+func getSettingTx(e executor, key string) (string, error) {
 	var value string
-	err := db.QueryRow(`select value from settings where key=?`, key).Scan(&value)
+	err := e.QueryRow(`select value from settings where key=?`, key).Scan(&value)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", nil
