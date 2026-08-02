@@ -606,7 +606,8 @@ func (a *App) imagePresetResolve(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "imageId is required")
 		return
 	}
-	img, err := a.db.ImageByID(req.ImageID)
+	u := currentUser(r)
+	img, err := a.db.ImageByIDForUser(req.ImageID, u.ID, u.Role == "admin")
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return

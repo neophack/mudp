@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -261,6 +262,10 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/images/preset/resolve", a.imagePresetResolve)
 		r.Get("/api/groups", a.groups)
 		r.Post("/api/groups", a.groups)
+		// Any activated user may switch their own display language; only the
+		// admin-wide default (adminLanguageSettings, below) is admin-only.
+		r.Get("/api/user/language", a.userLanguage)
+		r.Post("/api/user/language", a.userLanguage)
 		r.Get("/api/volumes", a.volumes)
 		r.Post("/api/volumes", a.volumes)
 		r.Post("/api/volumes/delete", a.volumeDelete)
@@ -398,8 +403,6 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/users/groups", a.setUserGroups)
 		r.Post("/api/users/approve", a.approveUser)
 		r.Post("/api/users/deactivate", a.deactivateUser)
-		r.Get("/api/user/language", a.userLanguage)
-		r.Post("/api/user/language", a.userLanguage)
 		r.Get("/api/admin/settings/language", a.adminLanguageSettings)
 		r.Post("/api/admin/settings/language", a.adminLanguageSettings)
 		r.Get("/api/admin/group/language", a.groupLanguage)
@@ -431,6 +434,8 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/settings/feishu", a.feishuSettings)
 		r.Get("/api/admin/settings/site", a.siteSettings)
 		r.Post("/api/admin/settings/site", a.siteSettings)
+		r.Get("/api/admin/settings/capacity", a.userCapacitySettings)
+		r.Post("/api/admin/settings/capacity", a.userCapacitySettings)
 		r.Post("/api/groups/netdisk", a.groupNetdisk)
 		r.Post("/api/groups/backup", a.groupBackup)
 		r.Get("/api/admin/netdisk/shares", a.netdiskSharesAdmin)
@@ -1210,6 +1215,10 @@ func (a *App) createStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot create containers")
+		return
+	}
 	var req createRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -1696,9 +1705,20 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 	u, err := a.db.UserByFeishu(fu.OpenID)
 	newUser := false
 	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			// A genuine database failure is not "no such user": creating
+			// here would only hit the unique open_id index and mask the
+			// real problem.
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		// First login: create the user in the pending group.
 		u, err = a.db.CreateFeishuUser(fu.OpenID, fu.Username(), fu.Name)
 		if err != nil {
+			if errors.Is(err, store.ErrUserCapacityFull) {
+				http.Redirect(w, r, "/?feishu_error=capacity", http.StatusFound)
+				return
+			}
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1844,6 +1864,10 @@ func (a *App) containerTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot open a terminal")
+		return
+	}
 	id := r.URL.Query().Get("id")
 	if id == "" {
 		writeErr(w, http.StatusBadRequest, "id is required")

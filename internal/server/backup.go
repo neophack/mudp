@@ -67,10 +67,21 @@ func (r *BackupJobRegistry) get(id string) *BackupJob {
 }
 
 func (r *BackupJobRegistry) snapshot() []BackupJob {
+	return r.snapshotForOwner(0, true)
+}
+
+// snapshotForOwner returns job snapshots visible to the caller: every job for
+// an admin, or only jobs owned by ownerID otherwise. Filtering happens here
+// (against the live *BackupJob pointers) rather than on an already-built
+// []BackupJob, so it never has to copy a value that embeds a sync.Mutex.
+func (r *BackupJobRegistry) snapshotForOwner(ownerID int64, admin bool) []BackupJob {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]BackupJob, 0, len(r.jobs))
 	for _, j := range r.jobs {
+		if !admin && j.owner() != ownerID {
+			continue
+		}
 		out = append(out, j.snapshot())
 	}
 	// Newest first, matching the client jobs panel sort.
@@ -162,6 +173,13 @@ func (j *BackupJob) setMessage(msg string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.Message = msg
+}
+
+// owner returns the job's owner id, safe for concurrent access.
+func (j *BackupJob) owner() int64 {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.OwnerID
 }
 
 // ---------------- Job lifecycle ----------------
@@ -591,7 +609,15 @@ func (a *App) backupJobsList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []BackupJob{})
 		return
 	}
-	writeJSON(w, http.StatusOK, a.backupJobs.snapshot())
+	u := currentUser(r)
+	if u == nil {
+		writeJSON(w, http.StatusOK, []BackupJob{})
+		return
+	}
+	// Non-admins only ever see their own jobs; without this filter any
+	// authenticated user could watch (and, via cancel, interfere with) every
+	// other user's backups.
+	writeJSON(w, http.StatusOK, a.backupJobs.snapshotForOwner(u.ID, u.Role == store.RoleAdmin))
 }
 
 // netdiskBackupBrowse lists directories on the caller's backup disk so the
@@ -1006,6 +1032,15 @@ func (a *App) backupJobCancel(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(r, &req); err != nil || req.ID == "" {
 		writeErr(w, http.StatusBadRequest, "id is required")
 		return
+	}
+	u := currentUser(r)
+	if a.backupJobs != nil {
+		if job := a.backupJobs.get(req.ID); job != nil {
+			if u == nil || (u.Role != store.RoleAdmin && job.owner() != u.ID) {
+				writeErr(w, http.StatusForbidden, "job is not yours")
+				return
+			}
+		}
 	}
 	if !a.cancelBackupJob(req.ID) {
 		writeErr(w, http.StatusNotFound, "job not found or not running")

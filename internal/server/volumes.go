@@ -48,8 +48,14 @@ func (a *App) volumes(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "name is required")
 			return
 		}
+		admin := u.Role == "admin"
+		if admin && (len(req.DriverOpts) > 0 || (req.Driver != "" && req.Driver != "local")) {
+			httpx.Logger(r).Info("admin volume create with custom driver/driverOpts",
+				"user", u.Username, "name", req.Name, "driver", req.Driver, "driverOpts", req.DriverOpts)
+		}
 		full, err := a.docker.CreateVolume(r.Context(), dockerx.CreateVolumeOptions{
 			Username:   u.Username,
+			Admin:      admin,
 			Name:       req.Name,
 			Driver:     req.Driver,
 			DriverOpts: req.DriverOpts,

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -141,6 +142,42 @@ func (a *App) siteSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		a.db.Audit(u.Username, "settings.site", "updated site name")
 		writeJSON(w, http.StatusOK, map[string]string{"siteName": name})
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// userCapacitySettings lets an admin read/write the maximum number of user
+// accounts the system will allow. Defaults to store.DefaultUserCapacity.
+func (a *App) userCapacitySettings(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil || roleRank(u.Role) < rankAdmin {
+		writeErr(w, http.StatusForbidden, "insufficient privileges")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		limit, err := a.db.UserCapacityLimit()
+		respond(w, map[string]int{"capacity": limit}, err)
+	case http.MethodPost:
+		var req struct {
+			Capacity int `json:"capacity"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.Capacity < 1 || req.Capacity > 9999 {
+			writeErr(w, http.StatusBadRequest, "capacity must be between 1 and 9999")
+			return
+		}
+		if err := a.db.SaveUserCapacityLimit(req.Capacity); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		a.db.Audit(u.Username, "settings.capacity", fmt.Sprintf("set user capacity to %d", req.Capacity))
+		writeJSON(w, http.StatusOK, map[string]int{"capacity": req.Capacity})
 	default:
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 	}

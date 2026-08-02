@@ -253,7 +253,19 @@ func (a *App) backupData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := filepath.Join(req.TargetDir, "mudp-backup-"+time.Now().Format("20060102-150405")+".zip")
-	f, err := os.Create(name)
+	// Copying the live DB file directly is unsafe under WAL: recently committed
+	// data can still be sitting in the "-wal" file and never gets copied, so the
+	// backup can be torn/incomplete. VACUUM INTO asks SQLite itself to write out
+	// a fully consistent, checkpointed snapshot, which we then zip instead of
+	// the live file.
+	snapshotPath := name + ".snapshot.tmp"
+	_ = os.Remove(snapshotPath) // VACUUM INTO refuses to overwrite an existing file
+	if _, err := a.db.ExecContext(r.Context(), "VACUUM INTO ?", snapshotPath); err != nil {
+		writeErr(w, http.StatusInternalServerError, "backup snapshot failed: "+err.Error())
+		return
+	}
+	defer os.Remove(snapshotPath)
+	f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -273,7 +285,7 @@ func (a *App) backupData(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = io.Copy(wr, in)
 	}
-	add(a.cfg.DBPath, filepath.Base(a.cfg.DBPath))
+	add(snapshotPath, filepath.Base(a.cfg.DBPath))
 	_ = a.db.SaveSetting("disk_backup_target_dir", req.TargetDir)
 	a.record(r, "backup.create", name)
 	writeJSON(w, http.StatusOK, map[string]string{"path": name})
