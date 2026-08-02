@@ -115,7 +115,11 @@ export async function renderUsers() {
       renderView();
       toast(t("users.userCreated"), true);
     } catch (err) {
-      toast(err.message);
+      if (err.message === "user capacity full") {
+        toast(t("users.capacityFull"));
+      } else {
+        toast(err.message);
+      }
     }
   };
   document.querySelectorAll("[data-edit-groups]").forEach((btn) => {

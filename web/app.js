@@ -74,6 +74,7 @@ export const state = {
   disks: [],
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
   siteAdmin: { siteName: "", loaded: false },
+  userCapacity: { capacity: 50, loaded: false },
   notifications: [],
   unreadCount: 0,
   search: "",

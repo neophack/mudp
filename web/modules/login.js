@@ -28,6 +28,12 @@ export async function renderLogin() {
 
   _renderLoginHTML(feishuOn);
 
+  // Surface Feishu SSO errors returned via redirect (e.g. capacity full).
+  const feishuError = new URLSearchParams(location.search).get("feishu_error");
+  if (feishuError === "capacity") {
+    showError(t("login.feishuCapacityFull"));
+  }
+
   // Record this page view for the security monitor. Only sent when the admin
   // has enabled client collection, and fire-and-forget so a slow/blocked
   // request never blocks the login form.

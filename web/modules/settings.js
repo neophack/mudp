@@ -33,6 +33,9 @@ export function renderSettings() {
   if (isAdmin() && !state.mcpRemoteAdmin) {
     loadMCPRemoteAdmin();
   }
+  if (isAdmin() && !state.userCapacity.loaded) {
+    loadUserCapacity();
+  }
 
   const currentLanguage = getCurrentLanguage();
   const defaultLanguage = state.me?.defaultLanguage || "en_US";
@@ -45,6 +48,7 @@ export function renderSettings() {
   const siteIcon = icon('<path d="M3 9.5 12 3l9 6.5"/><path d="M5 10v10h14V10"/>');
   const regIcon = icon('<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>');
   const feishuIcon = icon('<path d="M16 7h.01"/><path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/><path d="m20 7 2 .5-2 .5"/><path d="M10 18v3"/><path d="M14 17.75V22"/>');
+  const capacityIcon = icon('<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6"/><path d="M23 11h-6"/>');
 
   const siteSettingsCard = admin
     ? `<div class="card"><div class="card-head"><h2>${siteIcon}${t("settings.siteSettings")}</h2>` +
@@ -83,6 +87,17 @@ export function renderSettings() {
       `</div>`
     : "";
 
+  const userCapacityCard = admin
+    ? `<div class="card"><div class="card-head"><h2>${capacityIcon}${t("settings.userCapacity")}</h2>` +
+        `<span class="card-head-sub">${t("settings.userCapacityHint")}</span></div>` +
+        `<div class="card-body"><form id="userCapacityForm" class="compact">` +
+          `<p class="hint">${t("settings.userCapacityHint")}</p>` +
+          `<input name="capacity" type="number" min="1" max="9999" value="${state.userCapacity.loaded ? escapeHtml(String(state.userCapacity.capacity)) : ""}" placeholder="${t("settings.userCapacityPlaceholder")}">` +
+          `<button>${t("settings.saveUserCapacity")}</button>` +
+        `</form></div>` +
+      `</div>`
+    : "";
+
   const mcpCard = admin ? mcpRemotePanel() : "";
 
   // ---- Layout ----
@@ -105,6 +120,7 @@ export function renderSettings() {
           `<div class="settings-grid">` +
             createAdminLanguageSettings(defaultLanguage) +
             siteSettingsCard +
+            userCapacityCard +
             registriesCard +
             mcpCard +
             feishuSettingsCard +
@@ -162,6 +178,26 @@ export function renderSettings() {
         applySiteName(res.siteName || "");
         render();
         toast(t("settings.siteSaved"), true);
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+
+  const userCapacityForm = $("#userCapacityForm");
+  if (userCapacityForm) {
+    userCapacityForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const capacity = Number(fd.get("capacity"));
+      try {
+        const res = await api("/api/admin/settings/capacity", {
+          method: "POST",
+          body: JSON.stringify({ capacity }),
+        });
+        state.userCapacity = { capacity: res.capacity, loaded: true };
+        renderView();
+        toast(t("settings.userCapacitySaved"), true);
       } catch (err) {
         toast(err.message);
       }
@@ -371,6 +407,20 @@ export async function loadSiteAdmin() {
     state.siteAdmin = { siteName: cfg.siteName || "", loaded: true };
   } catch {
     state.siteAdmin = { siteName: "", loaded: true };
+  }
+  if (state.tab === "scripts") renderView();
+}
+
+export async function loadUserCapacity() {
+  if (!isAdmin()) {
+    state.userCapacity = { capacity: 50, loaded: true };
+    return;
+  }
+  try {
+    const cfg = await api("/api/admin/settings/capacity");
+    state.userCapacity = { capacity: cfg.capacity || 50, loaded: true };
+  } catch {
+    state.userCapacity = { capacity: 50, loaded: true };
   }
   if (state.tab === "scripts") renderView();
 }

@@ -5,6 +5,7 @@ import { makeFileIterator, prependIterator, makeDropIterator } from "../lib/uplo
 import { hashFileCRC32 } from "../lib/hashfile.js";
 import { uploadLargeFile } from "../lib/chunkupload.js";
 import { openYuvViewer } from "../lib/yuv.js";
+import { renderMarkdownInto } from "../lib/viewer.js";
 
 // netdiskMode is "netdisk" (primary SSD, the default) or "backup" (the slow
 // mechanical backup disk). The whole view branches on this: which list/quota
@@ -1393,7 +1394,7 @@ async function renderViewerContent(kind, path, name, url) {
     case "pdf":
       return renderPdf(url, body);
     case "markdown":
-      return renderMarkdown(url, body);
+      return renderMarkdownInto(url, body);
     case "text":
       return renderText(url, body);
     case "image":
@@ -1471,23 +1472,6 @@ async function rerenderPdf() {
   const body = document.getElementById("viewerBody");
   if (!body || !pdfRenderState) return;
   await paintPdfPages(body);
-}
-
-async function renderMarkdown(url, body) {
-  const res = await fetch(url, { credentials: "same-origin" });
-  const text = await res.text();
-  if (!body.isConnected) return;
-  const marked = window.marked;
-  if (!marked || typeof marked.parse !== "function") {
-    // Fallback: show as plain text.
-    body.innerHTML = `<pre class="viewer-text"></pre>`;
-    body.querySelector("pre").textContent = text;
-    return;
-  }
-  // Render into a sandboxed node via innerHTML, then rebind nothing (no scripts
-  // execute from innerHTML assignment, and marked escapes inline code/markup).
-  body.innerHTML = `<div class="viewer-markdown md-body"></div>`;
-  body.querySelector(".viewer-markdown").innerHTML = marked.parse(text);
 }
 
 async function renderText(url, body) {

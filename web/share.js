@@ -1,6 +1,7 @@
 // Standalone public share page. Baidu-Netdisk-style browsing + save-to-directory.
 
 import { openYuvViewer } from "/lib/yuv.js";
+import { renderMarkdownInto } from "/lib/viewer.js";
 
 const state = {
   token: "",
@@ -599,7 +600,7 @@ async function renderViewerContent(kind, name, url) {
     case "pdf":
       return renderPdf(url, body);
     case "markdown":
-      return renderMarkdown(url, body);
+      return renderMarkdownInto(url, body);
     case "text":
       return renderText(url, body);
     case "image":
@@ -672,19 +673,6 @@ async function paintPdfPages(body) {
     ctx.scale(dpr, dpr);
     await page.render({ canvasContext: ctx, viewport }).promise;
   }
-}
-
-async function renderMarkdown(url, body) {
-  const res = await fetch(url, { credentials: "same-origin" });
-  const text = await res.text();
-  const marked = window.marked;
-  if (!marked || typeof marked.parse !== "function") {
-    body.innerHTML = `<pre class="viewer-text"></pre>`;
-    body.querySelector("pre").textContent = text;
-    return;
-  }
-  body.innerHTML = `<div class="viewer-markdown md-body"></div>`;
-  body.querySelector(".viewer-markdown").innerHTML = marked.parse(text);
 }
 
 async function renderText(url, body) {

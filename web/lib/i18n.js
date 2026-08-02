@@ -124,6 +124,7 @@ const translations = {
     "login.feature2": "实时创建进度与网页终端",
     "login.feature3": "GPU 直通与按用户配额",
     "login.feature4": "飞书单点登录与管理员审批",
+    "login.feishuCapacityFull": "用户人数已满，请联系管理员。",
 
     // Sidebar / shell
     "shell.expandSidebar": "展开侧边栏",
@@ -628,6 +629,7 @@ const translations = {
     "users.notCreated": "未创建",
     "users.notConfigured": "未配置",
     "users.notSet": "未设置",
+    "users.capacityFull": "用户人数已满，无法创建新用户。",
 
     // Settings
     "settings.sectionPersonal": "个人偏好",
@@ -659,6 +661,11 @@ const translations = {
     "settings.callbackUrl": "回调地址：",
     "settings.saveFeishu": "保存飞书设置",
     "settings.feishuSaved": "飞书设置已保存",
+    "settings.userCapacity": "用户人数上限",
+    "settings.userCapacityHint": "用户总数达到此上限后，新用户注册和管理员手动创建均会被阻止。",
+    "settings.userCapacityPlaceholder": "例如 50",
+    "settings.saveUserCapacity": "保存上限",
+    "settings.userCapacitySaved": "用户人数上限已保存",
     "settings.mcpExternal": "MCP 外部访问",
     "settings.mcpStopped": "已停止",
     "settings.mcpListening": "正在监听 {addr}",
@@ -1422,6 +1429,7 @@ const translations = {
     "login.feature2": "Live creation progress and web terminal",
     "login.feature3": "GPU passthrough and per-user quotas",
     "login.feature4": "Feishu single sign-on with admin approval",
+    "login.feishuCapacityFull": "User capacity is full. Please contact the administrator.",
 
     // Sidebar / shell
     "shell.expandSidebar": "Expand sidebar",
@@ -1926,6 +1934,7 @@ const translations = {
     "users.notCreated": "not created",
     "users.notConfigured": "Not configured",
     "users.notSet": "Not set",
+    "users.capacityFull": "User capacity is full. Cannot create a new user.",
 
     // Settings
     "settings.sectionPersonal": "Personal preferences",
@@ -1957,6 +1966,11 @@ const translations = {
     "settings.callbackUrl": "Callback URL: ",
     "settings.saveFeishu": "Save Feishu Settings",
     "settings.feishuSaved": "Feishu settings saved",
+    "settings.userCapacity": "User Capacity",
+    "settings.userCapacityHint": "Once the total number of users reaches this limit, new sign-ups and admin-created accounts are blocked.",
+    "settings.userCapacityPlaceholder": "e.g. 50",
+    "settings.saveUserCapacity": "Save Capacity",
+    "settings.userCapacitySaved": "User capacity saved",
     "settings.mcpExternal": "MCP external access",
     "settings.mcpStopped": "Stopped",
     "settings.mcpListening": "Listening on {addr}",
