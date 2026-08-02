@@ -183,6 +183,19 @@ async function applyPreset(imageName) {
   }
   const p = img.preset;
   if (p.gpus) form.querySelector('[name="gpus"]').value = p.gpus;
+  // Preset ports are container-side only; render as ":container" so the backend
+  // auto-allocates a host port from the user's range.
+  if (p.ports && p.ports.length) form.querySelector('[name="ports"]').value = p.ports.map((c) => ":" + c).join("\n");
+  if (p.restartPolicy) form.querySelector('[name="restartPolicy"]').value = p.restartPolicy;
+  form.querySelector('[name="forward8080"]').checked = !!p.forward8080;
+  form.querySelector('[name="forward80"]').checked = !!p.forward80;
+  if (p.mountNetdisk !== undefined) form.querySelector('[name="mountNetdisk"]').checked = p.mountNetdisk;
+  if (p.mountShm !== undefined) form.querySelector('[name="mountShm"]').checked = p.mountShm;
+  // Applied synchronously, before the env-resolve await below: the network pool
+  // restriction must take effect immediately on image switch, not only once that
+  // network round-trip resolves, or a fast submit in between could send a
+  // network selection that doesn't reflect the new image's restriction.
+  applyPresetNetworks(form, p);
   if (p.env && p.env.length) {
     form.querySelector('[name="env"]').value = p.env.join("\n");
     try {
@@ -199,15 +212,6 @@ async function applyPreset(imageName) {
       toast(err.message);
     }
   }
-  // Preset ports are container-side only; render as ":container" so the backend
-  // auto-allocates a host port from the user's range.
-  if (p.ports && p.ports.length) form.querySelector('[name="ports"]').value = p.ports.map((c) => ":" + c).join("\n");
-  if (p.restartPolicy) form.querySelector('[name="restartPolicy"]').value = p.restartPolicy;
-  form.querySelector('[name="forward8080"]').checked = !!p.forward8080;
-  form.querySelector('[name="forward80"]').checked = !!p.forward80;
-  if (p.mountNetdisk !== undefined) form.querySelector('[name="mountNetdisk"]').checked = p.mountNetdisk;
-  if (p.mountShm !== undefined) form.querySelector('[name="mountShm"]').checked = p.mountShm;
-  applyPresetNetworks(form, p);
 }
 
 // applyPresetNetworks constrains the create form's network list to the image's

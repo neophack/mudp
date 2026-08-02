@@ -25,16 +25,21 @@ REM only needed the first time, to `go install` the analyzers.
 REM ============================================================================
 setlocal enabledelayedexpansion
 
-REM Module import path -- used by `goimports -local`. Auto-detected from go.mod
-REM so this script works unchanged across Go projects.
-set "LOCALPKG="
-for /f "tokens=2" %%m in ('findstr /b /c:"module " go.mod') do set "LOCALPKG=%%m"
-if "%LOCALPKG%"=="" set "LOCALPKG=mudp"
-
+REM cd into the project root and STAY there for the whole run -- every phase
+REM below invokes tools with relative paths ("." / "./...") that resolve
+REM against the current directory, so this pushd must not be undone until
+REM the script actually exits (see the matching popd at each exit point).
 set "PROJ=%~dp0.."
 pushd "%PROJ%" >nul 2>&1 || ( echo [FATAL] cannot cd to project root "%PROJ%" & exit /b 99 )
 set "PROJ=%CD%"
-popd >nul
+
+REM Module import path -- used by `goimports -local`. Auto-detected from
+REM go.mod in the project root (CWD is now %PROJ%, thanks to the pushd
+REM above) so this script works unchanged across Go projects regardless of
+REM where it was invoked from.
+set "LOCALPKG="
+for /f "tokens=2" %%m in ('findstr /b /c:"module " go.mod') do set "LOCALPKG=%%m"
+if "%LOCALPKG%"=="" set "LOCALPKG=mudp"
 
 REM Capture the script's own directory once, up front. %~dp0 is evaluated at
 REM parse time and stays valid here; capturing it avoids any later surprise
@@ -70,6 +75,7 @@ REM -- locate go ---------------------------------------------------------------
 where go >nul 2>&1
 if errorlevel 1 (
     echo [FATAL] 'go' not found on PATH. Install Go and re-run.
+    popd
     exit /b 99
 )
 
@@ -311,10 +317,12 @@ REM Avoid parentheses inside this branch -- cmd treats ( ) as block delimiters,
 REM which corrupts echo lines that contain them. Jump out of the if instead.
 if !FAILS! gtr 0 goto :failed
 echo  RESULT: PASSED
+popd
 exit /b 0
 
 :failed
 echo  RESULT: FAILED -- !FAILS! phase(s) need attention
+popd
 exit /b 1
 
 REM ---------------------------------------------------------------------------

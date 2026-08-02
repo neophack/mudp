@@ -2,7 +2,7 @@
 // over SSE. CSS-only sparklines — no chart dependency.
 
 import { escapeHtml } from "../app.js";
-import { showModalNoShell, closeModal } from "./ui.js";
+import { showModalNoShell, closeModal, onModalClose } from "./ui.js";
 
 export async function openStats(id, name) {
   showModalNoShell(
@@ -17,6 +17,11 @@ export async function openStats(id, name) {
   );
   const closeBtn = document.querySelector(".stats-modal [data-close]");
   if (closeBtn) closeBtn.onclick = closeModal;
+  // Esc/backdrop-click bypass the button above, so the SSE stream also has to
+  // be torn down through the modal teardown registry -- otherwise it keeps
+  // streaming from the server indefinitely after the modal is gone.
+  const backdrop = document.querySelector(".modal-backdrop.stats-modal");
+  if (backdrop) onModalClose(backdrop, () => { if (es) es.close(); });
 
   let interval = 2;
   const sel = document.querySelector("#statsInterval");

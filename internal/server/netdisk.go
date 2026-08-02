@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -390,7 +392,24 @@ func netdiskCopyOne(from, to string, move bool, policy string) error {
 		return err
 	}
 	if move {
-		return os.Rename(from, to)
+		if err := os.Rename(from, to); err != nil {
+			if !errors.Is(err, syscall.EXDEV) {
+				return err
+			}
+			// Source and destination are on different filesystems/mounts (e.g.
+			// the backup disk is a separate mount from the netdisk, which is the
+			// documented setup) -- os.Rename can never bridge that. Fall back to
+			// a copy followed by removing the original, so "move" still works
+			// for the primary deployment topology instead of failing outright.
+			if err := copyPathWithPolicy(from, to, policy); err != nil {
+				return err
+			}
+			if fromInfo.IsDir() {
+				return os.RemoveAll(from)
+			}
+			return os.Remove(from)
+		}
+		return nil
 	}
 	return copyPathWithPolicy(from, to, policy)
 }
@@ -1848,6 +1867,11 @@ func copyPathWithPolicy(src, dst, policy string) error {
 	}
 	if isSymlink(src) {
 		return fmt.Errorf("cannot copy symlink")
+	}
+	if policy == "skip" {
+		if _, err := os.Stat(dst); err == nil {
+			return nil
+		}
 	}
 	return copyFile(src, dst)
 }

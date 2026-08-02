@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"mudp/internal/dockerx"
@@ -339,6 +340,16 @@ func (a *App) networkConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if !a.containerOwnedBy(r.Context(), u, req.ContainerID) {
 		writeErr(w, http.StatusForbidden, "container is not yours")
+		return
+	}
+	// The image preset's SelectableNetworks pool narrows which networks may be
+	// newly attached (see allowedNetworksForImage / containerUpdate); without this
+	// check a user could side-step that restriction by calling connect directly
+	// instead of going through container create/update.
+	preset := a.presetForContainer(r.Context(), u, req.ContainerID)
+	allowed := allowedNetworksForImage(preset, a.attachableNetworks(r.Context(), u))
+	if !slices.Contains(allowed, full) {
+		writeErr(w, http.StatusForbidden, "network is not available to this image's preset")
 		return
 	}
 	if err := a.docker.NetworkConnectContainer(r.Context(), full, req.ContainerID, u.Username, u.Role == "admin", access); err != nil {

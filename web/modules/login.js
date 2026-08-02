@@ -209,12 +209,22 @@ function _renderLoginHTML(feishuOn) {
       }
       // A forward-auth redirect sends the browser here with ?next=<original URL>;
       // once logged in, send it straight back to the forwarded port it came from.
-      // Only same-origin or absolute http(s) URLs are honoured, so the parameter
-      // cannot be abused as an open redirect to an arbitrary scheme.
+      // The forwarded port lives on the same host as the console but on a
+      // different port (see forward_auth.go's forwardLoginTarget), so the check
+      // is against hostname, not full origin -- but it still has to check the
+      // hostname: checking only the scheme, as before, let ?next= redirect to
+      // any http(s) URL at all, including an attacker's own domain.
       const next = new URLSearchParams(location.search).get("next");
-      if (next && /^https?:\/\//.test(next)) {
-        window.location.href = next;
-        return;
+      if (next) {
+        try {
+          const target = new URL(next, location.origin);
+          if ((target.protocol === "http:" || target.protocol === "https:") && target.hostname === location.hostname) {
+            window.location.href = target.href;
+            return;
+          }
+        } catch {
+          // Malformed URL: fall through to the normal post-login render.
+        }
       }
       await refreshAll();
       render();

@@ -16,6 +16,7 @@ const view = {
   filter: { event: "", ip: "", username: "", q: "", suspicious: false },
   page: 0,
   pageSize: 25,
+  hasMoreLogs: false,
   settings: null,
   tab: "overview", // overview | logs | settings | mcp
   // Tracks which sub-tabs have already fetched their data. Without this the
@@ -176,10 +177,10 @@ function drawMap() {
 function renderLogs() {
   const f = view.filter;
   const rows = (view.logs || []).map(logRow).join("") ||
-    `<tr class="empty-row"><td colspan="8">${t("security.noLogs")}</td></tr>`;
-  const total = view.logsTotal || 0;
-  const from = total ? view.page * view.pageSize + 1 : 0;
-  const to = Math.min(total, (view.page + 1) * view.pageSize);
+    `<tr class="empty-row"><td colspan="7">${t("security.noLogs")}</td></tr>`;
+  const count = (view.logs || []).length;
+  const from = count ? view.page * view.pageSize + 1 : 0;
+  const to = view.page * view.pageSize + count;
   return (
     `<div class="card">` +
       `<div class="card-head">` +
@@ -211,9 +212,9 @@ function renderLogs() {
         `<tbody>${rows}</tbody>` +
       `</table>` +
       `<div class="sec-pager">` +
-        `<span class="hint">${total ? (from + "-" + to + " / " + total) : t("security.noLogs")}</span>` +
+        `<span class="hint">${count ? (from + "-" + to) : t("security.noLogs")}</span>` +
         `<button class="ghost" id="prevPage" ${view.page === 0 ? "disabled" : ""}>‹</button>` +
-        `<button class="ghost" id="nextPage" ${to >= total ? "disabled" : ""}>›</button>` +
+        `<button class="ghost" id="nextPage" ${view.hasMoreLogs ? "" : "disabled"}>›</button>` +
       `</div>` +
     `</div>`
   );
@@ -300,9 +301,10 @@ async function loadLogs(force) {
   params.set("offset", view.page * view.pageSize);
   try {
     const data = await api("/api/admin/access/logs?" + params.toString());
-    // The handler returns a flat array; estimate "more" by a full page.
+    // The handler returns a flat array, not a total count, so "more pages
+    // exist" is inferred from whether this page came back full.
     view.logs = Array.isArray(data) ? data : [];
-    view.logsTotal = view.page * view.pageSize + view.logs.length;
+    view.hasMoreLogs = view.logs.length === view.pageSize;
     renderSecurity();
   } catch (err) {
     view.loaded.logs = false; // allow a retry on the next entry.

@@ -378,9 +378,12 @@ func (db *DB) MCPAttackLogs(f MCPAttackFilter) ([]MCPAttackLog, error) {
 // MCPAttackStats summarises the attack log for the Security page header.
 func (db *DB) MCPAttackStats() (MCPAttackStats, error) {
 	var s MCPAttackStats
+	// created_at is RFC3339 ("...T...+08:00"); wrap it in datetime() so SQLite
+	// parses and normalises it to the same UTC form datetime('now',...) returns
+	// before comparing, rather than a raw string compare between two formats.
 	if err := db.QueryRow(`select count(*),
 		(select count(distinct ip) from mcp_attack_logs where ip != ''),
-		(select count(*) from mcp_attack_logs where created_at >= datetime('now','-24 hours'))
+		(select count(*) from mcp_attack_logs where datetime(created_at) >= datetime('now','-24 hours'))
 		from mcp_attack_logs`).Scan(&s.TotalAttacks, &s.UniqueIPs, &s.Last24h); err != nil {
 		return s, err
 	}
@@ -412,7 +415,7 @@ func attackTopCounts(db *DB, query string) []AttackCount {
 func attackTrend(db *DB) []AttackTrend {
 	rows, err := db.Query(`select strftime('%Y-%m-%dT%H:00:00', created_at) bucket, count(*)
 		from mcp_attack_logs
-		where created_at >= datetime('now','-24 hours')
+		where datetime(created_at) >= datetime('now','-24 hours')
 		group by bucket order by bucket asc`)
 	if err != nil {
 		return nil

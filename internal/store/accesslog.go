@@ -385,9 +385,14 @@ func accessTopCounts(db *DB, query string) []AccessCount {
 // first. SQLite's strftime with the 'unixepoch' modifier keeps buckets stable
 // across DST transitions.
 func accessTrend(db *DB) []AccessTrend {
+	// created_at is stored via time.Now().Format(time.RFC3339) ("...T...+08:00"),
+	// while datetime('now',...) returns SQLite's own space-separated UTC form --
+	// comparing created_at against it directly would be a plain string compare
+	// between two different formats. Wrapping created_at in datetime() makes
+	// SQLite parse and normalise it to the same UTC form first.
 	rows, err := db.Query(`select strftime('%Y-%m-%dT%H:00:00', created_at) bucket, count(*)
 		from access_logs
-		where created_at >= datetime('now','-24 hours')
+		where datetime(created_at) >= datetime('now','-24 hours')
 		group by bucket order by bucket asc`)
 	if err != nil {
 		return nil

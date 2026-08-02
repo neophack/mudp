@@ -20,13 +20,15 @@ const YUV_FORMATS = {
   i420: {
     label: "I420 (YUV420P)",
     frameSize: (w, h) => w * h + 2 * ((w / 2) | 0) * ((h / 2) | 0),
-    decode: (b, w, h) => decodePlanar420(b, w, h, 0, (w * h) + ((w / 2) | 0) * ((h / 2) | 0), w * h),
+    // Layout is Y, U, V: U comes right after Y, V after that.
+    decode: (b, w, h) => decodePlanar420(b, w, h, 0, w * h, (w * h) + ((w / 2) | 0) * ((h / 2) | 0)),
   },
   // Planar 4:2:0 with V before U.
   yv12: {
     label: "YV12 (YVU420P)",
     frameSize: (w, h) => w * h + 2 * ((w / 2) | 0) * ((h / 2) | 0),
-    decode: (b, w, h) => decodePlanar420(b, w, h, 0, w * h, (w * h) + ((w / 2) | 0) * ((h / 2) | 0)),
+    // Layout is Y, V, U: V comes right after Y, U after that.
+    decode: (b, w, h) => decodePlanar420(b, w, h, 0, (w * h) + ((w / 2) | 0) * ((h / 2) | 0), w * h),
   },
   // Semi-planar 4:2:0, interleaved UV (a.k.a. NV12). Common on Android/camera.
   nv12: {

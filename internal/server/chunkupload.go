@@ -64,6 +64,26 @@ func lockChunkState(dst string) func() {
 	return mu.Unlock
 }
 
+// chunkSegmentLocks serializes writeChunkSegment for one (destination, index)
+// pair. A client retry (timeout, flaky connection) can leave the original
+// request for a chunk still in flight when the retry arrives; without this,
+// both would open the same segment file O_TRUNC and stream into it
+// concurrently, interleaving bytes into a corrupt segment. Keyed by
+// "dst#index" rather than just dst, so chunks at different indices — which the
+// client intentionally uploads with concurrency > 1 — are not serialized
+// against each other.
+var chunkSegmentLocks sync.Map // map[string]*sync.Mutex
+
+// lockChunkSegment acquires the per-(destination,index) lock, returning the
+// unlock func the caller must defer.
+func lockChunkSegment(dst string, index int) func() {
+	key := fmt.Sprintf("%s#%d", dst, index)
+	v, _ := chunkSegmentLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // chunkStatePath returns the path of the resume state file for a destination.
 func chunkStatePath(dst string) string { return dst + mudppartSuffix }
 
@@ -401,9 +421,18 @@ func handleChunk(w http.ResponseWriter, r *http.Request, dir string) {
 		writeErr(w, http.StatusBadRequest, "index out of range")
 		return
 	}
+	// Held through the segment write below so a retry for this exact chunk
+	// index (timeout, flaky connection) can't run writeChunkSegment
+	// concurrently with the original request and interleave bytes into a
+	// corrupt segment; see chunkSegmentLocks doc comment.
+	unlockSeg := lockChunkSegment(dst, idx)
+	defer unlockSeg()
 	// Idempotent: a chunk already received is reported as done without rewriting
 	// it, so a client retry after a flaky network succeeds instead of 4xx'ing.
-	if st.Received[idx] {
+	// Re-read fresh now that the segment lock is held -- a request that was in
+	// flight for this same index may have just finished and persisted it, and
+	// the `st` read above (before the lock) could be stale.
+	if fresh, ferr := readChunkState(dst); ferr == nil && fresh.Received[idx] {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "index": idx, "crc32": "", "resumed": true})
 		return
 	}

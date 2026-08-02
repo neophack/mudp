@@ -232,10 +232,18 @@ func (m *Manager) Apply(rules []Rule) error {
 		r, ok := want[key]
 		if ok && e.rule.sameTarget(r) {
 			// Same socket, same destination: keep the listener and its open
-			// connections, but refresh the informational fields.
+			// connections, but refresh the informational fields plus
+			// RequireLogin/Note/Source/ManualID -- none of those need the
+			// listener restarted, but relayTCP reads RequireLogin off e.rule on
+			// every new connection, so leaving it stale would silently freeze
+			// an admin's login-gate toggle until the target address changes.
 			e.rule.Container = r.Container
 			e.rule.Owner = r.Owner
 			e.rule.Name = r.Name
+			e.rule.RequireLogin = r.RequireLogin
+			e.rule.Note = r.Note
+			e.rule.Source = r.Source
+			e.rule.ManualID = r.ManualID
 			continue
 		}
 		e.stop()

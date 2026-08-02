@@ -2,7 +2,7 @@
 // line-wrap toggle, and download.
 
 import { state, api, toast } from "../app.js";
-import { showModalNoShell, closeModal } from "./ui.js";
+import { showModalNoShell, closeModal, onModalClose } from "./ui.js";
 
 export async function openLogs(id, title) {
   state.logViewer = {
@@ -75,6 +75,12 @@ export function renderLogViewer() {
       closeModal();
     };
   }
+  // Esc/backdrop-click bypass the Close button above, so the follow stream also
+  // has to be torn down through the modal teardown registry. The backdrop is
+  // recreated on every renderLogViewer() call, so this has to be re-registered
+  // each time rather than once in openLogs.
+  const backdrop = document.querySelector(".modal-backdrop.logs-modal");
+  if (backdrop) onModalClose(backdrop, stopFollow);
   if (lv.follow) startFollow();
   const log = document.querySelector(".modal-body .log-output");
   if (log) log.scrollTop = log.scrollHeight;

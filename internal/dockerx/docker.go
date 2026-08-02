@@ -1758,15 +1758,26 @@ func (d *Client) StackContainers(ctx context.Context, projectName string) ([]Con
 
 // dequalifyVolumeName strips the mudp-<user>-vol- prefix from a full Docker
 // volume name, returning the display name. Returns "" if the name doesn't
-// belong to the user's volume namespace.
+// belong to the user's volume namespace -- callers (e.g. DuplicateContainer,
+// which may run as an admin duplicating another user's container) rely on
+// that empty string to skip a volume outside username's namespace, so
+// strings.TrimPrefix alone is wrong here: it returns its input unchanged on a
+// non-match instead of "".
 func dequalifyVolumeName(full, username string) string {
 	prefix := Prefix + Slug(username) + "-vol-"
+	if !strings.HasPrefix(full, prefix) {
+		return ""
+	}
 	return strings.TrimPrefix(full, prefix)
 }
 
 // dequalifyNetworkName strips the mudp-<user>-net- prefix from a full Docker
-// network name, returning the display name. Returns "" on no match.
+// network name, returning the display name. Returns "" on no match, for the
+// same reason as dequalifyVolumeName above.
 func dequalifyNetworkName(full, username string) string {
 	prefix := Prefix + Slug(username) + "-net-"
+	if !strings.HasPrefix(full, prefix) {
+		return ""
+	}
 	return strings.TrimPrefix(full, prefix)
 }
