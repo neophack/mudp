@@ -255,9 +255,7 @@ func (d *Client) CreateNetwork(ctx context.Context, opts CreateNetworkOptions) (
 		NameLabel:        name,
 		"mudp.createdAt": time.Now().Format(time.RFC3339),
 	}
-	for k, v := range opts.Labels {
-		labels[k] = v
-	}
+	labels = mergeUserLabels(labels, opts.Labels)
 	ipam := &network.IPAM{}
 	// Build the IPv4 IPAM config (subnet + optional gateway/range/aux). When a
 	// subnet is supplied the advanced fields are honored; without a subnet the

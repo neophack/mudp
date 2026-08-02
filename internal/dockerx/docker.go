@@ -42,6 +42,23 @@ const (
 
 var cleanPart = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
 
+// mergeUserLabels merges caller-supplied labels on top of the managed
+// (mudp.*) labels already present in base, but silently drops any key
+// prefixed "mudp." or "com.docker." so a caller can never forge ownership
+// (mudp.user), management (mudp.managed) or namespacing (mudp.name) labels,
+// nor collide with Docker's own reserved namespace. Used by every resource
+// creation path (containers, volumes, networks) that accepts user labels.
+func mergeUserLabels(base map[string]string, user map[string]string) map[string]string {
+	for k, v := range user {
+		k = strings.TrimSpace(k)
+		if k == "" || strings.HasPrefix(k, "mudp.") || strings.HasPrefix(k, "com.docker.") {
+			continue
+		}
+		base[k] = v
+	}
+	return base
+}
+
 type Client struct {
 	c *client.Client
 }
@@ -517,13 +534,7 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	}
 	// Merge user-supplied labels on top of the managed labels, but never let a
 	// caller overwrite the mudp.* keys (ownership/management must stay intact).
-	for k, v := range opts.Labels {
-		k = strings.TrimSpace(k)
-		if k == "" || strings.HasPrefix(k, "mudp.") || strings.HasPrefix(k, "com.docker.") {
-			continue
-		}
-		labels[k] = v
-	}
+	labels = mergeUserLabels(labels, opts.Labels)
 	// The forward labels are written after the merge (which refuses mudp.* keys
 	// from a caller) so the mapping mudp will relay cannot be forged from the
 	// request: it is exactly what the port allocator just handed out.

@@ -25,7 +25,12 @@ type Volume struct {
 
 // CreateVolumeOptions describes a volume to create.
 type CreateVolumeOptions struct {
-	Username   string
+	Username string
+	// Admin allows the caller to set a non-local driver and arbitrary
+	// DriverOpts (e.g. bind-mounting a host path via the local driver's
+	// "type=none,o=bind,device=..." trick). Non-admin callers are always
+	// forced to driver=local with no DriverOpts.
+	Admin      bool
 	Name       string // display name (without mudp- prefix)
 	Driver     string
 	DriverOpts map[string]string
@@ -74,7 +79,11 @@ func (d *Client) ListVolumes(ctx context.Context, username string, admin bool) (
 	return out, nil
 }
 
-// CreateVolume creates a mudp-managed volume owned by username.
+// CreateVolume creates a mudp-managed volume owned by username. Non-admin
+// callers are confined to the local driver with no DriverOpts: the local
+// driver accepts an arbitrary "type=none,o=bind,device=<path>" combination
+// that bind-mounts any host path (including "/") into the volume, which the
+// volume file browser would then expose for reading and writing.
 func (d *Client) CreateVolume(ctx context.Context, opts CreateVolumeOptions) (string, error) {
 	name := strings.TrimSpace(opts.Name)
 	if name == "" {
@@ -84,19 +93,26 @@ func (d *Client) CreateVolume(ctx context.Context, opts CreateVolumeOptions) (st
 	if driver == "" {
 		driver = "local"
 	}
+	driverOpts := opts.DriverOpts
+	if !opts.Admin {
+		if driver != "local" {
+			return "", fmt.Errorf("only the local driver is allowed")
+		}
+		if len(driverOpts) > 0 {
+			return "", fmt.Errorf("driver options are not allowed")
+		}
+	}
 	full := VolumeFullName(opts.Username, name)
 	labels := map[string]string{
 		ManagedLabel: "true",
 		UserLabel:    opts.Username,
 		NameLabel:    name,
 	}
-	for k, v := range opts.Labels {
-		labels[k] = v
-	}
+	labels = mergeUserLabels(labels, opts.Labels)
 	vol, err := d.c.VolumeCreate(ctx, volumetypes.CreateOptions{
 		Name:       full,
 		Driver:     driver,
-		DriverOpts: opts.DriverOpts,
+		DriverOpts: driverOpts,
 		Labels:     labels,
 	})
 	if err != nil {
