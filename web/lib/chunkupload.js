@@ -111,7 +111,10 @@ export async function uploadLargeFile(file, relPath, opts) {
     const now = performance.now();
     const dt = (now - lastTime) / 1000;
     if (dt > 0) {
-      const inst = (loaded - lastLoaded) / dt;
+      // Clamp negative deltas: a chunk retry resets its in-flight byte count to
+      // 0 (see uploadOneChunkWithRetry's onProgress?.(0)), which would otherwise
+      // read here as a burst of negative "throughput" and drag the EMA down.
+      const inst = Math.max(0, loaded - lastLoaded) / dt;
       speedBps = speedBps > 0 ? speedBps * 0.7 + inst * 0.3 : inst;
       lastTime = now;
       lastLoaded = loaded;
@@ -160,6 +163,10 @@ export async function uploadLargeFile(file, relPath, opts) {
       const missing2 = err?.data?.missing;
       if (err.status === 409 && Array.isArray(missing2) && missing2.length) {
         // Re-upload the gaps the server says it's missing, then complete again.
+        // These bytes were already folded into `committed` the first time this
+        // chunk landed (either via the initial resume set or the worker loop
+        // above), so re-adding them here would double-count the file's size —
+        // inflating `loaded` past `size` and skewing the speed/ETA calculation.
         for (const i of missing2) {
           const [start, end] = chunkRange(i, totalChunks, chunkSize, size);
           const hash = await hashChunkCRC32(file, start, end);
@@ -170,7 +177,6 @@ export async function uploadLargeFile(file, relPath, opts) {
             reportProgress();
           });
           inFlight.delete(i);
-          committed += end - start;
           reportProgress();
         }
         continue;
