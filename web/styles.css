@@ -1550,12 +1550,17 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
   line-height: 1;
 }
 /* Row action menu: on wide screens it's unwrapped (display: contents) so the
-   <summary> toggle disappears and every action renders inline, i.e. exactly
-   the old flat icon row. Only the mobile breakpoint below turns it into a
-   real dropdown — six icon buttons don't fit a phone-width actions column
-   without spilling into the Modified column next to it. */
+   "more" toggle disappears and every action renders inline, i.e. exactly the
+   old flat icon row. Only the mobile breakpoint below turns it into a real
+   dropdown — six icon buttons don't fit a phone-width actions column without
+   spilling into the Modified column next to it.
+   This must be a plain <div>/<button>, not <details>/<summary>: browsers
+   force-hide a closed <details>'s non-summary content with an !important
+   rule that no author CSS (including this display: contents) can override,
+   which would leave every action invisible on wide screens where the menu is
+   never "opened". */
 .row-menu, .row-menu-panel { display: contents; }
-.row-menu summary { display: none; }
+.row-menu-toggle { display: none; }
 .row-menu-panel span { display: none; }
 
 @media (max-width: 860px) {
@@ -1575,21 +1580,18 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
     position: relative;
     display: inline-block;
   }
-  .row-menu summary {
+  .row-menu-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     min-height: 30px;
     min-width: 30px;
-    list-style: none;
     cursor: pointer;
     font-size: 18px;
     border-radius: var(--radius-sm);
   }
-  .row-menu summary::-webkit-details-marker,
-  .row-menu summary::marker { display: none; content: ""; }
-  .row-menu summary:hover { background: var(--line-soft); }
-  .row-menu[open] summary { background: var(--line-soft); }
+  .row-menu-toggle:hover { background: var(--line-soft); }
+  .row-menu.open .row-menu-toggle { background: var(--line-soft); }
   /* The base rule makes .row-menu-panel `display: contents` (desktop's flat
      icon row) — undo that here so a closed menu stays hidden on mobile.
      The open panel is `position: fixed` (a bottom action sheet, like the
@@ -1598,7 +1600,7 @@ pre.raw-json { max-height: 420px; overflow: auto; font-size: 11.5px; }
      cut off an absolutely-positioned dropdown opening from a row near the
      bottom of a long file list. Fixed positioning is unaffected by that. */
   .row-menu-panel { display: none; }
-  .row-menu[open] .row-menu-panel {
+  .row-menu.open .row-menu-panel {
     position: fixed;
     left: 0;
     right: 0;
