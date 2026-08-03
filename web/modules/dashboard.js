@@ -168,13 +168,21 @@ function countryCodeFlag(code) {
 }
 
 // myContainersCard shows a non-admin their own containers as a compact list.
+// Badge color/label mirrors containerRow() in containers.js so a container's
+// state reads the same way everywhere in the app.
 function myContainersCard() {
   const list = (state.containers || []).slice(0, 6);
-  const rows = list.map((c) =>
-    `<li><span class="badge ${c.state === "running" ? "badge-ok" : "badge-muted"}"><span class="dot"></span>${escapeHtml(c.state || "?")}</span>` +
-    `<span class="primary-line">${escapeHtml(c.name || c.fullName)}</span>` +
-    `<span class="secondary-line">${escapeHtml(c.image || "")}</span></li>`
-  );
+  const rows = list.map((c) => {
+    const running = c.state === "running";
+    const paused = c.state === "paused";
+    const badgeClass = running ? "badge-ok" : paused ? "badge-warn" : "badge-muted";
+    const label = running ? t("containers.up") : paused ? t("containers.paused") : t("containers.stopped");
+    return (
+      `<li><span class="badge ${badgeClass}"><span class="dot"></span>${escapeHtml(label)}</span>` +
+      `<span class="primary-line">${escapeHtml(c.name || c.fullName)}</span>` +
+      `<span class="secondary-line">${escapeHtml(c.image || "")}</span></li>`
+    );
+  });
   return (
     `<section class="card">` +
       `<div class="card-head"><h2>${t("dash.myContainers")}</h2></div>` +
@@ -264,6 +272,19 @@ function legendItem(label, n, color) {
   return `<li><span class="swatch" style="background:${color}"></span>${escapeHtml(label)} <strong>${n}</strong></li>`;
 }
 
+// isAllowedAvatarSrc mirrors the server's CSP img-src directive (see
+// internal/middleware/secheaders.go: "img-src 'self' data: blob:") so we only
+// ever point an <img> at a URL the browser will actually load.
+function isAllowedAvatarSrc(url) {
+  if (!url) return false;
+  if (url.startsWith("data:") || url.startsWith("blob:")) return true;
+  try {
+    return new URL(url, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 function feishuCard(u) {
   const avatar = u.feishuAvatar || "";
   const name = escapeHtml(displayName(u) || u.username || "—");
@@ -276,7 +297,11 @@ function feishuCard(u) {
     [t("dash.feishuDepartment"), escapeHtml(u.feishuDepartment || "—")],
     [t("dash.feishuLastLogin"), escapeHtml(u.lastLoginAt || "—")],
   ];
-  const avatarHtml = avatar
+  // Feishu avatar URLs point at Feishu's own CDN, which the app's CSP
+  // (img-src 'self' data: blob:) blocks — the request never succeeds, it
+  // just logs a violation and leaves a broken image on every render. Fall
+  // back to the placeholder instead of ever attempting a cross-origin src.
+  const avatarHtml = isAllowedAvatarSrc(avatar)
     ? `<img src="${escapeHtml(avatar)}" alt="" class="feishu-avatar" loading="lazy">`
     : `<div class="feishu-avatar feishu-avatar-placeholder">🧑‍💼</div>`;
   return (

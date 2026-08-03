@@ -1198,7 +1198,6 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   .dash-tiles { grid-template-columns: repeat(2, 1fr) !important; }
   .dash-row-2 { grid-template-columns: 1fr !important; }
   .dash-row-3 { grid-template-columns: 1fr !important; }
-  .dash-row-feishu { grid-template-columns: 1fr !important; }
   .db-stat-row { grid-template-columns: 1fr !important; }
   .dash-span-2 { grid-column: span 2 !important; }
   /* Settings cards collapse to a single column on narrow screens; the section
@@ -1223,24 +1222,42 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
 }
+/* align-items: stretch makes both cards in the row match the tallest one's
+   height instead of each hugging its own content — a short card (e.g. the
+   donut chart next to the longer environment list) no longer leaves a
+   ragged gap below it. The card itself becomes a flex column so its
+   card-body can grow to fill that height, see .dash-row-2/.dash-row-3
+   > .card > .card-body below. */
 .dash-row-2 {
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 .dash-row-3 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
-.dash-row-feishu {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) 1fr;
-  gap: 16px;
-  align-items: start;
+.dash-row-2 > .card,
+.dash-row-3 > .card {
+  display: flex;
+  flex-direction: column;
 }
+/* Center the shorter card's content in the extra height instead of leaving
+   it pinned to the top with dead space below. Has no visible effect on
+   whichever card in the pair is already the tallest. */
+.dash-row-2 > .card > .card-body,
+.dash-row-3 > .card > .card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+/* The Feishu identity card is the only thing in its row — a leftover 2-column
+   grid here left ~40% of the row as dead space to its right. */
+.dash-row-feishu { display: block; }
 .feishu-card-body { display: flex; flex-direction: column; gap: 14px; }
 .feishu-header { display: flex; align-items: center; gap: 12px; }
 .feishu-avatar {
@@ -1259,8 +1276,12 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 .feishu-handle { font-size: 13px; color: var(--muted); font-family: var(--font-mono); }
 .feishu-detail dl { margin: 0; }
 .feishu-detail dt { color: var(--muted); }
-@media (max-width: 900px) {
-  .dash-row-feishu { grid-template-columns: 1fr; }
+/* The card is now full-width (see .dash-row-feishu above), so lay the detail
+   rows out two-per-line instead of one long thin column with empty space to
+   its right. */
+.feishu-detail { grid-template-columns: 112px 1fr 112px 1fr; column-gap: 28px; }
+@media (max-width: 700px) {
+  .feishu-detail { grid-template-columns: 112px 1fr; }
 }
 .db-stat-row {
   display: grid;
