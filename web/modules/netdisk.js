@@ -928,6 +928,17 @@ const UPLOAD_CONCURRENCY = 3;
 // multipart request, so a multi-GB file resumes after a drop and is verified in
 // 100 MB pieces rather than as a single giant blob.
 const CHUNK_THRESHOLD = 1 << 30; // 1 GiB
+// How many times a large file's *entire* chunked upload is automatically
+// re-attempted after it fails (network drop, proxy hiccup, etc.) before giving
+// up and surfacing the manual Retry button. This is cheap to do: the server
+// keeps every chunk it already verified on disk (internal/server/chunkupload.go),
+// so re-calling uploadLargeFile just resumes from the first missing chunk
+// instead of re-uploading the whole file — a slow/flaky link shouldn't cost the
+// user a from-scratch restart.
+const LARGE_FILE_MAX_ATTEMPTS = 5;
+const LARGE_FILE_RETRY_BASE_MS = 1000; // doubles each attempt: 1s, 2s, 4s, 8s
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // walkEntry recursively reads a FileSystemEntry, calling push(entry) for every
 // file it discovers. push may return a Promise (a gate): when it does, walkEntry
@@ -1061,32 +1072,45 @@ async function uploadFilesHandler(source, path) {
   }
 
   // uploadOneLarge drives the chunked upload for a single large file on its slot.
+  // A failure mid-upload (dropped connection, slow-network hiccup) does not
+  // immediately surface to the user: it re-drives uploadLargeFile up to
+  // LARGE_FILE_MAX_ATTEMPTS times with backoff, and each attempt resumes from
+  // the chunks the server already has rather than restarting at byte 0. Only
+  // once every attempt is exhausted does the row fall back to a manual Retry.
   async function uploadOneLarge(entry, slot) {
     let lastLoaded = 0;
-    try {
-      const res = await uploadLargeFile(entry.file, entry.relPath, {
-        base: "/api/netdisk", dir: path, csrfToken,
-        onProgress: ({ loaded, total }) => {
-          const delta = Math.max(0, loaded - lastLoaded);
-          lastLoaded = loaded;
-          doneBytes += delta;
-          overlay.updateActive(slot, {
-            loaded, total,
-            percent: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0,
-            speedBps: 0,
-          });
-        },
-      });
-      // The server verified + assembled the file; settle as done. (res.crc32 is
-      // the whole-file digest computed during assembly.)
-      void res;
-      overlay.settleActive(slot, "done");
-      ok++;
-    } catch (err) {
-      failedFiles.push(entry);
-      failed++;
-      armRetry(slot, entry, err.message);
+    let lastErr;
+    for (let attempt = 0; attempt < LARGE_FILE_MAX_ATTEMPTS; attempt++) {
+      try {
+        const res = await uploadLargeFile(entry.file, entry.relPath, {
+          base: "/api/netdisk", dir: path, csrfToken,
+          onProgress: ({ loaded, total, speedBps }) => {
+            const delta = Math.max(0, loaded - lastLoaded);
+            lastLoaded = loaded;
+            doneBytes += delta;
+            overlay.updateActive(slot, {
+              loaded, total,
+              percent: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0,
+              speedBps,
+            });
+          },
+        });
+        // The server verified + assembled the file; settle as done. (res.crc32
+        // is the whole-file digest computed during assembly.)
+        void res;
+        overlay.settleActive(slot, "done");
+        ok++;
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < LARGE_FILE_MAX_ATTEMPTS - 1) {
+          await sleep(LARGE_FILE_RETRY_BASE_MS * 2 ** attempt);
+        }
+      }
     }
+    failedFiles.push(entry);
+    failed++;
+    armRetry(slot, entry, lastErr?.message);
   }
 
   // sumSizes sums the byte sizes of an entry list (for the small-batch cap).

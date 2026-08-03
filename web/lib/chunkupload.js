@@ -23,11 +23,12 @@
 // directory the same way regardless of whether the body is JSON or multipart.
 //
 // uploadLargeFile returns a Promise<{ok, crc32, path}> on success and rejects
-// (with the last error) if it cannot make progress. It reports per-file byte
-// progress via onLoaded(bytesNowInFlightDeltasAreHandledByCaller) — actually it
-// calls onProgress({loaded, total}) as chunks land.
+// (with the last error) if it cannot make progress. It reports live per-file
+// progress via onProgress({loaded, total, speedBps}), updating continuously as
+// bytes stream out within each chunk — not just once a chunk fully lands.
 
 import { hashChunkCRC32 } from "./hashfile.js";
+import { uploadWithProgress } from "./upload.js";
 
 export const DEFAULT_CHUNK_SIZE = 100 * 1024 * 1024; // 100 MiB
 export const DEFAULT_CHUNK_CONCURRENCY = 3; // chunks in flight at once
@@ -91,8 +92,32 @@ export async function uploadLargeFile(file, relPath, opts) {
   }, csrfToken);
   const uploadId = init.uploadId;
   const received = new Set(Array.isArray(init.received) ? init.received : []);
-  let loaded = 0;
-  for (const i of received) loaded += chunkBytes(i, totalChunks, chunkSize, size);
+  // committed = bytes belonging to chunks the server has fully accepted.
+  // inFlight[index] = bytes of a chunk currently mid-upload (not yet committed),
+  // reported live from that chunk's own XHR progress events. Together they let
+  // onProgress advance smoothly within a single 100 MB chunk instead of jumping
+  // once per chunk completion.
+  let committed = 0;
+  for (const i of received) committed += chunkBytes(i, totalChunks, chunkSize, size);
+  const inFlight = new Map();
+
+  let lastTime = performance.now();
+  let lastLoaded = committed;
+  let speedBps = 0;
+  function reportProgress() {
+    if (!onProgress) return;
+    let loaded = committed;
+    for (const v of inFlight.values()) loaded += v;
+    const now = performance.now();
+    const dt = (now - lastTime) / 1000;
+    if (dt > 0) {
+      const inst = (loaded - lastLoaded) / dt;
+      speedBps = speedBps > 0 ? speedBps * 0.7 + inst * 0.3 : inst;
+      lastTime = now;
+      lastLoaded = loaded;
+    }
+    onProgress({ loaded, total: size, speedBps });
+  }
 
   // 2) upload every missing chunk, up to `concurrency` at a time. Each chunk is
   //    CRC32-hashed first; the server verifies and refuses a mismatch.
@@ -107,10 +132,14 @@ export async function uploadLargeFile(file, relPath, opts) {
       const hash = await hashChunkCRC32(file, start, end);
       await uploadOneChunkWithRetry(`${base}/chunk${qs}`, {
         uploadId, name: relPath, index: myIdx, hash, blob: file.slice(start, end),
-      }, csrfToken);
+      }, csrfToken, (chunkLoaded) => {
+        inFlight.set(myIdx, chunkLoaded);
+        reportProgress();
+      });
+      inFlight.delete(myIdx);
       received.add(myIdx);
-      loaded += end - start;
-      onProgress?.({ loaded, total: size });
+      committed += end - start;
+      reportProgress();
     }
   }
   const pool = [];
@@ -131,7 +160,19 @@ export async function uploadLargeFile(file, relPath, opts) {
       const missing2 = err?.data?.missing;
       if (err.status === 409 && Array.isArray(missing2) && missing2.length) {
         // Re-upload the gaps the server says it's missing, then complete again.
-        await reuploadMissing(`${base}/chunk${qs}`, file, relPath, uploadId, missing2, chunkSize, totalChunks, size, csrfToken, onProgress);
+        for (const i of missing2) {
+          const [start, end] = chunkRange(i, totalChunks, chunkSize, size);
+          const hash = await hashChunkCRC32(file, start, end);
+          await uploadOneChunkWithRetry(`${base}/chunk${qs}`, {
+            uploadId, name: relPath, index: i, hash, blob: file.slice(start, end),
+          }, csrfToken, (chunkLoaded) => {
+            inFlight.set(i, chunkLoaded);
+            reportProgress();
+          });
+          inFlight.delete(i);
+          committed += end - start;
+          reportProgress();
+        }
         continue;
       }
       throw err;
@@ -144,7 +185,9 @@ export async function uploadLargeFile(file, relPath, opts) {
 // times. A checksum mismatch surfaces as a 400 (the server deleted the bad
 // segment) and is also retried — the next attempt recomputes the same hash, but
 // re-slicing + re-POSTing a fresh body is the reliable fix for a transport garble.
-async function uploadOneChunkWithRetry(url, chunk, csrfToken) {
+// Uses XHR (via uploadWithProgress) rather than fetch so `onProgress` sees live
+// byte counts as this chunk itself streams out, not just once it fully lands.
+async function uploadOneChunkWithRetry(url, chunk, csrfToken, onProgress) {
   let lastErr;
   for (let attempt = 0; attempt < CHUNK_MAX_RETRIES; attempt++) {
     try {
@@ -154,28 +197,21 @@ async function uploadOneChunkWithRetry(url, chunk, csrfToken) {
       fd.append("index", String(chunk.index));
       fd.append("hash", chunk.hash || "");
       fd.append("chunk", chunk.blob, chunk.name);
-      const resp = await fetch(url, {
-        method: "POST", credentials: "same-origin",
-        headers: { "X-CSRF-Token": csrfToken || "" }, body: fd,
+      return await uploadWithProgress(url, fd, {
+        csrfToken,
+        onProgress: onProgress ? (p) => onProgress(p.loaded) : undefined,
       });
-      let data = {};
-      try { data = await resp.json(); } catch { /* non-JSON */ }
-      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-      return data;
     } catch (err) {
       lastErr = err;
+      onProgress?.(0); // this attempt's bytes don't count; next attempt restarts from 0
+      // Back off before retrying so a flaky/slow link isn't hammered with
+      // back-to-back attempts; the delay grows with each attempt.
+      if (attempt < CHUNK_MAX_RETRIES - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      }
     }
   }
   throw lastErr;
-}
-
-async function reuploadMissing(chunkUrl, file, relPath, uploadId, list, chunkSize, totalChunks, size, csrfToken, onProgress) {
-  for (const i of list) {
-    const [start, end] = chunkRange(i, totalChunks, chunkSize, size);
-    const hash = await hashChunkCRC32(file, start, end);
-    await uploadOneChunkWithRetry(chunkUrl, { uploadId, name: relPath, index: i, hash, blob: file.slice(start, end) }, csrfToken);
-    onProgress?.({ loaded: 0, total: size });
-  }
 }
 
 // chunkRange returns [start,end) for chunk index i given the layout.

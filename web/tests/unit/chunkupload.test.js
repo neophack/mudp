@@ -24,11 +24,38 @@ function requestPath(url) {
   return new URL(String(url), "http://localhost").pathname;
 }
 
+// The single-chunk POST (".../chunk?...") now goes out over XMLHttpRequest
+// (via uploadWithProgress) instead of fetch, so its live upload.onprogress
+// events can drive per-chunk speed/progress. init/complete still use fetch
+// (JSON, no progress needed). This stub simulates an XHR that "completes"
+// synchronously with one progress event before resolving.
+function installMockXHR(calls) {
+  global.XMLHttpRequest = class MockXHR {
+    constructor() {
+      this.upload = {};
+      this.status = 0;
+      this.responseText = "";
+    }
+    open(method, url) { this.method = method; this.url = url; }
+    setRequestHeader() {}
+    send(body) {
+      calls.push({ url: this.url, opts: { method: this.method, body } });
+      if (typeof this.upload.onprogress === "function") {
+        this.upload.onprogress({ lengthComputable: true, loaded: 8, total: 8 });
+      }
+      this.status = 200;
+      this.responseText = JSON.stringify({ ok: true, index: 0, crc32: "" });
+      if (typeof this.onload === "function") this.onload();
+    }
+  };
+}
+
 describe("uploadLargeFile", () => {
   let calls;
 
   beforeEach(() => {
     calls = [];
+    installMockXHR(calls);
     global.fetch = vi.fn(async (url, opts) => {
       calls.push({ url: String(url), opts });
       const path = requestPath(url);
@@ -40,9 +67,6 @@ describe("uploadLargeFile", () => {
       }
       if (path.endsWith("/chunk/complete")) {
         return { ok: true, json: async () => ({ ok: true, crc32: "deadbeef", path: "big.bin" }) };
-      }
-      if (path.endsWith("/chunk")) {
-        return { ok: true, json: async () => ({ ok: true, index: 0, crc32: "" }) };
       }
       return { ok: false, json: async () => ({ error: `unexpected path ${path}` }) };
     });

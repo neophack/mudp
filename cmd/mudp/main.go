@@ -63,7 +63,14 @@ func main() {
 		Addr:              cfg.Addr,
 		Handler:           app.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
+		// ReadTimeout is intentionally disabled too: it bounds the ENTIRE request
+		// read in net/http, body included, not just headers. A netdisk/volume
+		// chunk upload (up to ~100+ MiB) over a slow link can legitimately take
+		// longer than any fixed bound to arrive; a ReadTimeout here would sever
+		// the connection mid-upload and turn a slow network into a hard failure.
+		// ReadHeaderTimeout above still bounds the slow-header-only case, and
+		// body size is capped independently via http.MaxBytesReader per handler.
+		ReadTimeout: 0,
 		// WriteTimeout is intentionally disabled: long-running Server-Sent Events
 		// streams (container creation, fused image builds) can run for many
 		// minutes. Each handler uses its own context deadline instead.
