@@ -404,10 +404,10 @@ function fileRow(f, mutable, backup) {
   const checked = state.netdisk.selected.has(f.path) ? "checked" : "";
   const kind = previewKind(f.name);
   const name = f.dir
-    ? `<button class="linklike netdisk-name-link" data-open="${escapeHtml(f.path)}">${escapeHtml(f.name)}</button>`
+    ? `<button class="linklike netdisk-name-link" data-open="${escapeHtml(f.path)}" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</button>`
     : kind
-      ? `<button class="linklike netdisk-name-link" data-view="${escapeHtml(f.path)}" data-backup="${backup ? "1" : ""}" title="${t("netdisk.preview")}">${escapeHtml(f.name)}</button>`
-      : `<a class="netdisk-name-link" href="${href}">${escapeHtml(f.name)}</a>`;
+      ? `<button class="linklike netdisk-name-link" data-view="${escapeHtml(f.path)}" data-backup="${backup ? "1" : ""}" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</button>`
+      : `<a class="netdisk-name-link" href="${href}" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</a>`;
   const checkCell = mutable
     ? `<td class="chk-col"><input type="checkbox" class="netdisk-row-check" data-path="${escapeHtml(f.path)}" ${checked}></td>`
     : "";
@@ -555,7 +555,7 @@ function renderFolderPicker() {
     const blocked = folderPicker.move && sources.has(f.path);
     return `<div class="picker-row${blocked ? " disabled" : ""}"${blocked ? "" : ` data-open="${escapeHtml(f.path)}"`}>` +
       `<span class="picker-folder-icon">${fileIcon(true)}</span>` +
-      `<span class="picker-folder-name">${escapeHtml(f.name)}</span>` +
+      `<span class="picker-folder-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>` +
     `</div>`;
   }).join("");
   listEl.innerHTML = rows || `<div class="picker-empty">${t("netdisk.pickNoSubfolders")}</div>`;

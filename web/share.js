@@ -220,10 +220,10 @@ function renderItems() {
     const checked = state.selected.has(f.path) ? "checked" : "";
     const kind = !f.dir ? previewKind(f.name) : null;
     const nameCell = f.dir
-      ? `<button class="share-name linklike" data-open="${escapeHtml(f.path)}">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></button>`
+      ? `<button class="share-name linklike" data-open="${escapeHtml(f.path)}" title="${escapeHtml(f.name)}">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></button>`
       : kind
-        ? `<button class="share-name linklike" data-view="${escapeHtml(f.path)}" title="Preview">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></button>`
-        : `<span class="share-name">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></span>`;
+        ? `<button class="share-name linklike" data-view="${escapeHtml(f.path)}" title="${escapeHtml(f.name)}">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></button>`
+        : `<span class="share-name" title="${escapeHtml(f.name)}">${iconFor(f)}<span class="share-name-text">${escapeHtml(f.name)}</span></span>`;
     return `<tr data-path="${escapeHtml(f.path)}">
       <td class="chk-cell"><input type="checkbox" class="chk share-select" data-path="${escapeHtml(f.path)}" ${checked}></td>
       <td>${nameCell}</td>
@@ -317,7 +317,7 @@ function renderPicker() {
     const rows = state.pickerItems.map((f) => {
       return `<div class="picker-row" data-open="${escapeHtml(f.path)}">
         <span class="picker-folder-icon">${FOLDER_SVG}</span>
-        <span class="picker-folder-name">${escapeHtml(f.name)}</span>
+        <span class="picker-folder-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
       </div>`;
     }).join("");
     $("#pickerList").innerHTML = rows;
