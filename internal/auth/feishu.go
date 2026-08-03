@@ -140,19 +140,17 @@ func (f *FeishuClient) UserInfo(ctx context.Context, accessToken string) (Feishu
 		return FeishuUser{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
+	// Only open_id/name/tenant fields are parsed here — enterprise email,
+	// personal email, mobile, avatar, and department are deliberately not
+	// requested from the profile so they never enter the app.
 	var resp struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 		Data struct {
-			OpenID          string `json:"open_id"`
-			Name            string `json:"name"`
-			Email           string `json:"email"`
-			EnterpriseEmail string `json:"enterprise_email"`
-			Mobile          string `json:"mobile"`
-			AvatarURL       string `json:"avatar_url"`
-			TenantKey       string `json:"tenant_key"`
-			TenantName      string `json:"tenant_name"`
-			DepartmentName  string `json:"department_name"`
+			OpenID     string `json:"open_id"`
+			Name       string `json:"name"`
+			TenantKey  string `json:"tenant_key"`
+			TenantName string `json:"tenant_name"`
 		} `json:"data"`
 	}
 	if err := f.do(req, &resp); err != nil {
@@ -165,16 +163,11 @@ func (f *FeishuClient) UserInfo(ctx context.Context, accessToken string) (Feishu
 		return FeishuUser{}, errors.New("feishu returned empty open_id")
 	}
 	return FeishuUser{
-		OpenID:          resp.Data.OpenID,
-		Name:            strings.TrimSpace(resp.Data.Name),
-		Comment:         strings.TrimSpace(resp.Data.Name),
-		AvatarURL:       strings.TrimSpace(resp.Data.AvatarURL),
-		Email:           strings.TrimSpace(resp.Data.Email),
-		EnterpriseEmail: strings.TrimSpace(resp.Data.EnterpriseEmail),
-		Mobile:          strings.TrimSpace(resp.Data.Mobile),
-		TenantKey:       strings.TrimSpace(resp.Data.TenantKey),
-		TenantName:      strings.TrimSpace(resp.Data.TenantName),
-		DepartmentName:  strings.TrimSpace(resp.Data.DepartmentName),
+		OpenID:     resp.Data.OpenID,
+		Name:       strings.TrimSpace(resp.Data.Name),
+		Comment:    strings.TrimSpace(resp.Data.Name),
+		TenantKey:  strings.TrimSpace(resp.Data.TenantKey),
+		TenantName: strings.TrimSpace(resp.Data.TenantName),
 	}, nil
 }
 

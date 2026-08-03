@@ -273,38 +273,17 @@ function legendItem(label, n, color) {
   return `<li><span class="swatch" style="background:${color}"></span>${escapeHtml(label)} <strong>${n}</strong></li>`;
 }
 
-// isAllowedAvatarSrc mirrors the server's CSP img-src directive (see
-// internal/middleware/secheaders.go: "img-src 'self' data: blob:") so we only
-// ever point an <img> at a URL the browser will actually load.
-function isAllowedAvatarSrc(url) {
-  if (!url) return false;
-  if (url.startsWith("data:") || url.startsWith("blob:")) return true;
-  try {
-    return new URL(url, window.location.href).origin === window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
 function feishuCard(u) {
-  const avatar = u.feishuAvatar || "";
   const name = escapeHtml(displayName(u) || u.username || "—");
   const rows = [
     [t("dash.feishuOpenId"), escapeHtml(u.feishuOpenId || "—")],
-    [t("dash.feishuEnterpriseEmail"), escapeHtml(u.feishuEnterpriseEmail || u.feishuEmail || "—")],
-    [t("dash.feishuEmail"), escapeHtml(u.feishuEmail || "—")],
-    [t("dash.feishuMobile"), escapeHtml(u.feishuMobile || "—")],
     [t("dash.feishuTenant"), escapeHtml(u.feishuTenantName || u.feishuTenantKey || "—")],
-    [t("dash.feishuDepartment"), escapeHtml(u.feishuDepartment || "—")],
     [t("dash.feishuLastLogin"), escapeHtml(u.lastLoginAt || "—")],
   ];
-  // Feishu avatar URLs point at Feishu's own CDN, which the app's CSP
-  // (img-src 'self' data: blob:) blocks — the request never succeeds, it
-  // just logs a violation and leaves a broken image on every render. Fall
-  // back to the placeholder instead of ever attempting a cross-origin src.
-  const avatarHtml = isAllowedAvatarSrc(avatar)
-    ? `<img src="${escapeHtml(avatar)}" alt="" class="feishu-avatar" loading="lazy">`
-    : `<div class="feishu-avatar feishu-avatar-placeholder">🧑‍💼</div>`;
+  // Feishu no longer supplies an avatar (enterprise/personal email, mobile,
+  // department, and avatar are not fetched from the profile), so the card
+  // always shows the placeholder icon.
+  const avatarHtml = `<div class="feishu-avatar feishu-avatar-placeholder">🧑‍💼</div>`;
   return (
     `<section class="card feishu-card">` +
       `<div class="card-head">` +

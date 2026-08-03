@@ -921,11 +921,7 @@ const translations = {
     "dash.sAgo": "{n} 秒前",
     "dash.feishuProfile": "飞书账号信息",
     "dash.feishuOpenId": "飞书 Open ID",
-    "dash.feishuEnterpriseEmail": "企业邮箱",
-    "dash.feishuEmail": "个人邮箱",
-    "dash.feishuMobile": "手机号",
     "dash.feishuTenant": "所属公司",
-    "dash.feishuDepartment": "部门",
     "dash.feishuLastLogin": "上次登录",
     "dash.feishuLoginMethod": "飞书登录",
 
@@ -2259,11 +2255,7 @@ const translations = {
     "dash.sAgo": "{n}s ago",
     "dash.feishuProfile": "Feishu Profile",
     "dash.feishuOpenId": "Feishu Open ID",
-    "dash.feishuEnterpriseEmail": "Enterprise Email",
-    "dash.feishuEmail": "Personal Email",
-    "dash.feishuMobile": "Mobile",
     "dash.feishuTenant": "Organization",
-    "dash.feishuDepartment": "Department",
     "dash.feishuLastLogin": "Last Login",
     "dash.feishuLoginMethod": "Feishu SSO",
 
@@ -2682,10 +2674,6 @@ const translations = {
     "setup.usersPathHint": "This path is used as the root for members of the default users group. It will be created if it does not exist.",
     "setup.complete": "Complete Setup",
     "setup.completeToast": "Setup complete. Please sign in.",
-
-    "pending.title": "Waiting for Admin Approval",
-    "pending.body": "Hello {name}, your account has been created and placed in the pending approval group.<br>Please contact an administrator to add you to a business group before you can start using the platform.",
-    "pending.logout": "Log Out",
   },
 };
 
