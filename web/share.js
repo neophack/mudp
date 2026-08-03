@@ -178,8 +178,34 @@ function renderShareMeta() {
   $("#shareStats").textContent = `Total ${state.items.length} items · ${fmtBytes(total)}${dirs ? ` · ${dirs} folder(s)` : ""}${files ? ` · ${files} file(s)` : ""}`;
 }
 
+// shareRootFor finds which shared entry `path` falls under, so the breadcrumb
+// can be rendered relative to that entry instead of the owner's full netdisk
+// path. Paths on the share object are relative to the owner's netdisk root and
+// may sit several folders deep (e.g. "1/aa"); only "aa" was actually shared, so
+// the ancestor segment ("1") must never be shown to a visitor.
+function shareRootFor(path) {
+  const paths = (state.share && state.share.paths) || [];
+  let best = null;
+  for (const p of paths) {
+    if (path === p || path.startsWith(p + "/")) {
+      if (!best || p.length > best.length) best = p;
+    }
+  }
+  return best;
+}
+
+// The portion of `root` that is not the shared folder's own name — this is the
+// owner-internal prefix that must be stripped before display.
+function shareStripPrefix(root) {
+  if (!root) return "";
+  const last = root.split("/").pop();
+  return root.slice(0, root.length - last.length);
+}
+
 function renderBreadcrumb(path) {
-  const parts = path.split("/").filter(Boolean);
+  const stripPrefix = shareStripPrefix(shareRootFor(path));
+  const visible = path.startsWith(stripPrefix) ? path.slice(stripPrefix.length) : path;
+  const parts = visible.split("/").filter(Boolean);
   const home = document.createElement("button");
   home.className = "linklike";
   home.textContent = "All Files";
@@ -203,7 +229,7 @@ function renderBreadcrumb(path) {
       const btn = document.createElement("button");
       btn.className = "linklike";
       btn.textContent = escapeHtml(part);
-      btn.onclick = () => loadShare(built);
+      btn.onclick = () => loadShare(stripPrefix + built);
       nav.appendChild(btn);
     }
   });
