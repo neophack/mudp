@@ -468,6 +468,19 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Register the task before reading the body. ParseMultipartForm below
+	// blocks until the client has finished sending the request, which for a
+	// large non-chunked upload is most of the time the file is "in flight" --
+	// registering afterward (as this used to) left that entire window
+	// invisible to the admin task list, so an admin could see "nothing
+	// running" and restart mid-upload. r.ContentLength gives an early total
+	// estimate; it's refined once the parsed files are known below.
+	task, doneTask := a.tasksReg().start("netdisk.upload", fmt.Sprintf("%s · uploading…", u.Username), u)
+	if r.ContentLength > 0 {
+		task.setTotal(r.ContentLength)
+	}
+	defer doneTask()
+
 	// Cap the whole request body so a single upload cannot exhaust server
 	// memory/disk (the 2 GiB ParseMultipartForm argument only bounds the RAM
 	// buffer, not total bytes). 2 GiB matches the previous effective ceiling.
@@ -537,9 +550,8 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	task, doneTask := a.tasksReg().start("netdisk.upload", fmt.Sprintf("%s · %d file(s)", u.Username, len(files)), u)
+	task.setName(fmt.Sprintf("%s · %d file(s)", u.Username, len(files)))
 	task.setTotal(totalBytes)
-	defer doneTask()
 
 	for i, fh := range files {
 		src, err := fh.Open()

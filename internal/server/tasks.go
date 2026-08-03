@@ -69,6 +69,14 @@ func (t *ActiveTask) setMessage(msg string) {
 	t.Message = msg
 }
 
+// setName updates the display name after more precise information (e.g. the
+// actual file count) becomes available post-registration.
+func (t *ActiveTask) setName(name string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Name = name
+}
+
 // ActiveTaskRegistry tracks tasks currently in flight, keyed by id.
 type ActiveTaskRegistry struct {
 	mu    sync.Mutex
