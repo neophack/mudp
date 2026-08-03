@@ -36,6 +36,9 @@ export function renderSettings() {
   if (isAdmin() && !state.userCapacity.loaded) {
     loadUserCapacity();
   }
+  if (isAdmin() && !state.allowedCompany.loaded) {
+    loadAllowedCompany();
+  }
 
   const currentLanguage = getCurrentLanguage();
   const defaultLanguage = state.me?.defaultLanguage || "en_US";
@@ -49,6 +52,7 @@ export function renderSettings() {
   const regIcon = icon('<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>');
   const feishuIcon = icon('<path d="M16 7h.01"/><path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/><path d="m20 7 2 .5-2 .5"/><path d="M10 18v3"/><path d="M14 17.75V22"/>');
   const capacityIcon = icon('<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6"/><path d="M23 11h-6"/>');
+  const companyIcon = icon('<path d="M3 21h18"/><path d="M5 21V7l8-4 8 4v14"/><path d="M9 21v-6h6v6"/>');
 
   const siteSettingsCard = admin
     ? `<div class="card"><div class="card-head"><h2>${siteIcon}${t("settings.siteSettings")}</h2>` +
@@ -98,6 +102,17 @@ export function renderSettings() {
       `</div>`
     : "";
 
+  const companySettingsCard = admin
+    ? `<div class="card"><div class="card-head"><h2>${companyIcon}${t("settings.companyRestriction")}</h2>` +
+        `<span class="card-head-sub">${t("settings.companyRestrictionSub")}</span></div>` +
+        `<div class="card-body"><form id="companyForm" class="compact">` +
+          `<p class="hint">${t("settings.companyRestrictionHint")}</p>` +
+          `<input name="tenantKey" placeholder="${t("settings.tenantKeyPlaceholder")}" value="${escapeHtml(state.allowedCompany.tenantKey)}">` +
+          `<button>${t("settings.saveCompany")}</button>` +
+        `</form></div>` +
+      `</div>`
+    : "";
+
   const mcpCard = admin ? mcpRemotePanel() : "";
 
   // ---- Layout ----
@@ -121,6 +136,7 @@ export function renderSettings() {
             createAdminLanguageSettings(defaultLanguage) +
             siteSettingsCard +
             userCapacityCard +
+            companySettingsCard +
             registriesCard +
             mcpCard +
             feishuSettingsCard +
@@ -198,6 +214,25 @@ export function renderSettings() {
         state.userCapacity = { capacity: res.capacity, loaded: true };
         renderView();
         toast(t("settings.userCapacitySaved"), true);
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+
+  const companyForm = $("#companyForm");
+  if (companyForm) {
+    companyForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        const res = await api("/api/admin/settings/company", {
+          method: "POST",
+          body: JSON.stringify({ tenantKey: fd.get("tenantKey") || "" }),
+        });
+        state.allowedCompany = { tenantKey: res.tenantKey || "", loaded: true };
+        renderView();
+        toast(t("settings.companySaved"), true);
       } catch (err) {
         toast(err.message);
       }
@@ -421,6 +456,20 @@ export async function loadUserCapacity() {
     state.userCapacity = { capacity: cfg.capacity || 50, loaded: true };
   } catch {
     state.userCapacity = { capacity: 50, loaded: true };
+  }
+  if (state.tab === "scripts") renderView();
+}
+
+export async function loadAllowedCompany() {
+  if (!isAdmin()) {
+    state.allowedCompany = { tenantKey: "", loaded: true };
+    return;
+  }
+  try {
+    const cfg = await api("/api/admin/settings/company");
+    state.allowedCompany = { tenantKey: cfg.tenantKey || "", loaded: true };
+  } catch {
+    state.allowedCompany = { tenantKey: "", loaded: true };
   }
   if (state.tab === "scripts") renderView();
 }

@@ -11,6 +11,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
+
+	"mudp/internal/auth"
 )
 
 type DB struct {
@@ -18,20 +20,27 @@ type DB struct {
 }
 
 type User struct {
-	ID                int64    `json:"id"`
-	Username          string   `json:"username"`
-	DisplayName       string   `json:"displayName,omitempty"`
-	Role              string   `json:"role"`
-	Groups            []string `json:"groups,omitempty"`
-	PortPrefix        int      `json:"portPrefix"`
-	CreatedAt         string   `json:"createdAt"`
-	LastLoginAt       *string  `json:"lastLoginAt,omitempty"`
-	Disabled          bool     `json:"disabled"`
-	ContainerCap      int      `json:"containerCap"`
-	NetdiskQuotaBytes int64    `json:"netdiskQuotaBytes"`
-	FeishuOpenID      string   `json:"feishuOpenId,omitempty"`
-	Comment           string   `json:"comment,omitempty"`
-	Language          string   `json:"language,omitempty"`
+	ID                     int64    `json:"id"`
+	Username               string   `json:"username"`
+	DisplayName            string   `json:"displayName,omitempty"`
+	Role                   string   `json:"role"`
+	Groups                 []string `json:"groups,omitempty"`
+	PortPrefix             int      `json:"portPrefix"`
+	CreatedAt              string   `json:"createdAt"`
+	LastLoginAt            *string  `json:"lastLoginAt,omitempty"`
+	Disabled               bool     `json:"disabled"`
+	ContainerCap           int      `json:"containerCap"`
+	NetdiskQuotaBytes      int64    `json:"netdiskQuotaBytes"`
+	FeishuOpenID           string   `json:"feishuOpenId,omitempty"`
+	FeishuAvatar           string   `json:"feishuAvatar,omitempty"`
+	FeishuEmail            string   `json:"feishuEmail,omitempty"`
+	FeishuEnterpriseEmail  string   `json:"feishuEnterpriseEmail,omitempty"`
+	FeishuMobile           string   `json:"feishuMobile,omitempty"`
+	FeishuTenantKey        string   `json:"feishuTenantKey,omitempty"`
+	FeishuTenantName       string   `json:"feishuTenantName,omitempty"`
+	FeishuDepartment       string   `json:"feishuDepartment,omitempty"`
+	Comment                string   `json:"comment,omitempty"`
+	Language               string   `json:"language,omitempty"`
 }
 
 // ValidRole reports whether r is one of the supported RBAC roles.
@@ -204,7 +213,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 36
+const schemaVersion = 37
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -257,6 +266,20 @@ var migrations = []migration{
 	{34, "add images.env_seq", migrateAddImageEnvSeq},
 	{35, "extend access_logs (public_ip)", migrateExtendAccessLogsPublicIP},
 	{36, "widen mcp_logs (timezone/source_kind)", migrateWidenMCPLogs},
+	{37, "add users.feishu_profile_columns", migrateAddFeishuProfileColumns},
+}
+
+// AllowedTenantKey returns the configured Feishu tenant key that users must
+// belong to in order to log in or sign up via Feishu SSO. An empty value means
+// any tenant is allowed.
+func (db *DB) AllowedTenantKey() (string, error) {
+	return db.Setting("allowed_tenant_key")
+}
+
+// SaveAllowedTenantKey persists the Feishu tenant key restriction. An empty
+// value clears the restriction.
+func (db *DB) SaveAllowedTenantKey(tenantKey string) error {
+	return db.SaveSetting("allowed_tenant_key", strings.TrimSpace(tenantKey))
 }
 
 // migrateRevokeFeishuDerivedPasswords clears password hashes that were derived
@@ -318,6 +341,13 @@ func migrateCreateInitialTables(db executor) error {
 			created_at text not null,
 			last_login_at text,
 			feishu_open_id text default '',
+			feishu_avatar text default '',
+			feishu_email text default '',
+			feishu_enterprise_email text default '',
+			feishu_mobile text default '',
+			feishu_tenant_key text default '',
+			feishu_tenant_name text default '',
+			feishu_department text default '',
 			comment text default '',
 			display_name text default ''
 		)`,
@@ -584,6 +614,26 @@ func migrateCreateIndexes(db executor) error {
 // ('admin','user'). It is a no-op when the constraint is already permissive or
 // absent. The rebuild preserves every column and row, including auto-increment
 // continuity, by deriving the column list from the current table schema.
+// migrateAddFeishuProfileColumns extends the users table with the extra profile
+// fields fetched from Feishu OIDC so the dashboard can show a rich identity card.
+func migrateAddFeishuProfileColumns(db executor) error {
+	stmts := []string{
+		`alter table users add column feishu_avatar text default ''`,
+		`alter table users add column feishu_email text default ''`,
+		`alter table users add column feishu_enterprise_email text default ''`,
+		`alter table users add column feishu_mobile text default ''`,
+		`alter table users add column feishu_tenant_key text default ''`,
+		`alter table users add column feishu_tenant_name text default ''`,
+		`alter table users add column feishu_department text default ''`,
+	}
+	for _, stmt := range stmts {
+		if err := execIgnoring(db, stmt, sqliteDuplicateColumn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func migrateWidenRoleConstraint(db executor) error {
 	var tableSQL string
 	err := db.QueryRow(`select sql from sqlite_master where type='table' and name='users'`).Scan(&tableSQL)
@@ -871,8 +921,8 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 	var u User
 	var hash string
 	var disabled int
-	err := db.QueryRow(`select id,username,display_name,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where username=?`, username).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
+	err := db.QueryRow(`select id,username,display_name,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment from users where username=?`, username).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment)
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(password))
 		return nil, errors.New("invalid username or password")
@@ -903,8 +953,8 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 func (db *DB) UserByID(id int64) (*User, error) {
 	var u User
 	var disabled int
-	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where id=?`, id).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
+	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment from users where id=?`, id).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment)
 	if err != nil {
 		return nil, err
 	}
@@ -992,7 +1042,7 @@ func (db *DB) checkUserCapacity(tx executor) error {
 }
 
 func (db *DB) Users() ([]User, error) {
-	rows, err := db.Query(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,comment from users order by username`)
+	rows, err := db.Query(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment from users order by username`)
 	if err != nil {
 		return nil, err
 	}
@@ -1001,7 +1051,7 @@ func (db *DB) Users() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var disabled int
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
@@ -1377,8 +1427,8 @@ func (db *DB) UserByFeishu(openID string) (*User, error) {
 	}
 	var u User
 	var disabled int
-	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,comment from users where feishu_open_id=?`, openID).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.Comment)
+	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment from users where feishu_open_id=?`, openID).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment)
 	if err != nil {
 		return nil, err
 	}
@@ -1389,22 +1439,19 @@ func (db *DB) UserByFeishu(openID string) (*User, error) {
 
 // CreateFeishuUser registers a new user from a Feishu login. The user is placed
 // in the pending group until an admin assigns them a real group. Returns the
-// created user.
+// created user. This backward-compatible wrapper stores only the legacy fields;
+// use CreateFeishuUserWithProfile for the full OIDC profile.
 func (db *DB) CreateFeishuUser(openID, username, displayName string) (*User, error) {
-	if openID == "" {
-		return nil, errors.New("feishu open_id is required")
-	}
-	if strings.TrimSpace(username) == "" {
-		username = "feishu-" + openID
+	fu := auth.FeishuUser{OpenID: openID, Name: displayName, Comment: displayName}
+	if username == "" {
+		username = fu.Username()
 	}
 	base := username
-	// Retry a few times if another request claims the generated username
-	// between the existence check and the insert.
 	for i := 0; i < 10; i++ {
 		if i > 0 {
 			username = fmt.Sprintf("%s-%d", base, i)
 		}
-		u, err := db.createFeishuUserTx(openID, username, displayName)
+		u, err := db.createFeishuUserWithUsernameTx(fu, username)
 		if err == nil {
 			return u, nil
 		}
@@ -1415,7 +1462,30 @@ func (db *DB) CreateFeishuUser(openID, username, displayName string) (*User, err
 	return nil, errors.New("could not allocate a unique username")
 }
 
-func (db *DB) createFeishuUserTx(openID, username, displayName string) (*User, error) {
+// CreateFeishuUserWithProfile registers a new user from a Feishu login using the
+// full profile returned by Feishu. The user is placed in the pending group.
+func (db *DB) CreateFeishuUserWithProfile(fu auth.FeishuUser) (*User, error) {
+	if fu.OpenID == "" {
+		return nil, errors.New("feishu open_id is required")
+	}
+	username := fu.Username()
+	base := username
+	for i := 0; i < 10; i++ {
+		if i > 0 {
+			username = fmt.Sprintf("%s-%d", base, i)
+		}
+		u, err := db.createFeishuUserWithUsernameTx(fu, username)
+		if err == nil {
+			return u, nil
+		}
+		if !isUsernameConflict(err) {
+			return nil, err
+		}
+	}
+	return nil, errors.New("could not allocate a unique username")
+}
+
+func (db *DB) createFeishuUserWithUsernameTx(fu auth.FeishuUser, username string) (*User, error) {
 	// SSO accounts get no password at all. Hashing the open ID (as this once
 	// did) made the password derivable from the username: Username() is the
 	// open ID with its non-alphanumerics stripped, so "ou_a1b2" becomes the
@@ -1443,8 +1513,12 @@ func (db *DB) createFeishuUserTx(openID, username, displayName string) (*User, e
 	if err != nil {
 		return nil, err
 	}
-	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,port_prefix,created_at,feishu_open_id,comment,display_name) values(?,?,?,?,?,?,?,?,?)`,
-		username, hash, "user", 10, prefix, time.Now().Format(time.RFC3339), openID, displayName, displayName)
+	displayName := strings.TrimSpace(fu.Name)
+	if displayName == "" {
+		displayName = fu.Username()
+	}
+	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,port_prefix,created_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,display_name) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		username, hash, "user", 10, prefix, time.Now().Format(time.RFC3339), fu.OpenID, fu.AvatarURL, fu.Email, fu.EnterpriseEmail, fu.Mobile, fu.TenantKey, fu.TenantName, fu.DepartmentName, fu.Comment, displayName)
 	if err != nil {
 		return nil, err
 	}
@@ -1460,6 +1534,21 @@ func (db *DB) createFeishuUserTx(openID, username, displayName string) (*User, e
 		return nil, err
 	}
 	return db.UserByID(uid)
+}
+
+// UpdateFeishuProfile refreshes the Feishu profile fields for an existing user.
+// It is called on every Feishu login so the dashboard card stays current.
+func (db *DB) UpdateFeishuProfile(id int64, fu auth.FeishuUser) error {
+	if fu.OpenID == "" {
+		return errors.New("feishu open_id is required")
+	}
+	displayName := strings.TrimSpace(fu.Name)
+	if displayName == "" {
+		displayName = fu.Username()
+	}
+	_, err := db.Exec(`update users set feishu_open_id=?, feishu_avatar=?, feishu_email=?, feishu_enterprise_email=?, feishu_mobile=?, feishu_tenant_key=?, feishu_tenant_name=?, feishu_department=?, display_name=?, comment=? where id=?`,
+		fu.OpenID, fu.AvatarURL, fu.Email, fu.EnterpriseEmail, fu.Mobile, fu.TenantKey, fu.TenantName, fu.DepartmentName, displayName, fu.Comment, id)
+	return err
 }
 
 func isPortPrefixConflict(err error) bool {

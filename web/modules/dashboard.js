@@ -13,6 +13,8 @@ export function renderDashboard() {
   }
   const sys = d.system || {};
   const mine = d.mine || {};
+  const user = d.user || {};
+  const feishuUser = !!(user.feishuOpenId && user.feishuOpenId !== "");
   const healthy = !!sys.healthy;
   // Non-admins see only their own resource counts; admins see the whole
   // platform. A short label keeps the scope obvious.
@@ -35,6 +37,8 @@ export function renderDashboard() {
         envCard(sys, healthy) +
         containersChart(sys.containers || {}) +
       `</div>` +
+      // Row 2.5: Feishu identity card (only for Feishu-SSO users)
+      (feishuUser ? `<div class="dash-row-feishu">${feishuCard(user)}</div>` : "") +
       // Row 3: my workspace + top users (admin) or my containers
       `<div class="dash-row-3">` +
         myWorkspaceCard(mine) +
@@ -224,6 +228,41 @@ function containersChart(c) {
 
 function legendItem(label, n, color) {
   return `<li><span class="swatch" style="background:${color}"></span>${escapeHtml(label)} <strong>${n}</strong></li>`;
+}
+
+function feishuCard(u) {
+  const avatar = u.feishuAvatar || "";
+  const name = escapeHtml(displayName(u) || u.username || "—");
+  const rows = [
+    [t("dash.feishuOpenId"), escapeHtml(u.feishuOpenId || "—")],
+    [t("dash.feishuEnterpriseEmail"), escapeHtml(u.feishuEnterpriseEmail || u.feishuEmail || "—")],
+    [t("dash.feishuEmail"), escapeHtml(u.feishuEmail || "—")],
+    [t("dash.feishuMobile"), escapeHtml(u.feishuMobile || "—")],
+    [t("dash.feishuTenant"), escapeHtml(u.feishuTenantName || u.feishuTenantKey || "—")],
+    [t("dash.feishuDepartment"), escapeHtml(u.feishuDepartment || "—")],
+    [t("dash.feishuLastLogin"), escapeHtml(u.lastLoginAt || "—")],
+  ];
+  const avatarHtml = avatar
+    ? `<img src="${escapeHtml(avatar)}" alt="" class="feishu-avatar" loading="lazy">`
+    : `<div class="feishu-avatar feishu-avatar-placeholder">🧑‍💼</div>`;
+  return (
+    `<section class="card feishu-card">` +
+      `<div class="card-head">` +
+        `<h2>${t("dash.feishuProfile")}</h2>` +
+        `<span class="badge badge-ok"><span class="dot"></span>${t("dash.feishuLoginMethod")}</span>` +
+      `</div>` +
+      `<div class="card-body feishu-card-body">` +
+        `<div class="feishu-header">` +
+          `${avatarHtml}` +
+          `<div class="feishu-title">` +
+            `<div class="feishu-name">${name}</div>` +
+            `<div class="feishu-handle">${escapeHtml(u.username || "—")}</div>` +
+          `</div>` +
+        `</div>` +
+        `<dl class="detail feishu-detail">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}</dl>` +
+      `</div>` +
+    `</section>`
+  );
 }
 
 function myWorkspaceCard(mine) {

@@ -75,6 +75,7 @@ export const state = {
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
   siteAdmin: { siteName: "", loaded: false },
   userCapacity: { capacity: 50, loaded: false },
+  allowedCompany: { tenantKey: "", loaded: false },
   notifications: [],
   unreadCount: 0,
   search: "",

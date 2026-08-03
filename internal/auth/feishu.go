@@ -20,11 +20,18 @@ const (
 	pathUserInfo      = "/open-apis/authen/v1/user_info"
 )
 
-// FeishuUser is the minimal profile returned after a successful OIDC login.
+// FeishuUser is the profile returned after a successful OIDC login.
 type FeishuUser struct {
-	OpenID  string
-	Name    string
-	Comment string
+	OpenID           string
+	Name             string
+	Comment          string
+	AvatarURL        string
+	Email            string
+	EnterpriseEmail  string
+	Mobile           string
+	TenantKey        string
+	TenantName       string
+	DepartmentName   string
 }
 
 // Username returns a login-safe username derived from the OpenID by keeping
@@ -141,6 +148,11 @@ func (f *FeishuClient) UserInfo(ctx context.Context, accessToken string) (Feishu
 			Name            string `json:"name"`
 			Email           string `json:"email"`
 			EnterpriseEmail string `json:"enterprise_email"`
+			Mobile          string `json:"mobile"`
+			AvatarURL       string `json:"avatar_url"`
+			TenantKey       string `json:"tenant_key"`
+			TenantName      string `json:"tenant_name"`
+			DepartmentName  string `json:"department_name"`
 		} `json:"data"`
 	}
 	if err := f.do(req, &resp); err != nil {
@@ -152,7 +164,18 @@ func (f *FeishuClient) UserInfo(ctx context.Context, accessToken string) (Feishu
 	if resp.Data.OpenID == "" {
 		return FeishuUser{}, errors.New("feishu returned empty open_id")
 	}
-	return FeishuUser{OpenID: resp.Data.OpenID, Name: strings.TrimSpace(resp.Data.Name), Comment: strings.TrimSpace(resp.Data.Name)}, nil
+	return FeishuUser{
+		OpenID:          resp.Data.OpenID,
+		Name:            strings.TrimSpace(resp.Data.Name),
+		Comment:         strings.TrimSpace(resp.Data.Name),
+		AvatarURL:       strings.TrimSpace(resp.Data.AvatarURL),
+		Email:           strings.TrimSpace(resp.Data.Email),
+		EnterpriseEmail: strings.TrimSpace(resp.Data.EnterpriseEmail),
+		Mobile:          strings.TrimSpace(resp.Data.Mobile),
+		TenantKey:       strings.TrimSpace(resp.Data.TenantKey),
+		TenantName:      strings.TrimSpace(resp.Data.TenantName),
+		DepartmentName:  strings.TrimSpace(resp.Data.DepartmentName),
+	}, nil
 }
 
 func (f *FeishuClient) do(req *http.Request, out any) error {

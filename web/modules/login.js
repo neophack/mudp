@@ -32,6 +32,8 @@ export async function renderLogin() {
   const feishuError = new URLSearchParams(location.search).get("feishu_error");
   if (feishuError === "capacity") {
     showError(t("login.feishuCapacityFull"));
+  } else if (feishuError === "company") {
+    showError(t("login.feishuCompanyNotAllowed"));
   }
 
   // Record this page view for the security monitor. Only sent when the admin

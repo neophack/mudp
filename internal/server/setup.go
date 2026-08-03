@@ -182,3 +182,38 @@ func (a *App) userCapacitySettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
+
+// companySettings lets an admin read/write the Feishu tenant key restriction
+// applied to Feishu sign-ins. When set, only users whose Feishu tenant key
+// matches this value can log in or register. An empty value disables the
+// restriction.
+func (a *App) companySettings(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil || roleRank(u.Role) < rankAdmin {
+		writeErr(w, http.StatusForbidden, "insufficient privileges")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		tenantKey, err := a.db.AllowedTenantKey()
+		respond(w, map[string]string{"tenantKey": tenantKey}, err)
+	case http.MethodPost:
+		var req struct {
+			TenantKey string `json:"tenantKey"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		tenantKey := strings.TrimSpace(req.TenantKey)
+		if err := a.db.SaveAllowedTenantKey(tenantKey); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		a.db.Audit(u.Username, "settings.company", fmt.Sprintf("set allowed tenant key to %q", tenantKey))
+		writeJSON(w, http.StatusOK, map[string]string{"tenantKey": tenantKey})
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}

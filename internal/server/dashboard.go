@@ -23,13 +23,14 @@ type usageRow struct {
 }
 
 // dashboardResponse aggregates everything the home screen renders in one round
-// trip: environment info, the caller's container rollup, and (admin only) the
-// per-user usage summary.
+// trip: environment info, the caller's container rollup, (admin only) the
+// per-user usage summary, and the current user's profile (for the Feishu card).
 type dashboardResponse struct {
 	System  dockerx.SystemInfo `json:"system"`
 	Mine    mineRollup         `json:"mine"`
 	Usage   []usageRow         `json:"usage,omitempty"`
 	IsAdmin bool               `json:"isAdmin"`
+	User    store.User         `json:"user"`
 }
 
 type mineRollup struct {
@@ -60,7 +61,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := dashboardResponse{System: sys, Mine: mine, IsAdmin: u.Role == "admin"}
+	resp := dashboardResponse{System: sys, Mine: mine, IsAdmin: u.Role == "admin", User: *u}
 	if u.Role == "admin" {
 		resp.Usage = buildUsageFromContainers(r, a, items)
 	}

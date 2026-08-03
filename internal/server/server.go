@@ -436,6 +436,8 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/admin/settings/site", a.siteSettings)
 		r.Get("/api/admin/settings/capacity", a.userCapacitySettings)
 		r.Post("/api/admin/settings/capacity", a.userCapacitySettings)
+		r.Get("/api/admin/settings/company", a.companySettings)
+		r.Post("/api/admin/settings/company", a.companySettings)
 		r.Post("/api/groups/netdisk", a.groupNetdisk)
 		r.Post("/api/groups/backup", a.groupBackup)
 		r.Get("/api/admin/netdisk/shares", a.netdiskSharesAdmin)
@@ -1702,6 +1704,16 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	// Enforce the optional company restriction before creating or updating
+	// any user record. Feishu identifies a company by tenant_key, not the
+	// human-readable tenant name.
+	if allowed, _ := a.db.AllowedTenantKey(); strings.TrimSpace(allowed) != "" {
+		if !strings.EqualFold(strings.TrimSpace(fu.TenantKey), allowed) {
+			a.recordAccess(a.collectClient(r), store.AccessEventLoginFailed, fu.Username(), "tenant not allowed", false)
+			http.Redirect(w, r, "/?feishu_error=company", http.StatusFound)
+			return
+		}
+	}
 	u, err := a.db.UserByFeishu(fu.OpenID)
 	newUser := false
 	if err != nil {
@@ -1713,7 +1725,7 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// First login: create the user in the pending group.
-		u, err = a.db.CreateFeishuUser(fu.OpenID, fu.Username(), fu.Name)
+		u, err = a.db.CreateFeishuUserWithProfile(fu)
 		if err != nil {
 			if errors.Is(err, store.ErrUserCapacityFull) {
 				http.Redirect(w, r, "/?feishu_error=capacity", http.StatusFound)
@@ -1723,6 +1735,18 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		newUser = true
+	} else {
+		// Refresh cached Feishu profile on every login so the dashboard card
+		// reflects the latest name/avatar/department info.
+		if err := a.db.UpdateFeishuProfile(u.ID, fu); err != nil {
+			log.Printf("WARNING: failed to update Feishu profile for user %d: %v", u.ID, err)
+		}
+		// Re-read the user so the session carries the updated fields.
+		u, err = a.db.UserByID(u.ID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if newUser {
 		a.notifyAdminsPendingUser(u)

@@ -125,6 +125,7 @@ const translations = {
     "login.feature3": "GPU 直通与按用户配额",
     "login.feature4": "飞书单点登录与管理员审批",
     "login.feishuCapacityFull": "用户人数已满，请联系管理员。",
+    "login.feishuCompanyNotAllowed": "当前飞书账号所属公司不在允许列表中，请联系管理员。",
 
     // Sidebar / shell
     "shell.expandSidebar": "展开侧边栏",
@@ -691,6 +692,12 @@ const translations = {
     "settings.registryDeleted": "仓库已删除",
     "settings.loginSuccessful": "登录成功",
     "settings.test": "测试",
+    "settings.companyRestriction": "公司登录限制",
+    "settings.companyRestrictionSub": "仅允许指定飞书企业（tenant_key）的用户登录或注册。",
+    "settings.companyRestrictionHint": "输入飞书企业标识 tenant_key（例如 2e0d30eb），留空表示不限制。其他企业的飞书账号将无法登录。",
+    "settings.tenantKeyPlaceholder": "例如 2e0d30eb",
+    "settings.saveCompany": "保存企业限制",
+    "settings.companySaved": "企业限制已保存",
 
     // MCP
     "mcp.loadingTokens": "加载 MCP 令牌中…",
@@ -892,6 +899,15 @@ const translations = {
     "dash.hAgo": "{n} 小时前",
     "dash.dAgo": "{n} 天前",
     "dash.sAgo": "{n} 秒前",
+    "dash.feishuProfile": "飞书账号信息",
+    "dash.feishuOpenId": "飞书 Open ID",
+    "dash.feishuEnterpriseEmail": "企业邮箱",
+    "dash.feishuEmail": "个人邮箱",
+    "dash.feishuMobile": "手机号",
+    "dash.feishuTenant": "所属公司",
+    "dash.feishuDepartment": "部门",
+    "dash.feishuLastLogin": "上次登录",
+    "dash.feishuLoginMethod": "飞书登录",
 
     // Disks
     "disks.loading": "加载磁盘中…",
@@ -1430,6 +1446,7 @@ const translations = {
     "login.feature3": "GPU passthrough and per-user quotas",
     "login.feature4": "Feishu single sign-on with admin approval",
     "login.feishuCapacityFull": "User capacity is full. Please contact the administrator.",
+    "login.feishuCompanyNotAllowed": "Your Feishu account's company is not allowed. Please contact the administrator.",
 
     // Sidebar / shell
     "shell.expandSidebar": "Expand sidebar",
@@ -1996,6 +2013,12 @@ const translations = {
     "settings.registryDeleted": "Registry deleted",
     "settings.loginSuccessful": "Login successful",
     "settings.test": "Test",
+    "settings.companyRestriction": "Company Login Restriction",
+    "settings.companyRestrictionSub": "Only allow users from a specific Feishu tenant to sign in or sign up.",
+    "settings.companyRestrictionHint": "Enter the Feishu tenant_key (e.g. 2e0d30eb). Leave blank to allow any tenant. Users from other tenants will be blocked.",
+    "settings.tenantKeyPlaceholder": "e.g. 2e0d30eb",
+    "settings.saveCompany": "Save Tenant Restriction",
+    "settings.companySaved": "Tenant restriction saved",
 
     // MCP
     "mcp.loadingTokens": "Loading MCP tokens…",
@@ -2197,6 +2220,15 @@ const translations = {
     "dash.hAgo": "{n}h ago",
     "dash.dAgo": "{n}d ago",
     "dash.sAgo": "{n}s ago",
+    "dash.feishuProfile": "Feishu Profile",
+    "dash.feishuOpenId": "Feishu Open ID",
+    "dash.feishuEnterpriseEmail": "Enterprise Email",
+    "dash.feishuEmail": "Personal Email",
+    "dash.feishuMobile": "Mobile",
+    "dash.feishuTenant": "Organization",
+    "dash.feishuDepartment": "Department",
+    "dash.feishuLastLogin": "Last Login",
+    "dash.feishuLoginMethod": "Feishu SSO",
 
     // Disks
     "disks.loading": "Loading disks...",

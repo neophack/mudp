@@ -1198,6 +1198,7 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   .dash-tiles { grid-template-columns: repeat(2, 1fr) !important; }
   .dash-row-2 { grid-template-columns: 1fr !important; }
   .dash-row-3 { grid-template-columns: 1fr !important; }
+  .dash-row-feishu { grid-template-columns: 1fr !important; }
   .db-stat-row { grid-template-columns: 1fr !important; }
   .dash-span-2 { grid-column: span 2 !important; }
   /* Settings cards collapse to a single column on narrow screens; the section
@@ -1233,6 +1234,33 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   grid-template-columns: 1fr 1fr;
   gap: 16px;
   align-items: start;
+}
+.dash-row-feishu {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+.feishu-card-body { display: flex; flex-direction: column; gap: 14px; }
+.feishu-header { display: flex; align-items: center; gap: 12px; }
+.feishu-avatar {
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--accent-soft);
+}
+.feishu-avatar-placeholder {
+  display: grid; place-items: center;
+  font-size: 24px;
+}
+.feishu-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.feishu-name { font-weight: 600; font-size: 16px; color: var(--text); }
+.feishu-handle { font-size: 13px; color: var(--muted); font-family: var(--font-mono); }
+.feishu-detail dl { margin: 0; }
+.feishu-detail dt { color: var(--muted); }
+@media (max-width: 900px) {
+  .dash-row-feishu { grid-template-columns: 1fr; }
 }
 .db-stat-row {
   display: grid;
