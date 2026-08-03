@@ -26,7 +26,7 @@ import { renderDatabase } from "./modules/database.js";
 import { renderHardware, stopPolling as stopHardwarePolling } from "./modules/hardware.js";
 import { renderMCP } from "./modules/mcp.js";
 import { startAutoRefresh, refreshActiveTab } from "./modules/refresh.js";
-import { startBackupJobsPolling } from "./modules/jobs.js";
+import { startBackupJobsPolling, startTaskPolling } from "./modules/jobs.js";
 import { escapeHtml, fmtBytes, fmtMB, roleRank, isAdminUser, canMutateUser } from "./lib/common.js";
 import { initI18n, t } from "./lib/i18n.js";
 
@@ -257,6 +257,9 @@ export async function load() {
     // Server-side backup jobs survive the browser tab; poll them so the
     // background-jobs badge reflects in-progress backups started elsewhere.
     startBackupJobsPolling();
+    // Bulk file tasks (netdisk copy/move/transfer/restore/upload) that have
+    // been running long enough to matter; see jobs.js.
+    startTaskPolling();
   } catch {
     renderLogin();
   }

@@ -426,7 +426,8 @@ func (a *App) volumeFilesUpload(w http.ResponseWriter, r *http.Request) {
 // instead of a user netdisk root, and applies no quota (volumes are unbounded).
 
 func (a *App) volumeChunkInit(w http.ResponseWriter, r *http.Request) {
-	if !canMutate(currentUser(r)) {
+	u := currentUser(r)
+	if !canMutate(u) {
 		writeErr(w, http.StatusForbidden, "read-only role cannot modify volumes")
 		return
 	}
@@ -452,6 +453,9 @@ func (a *App) volumeChunkInit(w http.ResponseWriter, r *http.Request) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if dst, _, err := cleanUserPath(dir, req.Name); err == nil {
+		a.chunkReg().start(dst, req.Name, req.Size, u)
 	}
 	handleChunkInit(w, dir, req.Name, req, nil)
 }
@@ -493,7 +497,7 @@ func (a *App) volumeChunkComplete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	handleChunkComplete(w, r, dir)
+	handleChunkComplete(w, r, dir, a.chunkReg().finish)
 }
 
 func (a *App) volumeChunkAbort(w http.ResponseWriter, r *http.Request) {
@@ -511,5 +515,5 @@ func (a *App) volumeChunkAbort(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	handleChunkAbort(w, r, dir)
+	handleChunkAbort(w, r, dir, a.chunkReg().finish)
 }

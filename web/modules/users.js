@@ -1,7 +1,7 @@
 // Users & Groups management: create users/groups, assign roles, group
 // membership (Feishu approval flow), reset passwords, disable/delete accounts.
 
-import { state, api, toast, escapeHtml, fmtBytes, refreshSection, renderView, displayName, $, t } from "../app.js";
+import { state, api, toast, escapeHtml, fmtBytes, refreshSection, renderView, displayName, displayNameForUsername, $, t } from "../app.js";
 import { showModal, closeModal } from "./ui.js";
 
 function ROLES() {
@@ -32,6 +32,17 @@ export async function renderUsers() {
         paintNetdiskUsage();
       })
       .catch(() => { if (!prevUsage) state.netdiskUsage = {}; });
+  }
+  // Same fetch-if-missing pattern for the long-running-task card: the 15s
+  // background refresh (usersLoader) keeps it warm afterwards, but the first
+  // time the tab is opened nothing has fetched it yet.
+  if (!state.adminTasks) {
+    api("/api/admin/tasks")
+      .then((rows) => {
+        state.adminTasks = rows || [];
+        paintAdminTasks();
+      })
+      .catch(() => { if (!state.adminTasks) state.adminTasks = []; });
   }
 
   $("#view").innerHTML =
@@ -80,6 +91,10 @@ export async function renderUsers() {
         `<div class="card"><div class="card-head"><h2>${t("users.netdiskUsage")}</h2><span class="hint" id="netdiskUsageTotal"></span></div>` +
           `<table class="data netdisk-usage-table"><thead><tr><th>${t("common.user")}</th><th class="netdisk-used-col">${t("netdisk.usedCol")}</th><th>${t("users.colQuota")}</th><th class="netdisk-bar-col"></th></tr></thead>` +
           `<tbody id="netdiskUsageBody">${prevUsage ? usageRowsHtml(prevUsage) : `<tr class="empty-row"><td colspan="4">${t("users.loadingDots")}</td></tr>`}</tbody></table>` +
+        `</div>` +
+        `<div class="card"><div class="card-head"><h2>${t("users.longTasks")}</h2></div>` +
+          `<p class="hint" style="padding:0 16px;margin:0 0 8px">${t("users.longTasksHint")}</p>` +
+          `<div id="adminTasksBody">${adminTasksHtml(state.adminTasks)}</div>` +
         `</div>` +
       `</section>` +
     `</div>`;
@@ -455,6 +470,78 @@ function usageRow(user, info) {
       `<td class="netdisk-bar-col">${quota > 0 ? `<span class="quota-bar ${barCls}"><span style="width:${pct}%"></span></span>` : ""}</td>` +
     `</tr>`
   );
+}
+
+// ---------- Long-running tasks (admin) ----------
+//
+// Surfaces every in-flight bulk netdisk copy/move/transfer/restore/upload
+// (chunked or not) plus running backup jobs, across ALL users — not just the
+// viewing admin's own — so an admin can confirm nothing is mid-flight before
+// restarting or updating the app. Backed by GET /api/admin/tasks; refreshed
+// on the normal "users" tab poll cadence via usersLoader in refresh.js.
+
+const TASK_KIND_LABEL_KEY = {
+  "netdisk.copy": "task.netdiskCopy",
+  "netdisk.move": "task.netdiskMove",
+  "netdisk.upload": "task.netdiskUpload",
+  "netdisk.upload.chunked": "task.netdiskUploadChunked",
+  "netdisk.transfer": "task.netdiskTransfer",
+  "netdisk.restore": "task.netdiskRestore",
+  "backup.run": "task.backupRun",
+};
+
+// paintAdminTasks fills the dedicated task card once /api/admin/tasks
+// resolves. Called after the initial render so the card can paint
+// progressively, same as paintNetdiskUsage.
+function paintAdminTasks() {
+  const body = $("#adminTasksBody");
+  if (!body) return; // user navigated away before the fetch landed
+  body.innerHTML = adminTasksHtml(state.adminTasks);
+}
+
+function adminTasksHtml(tasks) {
+  if (!tasks || !tasks.length) {
+    return `<div class="empty-state">${t("users.longTasksNone")}</div>`;
+  }
+  const rows = [...tasks]
+    .sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt))
+    .map(taskRow)
+    .join("");
+  return (
+    `<table class="data">` +
+      `<thead><tr><th>${t("users.longTasksUser")}</th><th>${t("users.longTasksTask")}</th><th>${t("users.longTasksProgress")}</th><th>${t("users.longTasksElapsed")}</th></tr></thead>` +
+      `<tbody>${rows}</tbody>` +
+    `</table>`
+  );
+}
+
+function taskRow(task) {
+  const label = t(TASK_KIND_LABEL_KEY[task.kind] || "") || task.kind;
+  const owner = displayNameForUsername(task.ownerName) || task.ownerName || "—";
+  const elapsed = formatTaskElapsed(Date.now() - Date.parse(task.startedAt));
+  const hasProgress = typeof task.progress === "number" && task.progress >= 0;
+  const progressHtml = hasProgress
+    ? `<div class="job-progress"><div class="job-progress-fill" style="width:${Math.min(100, task.progress)}%"></div></div><span class="hint">${task.progress}%</span>`
+    : `<span class="hint">${escapeHtml(task.message || "…")}</span>`;
+  return (
+    `<tr>` +
+      `<td>${escapeHtml(owner)}</td>` +
+      `<td><div class="primary-line">${escapeHtml(label)}</div><div class="secondary-line">${escapeHtml(task.name || "")}</div></td>` +
+      `<td>${progressHtml}</td>` +
+      `<td>${escapeHtml(elapsed)}</td>` +
+    `</tr>`
+  );
+}
+
+function formatTaskElapsed(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours}h ${mins}m`;
 }
 
 

@@ -569,6 +569,10 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	task, doneTask := a.tasksReg().start("netdisk.transfer", fmt.Sprintf("%s · %s→%s · %d item(s)", u.Username, fromDisk, toDisk, len(req.Items)), u)
+	task.setTotal(int64(len(req.Items)))
+	defer doneTask()
+
 	results := make([]map[string]string, 0, len(req.Items))
 	count := 0
 	for _, item := range req.Items {
@@ -578,6 +582,7 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
+			task.addDone(1)
 			continue
 		}
 		to, _, err := cleanUserPath(toRoot, item.To)
@@ -585,8 +590,10 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
+			task.addDone(1)
 			continue
 		}
+		task.setMessage(filepath.Base(from))
 		if err := netdiskCopyOne(from, to, req.Move, policy); err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
@@ -599,6 +606,7 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 			count++
 		}
 		results = append(results, res)
+		task.addDone(1)
 	}
 	a.record(r, "netdisk.transfer", fmt.Sprintf("%s->%s %d item(s)", fromDisk, toDisk, count))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})
@@ -834,6 +842,14 @@ func (a *App) netdiskBackupCopy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "policy must be overwrite, skip or rename")
 		return
 	}
+	kind := "netdisk.copy"
+	if req.Move {
+		kind = "netdisk.move"
+	}
+	task, doneTask := a.tasksReg().start(kind, fmt.Sprintf("%s · backup · %d item(s)", u.Username, len(req.Items)), u)
+	task.setTotal(int64(len(req.Items)))
+	defer doneTask()
+
 	var results []map[string]string
 	count := 0
 	for _, item := range req.Items {
@@ -843,6 +859,7 @@ func (a *App) netdiskBackupCopy(w http.ResponseWriter, r *http.Request) {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
+			task.addDone(1)
 			continue
 		}
 		to, _, err := cleanUserPath(root, item.To)
@@ -850,8 +867,10 @@ func (a *App) netdiskBackupCopy(w http.ResponseWriter, r *http.Request) {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
+			task.addDone(1)
 			continue
 		}
+		task.setMessage(filepath.Base(from))
 		if err := netdiskCopyOne(from, to, req.Move, policy); err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
@@ -864,6 +883,7 @@ func (a *App) netdiskBackupCopy(w http.ResponseWriter, r *http.Request) {
 			count++
 		}
 		results = append(results, res)
+		task.addDone(1)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})
 }
@@ -958,10 +978,15 @@ func (a *App) netdiskBackupRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	activeTask, doneTask := a.tasksReg().start("netdisk.restore", fmt.Sprintf("%s · %d item(s)", u.Username, len(tasks)), u)
+	activeTask.setTotal(int64(len(tasks)))
+	defer doneTask()
+
 	results := make([]map[string]string, 0, len(tasks))
 	count := 0
 	for _, t := range tasks {
 		res := map[string]string{"from": t.path, "to": filepath.ToSlash(t.dst)}
+		activeTask.setMessage(filepath.Base(t.src))
 		if err := copyPathWithPolicy(t.src, t.dst, policy); err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
@@ -970,6 +995,7 @@ func (a *App) netdiskBackupRestore(w http.ResponseWriter, r *http.Request) {
 			count++
 		}
 		results = append(results, res)
+		activeTask.addDone(1)
 	}
 	a.record(r, "netdisk.backup.restore", fmt.Sprintf("%d item(s)", count))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})

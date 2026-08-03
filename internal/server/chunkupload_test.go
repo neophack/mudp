@@ -223,7 +223,7 @@ func TestHandleChunkComplete_ReadsJSONBody(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	handleChunkComplete(w, req, dir)
+	handleChunkComplete(w, req, dir, nil)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -263,7 +263,7 @@ func TestHandleChunkAbort_ReadsJSONBody(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	handleChunkAbort(w, req, dir)
+	handleChunkAbort(w, req, dir, nil)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())

@@ -328,6 +328,14 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	kind := "netdisk.copy"
+	if req.Move {
+		kind = "netdisk.move"
+	}
+	task, doneTask := a.tasksReg().start(kind, fmt.Sprintf("%s · %d item(s)", u.Username, len(req.Items)), u)
+	task.setTotal(int64(len(req.Items)))
+	defer doneTask()
+
 	var results []map[string]string
 	count := 0
 	for _, item := range req.Items {
@@ -337,6 +345,7 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
+			task.addDone(1)
 			continue
 		}
 		to, _, err := cleanUserPath(root, item.To)
@@ -344,8 +353,10 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
+			task.addDone(1)
 			continue
 		}
+		task.setMessage(filepath.Base(from))
 		if err := netdiskCopyOne(from, to, req.Move, policy); err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
@@ -358,6 +369,7 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 			count++
 		}
 		results = append(results, res)
+		task.addDone(1)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})
 }
@@ -493,7 +505,7 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 	// Pre-compute how much additional space is required, accounting for
 	// partially-uploaded files that may be resumed.
 	used := dirSize(root)
-	var additional int64
+	var additional, totalBytes int64
 	projected := used
 	for i, fh := range files {
 		dstPath, err := uploadDestPath(dir, relPaths, i, fh)
@@ -511,6 +523,7 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		additional += add
 		projected += add
+		totalBytes += fh.Size
 	}
 	if u.NetdiskQuotaBytes > 0 && projected > u.NetdiskQuotaBytes {
 		writeErr(w, http.StatusInsufficientStorage, "upload would exceed netdisk quota")
@@ -523,6 +536,10 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	task, doneTask := a.tasksReg().start("netdisk.upload", fmt.Sprintf("%s · %d file(s)", u.Username, len(files)), u)
+	task.setTotal(totalBytes)
+	defer doneTask()
 
 	for i, fh := range files {
 		src, err := fh.Open()
@@ -538,6 +555,7 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), Error: err.Error()})
 			continue
 		}
+		task.setMessage(filepath.Base(dstPath))
 		// Client-supplied per-file CRC32 (parallel to "paths", one per file). Empty
 		// for legacy clients / browsers without a hashing Worker: the file is
 		// still written and checksummed, just not compared.
@@ -552,6 +570,7 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 		} else {
 			results = append(results, uploadResult{Path: netdiskResultPath(relPaths, i, fh), CRC32: sum})
 		}
+		task.addDone(fh.Size)
 	}
 	// ok reflects only fully-saved files so the client can tell a partial failure
 	// (some files landed, some didn't) from total success.
@@ -629,6 +648,12 @@ func (a *App) netdiskChunkInit(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
+	// Register the session before writing the response so the admin task list
+	// picks it up on its very next poll. dst is recomputed with the same
+	// (dir, name) handleChunkInit uses internally, so it matches exactly.
+	if dst, _, err := cleanUserPath(dir, req.Name); err == nil {
+		a.chunkReg().start(dst, req.Name, req.Size, u)
+	}
 	handleChunkInit(w, dir, req.Name, req, quotaCheck)
 }
 
@@ -669,7 +694,7 @@ func (a *App) netdiskChunkComplete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	handleChunkComplete(w, r, dir)
+	handleChunkComplete(w, r, dir, a.chunkReg().finish)
 }
 
 func (a *App) netdiskChunkAbort(w http.ResponseWriter, r *http.Request) {
@@ -682,7 +707,7 @@ func (a *App) netdiskChunkAbort(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	handleChunkAbort(w, r, dir)
+	handleChunkAbort(w, r, dir, a.chunkReg().finish)
 }
 
 func (a *App) netdiskDownload(w http.ResponseWriter, r *http.Request) {

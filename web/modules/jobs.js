@@ -1,8 +1,14 @@
-// Global background-jobs tracker. Two kinds of jobs live here side by side:
+// Global background-jobs tracker. Three kinds of jobs live here side by side:
 //   - client-side SSE jobs (image pull/build, container create, stack up/down)
 //     identified by ids like "job_…" and cancelled by aborting their fetch;
 //   - server-side backup jobs (id prefix "backup_") that survive the browser
 //     tab — polled from /api/backup/jobs and cancelled via /api/backup/jobs/cancel.
+//   - server-side bulk file tasks (id prefix "task_": netdisk copy/move/
+//     transfer/restore/upload, chunked or not) — polled from /api/tasks. These
+//     only appear once they've run longer than the server's visibility
+//     threshold (a few seconds), so routine fast copies never flash a row,
+//     and they are NOT cancellable (no cancel endpoint exists for them): once
+//     a poll stops reporting one, it's assumed finished and flipped to "done".
 
 import { state, api } from "../app.js";
 import { showModal, setModalBody } from "./ui.js";
@@ -15,6 +21,12 @@ const KIND_LABEL = {
   "stack.down": "Stack down",
   "container.create": "Create container",
   "backup.run": "Netdisk backup",
+  "netdisk.copy": "Netdisk copy",
+  "netdisk.move": "Netdisk move",
+  "netdisk.upload": "Netdisk upload",
+  "netdisk.upload.chunked": "Netdisk large-file upload",
+  "netdisk.transfer": "Netdisk ⇄ backup transfer",
+  "netdisk.restore": "Restore from backup",
 };
 
 const KIND_ICON = {
@@ -25,6 +37,12 @@ const KIND_ICON = {
   "stack.down": `<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/>`,
   "container.create": `<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/>`,
   "backup.run": `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>`,
+  "netdisk.copy": `<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>`,
+  "netdisk.move": `<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>`,
+  "netdisk.upload": `<path d="M12 15V3m0 12-4-4m4 4 4-4"/><path d="M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17"/>`,
+  "netdisk.upload.chunked": `<path d="M12 15V3m0 12-4-4m4 4 4-4"/><path d="M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17"/>`,
+  "netdisk.transfer": `<path d="M17 3v18"/><path d="m21 7-4-4-4 4"/><path d="m13 17 4 4 4-4"/>`,
+  "netdisk.restore": `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>`,
 };
 
 function generateId() {
@@ -102,6 +120,10 @@ export function cancelJob(id) {
   const job = (state.jobs || []).find((j) => j.id === id);
   if (!job) return;
   if (!job.active) return;
+  // Bulk file tasks (netdisk copy/move/transfer/restore/upload) have no
+  // cancel endpoint -- they're visibility-only. jobRow() already hides the
+  // Stop button for these; this is just a defensive backstop.
+  if (job.cancellable === false) return;
   // Server-side backup jobs are cancelled through their own endpoint; the next
   // poll tick will flip the status to "cancelled". Client-side SSE jobs are
   // cancelled by aborting the fetch stream.
@@ -191,6 +213,77 @@ function mapServerJob(j) {
     progress: j.progress || 0,
     done: j.done || 0,
     total: j.total || 0,
+  };
+}
+
+// ---------- Server-side bulk file task sync ----------
+//
+// Mirrors the backup-job sync above, but for the netdisk copy/move/transfer/
+// restore/upload tasks tracked server-side in tasks.go. Two differences from
+// backup jobs: /api/tasks only reports a task once it's been running past the
+// server's visibility threshold (so routine fast copies never flash a row),
+// and there is no terminal status -- a task simply stops being reported once
+// it finishes, so one active in the last poll but missing from this one is
+// assumed done. Not cancellable (no cancel endpoint exists for these), so
+// jobRow() never renders a Stop button for them.
+
+let taskPollTimer = null;
+
+export function startTaskPolling() {
+  // One poller for the whole app lifetime; idempotent so repeated calls no-op.
+  if (taskPollTimer) return;
+  const tick = () => {
+    api("/api/tasks")
+      .then((tasks) => mergeUserTasks(tasks || []))
+      .catch(() => { /* best-effort; keep the previous snapshot */ });
+  };
+  tick();
+  taskPollTimer = setInterval(tick, 3000);
+}
+
+function mergeUserTasks(serverTasks) {
+  if (!Array.isArray(serverTasks)) return;
+  const seen = new Set(serverTasks.map((t) => t.id));
+  const kept = [];
+  for (const j of state.jobs || []) {
+    if (!j.taskSource || !j.active) {
+      kept.push(j); // not ours, or already finished -- leave as-is
+      continue;
+    }
+    if (!seen.has(j.id)) {
+      // Was running as of the last poll, no longer reported: the server has
+      // no terminal status for these, so this is the best signal available
+      // that it finished.
+      kept.push({ ...j, status: "done", message: "Completed", active: false });
+    }
+    // else: still active and still reported -- dropped here, replaced below
+    // by the fresh entry built from this poll's data.
+  }
+  const mapped = serverTasks.map(mapServerTask);
+  state.jobs = [...kept, ...mapped];
+  updateBadge();
+  refreshJobsModal();
+}
+
+function mapServerTask(t) {
+  let message = t.message || "";
+  const hasProgress = typeof t.progress === "number" && t.progress >= 0 && t.total > 0;
+  if (hasProgress) {
+    message = `${message} (${t.progress}% · ${fmtBytes(t.done)}/${fmtBytes(t.total)})`.trim();
+  }
+  return {
+    id: t.id,
+    kind: t.kind,
+    name: t.name || t.kind,
+    status: "running",
+    startedAt: t.startedAt ? Date.parse(t.startedAt) : Date.now(),
+    message,
+    active: true,
+    taskSource: true,
+    cancellable: false,
+    progress: hasProgress ? t.progress : undefined,
+    done: t.done || 0,
+    total: t.total || 0,
   };
 }
 
@@ -291,9 +384,13 @@ function jobRow(job) {
       ? "badge-danger"
       : "badge-muted";
   const statusText = job.status[0].toUpperCase() + job.status.slice(1);
-  const action = job.active
-    ? `<button class="warn" title="Stop job" data-job-stop="${escapeHtml(job.id)}">Stop</button>`
-    : `<button class="icon" title="Remove from list" data-job-remove="${escapeHtml(job.id)}">🗑</button>`;
+  // Bulk file tasks have no cancel endpoint (visibility-only): show neither a
+  // Stop button nor a false promise of one while they're running.
+  const action = !job.active
+    ? `<button class="icon" title="Remove from list" data-job-remove="${escapeHtml(job.id)}">🗑</button>`
+    : job.cancellable === false
+    ? ``
+    : `<button class="warn" title="Stop job" data-job-stop="${escapeHtml(job.id)}">Stop</button>`;
   // Backup jobs report a 0..100 progress; render a thin bar under the message
   // so the user can watch a long backup advance without opening the row.
   const progressHtml =

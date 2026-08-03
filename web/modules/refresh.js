@@ -35,23 +35,25 @@ async function auditLoader() {
   return JSON.stringify(state.audit);
 }
 
-// usersLoader refreshes the user/group lists and the admin netdisk-usage
-// report in parallel, then folds all three into the change-detection
-// signature. Folding usage in is what makes the "Netdisk Usage" card update
-// live when a user uploads or deletes files in another session — without it,
-// only users/groups changes would trigger a re-render.
+// usersLoader refreshes the user/group lists, the admin netdisk-usage report,
+// and the admin long-running-task list in parallel, then folds all of it into
+// the change-detection signature. Folding usage/tasks in is what makes those
+// cards update live from another session's activity — without it, only
+// users/groups changes would trigger a re-render.
 async function usersLoader() {
-  const usagePromise = state.me && state.me.role === "admin"
-    ? api("/api/admin/netdisk/usage").catch(() => null)
-    : Promise.resolve(null);
-  // refreshSection writes users/groups into state in parallel with the usage
-  // fetch; we don't need its return value, just the state mutation.
-  await Promise.all([refreshSection("users", "groups"), usagePromise]);
+  const isAdmin = state.me && state.me.role === "admin";
+  const usagePromise = isAdmin ? api("/api/admin/netdisk/usage").catch(() => null) : Promise.resolve(null);
+  const tasksPromise = isAdmin ? api("/api/admin/tasks").catch(() => null) : Promise.resolve(null);
+  // refreshSection writes users/groups into state in parallel with the other
+  // fetches; we don't need its return value, just the state mutation.
+  await Promise.all([refreshSection("users", "groups"), usagePromise, tasksPromise]);
   const usage = await usagePromise;
+  const tasks = await tasksPromise;
   // Stash the fresh usage rows so renderUsers() can paint them without a
   // duplicate fetch on this tick. renderUsers re-indexes by id at render time.
   if (usage) state.netdiskUsageRows = usage;
-  return JSON.stringify([state.users, state.groups, usage]);
+  if (tasks) state.adminTasks = tasks;
+  return JSON.stringify([state.users, state.groups, usage, tasks]);
 }
 
 // TAB_REFRESH maps a tab to its poll interval and data loader. A loader

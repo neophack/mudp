@@ -478,8 +478,12 @@ type chunkCompleteReq struct {
 	FileCRC32 string `json:"fileCRC32"`
 }
 
-// handleChunkComplete assembles the segments into the final file and verifies it.
-func handleChunkComplete(w http.ResponseWriter, r *http.Request, dir string) {
+// handleChunkComplete assembles the segments into the final file and verifies
+// it. onDone (may be nil) is called with the resolved destination path once
+// assembly succeeds, so callers can drop their session tracking for the admin
+// task list; it is NOT called on a missing-chunks conflict, since the upload
+// is still in progress at that point.
+func handleChunkComplete(w http.ResponseWriter, r *http.Request, dir string, onDone func(dst string)) {
 	var req chunkCompleteReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -520,6 +524,9 @@ func handleChunkComplete(w http.ResponseWriter, r *http.Request, dir string) {
 		writeErr(w, http.StatusBadRequest, aerr.Error())
 		return
 	}
+	if onDone != nil {
+		onDone(dst)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "crc32": sum, "path": name})
 }
 
@@ -530,8 +537,10 @@ type chunkAbortReq struct {
 }
 
 // handleChunkAbort removes all segment + state artifacts for an in-progress
-// upload. It never deletes an already-completed destination file.
-func handleChunkAbort(w http.ResponseWriter, r *http.Request, dir string) {
+// upload. It never deletes an already-completed destination file. onDone (may
+// be nil) is called with the resolved destination path so callers can drop
+// their session tracking for the admin task list.
+func handleChunkAbort(w http.ResponseWriter, r *http.Request, dir string, onDone func(dst string)) {
 	var req chunkAbortReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -554,6 +563,9 @@ func handleChunkAbort(w http.ResponseWriter, r *http.Request, dir string) {
 	}
 	if st, err := readChunkState(dst); err == nil {
 		removeChunkArtifacts(dst, st)
+	}
+	if onDone != nil {
+		onDone(dst)
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

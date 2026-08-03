@@ -56,6 +56,8 @@ type App struct {
 	registryMu       sync.Mutex
 	setupMu          sync.Mutex
 	backupJobs       *BackupJobRegistry
+	activeTasks      *ActiveTaskRegistry
+	chunkUploads     *ChunkUploadRegistry
 	dirSizeMu        sync.Mutex
 	dirSizeCache     map[string]dirSizeEntry
 	dirSizeRunning   map[string]bool
@@ -105,6 +107,8 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 		cfg: cfg, db: db, docker: dc, auth: auth.New(cfg.SessionSecret),
 		mcpHub:           mcp.NewSSEHub(),
 		backupJobs:       NewBackupJobRegistry(),
+		activeTasks:      NewActiveTaskRegistry(),
+		chunkUploads:     NewChunkUploadRegistry(),
 		dirSizeCache:     make(map[string]dirSizeEntry),
 		dirSizeRunning:   make(map[string]bool),
 		dirSizeSemaphore: make(chan struct{}, 1),
@@ -335,6 +339,10 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/netdisk/backup/raw", a.netdiskBackupRaw)
 		r.Get("/api/backup/jobs", a.backupJobsList)
 		r.Post("/api/backup/jobs/cancel", a.backupJobCancel)
+		// Long-running bulk file operations (copy/move/transfer/restore/upload)
+		// that have been running more than a few seconds, for the caller's own
+		// "Background jobs" panel. Not cancellable -- these are visibility only.
+		r.Get("/api/tasks", a.userTasks)
 		// Hardware monitoring is visible to all activated users (admins see host-wide
 		// detail; users see the shared GPU/CPU/memory snapshot of the host they run on).
 		r.Get("/api/hardware", a.hardwareSnapshot)
@@ -443,6 +451,11 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/admin/netdisk/shares", a.netdiskSharesAdmin)
 		r.Post("/api/admin/netdisk/shares/delete", a.netdiskSharesDeleteAdmin)
 		r.Get("/api/admin/netdisk/usage", a.netdiskUsageAdmin)
+		// Long-running task visibility: every user's in-flight bulk file
+		// operation (copy/move/transfer/restore/upload, chunked or not) plus
+		// running backup jobs, so an admin can confirm nothing will be cut off
+		// before restarting the app.
+		r.Get("/api/admin/tasks", a.adminTasks)
 		// Backup disk management: trigger an all-user backup, read/write the
 		// daily schedule. (Per-user backup + job list are user-facing above.)
 		r.Post("/api/netdisk/backup/all", a.netdiskBackupAll)
