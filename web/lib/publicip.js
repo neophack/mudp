@@ -17,6 +17,41 @@
 // the browser only needs to recover the visitor's own public IP when the server
 // would otherwise see only a private last hop (intranet/WSL deployments).
 
+// localStorage cache keeps the dashboard from flickering back to "detecting"
+// on every poll. The result is refreshed in the background every minute.
+const CACHE_KEY = "mudp:client-ip";
+const CACHE_TTL_MS = 60 * 1000;
+
+// backgroundRefresh holds the in-flight background refresh promise, if any,
+// so concurrent callers share one probe instead of spawning many.
+let backgroundRefresh = null;
+
+// readIPCache returns the last cached detection result, or null. Exported so
+// the dashboard can render the cached value immediately without awaiting.
+export function readIPCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeIPCache(result) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ ...result, ts: Date.now() }));
+  } catch (_) {}
+}
+
+// isCacheFresh reports whether a cached result is still valid (under the
+// 1-minute TTL). Exported for the dashboard's initial render path.
+export function isCacheFresh(cached) {
+  return !!cached && !!cached.ts && Date.now() - cached.ts < CACHE_TTL_MS;
+}
+
 // STUN servers for the WebRTC path. The ICE agent queries these to obtain
 // "server reflexive" (srflx) candidates carrying the host's public address.
 // A geographically diverse mix: any one server may be blocked or rate-limited
@@ -226,17 +261,10 @@ function gatherWebRTC(timeoutMs) {
   });
 }
 
-// detectClientIP resolves the visitor's public and LAN addresses within
-// timeoutMs, preferring the operator's Worker (which also yields geo) and
-// falling back to WebRTC/STUN. Returns { public: string[], lan: string[] } —
-// each deduped and possibly empty when the corresponding method is
-// unavailable/blocked. When the Worker answered, the result also carries
-// `geo` (same shape as /api/geo) so the dashboard can render a location chip
-// without a second request.
-//
-// (Kept the historical name `detectPublicIP` as a re-export below so existing
-// imports keep working; new callers should prefer detectClientIP.)
-export async function detectClientIP(timeoutMs = 4000) {
+// performDetection runs the actual Worker + WebRTC probes without consulting
+// the cache. Factored out so detectClientIP can serve a cached result while
+// still refreshing in the background.
+async function performDetection(timeoutMs = 4000) {
   const publicSet = new Set();
   const lanSet = new Set();
   let geo = null;
@@ -271,6 +299,47 @@ export async function detectClientIP(timeoutMs = 4000) {
   const out = { public: [...publicSet], lan: [...lanSet] };
   if (geo) out.geo = geo;
   return out;
+}
+
+// detectClientIP resolves the visitor's public and LAN addresses within
+// timeoutMs, preferring the operator's Worker (which also yields geo) and
+// falling back to WebRTC/STUN. Returns { public: string[], lan: string[] } —
+// each deduped and possibly empty when the corresponding method is
+// unavailable/blocked. When the Worker answered, the result also carries
+// `geo` (same shape as /api/geo) so the dashboard can render a location chip
+// without a second request.
+//
+// Cached results are returned immediately and refreshed in the background once
+// per minute, so the dashboard never flashes "detecting" again after the first
+// successful probe. The returned object includes a `background` promise that
+// resolves to the refreshed result (or null) when a background refresh is in
+// progress; callers can use it to update the UI silently.
+//
+// (Kept the historical name `detectPublicIP` as a re-export below so existing
+// imports keep working; new callers should prefer detectClientIP.)
+export async function detectClientIP(timeoutMs = 4000) {
+  const cached = readIPCache();
+  if (cached && isCacheFresh(cached)) {
+    // Start a background refresh if one isn't already running, but return the
+    // cached value immediately so the UI stays stable.
+    if (!backgroundRefresh) {
+      backgroundRefresh = performDetection(timeoutMs)
+        .then((result) => {
+          writeIPCache(result);
+          return result;
+        })
+        .catch(() => null)
+        .finally(() => {
+          backgroundRefresh = null;
+        });
+    }
+    return { ...cached, background: backgroundRefresh };
+  }
+
+  // No cache or stale cache: block on a fresh detection, write it, and return.
+  const result = await performDetection(timeoutMs);
+  writeIPCache(result);
+  return { ...result, background: Promise.resolve(null) };
 }
 
 // detectPublicIP is the legacy name; login.js only needs the visitor's WAN

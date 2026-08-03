@@ -2,7 +2,7 @@
 // rollup. Rendered from a single /api/dashboard payload (no N+1 fetches).
 
 import { state, api, escapeHtml, isAdmin, displayName, t } from "../app.js";
-import { detectClientIP } from "../lib/publicip.js";
+import { detectClientIP, readIPCache, isCacheFresh } from "../lib/publicip.js";
 
 export function renderDashboard() {
   const d = state.dashboard;
@@ -55,32 +55,65 @@ export function renderDashboard() {
 
 // probeClientIP fills the visitor's own IP, its location, and the visitor's
 // LAN address in the "My Workspace" card. Detection runs several methods in
-// parallel (WebRTC/STUN + HTTPS "what is my IP" services) via detectClientIP,
-// then — once a public IP is known — asks /api/geo for the city/country to show
-// next to it. Each step re-checks that its element is still in the DOM so the
-// 8s dashboard poller (which may rebuild #view) can't clobber a stale result.
+// parallel (WebRTC/STUN + the configured IP-detection Worker) via detectClientIP.
+// A 1-minute localStorage cache is rendered immediately so the dashboard never
+// flashes "detecting" on every poll; the cache is refreshed asynchronously in the
+// background and the UI updates silently when it completes. Each step re-checks
+// that its element is still in the DOM so the 8s dashboard poller (which may
+// rebuild #view) can't clobber a stale result.
 async function probeClientIP() {
   const ipEl = document.getElementById("dash-client-ip");
   const locEl = document.getElementById("dash-client-loc");
   const lanEl = document.getElementById("dash-client-lan");
   if (!ipEl) return;
 
-  let pub = [];
-  let lan = [];
-  let geo = null;
+  let result;
   try {
-    ({ public: pub, lan, geo } = await detectClientIP(4000));
+    result = await detectClientIP(4000);
   } catch (_) {
-    // pub/lan stay empty — rendered as "unavailable" below.
+    result = { public: [], lan: [], geo: null, background: Promise.resolve(null) };
   }
   if (!document.body.contains(ipEl)) return; // dashboard re-rendered under us
 
-  ipEl.textContent = pub.length ? pub.join(", ") : t("dash.detectFailed");
-  ipEl.classList.toggle("hint", pub.length === 0);
+  renderClientIP(ipEl, lanEl, locEl, result);
+
+  // If detectClientIP is refreshing the cache in the background, update the UI
+  // silently when that probe finishes — without resetting the text to "detecting".
+  if (result.background) {
+    result.background
+      .then((fresh) => {
+        if (fresh && document.body.contains(ipEl)) {
+          renderClientIP(ipEl, lanEl, locEl, fresh);
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+// renderClientIP writes public IP, LAN IP, and (optionally) location into the
+// "My Workspace" card. It keeps the existing value when the result is empty so
+// a stale refresh doesn't erase a previously cached value.
+function renderClientIP(ipEl, lanEl, locEl, result) {
+  const pub = result.public || [];
+  const lan = result.lan || [];
+  const geo = result.geo || null;
+
+  if (pub.length) {
+    ipEl.textContent = pub.join(", ");
+    ipEl.classList.remove("hint");
+  } else if (!ipEl.textContent || ipEl.textContent === t("dash.detecting")) {
+    ipEl.textContent = t("dash.detectFailed");
+    ipEl.classList.add("hint");
+  }
 
   if (lanEl) {
-    lanEl.textContent = lan.length ? lan.join(", ") : "—";
-    lanEl.classList.toggle("hint", lan.length === 0);
+    if (lan.length) {
+      lanEl.textContent = lan.join(", ");
+      lanEl.classList.remove("hint");
+    } else if (!lanEl.textContent || lanEl.textContent === t("dash.detecting")) {
+      lanEl.textContent = "—";
+      lanEl.classList.add("hint");
+    }
   }
 
   // Location chip. When the Worker answered /whoami it already carried geo (in
@@ -91,12 +124,13 @@ async function probeClientIP() {
     if (geo) {
       if (document.body.contains(locEl)) renderClientLocation(locEl, geo);
     } else if (pub.length) {
-      try {
-        const g = await api(`/api/geo?ip=${encodeURIComponent(pub[0])}`);
-        if (document.body.contains(locEl)) renderClientLocation(locEl, g);
-      } catch (_) {
-        // Leave the placeholder; location is a nice-to-have, not essential.
-      }
+      api(`/api/geo?ip=${encodeURIComponent(pub[0])}`)
+        .then((g) => {
+          if (document.body.contains(locEl)) renderClientLocation(locEl, g);
+        })
+        .catch(() => {
+          // Leave the placeholder; location is a nice-to-have, not essential.
+        });
     }
   }
 }
@@ -269,6 +303,16 @@ function myWorkspaceCard(mine) {
   const cap = mine.cap || 0;
   const used = mine.containers || 0;
   const pct = cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0;
+  const cached = readIPCache();
+  const hasCache = cached && isCacheFresh(cached);
+  const ipInit = hasCache && cached.public?.length
+    ? escapeHtml(cached.public.join(", "))
+    : escapeHtml(t("dash.detecting"));
+  const lanInit = hasCache && cached.lan?.length
+    ? escapeHtml(cached.lan.join(", "))
+    : escapeHtml(t("dash.detecting"));
+  const ipClass = hasCache && cached.public?.length ? "mono" : "mono hint";
+  const lanClass = hasCache && cached.lan?.length ? "mono" : "mono hint";
   return (
     `<section class="card">` +
       `<div class="card-head"><h2>${t("dash.myWorkspace")}</h2></div>` +
@@ -284,15 +328,17 @@ function myWorkspaceCard(mine) {
         // client-side via WebRTC/STUN and HTTPS services after render, then
         // geo-located through /api/geo. Stable ids let the async probe update
         // these cells without re-rendering the card. Distinct from the
-        // server's public IP shown in the Environment card.
+        // server's public IP shown in the Environment card. The cached value is
+        // rendered immediately so the dashboard never flashes "detecting" on
+        // every poll.
         `<div class="client-ip-block">` +
           `<div class="kv"><span>${t("dash.yourIp")}</span>` +
             `<span class="client-ip-main">` +
-              `<strong id="dash-client-ip" class="mono hint">${escapeHtml(t("dash.detecting"))}</strong>` +
+              `<strong id="dash-client-ip" class="${ipClass}">${ipInit}</strong>` +
               `<span id="dash-client-loc" class="hint"></span>` +
             `</span>` +
           `</div>` +
-          `<div class="kv"><span>${t("dash.yourLan")}</span><strong id="dash-client-lan" class="mono hint">${escapeHtml(t("dash.detecting"))}</strong></div>` +
+          `<div class="kv"><span>${t("dash.yourLan")}</span><strong id="dash-client-lan" class="${lanClass}">${lanInit}</strong></div>` +
         `</div>` +
       `</div>` +
     `</section>`
