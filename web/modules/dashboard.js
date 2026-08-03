@@ -56,11 +56,12 @@ export function renderDashboard() {
 // probeClientIP fills the visitor's own IP, its location, and the visitor's
 // LAN address in the "My Workspace" card. Detection runs several methods in
 // parallel (WebRTC/STUN + the configured IP-detection Worker) via detectClientIP.
-// A 1-minute localStorage cache is rendered immediately so the dashboard never
-// flashes "detecting" on every poll; the cache is refreshed asynchronously in the
-// background and the UI updates silently when it completes. Each step re-checks
-// that its element is still in the DOM so the 8s dashboard poller (which may
-// rebuild #view) can't clobber a stale result.
+// The result (plus a detection timestamp) is cached in localStorage and rendered
+// immediately so the dashboard never flashes "detecting" on every poll; the cache
+// is refreshed asynchronously in the background every 3 minutes and the UI
+// updates silently when it completes. Each step re-checks that its element is
+// still in the DOM so the 8s dashboard poller (which may rebuild #view) can't
+// clobber a stale result.
 async function probeClientIP() {
   const ipEl = document.getElementById("dash-client-ip");
   const locEl = document.getElementById("dash-client-loc");

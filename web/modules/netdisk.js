@@ -24,6 +24,19 @@ function currentModeState() {
   return modeState[isBackupMode() ? "backup" : "netdisk"];
 }
 
+// Mobile per-row action menus (see .row-menu in styles.css) are plain
+// <details> elements: the browser's native toggle only opens/closes them on
+// a tap on their own <summary>. This closes them the rest of the time — a
+// tap outside dismisses the sheet, and a tap on one of its actions dismisses
+// it too (like a bottom sheet), rather than leaving it open behind whatever
+// modal the action opens. Bound once at module load (not per render) so it
+// never accumulates listeners.
+document.addEventListener("click", (e) => {
+  document.querySelectorAll(".row-menu[open]").forEach((menu) => {
+    if (!menu.querySelector("summary")?.contains(e.target)) menu.removeAttribute("open");
+  });
+});
+
 function saveCurrentModeState() {
   const slot = currentModeState();
   slot.path = state.netdisk?.path || "";
@@ -393,15 +406,26 @@ function fileRow(f, mutable, backup) {
   // On the backup disk we drop Share (no sharing from backup) and the
   // Backup-to-backup button (it's already there). Everything else — download,
   // rename, copy/move within the disk, delete — stays for full management.
-  const actionCell = mutable
-    ? `<a class="icon" href="${href}" title="${t("netdisk.download")}">⬇</a>` +
-      `<button class="icon" title="${t("netdisk.rename")}" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✎</button>` +
-      `<button class="icon" title="${t("netdisk.copy")}" data-copy="${escapeHtml(f.path)}">⧉</button>` +
-      `<button class="icon" title="${t("netdisk.move")}" data-move="${escapeHtml(f.path)}">↗</button>` +
-      (backup ? "" : `<button class="icon" title="${t("netdisk.share")}" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">⤴</button>`) +
-      `<button class="icon danger" title="${t("common.delete")}" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✕</button>`
-    : `<a class="icon" href="${href}" title="${t("netdisk.download")}">⬇</a>`;
-  return `<tr>${checkCell}<td><div class="netdisk-file"><span class="netdisk-icon ${f.dir ? "folder" : "file"}" aria-hidden="true">${fileIcon(f.dir)}</span><div class="primary-line">${name}</div></div></td><td class="netdisk-size">${f.dir ? "-" : fmtBytes(f.size)}</td><td class="netdisk-time" title="${escapeHtml(new Date(f.modTime).toLocaleString())}">${escapeHtml(fmtDate(f.modTime))}</td><td class="actions netdisk-row-actions">${actionCell}</td></tr>`;
+  // All actions live inside a <details> disclosure: on wide screens it's
+  // rendered "flat" (CSS unwraps it via display:contents) so it looks like the
+  // old inline icon row, but on phones the icon row has no space for six
+  // buttons — the <details> becomes a real dropdown behind a single "more"
+  // trigger, like the file-row menu in mobile netdisk apps.
+  const menuItems = mutable
+    ? `<a class="icon" href="${href}" title="${t("netdisk.download")}">⬇ <span>${t("netdisk.download")}</span></a>` +
+      `<button class="icon" title="${t("netdisk.rename")}" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✎ <span>${t("netdisk.rename")}</span></button>` +
+      `<button class="icon" title="${t("netdisk.copy")}" data-copy="${escapeHtml(f.path)}">⧉ <span>${t("netdisk.copy")}</span></button>` +
+      `<button class="icon" title="${t("netdisk.move")}" data-move="${escapeHtml(f.path)}">↗ <span>${t("netdisk.move")}</span></button>` +
+      (backup ? "" : `<button class="icon" title="${t("netdisk.share")}" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">⤴ <span>${t("netdisk.share")}</span></button>`) +
+      `<button class="icon danger" title="${t("common.delete")}" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✕ <span>${t("common.delete")}</span></button>`
+    : `<a class="icon" href="${href}" title="${t("netdisk.download")}">⬇ <span>${t("netdisk.download")}</span></a>`;
+  const actionCell =
+    `<details class="row-menu" name="netdiskRowMenu">` +
+      `<summary class="icon row-menu-toggle" title="${t("netdisk.moreActions")}" aria-label="${t("netdisk.moreActions")}">⋮</summary>` +
+      `<div class="row-menu-panel">${menuItems}</div>` +
+    `</details>`;
+  const meta = `${f.dir ? "-" : fmtBytes(f.size)} · ${escapeHtml(fmtDate(f.modTime))}`;
+  return `<tr>${checkCell}<td><div class="netdisk-file"><span class="netdisk-icon ${f.dir ? "folder" : "file"}" aria-hidden="true">${fileIcon(f.dir)}</span><div class="netdisk-file-text"><div class="primary-line">${name}</div><div class="netdisk-file-meta">${meta}</div></div></div></td><td class="netdisk-size">${f.dir ? "-" : fmtBytes(f.size)}</td><td class="netdisk-time" title="${escapeHtml(new Date(f.modTime).toLocaleString())}">${escapeHtml(fmtDate(f.modTime))}</td><td class="actions netdisk-row-actions">${actionCell}</td></tr>`;
 }
 
 function toggleFileSelection(path, checked) {

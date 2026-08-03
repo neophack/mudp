@@ -18,9 +18,15 @@
 // would otherwise see only a private last hop (intranet/WSL deployments).
 
 // localStorage cache keeps the dashboard from flickering back to "detecting"
-// on every poll. The result is refreshed in the background every minute.
+// on every poll. CACHE_TTL_MS is how long a cached value is still considered
+// valid enough to serve immediately (well beyond the refresh cadence, so a
+// value never reverts to "detecting" just because a refresh is in flight);
+// REFRESH_INTERVAL_MS throttles how often we actually re-probe (WebRTC/STUN +
+// Worker) in the background once a value has been detected, so the
+// dashboard's 8s poller doesn't re-trigger detection on every tick.
 const CACHE_KEY = "mudp:client-ip";
-const CACHE_TTL_MS = 60 * 1000;
+const CACHE_TTL_MS = 30 * 60 * 1000;
+const REFRESH_INTERVAL_MS = 3 * 60 * 1000;
 
 // backgroundRefresh holds the in-flight background refresh promise, if any,
 // so concurrent callers share one probe instead of spawning many.
@@ -46,8 +52,8 @@ function writeIPCache(result) {
   } catch (_) {}
 }
 
-// isCacheFresh reports whether a cached result is still valid (under the
-// 1-minute TTL). Exported for the dashboard's initial render path.
+// isCacheFresh reports whether a cached result is still valid (under
+// CACHE_TTL_MS). Exported for the dashboard's initial render path.
 export function isCacheFresh(cached) {
   return !!cached && !!cached.ts && Date.now() - cached.ts < CACHE_TTL_MS;
 }
@@ -309,20 +315,25 @@ async function performDetection(timeoutMs = 4000) {
 // `geo` (same shape as /api/geo) so the dashboard can render a location chip
 // without a second request.
 //
-// Cached results are returned immediately and refreshed in the background once
-// per minute, so the dashboard never flashes "detecting" again after the first
-// successful probe. The returned object includes a `background` promise that
-// resolves to the refreshed result (or null) when a background refresh is in
-// progress; callers can use it to update the UI silently.
+// Cached results (public/lan/geo + detection timestamp, in localStorage) are
+// returned immediately and refreshed in the background once every
+// REFRESH_INTERVAL_MS (3 minutes), so the dashboard never flashes "detecting"
+// again after the first successful probe. The returned object includes a
+// `background` promise that resolves to the refreshed result (or null) when a
+// background refresh is in progress; callers can use it to update the UI
+// silently.
 //
 // (Kept the historical name `detectPublicIP` as a re-export below so existing
 // imports keep working; new callers should prefer detectClientIP.)
 export async function detectClientIP(timeoutMs = 4000) {
   const cached = readIPCache();
   if (cached && isCacheFresh(cached)) {
-    // Start a background refresh if one isn't already running, but return the
-    // cached value immediately so the UI stays stable.
-    if (!backgroundRefresh) {
+    // Only kick off a background refresh once the cached value is actually
+    // due for an update (throttled to REFRESH_INTERVAL_MS via its stored
+    // timestamp) -- otherwise the dashboard's 8s poller would re-trigger a
+    // full WebRTC/STUN + Worker probe on every tick.
+    const age = cached.ts ? Date.now() - cached.ts : Infinity;
+    if (!backgroundRefresh && age >= REFRESH_INTERVAL_MS) {
       backgroundRefresh = performDetection(timeoutMs)
         .then((result) => {
           writeIPCache(result);
@@ -333,7 +344,7 @@ export async function detectClientIP(timeoutMs = 4000) {
           backgroundRefresh = null;
         });
     }
-    return { ...cached, background: backgroundRefresh };
+    return { ...cached, background: backgroundRefresh || Promise.resolve(null) };
   }
 
   // No cache or stale cache: block on a fresh detection, write it, and return.
