@@ -127,6 +127,11 @@ const translations = {
     "login.feishuCapacityFull": "用户人数已满，请联系管理员。",
     "login.feishuCompanyNotAllowed": "当前飞书账号所属公司不在允许列表中，请联系管理员。",
 
+    // Pending approval
+    "pending.title": "等待管理员审批",
+    "pending.greeting": "你好 <strong>{name}</strong>，你的账号已创建，并已被加入待审批组。",
+    "pending.hint": "请联系管理员将你加入一个业务组后再开始使用本平台。",
+
     // Sidebar / shell
     "shell.expandSidebar": "展开侧边栏",
     "shell.collapseSidebar": "收起侧边栏",
@@ -1448,6 +1453,11 @@ const translations = {
     "login.feature4": "Feishu single sign-on with admin approval",
     "login.feishuCapacityFull": "User capacity is full. Please contact the administrator.",
     "login.feishuCompanyNotAllowed": "Your Feishu account's company is not allowed. Please contact the administrator.",
+
+    // Pending approval
+    "pending.title": "Waiting for Admin Approval",
+    "pending.greeting": "Hello <strong>{name}</strong>, your account has been created and placed in the pending approval group.",
+    "pending.hint": "Please contact an administrator to add you to a business group before you can start using the platform.",
 
     // Sidebar / shell
     "shell.expandSidebar": "Expand sidebar",
