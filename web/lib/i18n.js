@@ -1345,9 +1345,6 @@ const translations = {
     "setup.complete": "完成配置",
     "setup.completeToast": "配置完成，请登录。",
 
-    "pending.title": "等待管理员审批",
-    "pending.body": "你好 {name}，你的账号已创建并放入待审批组。请联系管理员将你加入业务组，之后方可开始使用平台。",
-    "pending.logout": "登出",
   },
 
   [LANG_ENGLISH]: {
