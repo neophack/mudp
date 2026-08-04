@@ -29,7 +29,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startServer, seed, apiClient } from "./fixtures/server.js";
-import { installPage, login, openTab, closeModals } from "./fixtures/ui.js";
+import { installPage, login, logout, openTab, closeModals } from "./fixtures/ui.js";
 
 const PORT = 19105;
 test.use({ baseURL: `http://127.0.0.1:${PORT}` });
@@ -409,6 +409,124 @@ test("a container's folder mount follows the folder owner's read-write preferenc
   // The page object is required by installPage, but this test drives everything
   // through the API; just make sure no errors leaked onto a backgrounded page.
   h.assertClean("the shared-disk mount permission phases");
+});
+
+test("shared-disk 'new folder' is offered only inside a regular user's own folder, never at the pool root or inside another member's folder; an admin sees it everywhere", async ({ page }) => {
+  test.setTimeout(120000);
+  const h = installPage(page);
+  await login(page, fixture.user.username, fixture.user.password);
+  await openTab(page, "netdisk");
+  await page.click('.netdisk-mode-btn[data-mode="shareddisk"]');
+  await expect(page.locator('.netdisk-mode-btn[data-mode="shareddisk"]')).toHaveClass(/active/);
+
+  // canMkdirInShared: the pool root is read-only browse for a regular user —
+  // mkdirBtn must not render there, even though the folder listing itself is
+  // visible.
+  const ownRow = page.locator("#view tbody tr", { hasText: userFolderName });
+  const otherRow = page.locator("#view tbody tr", { hasText: adminFolderName });
+  await expect(ownRow).toBeVisible({ timeout: 20000 });
+  await expect(page.locator("#mkdirBtn")).toHaveCount(0);
+
+  // Descending into the own folder makes it appear — mkdir is allowed inside
+  // the caller's own subfolder.
+  await ownRow.locator("button.netdisk-name-link[data-open]").click();
+  await expect(page.locator(".netdisk-crumbs")).toContainText(userFolderName);
+  await expect(page.locator("#mkdirBtn")).toBeVisible();
+
+  // Climbing back out and descending into another member's folder instead:
+  // browsing is allowed (read-only), but mkdir must disappear again — a
+  // regular user cannot create inside someone else's shared folder.
+  await page.click("#upDir");
+  await expect(otherRow).toBeVisible({ timeout: 20000 });
+  await otherRow.locator("button.netdisk-name-link[data-open]").click();
+  await expect(page.locator(".netdisk-crumbs")).toContainText(adminFolderName);
+  await expect(page.locator("#mkdirBtn")).toHaveCount(0);
+
+  h.assertClean("mkdir visibility for a regular user across shared-disk locations");
+
+  // An admin is exempt from the own-folder restriction: mkdir is available
+  // both at the pool root and inside any member's folder.
+  const h2 = installPage(page);
+  await logout(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "netdisk");
+  await page.click('.netdisk-mode-btn[data-mode="shareddisk"]');
+  await expect(page.locator('.netdisk-mode-btn[data-mode="shareddisk"]')).toHaveClass(/active/);
+  await expect(page.locator("#mkdirBtn")).toBeVisible();
+  const userFolderRowAsAdmin = page.locator("#view tbody tr", { hasText: userFolderName });
+  await expect(userFolderRowAsAdmin).toBeVisible({ timeout: 20000 });
+  await userFolderRowAsAdmin.locator("button.netdisk-name-link[data-open]").click();
+  await expect(page.locator(".netdisk-crumbs")).toContainText(userFolderName);
+  await expect(page.locator("#mkdirBtn")).toBeVisible();
+
+  h2.assertClean("mkdir visibility for an admin across shared-disk locations");
+});
+
+test("shared-disk batch actions: a selection mixing in another member's folder disables delete/move but leaves copy enabled", async ({ page }) => {
+  test.setTimeout(120000);
+  const h = installPage(page);
+  await login(page, fixture.user.username, fixture.user.password);
+  await openTab(page, "netdisk");
+  await page.click('.netdisk-mode-btn[data-mode="shareddisk"]');
+  await expect(page.locator('.netdisk-mode-btn[data-mode="shareddisk"]')).toHaveClass(/active/);
+
+  const ownRow = page.locator("#view tbody tr", { hasText: userFolderName });
+  const otherRow = page.locator("#view tbody tr", { hasText: adminFolderName });
+  await expect(ownRow).toBeVisible({ timeout: 20000 });
+  await expect(otherRow).toBeVisible();
+
+  const foreignTooltip = "Selection contains other members' shared files — can't delete or move (copy still works)";
+
+  // Selecting only another member's folder: delete/move are disabled (with
+  // the explanatory tooltip); copy stays enabled since copying someone else's
+  // files is harmless (a read, not a write).
+  await otherRow.locator(".netdisk-row-check").check();
+  await expect(page.locator("#batchDelete")).toBeDisabled();
+  await expect(page.locator("#batchMove")).toBeDisabled();
+  await expect(page.locator("#batchDelete")).toHaveAttribute("title", foreignTooltip);
+  await expect(page.locator("#batchMove")).toHaveAttribute("title", foreignTooltip);
+  await expect(page.locator("#batchCopy")).toBeEnabled();
+
+  // Adding the own folder to the selection (now mixed: own + foreign) keeps
+  // delete/move disabled — the whole selection must be own-only, not just
+  // partially.
+  await page.locator("#view tbody tr", { hasText: userFolderName }).locator(".netdisk-row-check").check();
+  await expect(page.locator("#batchDelete")).toBeDisabled();
+  await expect(page.locator("#batchMove")).toBeDisabled();
+  await expect(page.locator("#batchCopy")).toBeEnabled();
+
+  // Deselecting the foreign row leaves an own-only selection: delete/move
+  // become enabled again, with the tooltip cleared.
+  await page.locator("#view tbody tr", { hasText: adminFolderName }).locator(".netdisk-row-check").uncheck();
+  await expect(page.locator("#batchDelete")).toBeEnabled();
+  await expect(page.locator("#batchMove")).toBeEnabled();
+  await expect(page.locator("#batchDelete")).not.toHaveAttribute("title", foreignTooltip);
+
+  h.assertClean("shared-disk batch action gating on mixed selections");
+});
+
+test("the copy/move picker never offers the shared disk itself as a destination when the source is already the shared disk", async ({ page }) => {
+  test.setTimeout(120000);
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "netdisk");
+  await page.click('.netdisk-mode-btn[data-mode="shareddisk"]');
+  await expect(page.locator('.netdisk-mode-btn[data-mode="shareddisk"]')).toHaveClass(/active/);
+
+  const userFolderRow = page.locator("#view tbody tr", { hasText: userFolderName });
+  await expect(userFolderRow).toBeVisible({ timeout: 20000 });
+  await userFolderRow.locator("button[data-copy]").click();
+  await expect(page.locator(".modal-backdrop.netdisk-picker")).toBeVisible({ timeout: 20000 });
+
+  // No same-disk destination exists for the shared disk (see sharedDiskRename
+  // for in-place renames instead), so the picker must not offer it — only the
+  // netdisk (and backup disk, if configured) show up, and the netdisk is the
+  // default active target.
+  await expect(page.locator('[data-picker-disk="shareddisk"]')).toHaveCount(0);
+  await expect(page.locator('[data-picker-disk="netdisk"]')).toHaveClass(/active/);
+
+  await closeModals(page);
+  h.assertClean("the picker hiding the shared disk as a self-destination");
 });
 
 // rawMounts fetches the raw Docker inspect for a container and returns its
