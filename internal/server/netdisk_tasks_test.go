@@ -178,6 +178,12 @@ func TestNetdiskUploadTaskVisibleWhileBodyStreaming(t *testing.T) {
 // disappears the instant it's done. The source file is created via truncate
 // (an instant, sparse allocation) so only the copy itself -- real io.Copy
 // bytes written to the destination -- has to be slow enough to observe.
+//
+// It also pins down the byte-accurate progress fix: a copy request's task
+// total is the source's byte size (not the item count), and Done grows
+// mid-copy instead of jumping straight from 0 to the total -- this is what a
+// single large file copy (or a folder holding one) needs for its progress
+// bar to move instead of sitting at "0/1" until it suddenly finishes.
 func TestNetdiskCopyTaskVisibleWhileRunning(t *testing.T) {
 	a, u := newNetdiskTestApp(t)
 	root, err := a.userNetdiskRoot(u)
@@ -212,6 +218,36 @@ func TestNetdiskCopyTaskVisibleWhileRunning(t *testing.T) {
 
 	if !awaitTask(t, a, "netdisk.copy", "alice", 5*time.Second) {
 		t.Fatal("never observed a netdisk.copy task for alice while the copy was running")
+	}
+
+	// Total should be the source's byte size, not the item count (1) -- this
+	// is what lets the overlay show a real "X of Y" instead of an
+	// instantly-stale "0/1". Poll briefly for a non-zero Done to confirm
+	// progress actually advances mid-copy rather than jumping 0 -> total.
+	var sawTotal int64
+	var sawProgress bool
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		tasks := adminTasksSnapshot(t, a)
+		for i := range tasks {
+			if tasks[i].Kind != "netdisk.copy" || tasks[i].OwnerName != "alice" {
+				continue
+			}
+			sawTotal = tasks[i].Total
+			if tasks[i].Done > 0 {
+				sawProgress = true
+			}
+		}
+		if sawProgress {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if sawTotal != size {
+		t.Fatalf("task.Total = %d, want the source size %d", sawTotal, size)
+	}
+	if !sawProgress {
+		t.Fatal("task.Done never advanced above 0 while the copy was running")
 	}
 
 	select {

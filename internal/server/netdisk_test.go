@@ -1,12 +1,14 @@
 package server
 
 import (
+	"fmt"
 	"mime/multipart"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"mudp/internal/store"
 )
@@ -24,7 +26,7 @@ func TestNetdiskCopyOne(t *testing.T) {
 	}
 
 	dstFile := filepath.Join(dstDir, "a.txt")
-	if err := netdiskCopyOne(srcFile, dstFile, false, "overwrite"); err != nil {
+	if err := netdiskCopyOne(srcFile, dstFile, false, "overwrite", 0, nil); err != nil {
 		t.Fatalf("copy: %v", err)
 	}
 	if got, err := os.ReadFile(dstFile); err != nil || string(got) != "hello" {
@@ -32,7 +34,7 @@ func TestNetdiskCopyOne(t *testing.T) {
 	}
 
 	dstFile2 := filepath.Join(dstDir, "renamed.txt")
-	if err := netdiskCopyOne(srcFile, dstFile2, true, "rename"); err != nil {
+	if err := netdiskCopyOne(srcFile, dstFile2, true, "rename", 0, nil); err != nil {
 		t.Fatalf("move: %v", err)
 	}
 	if _, err := os.Stat(srcFile); err == nil {
@@ -56,7 +58,7 @@ func TestNetdiskCopyOneIntoDirectory(t *testing.T) {
 	if err := os.WriteFile(srcFile, []byte("hello"), 0640); err != nil {
 		t.Fatal(err)
 	}
-	if err := netdiskCopyOne(srcFile, dstDir, false, "overwrite"); err != nil {
+	if err := netdiskCopyOne(srcFile, dstDir, false, "overwrite", 0, nil); err != nil {
 		t.Fatalf("copy into dir: %v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(dstDir, "a.txt")); err != nil || string(got) != "hello" {
@@ -68,7 +70,7 @@ func TestNetdiskCopyOneIntoDirectory(t *testing.T) {
 	if err := os.WriteFile(srcFile2, []byte("world"), 0640); err != nil {
 		t.Fatal(err)
 	}
-	if err := netdiskCopyOne(srcFile2, dstDir, true, "rename"); err != nil {
+	if err := netdiskCopyOne(srcFile2, dstDir, true, "rename", 0, nil); err != nil {
 		t.Fatalf("move into dir: %v", err)
 	}
 	if _, err := os.Stat(srcFile2); err == nil {
@@ -76,6 +78,39 @@ func TestNetdiskCopyOneIntoDirectory(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(dstDir, "b.txt")); err != nil || string(got) != "world" {
 		t.Fatalf("move into dir result = %q, %v", got, err)
+	}
+}
+
+// TestPathSizeBeforeFallsBackPastDeadline verifies the bounded pre-scan used
+// by same-disk copy progress gives up cleanly (ok=false) once a directory
+// with a lot of entries has already run past its deadline, instead of
+// walking the whole tree regardless -- this is what stops a folder with a
+// huge number of files from adding noticeable time to the copy request just
+// to compute a byte total for the progress bar.
+func TestPathSizeBeforeFallsBackPastDeadline(t *testing.T) {
+	tmp := t.TempDir()
+	// More than the 2048-entry sampling interval, so the deadline check is
+	// guaranteed to actually run at least once during the walk.
+	const n = 2200
+	for i := 0; i < n; i++ {
+		p := filepath.Join(tmp, fmt.Sprintf("f%d.txt", i))
+		if err := os.WriteFile(p, nil, 0640); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+
+	if _, ok := pathSizeBefore(tmp, time.Now()); ok {
+		t.Fatal("pathSizeBefore should report ok=false once it runs past an already-elapsed deadline")
+	}
+
+	// A generous deadline must still complete normally and return the exact
+	// total, proving the bound doesn't kick in for an ordinary-sized folder.
+	size, ok := pathSizeBefore(tmp, time.Now().Add(10*time.Second))
+	if !ok {
+		t.Fatal("pathSizeBefore should complete well within a generous deadline")
+	}
+	if size != 0 { // all files are empty
+		t.Fatalf("size = %d, want 0", size)
 	}
 }
 
@@ -96,7 +131,7 @@ func TestCopyPathWithPolicySkipsExistingSingleFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := copyPathWithPolicy(src, dst, "skip"); err != nil {
+	if err := copyPathWithPolicy(src, dst, "skip", nil); err != nil {
 		t.Fatalf("copyPathWithPolicy skip: %v", err)
 	}
 	got, err := os.ReadFile(dst)
@@ -110,7 +145,7 @@ func TestCopyPathWithPolicySkipsExistingSingleFile(t *testing.T) {
 	// Sanity check the same call without an existing destination still copies
 	// (skip only applies when there is something to preserve).
 	dst2 := filepath.Join(tmp, "dst2.txt")
-	if err := copyPathWithPolicy(src, dst2, "skip"); err != nil {
+	if err := copyPathWithPolicy(src, dst2, "skip", nil); err != nil {
 		t.Fatalf("copyPathWithPolicy skip (no existing dst): %v", err)
 	}
 	if got, err := os.ReadFile(dst2); err != nil || string(got) != "new content" {
@@ -119,7 +154,7 @@ func TestCopyPathWithPolicySkipsExistingSingleFile(t *testing.T) {
 
 	// overwrite policy must still replace the file, so skip's new check
 	// didn't accidentally make copyPathWithPolicy always-preserve.
-	if err := copyPathWithPolicy(src, dst, "overwrite"); err != nil {
+	if err := copyPathWithPolicy(src, dst, "overwrite", nil); err != nil {
 		t.Fatalf("copyPathWithPolicy overwrite: %v", err)
 	}
 	if got, err := os.ReadFile(dst); err != nil || string(got) != "new content" {

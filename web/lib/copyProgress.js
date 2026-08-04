@@ -15,6 +15,12 @@
 // A locally-owned overlay always wins over the passive poll; the poll only
 // drives the overlay when no local operation currently owns it, and hands
 // back control (closes it) once the task it was tracking disappears.
+//
+// The server reports raw Done/Total counts plus a `unit` ("bytes" or
+// "items", see ActiveTask.Unit in tasks.go) -- all KB/MB/GB formatting
+// happens here client-side via fmtBytes, never on the server.
+
+import { fmtBytes } from "./common.js";
 
 let overlayEl = null;
 let source = null; // "local" | "poll" | null
@@ -55,13 +61,14 @@ function ensureOverlay(kind) {
   overlayEl.querySelector(".copy-title").textContent = KIND_TITLE[kind] || "Working…";
 }
 
-function updateOverlay({ done = 0, total = 0, message = "" } = {}) {
+function updateOverlay({ done = 0, total = 0, message = "", unit = "bytes" } = {}) {
   if (!overlayEl) return;
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   overlayEl.querySelector(".copy-bar > .bar-fill").style.width = `${pct}%`;
-  const totStr = total > 0 ? total : "…";
+  const fmt = unit === "items" ? String : fmtBytes;
+  const totStr = total > 0 ? fmt(total) : "…";
   const msg = message ? ` · ${message}` : "";
-  overlayEl.querySelector(".copy-meta").textContent = `${done} / ${totStr} · ${pct}%${msg}`;
+  overlayEl.querySelector(".copy-meta").textContent = `${fmt(done)} / ${totStr} · ${pct}%${msg}`;
 }
 
 function removeOverlay() {
@@ -72,20 +79,29 @@ function removeOverlay() {
 }
 
 // beginLocalCopy shows the overlay immediately for an operation this tab just
-// started. Returns { update(done, total, message), end() } -- the caller
-// drives update() from its own poll and calls end() once its fetch settles.
+// started, before the server has reported anything about it yet. total is
+// the item count known client-side (the real byte total, if any, arrives via
+// the caller's own poll and update() call); unit guesses "items" for a
+// same-disk move (always item-counted server-side, see ActiveTask.Unit) and
+// "bytes" otherwise, self-correcting once the first poll tick lands.
+// Returns { update(done, total, message, unit), end() } -- the caller drives
+// update() from its own poll and calls end() once its fetch settles.
 export function beginLocalCopy(kind, total) {
   source = "local";
+  let lastUnit = kind === "netdisk.move" ? "items" : "bytes";
+  let lastTotal = total;
   ensureOverlay(kind);
-  updateOverlay({ done: 0, total });
+  updateOverlay({ done: 0, total, unit: lastUnit });
   return {
-    update(done, totalNow, message) {
+    update(done, totalNow, message, unit) {
       if (source !== "local") return; // superseded by another local op; ignore stale ticks
-      updateOverlay({ done, total: totalNow || total, message });
+      if (unit) lastUnit = unit;
+      lastTotal = totalNow || lastTotal;
+      updateOverlay({ done, total: lastTotal, message, unit: lastUnit });
     },
     end() {
       if (source !== "local") return;
-      updateOverlay({ done: total, total });
+      updateOverlay({ done: lastTotal, total: lastTotal, unit: lastUnit });
       // Brief pause so the user sees the bar reach 100% before it vanishes.
       closeTimer = setTimeout(() => {
         if (source === "local") {
@@ -114,5 +130,5 @@ export function syncCopyOverlayFromTasks(tasks) {
   const t = tasks.slice().sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
   source = "poll";
   ensureOverlay(t.kind);
-  updateOverlay({ done: t.done || 0, total: t.total || 0, message: t.message });
+  updateOverlay({ done: t.done || 0, total: t.total || 0, message: t.message, unit: t.unit || "bytes" });
 }

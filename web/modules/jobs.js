@@ -275,7 +275,12 @@ function mapServerTask(t) {
   let message = t.message || "";
   const hasProgress = typeof t.progress === "number" && t.progress >= 0 && t.total > 0;
   if (hasProgress) {
-    message = `${message} (${t.progress}% · ${fmtBytes(t.done)}/${fmtBytes(t.total)})`.trim();
+    // A same-disk move (and, rarely, a copy whose size scan hit its own time
+    // budget -- see pathSizeBefore in tasks.go) counts items, not bytes; the
+    // server says which via t.unit so this never mislabels a plain "3/5" as
+    // a byte size.
+    const fmt = t.unit === "items" ? String : fmtBytes;
+    message = `${message} (${t.progress}% · ${fmt(t.done)}/${fmt(t.total)})`.trim();
   }
   return {
     id: t.id,

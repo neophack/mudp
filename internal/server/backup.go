@@ -559,8 +559,12 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-item sizes are kept (not just summed) so the copy loop below can
+	// report byte-accurate progress, including the one-shot credit for an
+	// item that completes via a same-filesystem rename (see netdiskCopyOne).
+	sizes := make([]int64, len(req.Items))
 	var required int64
-	for _, it := range req.Items {
+	for i, it := range req.Items {
 		src, srcRel, err := cleanUserPath(fromRoot, it.From)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
@@ -575,7 +579,8 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 		if isSymlink(src) {
 			continue
 		}
-		required += pathSize(src)
+		sizes[i] = pathSize(src)
+		required += sizes[i]
 	}
 	if toDisk == "netdisk" {
 		used := dirSize(toRoot)
@@ -595,12 +600,17 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task, doneTask := a.tasksReg().start("netdisk.transfer", fmt.Sprintf("%s · %s→%s · %d item(s)", u.Username, fromDisk, toDisk, len(req.Items)), u)
-	task.setTotal(int64(len(req.Items)))
+	// Cross-disk transfers are documented as separate mounts (netdisk vs.
+	// backup), so a same-filesystem rename essentially never applies here --
+	// unlike the same-disk copy endpoints, byte progress is worth reporting
+	// unconditionally, and required (above) already sized every item up front
+	// for the quota/free-space checks, so this is free.
+	task.setTotal(required)
 	defer doneTask()
 
 	results := make([]map[string]string, 0, len(req.Items))
 	count := 0
-	for _, item := range req.Items {
+	for i, item := range req.Items {
 		res := map[string]string{"from": item.From, "to": item.To}
 		from, fromRel, err := cleanUserPath(fromRoot, item.From)
 		if err == nil && fromDisk == "shareddisk" && req.Move {
@@ -610,7 +620,6 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
-			task.addDone(1)
 			continue
 		}
 		to, toRel, err := cleanUserPath(toRoot, item.To)
@@ -621,11 +630,10 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
-			task.addDone(1)
 			continue
 		}
 		task.setMessage(filepath.Base(from))
-		if err := netdiskCopyOne(from, to, req.Move, policy); err != nil {
+		if err := netdiskCopyOne(from, to, req.Move, policy, sizes[i], task.addDone); err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
 		} else {
@@ -637,7 +645,6 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 			count++
 		}
 		results = append(results, res)
-		task.addDone(1)
 	}
 	a.record(r, "netdisk.transfer", fmt.Sprintf("%s->%s %d item(s)", fromDisk, toDisk, count))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})
@@ -878,19 +885,50 @@ func (a *App) netdiskBackupCopy(w http.ResponseWriter, r *http.Request) {
 		kind = "netdisk.move"
 	}
 	task, doneTask := a.tasksReg().start(kind, fmt.Sprintf("%s · backup · %d item(s)", u.Username, len(req.Items)), u)
-	task.setTotal(int64(len(req.Items)))
 	defer doneTask()
+
+	// See netdiskCopy for why this branches on move (rename is too fast for
+	// byte progress to mean anything) and why the sizing pass is bounded (it
+	// exists purely for the progress bar, so a huge selection must not add
+	// noticeable time to the request -- falls back to per-item counting if so).
+	sizes := make([]int64, len(req.Items))
+	var totalBytes int64
+	useBytes := !req.Move
+	if useBytes {
+		scanDeadline := time.Now().Add(300 * time.Millisecond)
+		for i, item := range req.Items {
+			from, _, err := cleanUserPath(root, item.From)
+			if err != nil {
+				continue
+			}
+			size, ok := pathSizeBefore(from, scanDeadline)
+			if !ok {
+				useBytes = false
+				break
+			}
+			sizes[i] = size
+			totalBytes += size
+		}
+	}
+	if useBytes {
+		task.setTotal(totalBytes)
+	} else {
+		task.setUnit("items")
+		task.setTotal(int64(len(req.Items)))
+	}
 
 	var results []map[string]string
 	count := 0
-	for _, item := range req.Items {
+	for i, item := range req.Items {
 		res := map[string]string{"from": item.From, "to": item.To}
 		from, _, err := cleanUserPath(root, item.From)
 		if err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
-			task.addDone(1)
+			if !useBytes {
+				task.addDone(1)
+			}
 			continue
 		}
 		to, _, err := cleanUserPath(root, item.To)
@@ -898,11 +936,17 @@ func (a *App) netdiskBackupCopy(w http.ResponseWriter, r *http.Request) {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
-			task.addDone(1)
+			if !useBytes {
+				task.addDone(1)
+			}
 			continue
 		}
 		task.setMessage(filepath.Base(from))
-		if err := netdiskCopyOne(from, to, req.Move, policy); err != nil {
+		var onBytes func(int64)
+		if useBytes {
+			onBytes = task.addDone
+		}
+		if err := netdiskCopyOne(from, to, req.Move, policy, sizes[i], onBytes); err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
 		} else {
@@ -914,7 +958,9 @@ func (a *App) netdiskBackupCopy(w http.ResponseWriter, r *http.Request) {
 			count++
 		}
 		results = append(results, res)
-		task.addDone(1)
+		if !useBytes {
+			task.addDone(1)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})
 }
@@ -1010,7 +1056,10 @@ func (a *App) netdiskBackupRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	activeTask, doneTask := a.tasksReg().start("netdisk.restore", fmt.Sprintf("%s · %d item(s)", u.Username, len(tasks)), u)
-	activeTask.setTotal(int64(len(tasks)))
+	// required (above) already sized every item for the quota/free-space
+	// checks; restore is always a real data copy (no rename fast path), so
+	// byte progress is accurate throughout.
+	activeTask.setTotal(required)
 	defer doneTask()
 
 	results := make([]map[string]string, 0, len(tasks))
@@ -1018,7 +1067,7 @@ func (a *App) netdiskBackupRestore(w http.ResponseWriter, r *http.Request) {
 	for _, t := range tasks {
 		res := map[string]string{"from": t.path, "to": filepath.ToSlash(t.dst)}
 		activeTask.setMessage(filepath.Base(t.src))
-		if err := copyPathWithPolicy(t.src, t.dst, policy); err != nil {
+		if err := copyPathWithPolicy(t.src, t.dst, policy, activeTask.addDone); err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
 		} else {
@@ -1026,7 +1075,6 @@ func (a *App) netdiskBackupRestore(w http.ResponseWriter, r *http.Request) {
 			count++
 		}
 		results = append(results, res)
-		activeTask.addDone(1)
 	}
 	a.record(r, "netdisk.backup.restore", fmt.Sprintf("%d item(s)", count))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})

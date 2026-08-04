@@ -29,8 +29,19 @@ type ActiveTask struct {
 	Progress  int       `json:"progress"` // 0..100, -1 while indeterminate
 	Done      int64     `json:"done"`
 	Total     int64     `json:"total"`
-	Message   string    `json:"message"`
-	mu        sync.Mutex
+	// Unit tells the client how to render Done/Total: "bytes" (the default --
+	// every progress source except the two below) or "items". A same-disk
+	// move renames instead of copying data, so its Done/Total count items,
+	// not bytes; a same-disk copy normally counts bytes too, but falls back
+	// to items if its up-front sizing pass got cut off by pathSizeBefore's
+	// deadline (see netdiskCopy) rather than report a partial, misleading
+	// byte total. The kind alone can't disambiguate this for "netdisk.copy",
+	// since the same kind can land in either state depending on that
+	// runtime fallback -- hence an explicit field instead of client-side
+	// inference from Kind.
+	Unit    string `json:"unit"`
+	Message string `json:"message"`
+	mu      sync.Mutex
 }
 
 func (t *ActiveTask) snapshot() ActiveTask {
@@ -40,7 +51,7 @@ func (t *ActiveTask) snapshot() ActiveTask {
 		ID: t.ID, Kind: t.Kind, Name: t.Name,
 		OwnerID: t.OwnerID, OwnerName: t.OwnerName,
 		StartedAt: t.StartedAt, Progress: t.Progress,
-		Done: t.Done, Total: t.Total, Message: t.Message,
+		Done: t.Done, Total: t.Total, Unit: t.Unit, Message: t.Message,
 	}
 }
 
@@ -51,6 +62,14 @@ func (t *ActiveTask) setTotal(n int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.Total = n
+}
+
+// setUnit overrides Unit from its "bytes" default to "items" for a task whose
+// Done/Total count discrete items instead (see the Unit field's doc comment).
+func (t *ActiveTask) setUnit(u string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Unit = u
 }
 
 // addDone credits n more units/bytes as processed and recomputes Progress.
@@ -115,6 +134,7 @@ func (r *ActiveTaskRegistry) start(kind, name string, owner *store.User) (*Activ
 		Name:      name,
 		StartedAt: time.Now(),
 		Progress:  -1,
+		Unit:      "bytes",
 	}
 	if owner != nil {
 		t.OwnerID = owner.ID
@@ -250,7 +270,7 @@ func (r *ChunkUploadRegistry) snapshot() []ActiveTask {
 		out = append(out, ActiveTask{
 			ID: s.ID, Kind: "netdisk.upload.chunked", Name: s.Name,
 			OwnerID: s.OwnerID, OwnerName: s.OwnerName, StartedAt: s.StartedAt,
-			Progress: progress, Done: done, Total: total,
+			Progress: progress, Done: done, Total: total, Unit: "bytes",
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
@@ -282,7 +302,7 @@ func (a *App) collectTasks() []ActiveTask {
 				ID: j.ID, Kind: j.Kind, Name: j.Name,
 				OwnerID: j.OwnerID, OwnerName: j.OwnerName,
 				StartedAt: j.StartedAt, Progress: j.Progress,
-				Done: j.Done, Total: j.Total, Message: j.Message,
+				Done: j.Done, Total: j.Total, Unit: "bytes", Message: j.Message,
 			})
 		}
 	}
@@ -342,7 +362,7 @@ func (a *App) userTasks(w http.ResponseWriter, r *http.Request) {
 			ID: t.ID, Kind: t.Kind, Name: t.Name,
 			OwnerID: t.OwnerID, OwnerName: t.OwnerName,
 			StartedAt: t.StartedAt, Progress: t.Progress,
-			Done: t.Done, Total: t.Total, Message: t.Message,
+			Done: t.Done, Total: t.Total, Unit: t.Unit, Message: t.Message,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

@@ -333,19 +333,56 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 		kind = "netdisk.move"
 	}
 	task, doneTask := a.tasksReg().start(kind, fmt.Sprintf("%s · %d item(s)", u.Username, len(req.Items)), u)
-	task.setTotal(int64(len(req.Items)))
 	defer doneTask()
+
+	// A same-filesystem move renames instead of touching file data, so it's
+	// too fast for byte progress to be meaningful -- keep counting by item.
+	// A copy actually reads and writes every byte, so size each source up
+	// front and report progress in bytes, matching how the floating overlay
+	// renders it -- but bounded: this sizing pass exists purely for the
+	// progress bar (unlike a cross-disk transfer or restore, which already
+	// walk every source for a quota check regardless), so a selection with an
+	// enormous number of files must not make it noticeably slower to fire off
+	// the request. If the bound is hit, fall back to the same per-item
+	// counting a move uses instead of a partial, misleading byte total.
+	sizes := make([]int64, len(req.Items))
+	var totalBytes int64
+	useBytes := !req.Move
+	if useBytes {
+		scanDeadline := time.Now().Add(300 * time.Millisecond)
+		for i, item := range req.Items {
+			from, _, err := cleanUserPath(root, item.From)
+			if err != nil {
+				continue
+			}
+			size, ok := pathSizeBefore(from, scanDeadline)
+			if !ok {
+				useBytes = false
+				break
+			}
+			sizes[i] = size
+			totalBytes += size
+		}
+	}
+	if useBytes {
+		task.setTotal(totalBytes)
+	} else {
+		task.setUnit("items")
+		task.setTotal(int64(len(req.Items)))
+	}
 
 	var results []map[string]string
 	count := 0
-	for _, item := range req.Items {
+	for i, item := range req.Items {
 		res := map[string]string{"from": item.From, "to": item.To}
 		from, _, err := cleanUserPath(root, item.From)
 		if err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
-			task.addDone(1)
+			if !useBytes {
+				task.addDone(1)
+			}
 			continue
 		}
 		to, _, err := cleanUserPath(root, item.To)
@@ -353,11 +390,17 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 			res["status"] = "error"
 			res["error"] = err.Error()
 			results = append(results, res)
-			task.addDone(1)
+			if !useBytes {
+				task.addDone(1)
+			}
 			continue
 		}
 		task.setMessage(filepath.Base(from))
-		if err := netdiskCopyOne(from, to, req.Move, policy); err != nil {
+		var onBytes func(int64)
+		if useBytes {
+			onBytes = task.addDone
+		}
+		if err := netdiskCopyOne(from, to, req.Move, policy, sizes[i], onBytes); err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
 		} else {
@@ -369,12 +412,22 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 			count++
 		}
 		results = append(results, res)
-		task.addDone(1)
+		if !useBytes {
+			task.addDone(1)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})
 }
 
-func netdiskCopyOne(from, to string, move bool, policy string) error {
+// netdiskCopyOne copies or moves a single from->to item. size and onBytes are
+// only used to report progress for the actual-data-copy paths (a plain copy,
+// or a move that falls back to copy+delete across filesystems); pass 0/nil
+// when the caller doesn't track progress. A same-filesystem move renames
+// instead of touching file contents, so it completes far too fast for
+// per-byte progress to mean anything -- if onBytes is set, size is reported
+// to it in one shot on success so a byte-based total (which already counted
+// this item) doesn't get stuck short of 100%.
+func netdiskCopyOne(from, to string, move bool, policy string, size int64, onBytes func(int64)) error {
 	fromInfo, err := os.Stat(from)
 	if err != nil {
 		return err
@@ -413,7 +466,7 @@ func netdiskCopyOne(from, to string, move bool, policy string) error {
 			// documented setup) -- os.Rename can never bridge that. Fall back to
 			// a copy followed by removing the original, so "move" still works
 			// for the primary deployment topology instead of failing outright.
-			if err := copyPathWithPolicy(from, to, policy); err != nil {
+			if err := copyPathWithPolicy(from, to, policy, onBytes); err != nil {
 				return err
 			}
 			if fromInfo.IsDir() {
@@ -421,9 +474,12 @@ func netdiskCopyOne(from, to string, move bool, policy string) error {
 			}
 			return os.Remove(from)
 		}
+		if onBytes != nil {
+			onBytes(size)
+		}
 		return nil
 	}
-	return copyPathWithPolicy(from, to, policy)
+	return copyPathWithPolicy(from, to, policy, onBytes)
 }
 
 // uploadDestPath resolves where the i-th uploaded file part lands under dir.
@@ -1289,7 +1345,7 @@ func (a *App) netdiskShareSave(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		if err := copyPathWithPolicy(t.src, dstPath, policy); err != nil {
+		if err := copyPathWithPolicy(t.src, dstPath, policy, nil); err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
 		} else {
@@ -1752,6 +1808,44 @@ func pathSize(root string) int64 {
 	return total
 }
 
+// pathSizeBefore is pathSize bounded by a deadline, for sizing a same-disk
+// copy up front so its progress can be reported in bytes. Unlike a cross-disk
+// transfer or a restore (which already walk every source for a quota/free-
+// space check before this ever runs, so reusing that sum costs nothing extra),
+// a same-disk copy has no such pass -- this one is purely to power the
+// progress bar, so it must never let a directory with an enormous number of
+// entries add noticeable time to the request. The deadline check is only
+// sampled periodically (not per entry) so it doesn't itself become the
+// overhead it's trying to avoid. ok is false if the walk was cut off, in
+// which case the size returned is a partial undercount and the caller should
+// fall back to per-item counting instead of a byte-based total.
+func pathSizeBefore(root string, deadline time.Time) (size int64, ok bool) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return 0, true
+	}
+	if !info.IsDir() {
+		return info.Size(), true
+	}
+	ok = true
+	seen := 0
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		seen++
+		if seen%2048 == 0 && time.Now().After(deadline) {
+			ok = false
+			return filepath.SkipAll
+		}
+		if err != nil || d.IsDir() || isSymlink(path) {
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, ok
+}
+
 // nextFreeName returns an unused file name inside dir by appending " (1)", " (2)", etc.
 func nextFreeName(dir, name string) string {
 	return nextFreeNameWithPlanned(dir, name, nil)
@@ -1875,7 +1969,12 @@ func shareVisible(paths []string, req string) bool {
 	return false
 }
 
-func copyPathWithPolicy(src, dst, policy string) error {
+// copyPathWithPolicy copies src (a file or directory tree) to dst. onBytes,
+// if non-nil, is called with each chunk's byte count as data is written --
+// wiring it to an ActiveTask's addDone lets a caller report live, byte-
+// accurate progress (e.g. the netdisk copy/move progress overlay) even while
+// a single large file is still mid-copy, not just once each file finishes.
+func copyPathWithPolicy(src, dst, policy string, onBytes func(int64)) error {
 	info, err := os.Stat(src)
 	if err != nil {
 		return err
@@ -1899,7 +1998,7 @@ func copyPathWithPolicy(src, dst, policy string) error {
 					return nil
 				}
 			}
-			return copyFile(path, target)
+			return copyFile(path, target, onBytes)
 		})
 	}
 	if isSymlink(src) {
@@ -1910,10 +2009,26 @@ func copyPathWithPolicy(src, dst, policy string) error {
 			return nil
 		}
 	}
-	return copyFile(src, dst)
+	return copyFile(src, dst, onBytes)
 }
 
-func copyFile(src, dst string) error {
+// progressWriter reports each chunk it forwards to the wrapped writer via
+// onBytes, so a copy of one large file still advances byte progress smoothly
+// instead of jumping only when the whole file finishes.
+type progressWriter struct {
+	w       io.Writer
+	onBytes func(int64)
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	if n > 0 {
+		p.onBytes(int64(n))
+	}
+	return n, err
+}
+
+func copyFile(src, dst string, onBytes func(int64)) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0750); err != nil {
 		return err
 	}
@@ -1927,6 +2042,10 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer out.Close()
-	_, err = io.Copy(out, in)
+	var w io.Writer = out
+	if onBytes != nil {
+		w = &progressWriter{w: out, onBytes: onBytes}
+	}
+	_, err = io.Copy(w, in)
 	return err
 }
