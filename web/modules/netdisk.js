@@ -7,21 +7,27 @@ import { uploadLargeFile } from "../lib/chunkupload.js";
 import { openYuvViewer } from "../lib/yuv.js";
 import { renderMarkdownInto } from "../lib/viewer.js";
 
-// netdiskMode is "netdisk" (primary SSD, the default) or "backup" (the slow
-// mechanical backup disk). The whole view branches on this: which list/quota
-// endpoints it fetches, which action buttons show, and how download/preview
-// URLs are built. Toggling also resets the path so each disk starts at its root.
+// netdiskMode is "netdisk" (primary SSD, the default), "backup" (the slow
+// mechanical backup disk), or "shareddisk" (共享盘: one pool per group;
+// everyone can browse it, but only the caller's own subfolder — or any
+// folder, for an admin — is editable). Named "shareddisk", not "shared" or
+// "share", to stay clearly distinct from the netdisk's own external
+// share-link feature (分享链接, netdisk.share*/openShareModal below). The
+// whole view branches on this: which list/quota endpoints it fetches, which
+// action buttons show, and how download/preview URLs are built. Toggling
+// also resets the path so each disk starts at its root.
 let netdiskMode = "netdisk";
 
 // Keep independent browsing context for each disk so toggling does not lose
-// the current folder/selection state of the other side.
+// the current folder/selection state of the other sides.
 const modeState = {
   netdisk: { path: "", selected: new Set() },
   backup: { path: "", selected: new Set() },
+  shareddisk: { path: "", selected: new Set() },
 };
 
 function currentModeState() {
-  return modeState[isBackupMode() ? "backup" : "netdisk"];
+  return modeState[netdiskMode];
 }
 
 // Mobile per-row action menus (see .row-menu in styles.css) toggle open via
@@ -79,6 +85,20 @@ function isBackupMode() {
   return netdiskMode === "backup";
 }
 
+function isSharedDiskMode() {
+  return netdiskMode === "shareddisk";
+}
+
+// isOwnSharedDiskRow reports whether a shared-disk listing row belongs to the
+// caller's own subfolder (mirrors the backend's firstPathSegment check). Admins
+// can manage every row, not just their own — see requireOwnSharedDiskPath.
+function isOwnSharedDiskRow(path, ownFolder) {
+  if (isAdmin()) return true;
+  if (!ownFolder) return false;
+  const first = (path || "").split("/")[0];
+  return first === ownFolder;
+}
+
 function backupUnavailableMessage(errOrMsg) {
   const msg = String(errOrMsg?.message || errOrMsg || "").trim();
   if (!msg) return t("netdisk.backupUnavailable");
@@ -99,18 +119,23 @@ export async function renderNetdisk() {
   const prevSelSig = state.netdisk?.selSig;
   let sig;
   try {
+    const listURL = isBackupMode()
+      ? `/api/netdisk/backup/browse?path=${encodeURIComponent(state.netdisk.path || "")}`
+      : isSharedDiskMode()
+        ? `/api/shareddisk?path=${encodeURIComponent(state.netdisk.path || "")}`
+        : `/api/netdisk?path=${encodeURIComponent(state.netdisk.path || "")}`;
+    // Quota and external-link shares are netdisk-only concepts; the shared
+    // disk has its own (simpler) quota endpoint, backup has neither.
+    const quotaURL = isSharedDiskMode() ? "/api/shareddisk/quota" : "/api/netdisk/quota";
     const [list, quota, shares, adminShares] = await Promise.all([
-      isBackupMode()
-        ? api(`${"/api/netdisk/backup/browse"}?path=${encodeURIComponent(state.netdisk.path || "")}`)
-        : api(`/api/netdisk?path=${encodeURIComponent(state.netdisk.path || "")}`),
-      // Quota and shares are netdisk-only concepts; skip both in backup mode.
-      isBackupMode() ? Promise.resolve(null) : api("/api/netdisk/quota").catch(() => null),
-      isBackupMode() ? Promise.resolve([]) : api("/api/netdisk/shares").catch(() => []),
-      isBackupMode() || !isAdmin() ? Promise.resolve([]) : api("/api/admin/netdisk/shares").catch(() => []),
+      api(listURL),
+      isBackupMode() ? Promise.resolve(null) : api(quotaURL).catch(() => null),
+      isBackupMode() || isSharedDiskMode() ? Promise.resolve([]) : api("/api/netdisk/shares").catch(() => []),
+      isBackupMode() || isSharedDiskMode() || !isAdmin() ? Promise.resolve([]) : api("/api/admin/netdisk/shares").catch(() => []),
     ]);
     const effectiveQuota = isBackupMode() ? (list?.quota || null) : quota;
     const backupWarning = isBackupMode() && list?.unavailable ? backupUnavailableMessage(list.message) : "";
-    sig = JSON.stringify([netdiskMode, list.path, list.items, effectiveQuota, shares, adminShares, backupWarning]);
+    sig = JSON.stringify([netdiskMode, list.path, list.items, effectiveQuota, shares, adminShares, backupWarning, list.ownFolder]);
     state.netdisk = {
       path: list.path || "",
       items: list.items || [],
@@ -118,6 +143,7 @@ export async function renderNetdisk() {
       shares,
       adminShares,
       backupWarning,
+      ownFolder: list.ownFolder || "",
       selected: state.netdisk?.selected || new Set(),
       sig,
     };
@@ -161,12 +187,15 @@ export async function renderNetdisk() {
 
   const mutable = canMutate();
   const backup = isBackupMode();
-  const rows = sortedItems(state.netdisk.items).map((f) => fileRow(f, mutable, backup)).join("") ||
+  const shared = isSharedDiskMode();
+  const ownFolder = state.netdisk.ownFolder || "";
+  const rows = sortedItems(state.netdisk.items).map((f) => fileRow(f, mutable, backup, shared, ownFolder)).join("") ||
     `<tr class="empty-row"><td colspan="${mutable ? 6 : 5}">No files.</td></tr>`;
   const fileCount = state.netdisk.items.filter((f) => !f.dir).length;
   const folderCount = state.netdisk.items.length - fileCount;
   const quotaHtml = quotaBar(state.netdisk.quota);
   const selectionSize = [...state.netdisk.selected].length;
+  const modeOf = (name) => (shared ? "shareddisk" : backup ? "backup" : "netdisk") === name;
 
   $("#view").innerHTML =
     `<div class="stack netdisk-stack">` +
@@ -174,8 +203,9 @@ export async function renderNetdisk() {
         `<div class="netdisk-toolbar">` +
           `<div class="netdisk-title">` +
             `<div class="netdisk-mode-toggle" role="tablist">` +
-              `<button class="netdisk-mode-btn${backup ? "" : " active"}" data-mode="netdisk" role="tab" aria-selected="${backup ? "false" : "true"}">${t("netdisk.modeNetdisk")}</button>` +
-              `<button class="netdisk-mode-btn${backup ? " active" : ""}" data-mode="backup" role="tab" aria-selected="${backup ? "true" : "false"}">${t("netdisk.modeBackup")}</button>` +
+              `<button class="netdisk-mode-btn${modeOf("netdisk") ? " active" : ""}" data-mode="netdisk" role="tab" aria-selected="${modeOf("netdisk")}">${t("netdisk.modeNetdisk")}</button>` +
+              `<button class="netdisk-mode-btn${modeOf("backup") ? " active" : ""}" data-mode="backup" role="tab" aria-selected="${modeOf("backup")}">${t("netdisk.modeBackup")}</button>` +
+              `<button class="netdisk-mode-btn${modeOf("shareddisk") ? " active" : ""}" data-mode="shareddisk" role="tab" aria-selected="${modeOf("shareddisk")}">${t("netdisk.modeSharedDisk")}</button>` +
             `</div>` +
             `<span class="netdisk-count">${t("netdisk.counts", { folders: folderCount, files: fileCount })}</span>` +
           `</div>` +
@@ -183,21 +213,29 @@ export async function renderNetdisk() {
             `<button class="ghost" id="upDir">${t("netdisk.up")}</button>` +
             `<button class="ghost" id="mkdirBtn">${t("netdisk.newFolder")}</button>` +
             // Upload and Folder-upload are netdisk-only: a backup disk is a
-            // mirror target, not a place to drop arbitrary new files.
-            (backup ? "" : `<label class="buttonlike"><input id="uploadFiles" type="file" multiple> ${t("netdisk.upload")}</label>`) +
-            (backup ? "" : `<label class="buttonlike"><input id="uploadFolder" type="file" webkitdirectory directory multiple> ${t("netdisk.folder")}</label>`) +
+            // mirror target and the shared disk has no upload surface of its
+            // own — files reach it via copy/move from the netdisk instead
+            // (see openFolderPicker, which also works the other way: copying
+            // or moving out of the shared disk onto the netdisk/backup disk).
+            (backup || shared ? "" : `<label class="buttonlike"><input id="uploadFiles" type="file" multiple> ${t("netdisk.upload")}</label>`) +
+            (backup || shared ? "" : `<label class="buttonlike"><input id="uploadFolder" type="file" webkitdirectory directory multiple> ${t("netdisk.folder")}</label>`) +
             (mutable
               ? `<button class="ghost danger" id="batchDelete" ${selectionSize ? "" : "disabled"}>${t("netdisk.deleteN", { n: selectionSize })}</button>` +
                 `<button class="ghost" id="batchCopy" ${selectionSize ? "" : "disabled"}>${t("netdisk.copyN", { n: selectionSize })}</button>` +
                 `<button class="ghost" id="batchMove" ${selectionSize ? "" : "disabled"}>${t("netdisk.moveN", { n: selectionSize })}</button>` +
-                // Share and Backup-to-backup don't apply on the backup disk.
-                (backup ? "" : `<button class="ghost" id="batchShare" ${selectionSize ? "" : "disabled"}>${t("netdisk.shareN", { n: selectionSize })}</button>`) +
-                `<button class="ghost" id="batchDownload" ${selectionSize ? "" : "disabled"}>${t("netdisk.downloadN", { n: selectionSize })}</button>`
+                // Share doesn't apply on the backup or shared disk. The
+                // shared disk also has no zip-download surface of its own —
+                // download a copy by copying it to the netdisk first.
+                (backup || shared ? "" : `<button class="ghost" id="batchShare" ${selectionSize ? "" : "disabled"}>${t("netdisk.shareN", { n: selectionSize })}</button>`) +
+                (shared ? "" : `<button class="ghost" id="batchDownload" ${selectionSize ? "" : "disabled"}>${t("netdisk.downloadN", { n: selectionSize })}</button>`)
               : "") +
           `</div>` +
         `</div>` +
         (backup && state.netdisk.backupWarning
           ? `<div class="netdisk-backup-hint">${escapeHtml(state.netdisk.backupWarning)}</div>`
+          : "") +
+        (shared
+          ? `<div class="netdisk-backup-hint">${t("netdisk.sharedDiskHint")}</div>`
           : "") +
         `<div class="netdisk-pathbar">` +
           `<div class="netdisk-crumbs">${breadcrumbs(state.netdisk.path)}</div>` +
@@ -208,8 +246,8 @@ export async function renderNetdisk() {
           `<th>${t("common.name")}</th><th class="size-col">${t("common.size")}</th><th class="time-col">${t("netdisk.colModified")}</th><th class="actions">${t("common.actions")}</th>` +
         `</tr></thead><tbody>${rows}</tbody></table>` +
       `</div>` +
-      // External Links cards are netdisk-only — backup files can't be shared.
-      (backup ? "" :
+      // External Links cards are netdisk-only — backup/shared-disk files can't be shared.
+      (backup || shared ? "" :
         `<div class="card"><div class="card-head"><h2>${t("netdisk.externalLinks")}</h2></div>` +
         `<table class="data netdisk-shares"><thead><tr><th class="share-name-col">${t("common.name")}</th><th class="share-link-col">${t("netdisk.colLink")}</th><th class="share-expires-col">${t("netdisk.colExpires")}</th><th class="share-access-col">${t("netdisk.colAccess")}</th><th class="actions">${t("common.actions")}</th></tr></thead><tbody>${shareRows(state.netdisk.shares || [])}</tbody></table></div>` +
         (isAdmin() ? `<div class="card"><div class="card-head"><h2>${t("netdisk.allExternalLinks")}</h2><div class="head-tools"><label class="check compact-check" for="selectAllShares"><input type="checkbox" id="selectAllShares"><span>${t("netdisk.selectAll")}</span></label><button class="danger" id="deleteSelectedShares">${t("netdisk.deleteSelected")}</button></div></div>` +
@@ -222,10 +260,11 @@ export async function renderNetdisk() {
 
 function bindNetdiskEvents(mutable) {
   const backup = isBackupMode();
-  const base = backup ? "/api/netdisk/backup" : "/api/netdisk";
+  const shared = isSharedDiskMode();
+  const base = shared ? "/api/shareddisk" : backup ? "/api/netdisk/backup" : "/api/netdisk";
 
-  // --- Mode toggle: switch between the netdisk and the backup disk. Switching
-  // resets path + selection so each disk opens at its own root.
+  // --- Mode toggle: switch between the netdisk, backup and shared disks.
+  // Switching resets path + selection so each disk opens at its own root.
   document.querySelectorAll("[data-mode]").forEach((btn) => {
     btn.onclick = () => {
       if (btn.dataset.mode === netdiskMode) return;
@@ -293,7 +332,7 @@ function bindNetdiskEvents(mutable) {
   // the FileSystemEntry API to recover the folder structure. The walker streams
   // into a bounded buffer the queue drains, so traversal and upload run in
   // parallel and only ~one batch of files is held in memory at a time.
-  if (!backup) {
+  if (netdiskMode === "netdisk") {
     const card = $("#netdiskCard");
     card.ondragover = (e) => { e.preventDefault(); card.classList.add("drag-over"); };
     card.ondragleave = () => card.classList.remove("drag-over");
@@ -357,11 +396,14 @@ function bindNetdiskEvents(mutable) {
       renderNetdisk();
     };
     $("#batchDelete").onclick = batchDelete;
-    $("#batchCopy").onclick = () => batchCopyMove(false);
-    $("#batchMove").onclick = () => batchCopyMove(true);
+    const batchCopyBtn = $("#batchCopy");
+    if (batchCopyBtn) batchCopyBtn.onclick = () => batchCopyMove(false);
+    const batchMoveBtn = $("#batchMove");
+    if (batchMoveBtn) batchMoveBtn.onclick = () => batchCopyMove(true);
     const batchShareBtn = $("#batchShare");
     if (batchShareBtn) batchShareBtn.onclick = batchShare;
-    $("#batchDownload").onclick = batchDownload;
+    const batchDownloadBtn = $("#batchDownload");
+    if (batchDownloadBtn) batchDownloadBtn.onclick = batchDownload;
   }
 
   document.querySelectorAll("[data-copy-link]").forEach((btn) => {
@@ -399,35 +441,58 @@ function bindNetdiskEvents(mutable) {
   }
 }
 
-function fileRow(f, mutable, backup) {
-  const href = backup ? backupDownloadURL(f.path) : downloadURL(f.path);
+function fileRow(f, mutable, backup, shared, ownFolder) {
+  // The shared disk has no download/preview endpoint of its own (retrieval
+  // goes through copying it to the netdisk instead), so a shared-mode row
+  // never links out: folders stay navigable, files are plain text.
+  const href = shared ? "" : backup ? backupDownloadURL(f.path) : downloadURL(f.path);
   const checked = state.netdisk.selected.has(f.path) ? "checked" : "";
-  const kind = previewKind(f.name);
+  const kind = shared ? null : previewKind(f.name);
   const name = f.dir
     ? `<button class="linklike netdisk-name-link" data-open="${escapeHtml(f.path)}" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</button>`
     : kind
       ? `<button class="linklike netdisk-name-link" data-view="${escapeHtml(f.path)}" data-backup="${backup ? "1" : ""}" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</button>`
-      : `<a class="netdisk-name-link" href="${href}" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</a>`;
+      : shared
+        ? `<span class="netdisk-name-link" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>`
+        : `<a class="netdisk-name-link" href="${href}" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</a>`;
+  // Only the caller's own subfolder (or, for an admin, any folder) is
+  // editable on the shared disk — a row outside it can still be selected and
+  // copied out to the netdisk/backup disk (a non-destructive read), but not
+  // moved, renamed or deleted.
+  const editable = shared ? isOwnSharedDiskRow(f.path, ownFolder) : true;
   const checkCell = mutable
     ? `<td class="chk-col"><input type="checkbox" class="netdisk-row-check" data-path="${escapeHtml(f.path)}" ${checked}></td>`
     : "";
   // On the backup disk we drop Share (no sharing from backup) and the
-  // Backup-to-backup button (it's already there). Everything else — download,
-  // rename, copy/move within the disk, delete — stays for full management.
-  // All actions live inside a .row-menu: on wide screens it's rendered "flat"
-  // (CSS unwraps it via display:contents) so it looks like the old inline
-  // icon row, but on phones the icon row has no space for six buttons — the
-  // panel becomes a real dropdown behind a single "more" trigger, like the
-  // file-row menu in mobile netdisk apps.
-  const menuItems = mutable
-    ? `<a class="icon" href="${href}" title="${t("netdisk.download")}">⬇ <span>${t("netdisk.download")}</span></a>` +
+  // Backup-to-backup button (it's already there). On the shared disk there
+  // is no download link and no share button (those stay netdisk-only); copy
+  // is available on every row (copying someone else's file is harmless),
+  // move/rename/delete only on rows inside the caller's own folder (or, for
+  // an admin, any folder — requireOwnSharedDiskPath enforces this
+  // server-side too). All actions live inside a .row-menu: on wide screens
+  // it's rendered "flat" (CSS unwraps it via display:contents) so it looks
+  // like the old inline icon row, but on phones the icon row has no space
+  // for six buttons — the panel becomes a real dropdown behind a single
+  // "more" trigger, like the file-row menu in mobile netdisk apps.
+  let menuItems;
+  if (!mutable) {
+    menuItems = shared ? "" : `<a class="icon" href="${href}" title="${t("netdisk.download")}">⬇ <span>${t("netdisk.download")}</span></a>`;
+  } else if (shared) {
+    menuItems = `<button class="icon" title="${t("netdisk.copy")}" data-copy="${escapeHtml(f.path)}">⧉ <span>${t("netdisk.copy")}</span></button>` +
+      (editable
+        ? `<button class="icon" title="${t("netdisk.move")}" data-move="${escapeHtml(f.path)}">↗ <span>${t("netdisk.move")}</span></button>` +
+          `<button class="icon" title="${t("netdisk.rename")}" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✎ <span>${t("netdisk.rename")}</span></button>` +
+          `<button class="icon danger" title="${t("common.delete")}" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✕ <span>${t("common.delete")}</span></button>`
+        : "");
+  } else {
+    menuItems = `<a class="icon" href="${href}" title="${t("netdisk.download")}">⬇ <span>${t("netdisk.download")}</span></a>` +
       `<button class="icon" title="${t("netdisk.rename")}" data-ren="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✎ <span>${t("netdisk.rename")}</span></button>` +
       `<button class="icon" title="${t("netdisk.copy")}" data-copy="${escapeHtml(f.path)}">⧉ <span>${t("netdisk.copy")}</span></button>` +
       `<button class="icon" title="${t("netdisk.move")}" data-move="${escapeHtml(f.path)}">↗ <span>${t("netdisk.move")}</span></button>` +
       (backup ? "" : `<button class="icon" title="${t("netdisk.share")}" data-share="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">⤴ <span>${t("netdisk.share")}</span></button>`) +
-      `<button class="icon danger" title="${t("common.delete")}" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✕ <span>${t("common.delete")}</span></button>`
-    : `<a class="icon" href="${href}" title="${t("netdisk.download")}">⬇ <span>${t("netdisk.download")}</span></a>`;
-  const actionCell =
+      `<button class="icon danger" title="${t("common.delete")}" data-del="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">✕ <span>${t("common.delete")}</span></button>`;
+  }
+  const actionCell = !menuItems ? "" :
     `<div class="row-menu">` +
       `<button type="button" class="icon row-menu-toggle" title="${t("netdisk.moreActions")}" aria-label="${t("netdisk.moreActions")}">⋮</button>` +
       `<div class="row-menu-panel">${menuItems}</div>` +
@@ -447,7 +512,7 @@ async function batchDelete() {
   const paths = [...state.netdisk.selected];
   if (!paths.length) return;
   if (!confirm(t("netdisk.batchDeleteConfirm", { n: paths.length }))) return;
-  const endpoint = isBackupMode() ? "/api/netdisk/backup/delete" : "/api/netdisk/delete";
+  const endpoint = isSharedDiskMode() ? "/api/shareddisk/delete" : isBackupMode() ? "/api/netdisk/backup/delete" : "/api/netdisk/delete";
   await api(endpoint, { method: "POST", body: JSON.stringify({ paths }) });
   clearCurrentSelection();
   toast(t("netdisk.deleted"), true);
@@ -466,12 +531,23 @@ function batchCopyMove(move) {
 let folderPicker = null;
 
 function openFolderPicker(move, paths) {
-  const sourceDisk = isBackupMode() ? "backup" : "netdisk";
-  folderPicker = { move, paths, path: state.netdisk.path || "", items: [], sourceDisk, targetDisk: sourceDisk };
+  const sourceDisk = isSharedDiskMode() ? "shareddisk" : isBackupMode() ? "backup" : "netdisk";
+  // The shared disk has no same-disk copy/move of its own (see
+  // sharedDiskRename for in-place renames within a folder) — when copying
+  // or moving out of it, default the destination picker to the netdisk
+  // instead of trying to target the disk it's already coming from.
+  const initialTargetDisk = sourceDisk === "shareddisk" ? "netdisk" : sourceDisk;
+  folderPicker = {
+    move, paths,
+    path: initialTargetDisk === sourceDisk ? (state.netdisk.path || "") : "",
+    items: [], sourceDisk, targetDisk: initialTargetDisk, sharedDiskOwnFolder: "",
+  };
   const action = move ? t("netdisk.move") : t("netdisk.copy");
-  const diskLabel = sourceDisk === "backup" ? t("netdisk.backupDisk") : t("netdisk.myNetdisk");
-  const netdiskActive = sourceDisk === "netdisk" ? " active" : "";
-  const backupActive = sourceDisk === "backup" ? " active" : "";
+  const diskLabel = initialTargetDisk === "backup" ? t("netdisk.backupDisk")
+    : initialTargetDisk === "shareddisk" ? t("netdisk.modeSharedDisk")
+    : t("netdisk.myNetdisk");
+  const netdiskActive = initialTargetDisk === "netdisk" ? " active" : "";
+  const backupActive = initialTargetDisk === "backup" ? " active" : "";
   showModalNoShell(
     "netdisk-picker",
     "wide picker-modal",
@@ -483,6 +559,12 @@ function openFolderPicker(move, paths) {
       `<aside class="picker-tree">` +
         `<button class="picker-tree-item picker-disk${netdiskActive}" data-picker-disk="netdisk" type="button">${t("netdisk.myNetdisk")}</button>` +
         `<button class="picker-tree-item picker-disk${backupActive}" data-picker-disk="backup" type="button">${t("netdisk.backupDisk")}</button>` +
+        // No self-target when the source is already the shared disk — there is
+        // no same-disk copy/move endpoint for it. Otherwise it's a valid
+        // destination: items land at the root of the caller's own subfolder,
+        // since the shared disk has no folder-picker browsing of its own.
+        (sourceDisk === "shareddisk" ? "" :
+          `<button class="picker-tree-item picker-disk" data-picker-disk="shareddisk" type="button">${t("netdisk.modeSharedDisk")}</button>`) +
       `</aside>` +
       `<section class="picker-main">` +
         `<div class="picker-toolbar">` +
@@ -529,6 +611,12 @@ async function loadPickerFolder(path) {
   folderPicker.path = path;
   const listEl = $("#pickerList");
   if (!listEl) return; // modal closed while navigating
+  // The shared disk has no browsable destination tree — items always land
+  // at the root of the caller's own shared subfolder.
+  if (folderPicker.targetDisk === "shareddisk") {
+    await loadPickerSharedDiskTarget();
+    return;
+  }
   listEl.innerHTML = `<div class="picker-empty">${t("netdisk.pickLoading")}</div>`;
   try {
     const url = folderPicker.targetDisk === "backup"
@@ -542,12 +630,37 @@ async function loadPickerFolder(path) {
   }
 }
 
+async function loadPickerSharedDiskTarget() {
+  const listEl = $("#pickerList");
+  if (!listEl || !folderPicker) return;
+  listEl.innerHTML = `<div class="picker-empty">${t("netdisk.pickLoading")}</div>`;
+  try {
+    if (!folderPicker.sharedDiskOwnFolder) {
+      const data = await api("/api/shareddisk?path=");
+      folderPicker.sharedDiskOwnFolder = data.ownFolder || "";
+    }
+    folderPicker.path = folderPicker.sharedDiskOwnFolder;
+    folderPicker.items = [];
+    renderFolderPicker();
+  } catch (err) {
+    if (listEl.isConnected) listEl.innerHTML = `<div class="picker-empty">${escapeHtml(err.message)}</div>`;
+  }
+}
+
 function renderFolderPicker() {
   const listEl = $("#pickerList");
   if (!folderPicker || !listEl) return; // modal closed mid-load
   const path = folderPicker.path;
+  const shared = folderPicker.targetDisk === "shareddisk";
   $("#pickerPath").textContent = "/" + path;
-  $("#pickerUp").disabled = !path;
+  $("#pickerUp").disabled = shared || !path;
+  $("#pickerMkdir").disabled = shared;
+  if (shared) {
+    listEl.innerHTML = `<div class="picker-empty">${t("netdisk.pickSharedDiskFixed")}</div>`;
+    $("#pickerConfirm").disabled = false;
+    $("#pickerHint").textContent = t("netdisk.pickDest", { path });
+    return;
+  }
 
   // A folder being moved cannot be its own destination: show it disabled.
   const sources = new Set(folderPicker.paths);
@@ -570,6 +683,7 @@ function renderFolderPicker() {
 }
 
 async function pickerMkdirFolder() {
+  if (!folderPicker || folderPicker.targetDisk === "shareddisk") return;
   const name = prompt(t("netdisk.newFolderNamePrompt"));
   if (!name || !folderPicker) return;
   try {
@@ -596,8 +710,17 @@ function parentDir(p) {
   return (p || "").split("/").filter(Boolean).slice(0, -1).join("/");
 }
 
+// diskModeOf returns the current view's disk identifier in the "netdisk" |
+// "backup" | "shareddisk" vocabulary the transfer/same-disk endpoints use.
+function diskModeOf() {
+  return isSharedDiskMode() ? "shareddisk" : isBackupMode() ? "backup" : "netdisk";
+}
+
 async function copyItems(items, targetDisk) {
-  const sourceDisk = isBackupMode() ? "backup" : "netdisk";
+  const sourceDisk = diskModeOf();
+  // The shared disk has no same-disk copy endpoint of its own — the folder
+  // picker never offers it as a target when it's also the source (see
+  // openFolderPicker), so sameDisk is never true for sourceDisk "shareddisk".
   const sameDisk = sourceDisk === targetDisk;
   const endpoint = sameDisk
     ? (sourceDisk === "backup" ? "/api/netdisk/backup/copy" : "/api/netdisk/copy")
@@ -616,7 +739,7 @@ async function copyItems(items, targetDisk) {
 }
 
 async function moveItems(items, targetDisk) {
-  const sourceDisk = isBackupMode() ? "backup" : "netdisk";
+  const sourceDisk = diskModeOf();
   const sameDisk = sourceDisk === targetDisk;
   const endpoint = sameDisk
     ? (sourceDisk === "backup" ? "/api/netdisk/backup/copy" : "/api/netdisk/copy")
@@ -717,7 +840,7 @@ async function renameItem(path, oldName) {
   const parts = path.split("/");
   parts.pop();
   const to = joinPath(parts.join("/"), next);
-  const endpoint = isBackupMode() ? "/api/netdisk/backup/rename" : "/api/netdisk/rename";
+  const endpoint = isSharedDiskMode() ? "/api/shareddisk/rename" : isBackupMode() ? "/api/netdisk/backup/rename" : "/api/netdisk/rename";
   await api(endpoint, { method: "POST", body: JSON.stringify({ from: path, to }) });
   toast(t("netdisk.renamed"), true);
   renderNetdisk();

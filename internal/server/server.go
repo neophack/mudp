@@ -270,6 +270,11 @@ func (a *App) Routes() http.Handler {
 		// admin-wide default (adminLanguageSettings, below) is admin-only.
 		r.Get("/api/user/language", a.userLanguage)
 		r.Post("/api/user/language", a.userLanguage)
+		// Self-service shared-disk (共享盘) access preference: read-only vs
+		// read-write for the caller's own subfolder, wherever the shared disk
+		// is mounted (see User.SharedDiskReadWrite).
+		r.Get("/api/user/shareddisk-access", a.sharedDiskAccessSettings)
+		r.Post("/api/user/shareddisk-access", a.sharedDiskAccessSettings)
 		r.Get("/api/volumes", a.volumes)
 		r.Post("/api/volumes", a.volumes)
 		r.Post("/api/volumes/delete", a.volumeDelete)
@@ -339,6 +344,19 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/netdisk/backup/raw", a.netdiskBackupRaw)
 		r.Get("/api/backup/jobs", a.backupJobsList)
 		r.Post("/api/backup/jobs/cancel", a.backupJobCancel)
+		// Shared disk (共享盘): one pool per group; every member gets a
+		// subfolder others can view but not modify (admins can manage
+		// everyone's). No upload/download/share surface of its own — getting
+		// files in or out goes through the same /api/netdisk/transfer
+		// endpoint above (fromDisk/toDisk "shareddisk"). Routes and
+		// identifiers use "shareddisk"/"SharedDisk" throughout, kept
+		// deliberately distinct from the netdisk's own external share-link
+		// feature ("share", /api/netdisk/share*) so the two are never confused.
+		r.Get("/api/shareddisk", a.sharedDiskBrowse)
+		r.Post("/api/shareddisk/mkdir", a.sharedDiskMkdir)
+		r.Post("/api/shareddisk/delete", a.sharedDiskDelete)
+		r.Post("/api/shareddisk/rename", a.sharedDiskRename)
+		r.Get("/api/shareddisk/quota", a.sharedDiskQuota)
 		// Long-running bulk file operations (copy/move/transfer/restore/upload)
 		// that have been running more than a few seconds, for the caller's own
 		// "Background jobs" panel. Not cancellable -- these are visibility only.
@@ -448,6 +466,7 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/admin/settings/company", a.companySettings)
 		r.Post("/api/groups/netdisk", a.groupNetdisk)
 		r.Post("/api/groups/backup", a.groupBackup)
+		r.Post("/api/groups/shareddisk", a.groupSharedDisk)
 		r.Get("/api/admin/netdisk/shares", a.netdiskSharesAdmin)
 		r.Post("/api/admin/netdisk/shares/delete", a.netdiskSharesDeleteAdmin)
 		r.Get("/api/admin/netdisk/usage", a.netdiskUsageAdmin)
@@ -989,20 +1008,29 @@ func (a *App) containers(w http.ResponseWriter, r *http.Request) {
 }
 
 type createRequest struct {
-	Name          string   `json:"name"`
-	Image         string   `json:"image"`
-	Env           []string `json:"env"`
-	GPUs          string   `json:"gpus"`
-	Forward8080   bool     `json:"forward8080"`
-	Forward80     bool     `json:"forward80"`
-	PortsRaw      string   `json:"ports"`
-	MountsRaw     string   `json:"mounts"`
-	Networks      []string `json:"networks"`
-	MountNetdisk  *bool    `json:"mountNetdisk"`
-	MountShm      *bool    `json:"mountShm"`
-	RestartPolicy string   `json:"restartPolicy"`
-	Devices       []string `json:"devices"`
-	CDIDevices    []string `json:"cdiDevices"`
+	Name         string   `json:"name"`
+	Image        string   `json:"image"`
+	Env          []string `json:"env"`
+	GPUs         string   `json:"gpus"`
+	Forward8080  bool     `json:"forward8080"`
+	Forward80    bool     `json:"forward80"`
+	PortsRaw     string   `json:"ports"`
+	MountsRaw    string   `json:"mounts"`
+	Networks     []string `json:"networks"`
+	MountNetdisk *bool    `json:"mountNetdisk"`
+	MountShm     *bool    `json:"mountShm"`
+	// MountSharedDisk requests the shared-disk (共享盘) bind offered by the
+	// image preset (see store.ImagePreset.MountSharedDisk). Only honored when
+	// the selected image's preset has opted in — see validateCreate. Named
+	// "SharedDisk" throughout, not "Share", to stay distinct from the
+	// netdisk's own external share-link feature. Whether each mounted folder
+	// ends up read-only or read-write is not part of this request — it's the
+	// folder owner's own persistent preference (see
+	// User.SharedDiskReadWrite / sharedDiskMountsFor).
+	MountSharedDisk *bool    `json:"mountSharedDisk"`
+	RestartPolicy   string   `json:"restartPolicy"`
+	Devices         []string `json:"devices"`
+	CDIDevices      []string `json:"cdiDevices"`
 	// Advanced create fields (all optional). Command/Entrypoint are space-split
 	// from a single string by the frontend; the backend tolerates either form.
 	Command    string            `json:"command"`
@@ -1186,6 +1214,27 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 			netdiskPath = path
 		}
 	}
+	// Shared-disk (共享盘) mounting is a hard admin gate, unlike MountNetdisk
+	// above: an image only offers it when its preset explicitly opted in, and
+	// that choice — never the request — decides whether it's honored at all.
+	// Once allowed, the user still decides whether to actually bind
+	// (mountSharedDisk); whether each folder ends up read-only or read-write
+	// is not a per-container choice — it follows that folder owner's own
+	// SharedDiskReadWrite preference (an admin's container is the one
+	// exception: always read-write) — see sharedDiskMountsFor.
+	sharedDiskAllowed := img.Preset != nil && img.Preset.MountSharedDisk != nil && *img.Preset.MountSharedDisk
+	mountSharedDisk := false
+	if sharedDiskAllowed && req.MountSharedDisk != nil {
+		mountSharedDisk = *req.MountSharedDisk
+	}
+	var sharedDiskMounts []dockerx.SharedDiskMount
+	if mountSharedDisk {
+		mounts, err := a.sharedDiskMountsFor(u)
+		if err != nil {
+			return dockerx.CreateOptions{}, err
+		}
+		sharedDiskMounts = mounts
+	}
 	return dockerx.CreateOptions{
 		Username: u.Username, Name: req.Name, ImageRef: img.DockerRef, ImageName: img.DisplayName,
 		// An image preset may define a candidate pool of networks (SelectableNetworks)
@@ -1210,6 +1259,7 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		Forward8080: req.Forward8080, Forward80: req.Forward80,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
+		MountSharedDisk: mountSharedDisk, SharedDiskMounts: sharedDiskMounts,
 		Devices: devices, CDIDevices: cdiDevices,
 		RestartPolicy: req.RestartPolicy,
 		// Advanced fields. Command/Entrypoint accept a shell-style string (split

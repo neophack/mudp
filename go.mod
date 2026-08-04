@@ -6,6 +6,7 @@ require (
 	github.com/docker/docker v25.0.7+incompatible
 	github.com/docker/go-connections v0.5.0
 	github.com/go-chi/chi/v5 v5.0.12
+	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/opencontainers/image-spec v1.1.0
 	golang.org/x/crypto v0.17.0
 	golang.org/x/sys v0.16.0

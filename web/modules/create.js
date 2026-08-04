@@ -73,6 +73,16 @@ export function openCreateModal() {
         `<label class="check"><input type="checkbox" name="forward80"> ${t("create.forward80")}</label>` +
         `<label class="check"><input type="checkbox" name="mountNetdisk" checked> ${t("create.mountNetdisk")}</label>` +
         `<label class="check"><input type="checkbox" name="mountShm" checked> ${t("create.mountShm")}</label>` +
+        // Hidden until an image whose admin-defined preset opted into it is
+        // selected — see applyPreset. Not every image may bind the shared
+        // disk, so the option is never offered by default. Whether the
+        // caller's own folder ends up read-only or read-write is not chosen
+        // here — it's their persistent shared-disk access setting (see
+        // settings.js), which every new container picks up at creation time.
+        `<div id="sharedDiskSection" class="shared-disk-section" style="display:none">` +
+          `<label class="check"><input type="checkbox" name="mountSharedDisk"> ${t("create.mountSharedDisk")}</label>` +
+          `<p class="hint" style="margin:2px 0 0">${t("create.sharedDiskAccessHint")}</p>` +
+        `</div>` +
         // Collapsible advanced block. Empty fields inherit the image defaults
         // (the backend treats them as "unset"), so leaving this collapsed keeps
         // the simple wizard behavior for most users.
@@ -115,6 +125,7 @@ export function openCreateModal() {
     payload.forward80 = fd.has("forward80");
     payload.mountNetdisk = fd.has("mountNetdisk");
     payload.mountShm = fd.has("mountShm");
+    payload.mountSharedDisk = fd.has("mountSharedDisk");
     payload.networks = [...$("#newContainer").querySelectorAll('input[name="networks"]:checked')].map((i) => i.value);
     payload.restartPolicy = fd.get("restartPolicy") || "unless-stopped";
     // Advanced overrides (all optional; backend ignores empties/zeros).
@@ -179,6 +190,7 @@ async function applyPreset(imageName) {
   // network list reflects the new image's rules rather than the old one's.
   if (!img.preset) {
     applyPresetNetworks(form, null);
+    toggleSharedDiskSection(form, false);
     return;
   }
   const p = img.preset;
@@ -191,6 +203,7 @@ async function applyPreset(imageName) {
   form.querySelector('[name="forward80"]').checked = !!p.forward80;
   if (p.mountNetdisk !== undefined) form.querySelector('[name="mountNetdisk"]').checked = p.mountNetdisk;
   if (p.mountShm !== undefined) form.querySelector('[name="mountShm"]').checked = p.mountShm;
+  toggleSharedDiskSection(form, !!p.mountSharedDisk);
   // Applied synchronously, before the env-resolve await below: the network pool
   // restriction must take effect immediately on image switch, not only once that
   // network round-trip resolves, or a fast submit in between could send a
@@ -211,6 +224,20 @@ async function applyPreset(imageName) {
     } catch (err) {
       toast(err.message);
     }
+  }
+}
+
+// toggleSharedDiskSection shows/hides the shared-disk bind option based on
+// whether the selected image's preset opted into it, resetting the checkbox
+// when hiding so a stale choice from a previously selected image doesn't
+// linger unseen.
+function toggleSharedDiskSection(form, allowed) {
+  const section = form.querySelector("#sharedDiskSection");
+  if (!section) return;
+  section.style.display = allowed ? "" : "none";
+  if (!allowed) {
+    const cb = form.querySelector('[name="mountSharedDisk"]');
+    if (cb) cb.checked = false;
   }
 }
 

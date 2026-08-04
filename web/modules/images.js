@@ -155,6 +155,7 @@ export function openPresetModal(imageId) {
           presetCheck("forward80", t("images.forward80"), p.forward80) +
           presetCheck("mountNetdisk", t("images.presetNetdisk"), p.mountNetdisk) +
           presetCheck("mountShm", t("images.presetShm"), p.mountShm) +
+          presetCheck("mountSharedDisk", t("images.presetSharedDisk"), p.mountSharedDisk) +
           presetCheck("requireLogin", t("images.requireLogin"), p.requireLogin) +
         `</div>` +
         `<label class="field-label">${t("images.novncPasswordLabel")}</label>` +
@@ -221,6 +222,7 @@ export function openPresetModal(imageId) {
       forward80: form.querySelector('[name=forward80]').checked || undefined,
       mountNetdisk: form.querySelector('[name=mountNetdisk]').checked || undefined,
       mountShm: form.querySelector('[name=mountShm]').checked || undefined,
+      mountSharedDisk: form.querySelector('[name=mountSharedDisk]').checked || undefined,
       requireLogin: form.querySelector('[name=requireLogin]').checked || undefined,
       novncPasswordEnv: (fd.get("novncPasswordEnv") || "").trim(),
       selectableNetworks,

@@ -53,6 +53,27 @@ export function renderSettings() {
   const feishuIcon = icon('<path d="M16 7h.01"/><path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/><path d="m20 7 2 .5-2 .5"/><path d="M10 18v3"/><path d="M14 17.75V22"/>');
   const capacityIcon = icon('<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6"/><path d="M23 11h-6"/>');
   const companyIcon = icon('<path d="M3 21h18"/><path d="M5 21V7l8-4 8 4v14"/><path d="M9 21v-6h6v6"/>');
+  const sharedDiskIcon = icon('<rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0"/>');
+
+  // 共享盘 (shared disk) access is the user's own persistent preference for
+  // their subfolder: read-only (default) or read-write, applied wherever the
+  // shared disk is mounted — in anyone's container, not just their own new
+  // ones. Distinct from the netdisk's external share-link feature; kept
+  // "SharedDisk"-named in code and API to avoid any confusion with "Share".
+  const sharedDiskReadWrite = !!state.me?.sharedDiskReadWrite;
+  const sharedDiskAccessCard =
+    `<div class="card"><div class="card-head"><h2>${sharedDiskIcon}${t("settings.sharedDiskAccess")}</h2>` +
+      `<span class="card-head-sub">${t("settings.sharedDiskAccessSub")}</span></div>` +
+      `<div class="card-body"><form id="sharedDiskAccessForm" class="compact">` +
+        `<p class="hint">${t("settings.sharedDiskAccessHint")}</p>` +
+        `<label for="sharedDiskAccessSelect">${t("settings.sharedDiskAccessLabel")}:</label>` +
+        `<select id="sharedDiskAccessSelect" name="readWrite">` +
+          `<option value="ro" ${sharedDiskReadWrite ? "" : "selected"}>${t("settings.sharedDiskReadOnly")}</option>` +
+          `<option value="rw" ${sharedDiskReadWrite ? "selected" : ""}>${t("settings.sharedDiskReadWrite")}</option>` +
+        `</select>` +
+        `<button type="submit">${t("common.save")}</button>` +
+      `</form></div>` +
+    `</div>`;
 
   const siteSettingsCard = admin
     ? `<div class="card"><div class="card-head"><h2>${siteIcon}${t("settings.siteSettings")}</h2>` +
@@ -126,6 +147,7 @@ export function renderSettings() {
         t("settings.sectionPersonalSub")
       ) +
       createUserLanguageSettings(currentLanguage) +
+      sharedDiskAccessCard +
       (admin
         ? sectionHeader(
             icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>'),
@@ -156,6 +178,23 @@ export function renderSettings() {
         toast(t("settings.languageChanged"), true);
         // Reload to apply language changes
         setTimeout(() => location.reload(), 500);
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+
+  // Handle shared-disk (共享盘) access preference
+  const sharedDiskAccessForm = $("#sharedDiskAccessForm");
+  if (sharedDiskAccessForm) {
+    sharedDiskAccessForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const readWrite = fd.get("readWrite") === "rw";
+      try {
+        await api("/api/user/shareddisk-access", { method: "POST", body: JSON.stringify({ readWrite }) });
+        if (state.me) state.me.sharedDiskReadWrite = readWrite;
+        toast(t("settings.sharedDiskAccessSaved"), true);
       } catch (err) {
         toast(err.message);
       }

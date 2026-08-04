@@ -38,6 +38,15 @@ type ImagePreset struct {
 	// container. Pointer so nil leaves the create form's own default (checked) in
 	// place instead of forcing it off.
 	MountShm *bool `json:"mountShm,omitempty"`
+	// MountSharedDisk gates whether this image offers the shared-disk (共享盘)
+	// bind option at all. Unlike MountNetdisk (a default-fill every image can
+	// use), MountSharedDisk is a hard admin opt-in: nil/false hides the
+	// shared-disk section of the create form entirely, so a user can never
+	// bind a disk the admin hasn't approved for this image. When true, the
+	// user still chooses whether to bind and whether the bind is read-only or
+	// read-write (see createRequest.SharedDiskReadWrite) — read-write only
+	// ever grants write access to the caller's own shared subfolder.
+	MountSharedDisk *bool `json:"mountSharedDisk,omitempty"`
 	// SelectableNetworks is the candidate pool of network names an admin exposes
 	// for this image. When set, a user creating a container from this image may
 	// only pick networks that are both in this list AND ones they can attach
@@ -121,7 +130,7 @@ func isEmptyPreset(p *ImagePreset) bool {
 	}
 	return p.GPUs == "" && len(p.Env) == 0 && len(p.Ports) == 0 &&
 		p.Forward8080 == nil && p.Forward80 == nil &&
-		p.MountNetdisk == nil && p.MountShm == nil && len(p.Networks) == 0 && len(p.SelectableNetworks) == 0 &&
+		p.MountNetdisk == nil && p.MountShm == nil && p.MountSharedDisk == nil && len(p.Networks) == 0 && len(p.SelectableNetworks) == 0 &&
 		p.RestartPolicy == "" &&
 		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == "" && p.RequireLogin == nil &&
 		p.NoVNCPasswordEnv == ""

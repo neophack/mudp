@@ -74,6 +74,11 @@ export async function renderUsers() {
           `<table class="data"><thead><tr><th>${t("users.colGroup")}</th><th>${t("users.colBackupPath")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
           `<tbody>${state.groups.map(groupBackupRow).join("") || `<tr class="empty-row"><td colspan="3">${t("users.noGroups")}</td></tr>`}</tbody></table>` +
         `</div>` +
+        `<div class="card"><div class="card-head"><h2>${t("users.groupSharedDiskPaths")}</h2></div>` +
+          `<p class="hint" style="padding:0 16px;margin:0 0 8px">${t("users.sharedDiskHint")}</p>` +
+          `<table class="data"><thead><tr><th>${t("users.colGroup")}</th><th>${t("users.colSharedDiskPath")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
+          `<tbody>${state.groups.map(groupSharedDiskRow).join("") || `<tr class="empty-row"><td colspan="3">${t("users.noGroups")}</td></tr>`}</tbody></table>` +
+        `</div>` +
         `<div class="card"><div class="card-head"><h2>${t("users.groupLanguages")}</h2></div>` +
           `<p class="hint" style="padding:0 16px;margin:0 0 8px">${t("users.groupLangHint")}</p>` +
           `<table class="data"><thead><tr><th>${t("users.colGroup")}</th><th>${t("users.colLanguage")}</th><th class="actions">${t("common.actions")}</th></tr></thead>` +
@@ -161,6 +166,9 @@ export async function renderUsers() {
   document.querySelectorAll("[data-group-lang]").forEach((btn) => {
     btn.onclick = () => setGroupLanguage(Number(btn.dataset.groupLang), btn.dataset.groupName, btn.dataset.current || "");
   });
+  document.querySelectorAll("[data-group-shareddisk]").forEach((btn) => {
+    btn.onclick = () => setGroupSharedDiskPath(Number(btn.dataset.groupShareddisk), btn.dataset.groupName, btn.dataset.current || "");
+  });
 }
 
 function userRow(user) {
@@ -225,6 +233,23 @@ async function setGroupPath(groupId, name, current) {
 
 function groupBackupRow(g) {
   return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td class="path-cell"><div class="secondary-line mono">${escapeHtml(g.backupPath || t("users.notConfigured"))}</div></td><td class="actions"><button class="ghost" data-group-backup="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.backupPath || "")}">${t("users.setBackupPath")}</button></td></tr>`;
+}
+
+function groupSharedDiskRow(g) {
+  return `<tr><td><div class="primary-line">${escapeHtml(g.name)}</div></td><td class="path-cell"><div class="secondary-line mono">${escapeHtml(g.sharedDiskPath || t("users.notConfigured"))}</div></td><td class="actions"><button class="ghost" data-group-shareddisk="${g.id}" data-group-name="${escapeHtml(g.name)}" data-current="${escapeHtml(g.sharedDiskPath || "")}">${t("users.setSharedDiskPath")}</button></td></tr>`;
+}
+
+async function setGroupSharedDiskPath(groupId, name, current) {
+  const path = prompt(t("users.sharedDiskPathPrompt", { name }), current || "");
+  if (path === null) return;
+  try {
+    await api("/api/groups/shareddisk", { method: "POST", body: JSON.stringify({ groupId, path }) });
+    await refreshSection("users", "groups");
+    renderView();
+    toast(t("users.sharedDiskPathSaved"), true);
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 function groupLanguageRow(g) {

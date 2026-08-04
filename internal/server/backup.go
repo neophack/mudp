@@ -487,8 +487,8 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		FromDisk string `json:"fromDisk"` // netdisk | backup
-		ToDisk   string `json:"toDisk"`   // netdisk | backup
+		FromDisk string `json:"fromDisk"` // netdisk | backup | shareddisk
+		ToDisk   string `json:"toDisk"`   // netdisk | backup | shareddisk
 		Items    []struct {
 			From string `json:"from"`
 			To   string `json:"to"`
@@ -502,8 +502,12 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 	fromDisk := strings.ToLower(strings.TrimSpace(req.FromDisk))
 	toDisk := strings.ToLower(strings.TrimSpace(req.ToDisk))
-	if (fromDisk != "netdisk" && fromDisk != "backup") || (toDisk != "netdisk" && toDisk != "backup") {
-		writeErr(w, http.StatusBadRequest, "fromDisk/toDisk must be netdisk or backup")
+	// "shareddisk" (共享盘) is named distinctly from the netdisk's own
+	// external-share-link feature ("share"/分享链接, netdiskShare* below) so
+	// the two are never confused in a request payload.
+	validDisk := func(d string) bool { return d == "netdisk" || d == "backup" || d == "shareddisk" }
+	if !validDisk(fromDisk) || !validDisk(toDisk) {
+		writeErr(w, http.StatusBadRequest, "fromDisk/toDisk must be netdisk, backup or shareddisk")
 		return
 	}
 	policy := strings.ToLower(strings.TrimSpace(req.Policy))
@@ -520,32 +524,53 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if fromDisk == "backup" {
+	switch fromDisk {
+	case "backup":
 		fromRoot, err = a.userBackupRoot(u)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	case "shareddisk":
+		// The whole pool is the read root: copying out of someone else's
+		// shared folder is fine, only moving out of it is not (checked below,
+		// per item, since only a move mutates the source).
+		fromRoot, err = a.sharedDiskGroupRoot(u)
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	toRoot, err := a.userNetdiskRoot(u)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if toDisk == "backup" {
+	switch toDisk {
+	case "backup":
 		toRoot, err = a.userBackupRoot(u)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
+	case "shareddisk":
+		// Ensure the caller's own subfolder exists before anything is written
+		// into it, mirroring userNetdiskRoot's auto-create behaviour.
+		if _, err2 := a.userSharedDiskOwnRoot(u); err2 != nil {
+			writeErr(w, http.StatusBadRequest, err2.Error())
 			return
 		}
+		toRoot, err = a.sharedDiskGroupRoot(u)
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	var required int64
 	for _, it := range req.Items {
-		src, _, err := cleanUserPath(fromRoot, it.From)
+		src, srcRel, err := cleanUserPath(fromRoot, it.From)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		if fromDisk == "shareddisk" && req.Move {
+			if err := requireOwnSharedDiskPath(u, srcRel); err != nil {
+				writeErr(w, http.StatusForbidden, err.Error())
+				return
+			}
 		}
 		if isSymlink(src) {
 			continue
@@ -577,7 +602,10 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 	count := 0
 	for _, item := range req.Items {
 		res := map[string]string{"from": item.From, "to": item.To}
-		from, _, err := cleanUserPath(fromRoot, item.From)
+		from, fromRel, err := cleanUserPath(fromRoot, item.From)
+		if err == nil && fromDisk == "shareddisk" && req.Move {
+			err = requireOwnSharedDiskPath(u, fromRel)
+		}
 		if err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
@@ -585,7 +613,10 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 			task.addDone(1)
 			continue
 		}
-		to, _, err := cleanUserPath(toRoot, item.To)
+		to, toRel, err := cleanUserPath(toRoot, item.To)
+		if err == nil && toDisk == "shareddisk" {
+			err = requireOwnSharedDiskPath(u, toRel)
+		}
 		if err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()

@@ -323,3 +323,22 @@ func (a *App) groupBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, map[string]bool{"ok": true}, a.db.UpdateGroupBackupPath(req.GroupID, req.Path))
 }
+
+// groupSharedDisk sets the per-group shared-disk root, mirroring groupNetdisk.
+func (a *App) groupSharedDisk(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		GroupID int64  `json:"groupId"`
+		Path    string `json:"path"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.GroupID == 0 {
+		writeErr(w, http.StatusBadRequest, "groupId is required")
+		return
+	}
+	if req.Path != "" {
+		if err := os.MkdirAll(req.Path, 0750); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	respond(w, map[string]bool{"ok": true}, a.db.UpdateGroupSharedDiskPath(req.GroupID, req.Path))
+}

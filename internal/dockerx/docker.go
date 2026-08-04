@@ -90,6 +90,18 @@ type Container struct {
 	Forwarded bool `json:"forwarded,omitempty"`
 }
 
+// SharedDiskMount is one per-user subfolder of a shared disk (共享盘) pool to
+// bind into a container. Source is the host path; Name is the folder's own
+// name, used verbatim as the mount's target directory name under /data (see
+// the mount-building block in Create below). Not to be confused with the
+// netdisk's external share-link feature (分享链接) — kept as "SharedDisk" to
+// avoid any naming collision with "Share" elsewhere in this codebase.
+type SharedDiskMount struct {
+	Source   string
+	Name     string
+	ReadOnly bool
+}
+
 type CreateOptions struct {
 	Username    string
 	Name        string
@@ -118,6 +130,14 @@ type CreateOptions struct {
 	// large shared memory (ML data loaders, in-memory databases, IPC) are not
 	// capped by Docker's default 64MB tmpfs.
 	MountShm bool
+	// SharedDiskMounts are the shared disk's (共享盘) per-user subfolders to
+	// bind in, one mount per folder, when MountSharedDisk is set. Distinct
+	// from the netdisk's external share-link feature (分享链接) — "SharedDisk"
+	// naming is used throughout to avoid confusion with "Share". Only
+	// honored when the image preset opted the image into shared-disk
+	// mounting (see store.ImagePreset.MountSharedDisk).
+	SharedDiskMounts []SharedDiskMount
+	MountSharedDisk  bool
 	// Networks are mudp network names to attach the container to.
 	Networks []string
 	// AllowedNetworks are full Docker names the user may attach to beyond their
@@ -597,6 +617,24 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	}
 	if opts.MountShm {
 		hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{Type: mount.TypeBind, Source: "/dev/shm", Target: "/dev/shm"})
+	}
+	if opts.MountSharedDisk {
+		// One independent bind per member's folder — e.g.
+		//   -v /pool/userother:/data/userother:ro
+		//   -v /pool/userme:/data/userme:rw
+		// rather than a single root mount, so the container's /data is an
+		// explicit, per-folder enumeration (the caller's own folder writable,
+		// everyone else's read-only) instead of one bind whose write access is
+		// carved out via a nested overlay mount.
+		for _, m := range opts.SharedDiskMounts {
+			source := strings.TrimSpace(m.Source)
+			if source == "" || m.Name == "" {
+				continue
+			}
+			hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{
+				Type: mount.TypeBind, Source: source, Target: "/data/" + m.Name, ReadOnly: m.ReadOnly,
+			})
+		}
 	}
 	if opts.GPUs != "" && opts.GPUs != "none" {
 		hostCfg.Resources.DeviceRequests = []container.DeviceRequest{{Driver: "nvidia", Count: -1, Capabilities: [][]string{{"gpu"}}}}

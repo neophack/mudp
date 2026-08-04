@@ -20,27 +20,41 @@ type DB struct {
 }
 
 type User struct {
-	ID                     int64    `json:"id"`
-	Username               string   `json:"username"`
-	DisplayName            string   `json:"displayName,omitempty"`
-	Role                   string   `json:"role"`
-	Groups                 []string `json:"groups,omitempty"`
-	PortPrefix             int      `json:"portPrefix"`
-	CreatedAt              string   `json:"createdAt"`
-	LastLoginAt            *string  `json:"lastLoginAt,omitempty"`
-	Disabled               bool     `json:"disabled"`
-	ContainerCap           int      `json:"containerCap"`
-	NetdiskQuotaBytes      int64    `json:"netdiskQuotaBytes"`
-	FeishuOpenID           string   `json:"feishuOpenId,omitempty"`
-	FeishuAvatar           string   `json:"feishuAvatar,omitempty"`
-	FeishuEmail            string   `json:"feishuEmail,omitempty"`
-	FeishuEnterpriseEmail  string   `json:"feishuEnterpriseEmail,omitempty"`
-	FeishuMobile           string   `json:"feishuMobile,omitempty"`
-	FeishuTenantKey        string   `json:"feishuTenantKey,omitempty"`
-	FeishuTenantName       string   `json:"feishuTenantName,omitempty"`
-	FeishuDepartment       string   `json:"feishuDepartment,omitempty"`
-	Comment                string   `json:"comment,omitempty"`
-	Language               string   `json:"language,omitempty"`
+	ID                    int64    `json:"id"`
+	Username              string   `json:"username"`
+	DisplayName           string   `json:"displayName,omitempty"`
+	Role                  string   `json:"role"`
+	Groups                []string `json:"groups,omitempty"`
+	PortPrefix            int      `json:"portPrefix"`
+	CreatedAt             string   `json:"createdAt"`
+	LastLoginAt           *string  `json:"lastLoginAt,omitempty"`
+	Disabled              bool     `json:"disabled"`
+	ContainerCap          int      `json:"containerCap"`
+	NetdiskQuotaBytes     int64    `json:"netdiskQuotaBytes"`
+	FeishuOpenID          string   `json:"feishuOpenId,omitempty"`
+	FeishuAvatar          string   `json:"feishuAvatar,omitempty"`
+	FeishuEmail           string   `json:"feishuEmail,omitempty"`
+	FeishuEnterpriseEmail string   `json:"feishuEnterpriseEmail,omitempty"`
+	FeishuMobile          string   `json:"feishuMobile,omitempty"`
+	FeishuTenantKey       string   `json:"feishuTenantKey,omitempty"`
+	FeishuTenantName      string   `json:"feishuTenantName,omitempty"`
+	FeishuDepartment      string   `json:"feishuDepartment,omitempty"`
+	Comment               string   `json:"comment,omitempty"`
+	Language              string   `json:"language,omitempty"`
+	// PinyinName is derived from the Feishu profile name: Han characters are
+	// converted to tone-free pinyin, non-Han characters (e.g. a Latin name or
+	// initials) pass through unchanged, and all spaces are stripped. Empty for
+	// users without a Feishu profile. See Pinyinize.
+	PinyinName string `json:"pinyinName,omitempty"`
+	// SharedDiskReadWrite is the user's own self-service preference for their
+	// shared-disk (共享盘) subfolder: false (the default) keeps it read-only
+	// wherever it is mounted, true makes it writable — in every container
+	// that mounts the shared disk, whoever creates it, not just the owner's
+	// own. New containers pick this up at creation time; already-running
+	// containers keep whatever mount they were created with. An admin's own
+	// container always gets read-write on every folder regardless of this
+	// setting — see sharedDiskMountsFor.
+	SharedDiskReadWrite bool `json:"sharedDiskReadWrite"`
 }
 
 // ValidRole reports whether r is one of the supported RBAC roles.
@@ -93,11 +107,12 @@ const PendingGroup = "pending"
 const DefaultUserGroup = "users"
 
 type Group struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	NetdiskPath string `json:"netdiskPath,omitempty"`
-	BackupPath  string `json:"backupPath,omitempty"`
-	Language    string `json:"language,omitempty"`
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	NetdiskPath    string `json:"netdiskPath,omitempty"`
+	BackupPath     string `json:"backupPath,omitempty"`
+	SharedDiskPath string `json:"sharedDiskPath,omitempty"`
+	Language       string `json:"language,omitempty"`
 }
 
 // Notification is an in-app message delivered to a single user.
@@ -213,7 +228,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 37
+const schemaVersion = 40
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -267,6 +282,9 @@ var migrations = []migration{
 	{35, "extend access_logs (public_ip)", migrateExtendAccessLogsPublicIP},
 	{36, "widen mcp_logs (timezone/source_kind)", migrateWidenMCPLogs},
 	{37, "add users.feishu_profile_columns", migrateAddFeishuProfileColumns},
+	{38, "add users.pinyin_name", migrateAddUserPinyinName},
+	{39, "add groups.shared_disk_path", migrateAddGroupSharedDiskPath},
+	{40, "add users.shared_disk_read_write", migrateAddUserSharedDiskReadWrite},
 }
 
 // AllowedTenantKey returns the configured Feishu tenant key that users must
@@ -443,6 +461,14 @@ func migrateAddGroupNetdiskPath(db executor) error {
 
 func migrateAddGroupBackupPath(db executor) error {
 	return execIgnoring(db, `alter table groups add column backup_path text not null default ''`, sqliteDuplicateColumn)
+}
+
+func migrateAddGroupSharedDiskPath(db executor) error {
+	return execIgnoring(db, `alter table groups add column shared_disk_path text not null default ''`, sqliteDuplicateColumn)
+}
+
+func migrateAddUserSharedDiskReadWrite(db executor) error {
+	return execIgnoring(db, `alter table users add column shared_disk_read_write integer not null default 0`, sqliteDuplicateColumn)
 }
 
 // migrateCreateBackupSchedule creates the single-row backup schedule config
@@ -628,6 +654,42 @@ func migrateAddFeishuProfileColumns(db executor) error {
 	}
 	for _, stmt := range stmts {
 		if err := execIgnoring(db, stmt, sqliteDuplicateColumn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateAddUserPinyinName adds the pinyin_name column and backfills it for
+// existing Feishu users from their current display name, using the same
+// Pinyinize conversion applied on every future Feishu login.
+func migrateAddUserPinyinName(db executor) error {
+	if err := execIgnoring(db, `alter table users add column pinyin_name text default ''`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
+	rows, err := db.Query(`select id, display_name from users where feishu_open_id != '' and display_name != ''`)
+	if err != nil {
+		return err
+	}
+	type feishuNameRow struct {
+		id   int64
+		name string
+	}
+	var toUpdate []feishuNameRow
+	for rows.Next() {
+		var r feishuNameRow
+		if err := rows.Scan(&r.id, &r.name); err != nil {
+			rows.Close()
+			return err
+		}
+		toUpdate = append(toUpdate, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	for _, r := range toUpdate {
+		if _, err := db.Exec(`update users set pinyin_name=? where id=?`, Pinyinize(r.name), r.id); err != nil {
 			return err
 		}
 	}
@@ -920,9 +982,10 @@ func isUsablePasswordHash(hash string) bool {
 func (db *DB) Authenticate(username, password string) (*User, error) {
 	var u User
 	var hash string
-	var disabled int
-	err := db.QueryRow(`select id,username,display_name,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment from users where username=?`, username).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment)
+	var disabled, sharedRW int
+	err := db.QueryRow(`select id,username,display_name,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,pinyin_name,shared_disk_read_write from users where username=?`, username).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW)
+	u.SharedDiskReadWrite = sharedRW != 0
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(password))
 		return nil, errors.New("invalid username or password")
@@ -952,9 +1015,10 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 
 func (db *DB) UserByID(id int64) (*User, error) {
 	var u User
-	var disabled int
-	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment from users where id=?`, id).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment)
+	var disabled, sharedRW int
+	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,pinyin_name,shared_disk_read_write from users where id=?`, id).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW)
+	u.SharedDiskReadWrite = sharedRW != 0
 	if err != nil {
 		return nil, err
 	}
@@ -1042,7 +1106,7 @@ func (db *DB) checkUserCapacity(tx executor) error {
 }
 
 func (db *DB) Users() ([]User, error) {
-	rows, err := db.Query(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment from users order by username`)
+	rows, err := db.Query(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,pinyin_name,shared_disk_read_write from users order by username`)
 	if err != nil {
 		return nil, err
 	}
@@ -1050,11 +1114,12 @@ func (db *DB) Users() ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		var disabled int
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment); err != nil {
+		var disabled, sharedRW int
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
+		u.SharedDiskReadWrite = sharedRW != 0
 		u.Groups = db.UserGroupNames(u.ID)
 		users = append(users, u)
 	}
@@ -1062,7 +1127,7 @@ func (db *DB) Users() ([]User, error) {
 }
 
 func (db *DB) Groups() ([]Group, error) {
-	rows, err := db.Query(`select id,name,netdisk_path,backup_path,language from groups order by name`)
+	rows, err := db.Query(`select id,name,netdisk_path,backup_path,shared_disk_path,language from groups order by name`)
 	if err != nil {
 		return nil, err
 	}
@@ -1070,7 +1135,7 @@ func (db *DB) Groups() ([]Group, error) {
 	var groups []Group
 	for rows.Next() {
 		var g Group
-		if err := rows.Scan(&g.ID, &g.Name, &g.NetdiskPath, &g.BackupPath, &g.Language); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.NetdiskPath, &g.BackupPath, &g.SharedDiskPath, &g.Language); err != nil {
 			return nil, err
 		}
 		groups = append(groups, g)
@@ -1090,6 +1155,13 @@ func (db *DB) UpdateGroupNetdiskPath(groupID int64, path string) error {
 
 func (db *DB) UpdateGroupBackupPath(groupID int64, path string) error {
 	_, err := db.Exec(`update groups set backup_path=? where id=?`, strings.TrimSpace(path), groupID)
+	return err
+}
+
+// UpdateGroupSharedDiskPath sets a group's shared-disk root, mirroring
+// UpdateGroupNetdiskPath/UpdateGroupBackupPath.
+func (db *DB) UpdateGroupSharedDiskPath(groupID int64, path string) error {
+	_, err := db.Exec(`update groups set shared_disk_path=? where id=?`, strings.TrimSpace(path), groupID)
 	return err
 }
 
@@ -1120,6 +1192,25 @@ func (db *DB) NetdiskPathForUser(userID int64) (string, error) {
 func (db *DB) BackupPathForUser(userID int64) (string, error) {
 	rows, err := db.Query(`select g.backup_path from groups g join user_groups ug on ug.group_id=g.id
 		where ug.user_id=? and g.backup_path != '' order by g.id limit 1`, userID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(path), nil
+	}
+	return "", nil
+}
+
+// SharedDiskPathForUser resolves the configured shared-disk root for a
+// user's primary group, mirroring NetdiskPathForUser/BackupPathForUser.
+func (db *DB) SharedDiskPathForUser(userID int64) (string, error) {
+	rows, err := db.Query(`select g.shared_disk_path from groups g join user_groups ug on ug.group_id=g.id
+		where ug.user_id=? and g.shared_disk_path != '' order by g.id limit 1`, userID)
 	if err != nil {
 		return "", err
 	}
@@ -1426,13 +1517,14 @@ func (db *DB) UserByFeishu(openID string) (*User, error) {
 		return nil, sql.ErrNoRows
 	}
 	var u User
-	var disabled int
-	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment from users where feishu_open_id=?`, openID).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment)
+	var disabled, sharedRW int
+	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,pinyin_name,shared_disk_read_write from users where feishu_open_id=?`, openID).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW)
 	if err != nil {
 		return nil, err
 	}
 	u.Disabled = disabled != 0
+	u.SharedDiskReadWrite = sharedRW != 0
 	u.Groups = db.UserGroupNames(u.ID)
 	return &u, nil
 }
@@ -1517,8 +1609,9 @@ func (db *DB) createFeishuUserWithUsernameTx(fu auth.FeishuUser, username string
 	if displayName == "" {
 		displayName = fu.Username()
 	}
-	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,port_prefix,created_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,display_name) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		username, hash, "user", 10, prefix, time.Now().Format(time.RFC3339), fu.OpenID, fu.AvatarURL, fu.Email, fu.EnterpriseEmail, fu.Mobile, fu.TenantKey, fu.TenantName, fu.DepartmentName, fu.Comment, displayName)
+	pinyinName := Pinyinize(displayName)
+	res, err := tx.Exec(`insert into users(username,password_hash,role,container_cap,port_prefix,created_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,display_name,pinyin_name) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		username, hash, "user", 10, prefix, time.Now().Format(time.RFC3339), fu.OpenID, fu.AvatarURL, fu.Email, fu.EnterpriseEmail, fu.Mobile, fu.TenantKey, fu.TenantName, fu.DepartmentName, fu.Comment, displayName, pinyinName)
 	if err != nil {
 		return nil, err
 	}
@@ -1546,8 +1639,9 @@ func (db *DB) UpdateFeishuProfile(id int64, fu auth.FeishuUser) error {
 	if displayName == "" {
 		displayName = fu.Username()
 	}
-	_, err := db.Exec(`update users set feishu_open_id=?, feishu_avatar=?, feishu_email=?, feishu_enterprise_email=?, feishu_mobile=?, feishu_tenant_key=?, feishu_tenant_name=?, feishu_department=?, display_name=?, comment=? where id=?`,
-		fu.OpenID, fu.AvatarURL, fu.Email, fu.EnterpriseEmail, fu.Mobile, fu.TenantKey, fu.TenantName, fu.DepartmentName, displayName, fu.Comment, id)
+	pinyinName := Pinyinize(displayName)
+	_, err := db.Exec(`update users set feishu_open_id=?, feishu_avatar=?, feishu_email=?, feishu_enterprise_email=?, feishu_mobile=?, feishu_tenant_key=?, feishu_tenant_name=?, feishu_department=?, display_name=?, comment=?, pinyin_name=? where id=?`,
+		fu.OpenID, fu.AvatarURL, fu.Email, fu.EnterpriseEmail, fu.Mobile, fu.TenantKey, fu.TenantName, fu.DepartmentName, displayName, fu.Comment, pinyinName, id)
 	return err
 }
 
@@ -1942,6 +2036,53 @@ func (db *DB) UpdateUserPortPrefix(id int64, prefix int) error {
 func (db *DB) UpdateUserLanguage(id int64, language string) error {
 	_, err := db.Exec(`update users set language=? where id=?`, language, id)
 	return err
+}
+
+// UpdateUserSharedDiskReadWrite sets a user's self-service preference for
+// their own shared-disk (共享盘) subfolder: whether it is mounted read-write
+// or read-only wherever the shared disk is bound — in anyone's container,
+// not just their own. Takes effect for containers created from this point
+// on; already-running containers keep the mount they were created with.
+func (db *DB) UpdateUserSharedDiskReadWrite(id int64, readWrite bool) error {
+	v := 0
+	if readWrite {
+		v = 1
+	}
+	_, err := db.Exec(`update users set shared_disk_read_write=? where id=?`, v, id)
+	return err
+}
+
+// SharedDiskGroupMembers returns every user who belongs to the same
+// shared-disk group as userID (the group SharedDiskPathForUser resolves
+// against) — i.e. everyone whose subfolder can appear in that pool — with
+// just enough fields populated (ID, Username, DisplayName, Role,
+// SharedDiskReadWrite) to compute each member's folder name and read-write
+// preference for mount building. See sharedDiskMountsFor.
+func (db *DB) SharedDiskGroupMembers(userID int64) ([]User, error) {
+	rows, err := db.Query(`select u2.id, u2.username, u2.display_name, u2.role, u2.shared_disk_read_write
+		from users u2
+		join user_groups ug2 on ug2.user_id = u2.id
+		where ug2.group_id = (
+			select g.id from groups g
+			join user_groups ug on ug.group_id = g.id
+			where ug.user_id = ? and g.shared_disk_path != ''
+			order by g.id limit 1
+		)`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []User
+	for rows.Next() {
+		var m User
+		var rw int
+		if err := rows.Scan(&m.ID, &m.Username, &m.DisplayName, &m.Role, &rw); err != nil {
+			return nil, err
+		}
+		m.SharedDiskReadWrite = rw != 0
+		members = append(members, m)
+	}
+	return members, rows.Err()
 }
 
 // UpdateDefaultLanguageForNewUsers updates the language for users who don't have one set
