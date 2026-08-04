@@ -60,8 +60,11 @@ export function renderSettings() {
   // shared disk is mounted — in anyone's container, not just their own new
   // ones. Distinct from the netdisk's external share-link feature; kept
   // "SharedDisk"-named in code and API to avoid any confusion with "Share".
+  // Hidden entirely when the caller's group has no shared-disk root configured
+  // (see /api/me sharedDiskConfigured): there is no folder for the preference
+  // to govern, so offering the choice would be meaningless.
   const sharedDiskReadWrite = !!state.me?.sharedDiskReadWrite;
-  const sharedDiskAccessCard =
+  const sharedDiskAccessCard = !state.me?.sharedDiskConfigured ? "" :
     `<div class="card"><div class="card-head"><h2>${sharedDiskIcon}${t("settings.sharedDiskAccess")}</h2>` +
       `<span class="card-head-sub">${t("settings.sharedDiskAccessSub")}</span></div>` +
       `<div class="card-body"><form id="sharedDiskAccessForm" class="compact">` +

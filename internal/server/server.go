@@ -621,12 +621,57 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": u, "csrfToken": csrfToken})
+	// Same shape as /api/me: the login form sets state.me from this response
+	// directly and never calls /api/me, so a bare user row here would leave the
+	// console missing every derived field until the next page reload.
+	writeJSON(w, http.StatusOK, map[string]any{"user": a.meResponse(u, csrfToken), "csrfToken": csrfToken})
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	a.auth.Clear(w, r)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// meUser is the console's view of the signed-in account: the stored user row
+// plus everything the UI needs that is derived rather than stored. It is what
+// the frontend keeps in state.me.
+type meUser struct {
+	*store.User
+	// Pending drives the waiting-for-approval screen.
+	Pending         bool   `json:"pending"`
+	CSRFToken       string `json:"csrfToken,omitempty"`
+	DefaultLanguage string `json:"defaultLanguage"`
+	GroupLanguage   string `json:"groupLanguage,omitempty"`
+	Version         string `json:"version"`
+	// Whether the backup/shared disks even have a group-configured root, so
+	// the netdisk UI can hide those modes (and their copy/move destinations,
+	// settings card and create-wizard checkbox) entirely instead of offering
+	// something that only errors once opened.
+	BackupConfigured     bool `json:"backupConfigured"`
+	SharedDiskConfigured bool `json:"sharedDiskConfigured"`
+}
+
+// meResponse builds the state.me payload for u. Both /api/me and /api/login
+// go through it: logging in from the login form sets state.me straight from
+// the login response without ever calling /api/me, so anything computed in
+// only one of the two is silently missing until the user reloads the page.
+func (a *App) meResponse(u *store.User, csrfToken string) meUser {
+	var groupLanguage string
+	if len(u.Groups) > 0 {
+		groupLanguage = a.getGroupLanguage(u.Groups[0])
+	}
+	backupPath, _ := a.db.BackupPathForUser(u.ID)
+	_, sharedDiskPath, _ := a.sharedDiskGroup(u)
+	return meUser{
+		User:                 u,
+		Pending:              isPending(u),
+		CSRFToken:            csrfToken,
+		DefaultLanguage:      a.cfg.DefaultLanguage,
+		GroupLanguage:        groupLanguage,
+		Version:              version.Version,
+		BackupConfigured:     backupPath != "",
+		SharedDiskConfigured: sharedDiskPath != "",
+	}
 }
 
 func (a *App) me(w http.ResponseWriter, r *http.Request) {
@@ -640,21 +685,6 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
 		return
 	}
-	// Get the user's first group's language as a fallback
-	var groupLanguage string
-	if len(u.Groups) > 0 {
-		groupLanguage = a.getGroupLanguage(u.Groups[0])
-	}
-
-	// Surface pending state so the UI can show the waiting-for-approval screen.
-	type meUser struct {
-		*store.User
-		Pending         bool   `json:"pending"`
-		CSRFToken       string `json:"csrfToken,omitempty"`
-		DefaultLanguage string `json:"defaultLanguage"`
-		GroupLanguage   string `json:"groupLanguage,omitempty"`
-		Version         string `json:"version"`
-	}
 	// A session can outlive its CSRF cookie (cleared by the browser, or issued
 	// before the cookie had an explicit expiry). The session is still valid, so
 	// re-issue rather than hand back an empty token: otherwise the console loads
@@ -666,7 +696,7 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 			csrfToken = fresh
 		}
 	}
-	writeJSON(w, http.StatusOK, meUser{User: u, Pending: isPending(u), CSRFToken: csrfToken, DefaultLanguage: a.cfg.DefaultLanguage, GroupLanguage: groupLanguage, Version: version.Version})
+	writeJSON(w, http.StatusOK, a.meResponse(u, csrfToken))
 }
 
 // isPending reports whether a user is still awaiting admin approval: a non-admin
@@ -1223,14 +1253,25 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	// follows that folder owner's own SharedDiskReadWrite preference (an
 	// admin's container is the one exception: always read-write) — see
 	// sharedDiskMountsFor.
+	// A group with no shared-disk root configured has nothing to bind: skip
+	// silently rather than failing the whole create, mirroring how mountNetdisk
+	// above simply leaves netdiskPath empty. The UI hides the checkbox in that
+	// case (see /api/me sharedDiskConfigured), so this only catches a stale
+	// form or a hand-rolled request.
 	mountSharedDisk := req.MountSharedDisk != nil && *req.MountSharedDisk
 	var sharedDiskMounts []dockerx.SharedDiskMount
 	if mountSharedDisk {
-		mounts, err := a.sharedDiskMountsFor(u)
+		_, root, err := a.sharedDiskGroup(u)
 		if err != nil {
 			return dockerx.CreateOptions{}, err
 		}
-		sharedDiskMounts = mounts
+		if root != "" {
+			mounts, err := a.sharedDiskMountsFor(u)
+			if err != nil {
+				return dockerx.CreateOptions{}, err
+			}
+			sharedDiskMounts = mounts
+		}
 	}
 	return dockerx.CreateOptions{
 		Username: u.Username, Name: req.Name, ImageRef: img.DockerRef, ImageName: img.DisplayName,

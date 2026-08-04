@@ -35,7 +35,7 @@ export function renderContainers() {
   $("#view").innerHTML =
     filterBar() +
     (anySelected ? batchToolbar(sel.size) : "") +
-    `<div class="card"><table class="data">` +
+    `<div class="card"><table class="data containers-table">` +
     `<thead><tr>` +
       (canMutate() ? `<th class="chk-col"><input type="checkbox" id="selectAll" ${allChecked ? "checked" : ""}></th>` : "") +
       `<th>${t("containers.colContainer")}</th>` +
@@ -228,12 +228,12 @@ function containerRow(c) {
   return (
     `<tr>` +
       (canMutate() ? `<td class="chk-col"><input type="checkbox" data-cid="${escapeHtml(c.id)}" ${checked}></td>` : "") +
-      `<td><div class="primary-line">${escapeHtml(name)}${forwarded ? ` <span class="badge badge-muted" title="${t("containers.forwardBadgeTitle")}">${t("containers.forwardBadge")}</span>` : ""}</div>` +
+      `<td class="col-name"><div class="primary-line">${escapeHtml(name)}${forwarded ? ` <span class="badge badge-muted" title="${t("containers.forwardBadgeTitle")}">${t("containers.forwardBadge")}</span>` : ""}</div>` +
         `<div class="secondary-line">${portLine || "—"}</div></td>` +
-      (isAdmin() ? `<td><div class="secondary-line">${escapeHtml(displayNameForUsername(c.owner) || "—")}</div></td>` : "") +
-      `<td>${statusBadge}</td>` +
-      `<td><div class="secondary-line">${escapeHtml(c.image || c.Image || "—")}</div></td>` +
-      `<td><div class="secondary-line">${t("containers.memDisk", { mem: num(c.memoryMb).toFixed(0), disk: num(c.diskMb).toFixed(0) })}</div>` +
+      (isAdmin() ? `<td class="col-owner"><div class="secondary-line">${escapeHtml(displayNameForUsername(c.owner) || "—")}</div></td>` : "") +
+      `<td class="col-status">${statusBadge}</td>` +
+      `<td class="col-image"><div class="secondary-line">${escapeHtml(c.image || c.Image || "—")}</div></td>` +
+      `<td class="col-resources"><div class="secondary-line">${t("containers.memDisk", { mem: num(c.memoryMb).toFixed(0), disk: num(c.diskMb).toFixed(0) })}</div>` +
         `<div class="secondary-line">${t("containers.gpuLine", { gpu: escapeHtml(c.gpu || "none") })}</div></td>` +
       `<td class="actions">` +
         iconBtn("logs", "📄", t("containers.actLogs")) +

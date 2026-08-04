@@ -73,16 +73,19 @@ export function openCreateModal() {
         `<label class="check"><input type="checkbox" name="forward80"> ${t("create.forward80")}</label>` +
         `<label class="check"><input type="checkbox" name="mountNetdisk" checked> ${t("create.mountNetdisk")}</label>` +
         `<label class="check"><input type="checkbox" name="mountShm" checked> ${t("create.mountShm")}</label>` +
-        // Always offered on every new container: the shared disk (共享盘) is a
-        // general-purpose group folder, not something tied to a particular image,
-        // so users decide per-container whether to bind it. Whether the caller's
-        // own folder ends up read-only or read-write is not chosen here — it's
-        // their persistent shared-disk access setting (see settings.js), which
-        // every new container picks up at creation time.
-        `<div id="sharedDiskSection" class="shared-disk-section">` +
-          `<label class="check"><input type="checkbox" name="mountSharedDisk"> ${t("create.mountSharedDisk")}</label>` +
-          `<p class="hint" style="margin:2px 0 0">${t("create.sharedDiskAccessHint")}</p>` +
-        `</div>` +
+        // Offered on every new container — but only once the caller's group
+        // actually has a shared-disk root (see /api/me sharedDiskConfigured):
+        // the shared disk (共享盘) is a general-purpose group folder, not
+        // something tied to a particular image, so users decide per-container
+        // whether to bind it. Whether the caller's own folder ends up read-only
+        // or read-write is not chosen here — it's their persistent shared-disk
+        // access setting (see settings.js), which every new container picks up
+        // at creation time.
+        (!state.me?.sharedDiskConfigured ? "" :
+          `<div id="sharedDiskSection" class="shared-disk-section">` +
+            `<label class="check"><input type="checkbox" name="mountSharedDisk"> ${t("create.mountSharedDisk")}</label>` +
+            `<p class="hint" style="margin:2px 0 0">${t("create.sharedDiskAccessHint")}</p>` +
+          `</div>`) +
         // Collapsible advanced block. Empty fields inherit the image defaults
         // (the backend treats them as "unset"), so leaving this collapsed keeps
         // the simple wizard behavior for most users.
@@ -202,9 +205,10 @@ async function applyPreset(imageName) {
   form.querySelector('[name="forward80"]').checked = !!p.forward80;
   if (p.mountNetdisk !== undefined) form.querySelector('[name="mountNetdisk"]').checked = p.mountNetdisk;
   if (p.mountShm !== undefined) form.querySelector('[name="mountShm"]').checked = p.mountShm;
-  // The shared-disk section is always visible now; a preset that opts in just
-  // pre-checks the box as a convenience, mirroring how mountNetdisk/mountShm
-  // presets behave. The user can still toggle it freely.
+  // A preset that opts in just pre-checks the box as a convenience, mirroring
+  // how mountNetdisk/mountShm presets behave; the user can still toggle it
+  // freely. The checkbox is absent altogether when the group has no shared
+  // disk configured, hence the null guard.
   if (p.mountSharedDisk !== undefined) {
     const cb = form.querySelector('[name="mountSharedDisk"]');
     if (cb) cb.checked = p.mountSharedDisk;

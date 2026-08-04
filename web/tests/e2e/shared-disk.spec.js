@@ -138,11 +138,16 @@ test("checking 'mount shared disk' binds the caller's own folder at /data and it
   await page.fill("#newContainer [name='name']", containerName);
   await page.selectOption("#newContainer [name='image']", fixture.imageName);
 
-  // The shared-disk section is now always visible (no longer gated on an image
-  // preset); confirm the checkbox is actually offered, then check it.
+  // The shared-disk section is no longer gated on an image preset — it shows
+  // for every image now that beforeAll has given the group a shared-disk root.
+  // (admin-console.spec.js covers the unconfigured case, where it is absent.)
+  await expect(page.locator("#sharedDiskSection")).toBeVisible();
+  // label.check inputs are zero-size by design (styles.css draws the visible
+  // box via ::before/::after on the label) — assert visibility on the section
+  // above, and force the click since the raw input itself never passes
+  // Playwright's own visibility check.
   const sharedDiskCheckbox = page.locator("#sharedDiskSection [name='mountSharedDisk']");
-  await expect(sharedDiskCheckbox).toBeVisible();
-  await sharedDiskCheckbox.check();
+  await sharedDiskCheckbox.check({ force: true });
   await expect(sharedDiskCheckbox).toBeChecked();
   await page.click("#createSubmit");
 
@@ -220,6 +225,75 @@ test("shared-disk file browser: an admin can edit every folder", async ({ page }
   await expect(userFolderRow.locator("button[data-del]")).toBeVisible();
 
   h.assertClean("the shared-disk file browser button states for an admin");
+});
+
+test("copy/move picker browses into a shared-disk subfolder, not just the own-folder root", async ({ page }) => {
+  test.setTimeout(120000);
+  const h = installPage(page);
+  await login(page, server.adminUser, server.adminPassword);
+  await openTab(page, "netdisk");
+
+  // Make a folder on the netdisk to copy from.
+  const sourceFolder = `to-shared-${fixture.runId}`;
+  await h.withConfirm(() => page.click("#mkdirBtn"), sourceFolder);
+  await expect(page.locator("#view tbody tr", { hasText: sourceFolder })).toBeVisible({ timeout: 20000 });
+  await page.check("#selectAllFiles");
+
+  // Open the copy destination picker and switch to the shared disk.
+  await page.click("#batchCopy");
+  await expect(page.locator(".modal-backdrop.netdisk-picker")).toBeVisible({ timeout: 20000 });
+  await page.click('[data-picker-disk="shareddisk"]');
+
+  // The picker must list the pool's member folders (browsable, not the old
+  // "fixed destination" empty state) and let us descend into the admin's own
+  // folder. The regression this guards: the picker used to pin the target at
+  // the own-folder root with no way to choose a subfolder inside it.
+  const adminRow = page.locator("#pickerList .picker-row", { hasText: adminFolderName });
+  await expect(adminRow).toBeVisible({ timeout: 20000 });
+  await adminRow.click();
+
+  // Create a subfolder inside the admin's own folder and target it. The
+  // destination hint reflects the full nested path, proving the chosen
+  // subfolder — not the own-folder root — is what the transfer will use.
+  const subFolder = `dest-${fixture.runId}`;
+  await h.withConfirm(() => page.click("#pickerMkdir"), subFolder);
+  const subRow = page.locator("#pickerList .picker-row", { hasText: subFolder });
+  await expect(subRow).toBeVisible({ timeout: 20000 });
+  await subRow.click();
+  await expect(page.locator("#pickerHint")).toContainText(`${adminFolderName}/${subFolder}`);
+
+  await closeModals(page);
+  h.assertClean("the shared-disk subfolder copy picker");
+});
+
+test("a regular user's copy picker only shows their own shared folder, not other members'", async ({ page }) => {
+  test.setTimeout(120000);
+  const h = installPage(page);
+  await login(page, fixture.user.username, fixture.user.password);
+  await openTab(page, "netdisk");
+
+  // Make a folder on the netdisk to copy from.
+  const sourceFolder = `to-shared-user-${fixture.runId}`;
+  await h.withConfirm(() => page.click("#mkdirBtn"), sourceFolder);
+  await expect(page.locator("#view tbody tr", { hasText: sourceFolder })).toBeVisible({ timeout: 20000 });
+  await page.check("#selectAllFiles");
+
+  // Open the copy destination picker and switch to the shared disk.
+  await page.click("#batchCopy");
+  await expect(page.locator(".modal-backdrop.netdisk-picker")).toBeVisible({ timeout: 20000 });
+  await page.click('[data-picker-disk="shareddisk"]');
+
+  // The picker roots the user INSIDE their own shared folder: its own
+  // subfolders are listed and browsable, but other members' folders (the
+  // admin's here) never appear — a regular user can't write to them, so
+  // showing them would only lead to a server-side rejection.
+  await expect(page.locator("#pickerPath")).toContainText(userFolderName);
+  await expect(page.locator("#pickerList .picker-row", { hasText: adminFolderName })).toHaveCount(0);
+  // "Up" is disabled at the own-folder root so they can't climb out of it.
+  await expect(page.locator("#pickerUp")).toBeDisabled();
+
+  await closeModals(page);
+  h.assertClean("the shared-disk copy picker fenced to a regular user's own folder");
 });
 
 test("the settings 'shared disk access' select persists read-only and read-write", async ({ page }) => {

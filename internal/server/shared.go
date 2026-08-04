@@ -32,11 +32,31 @@ import (
 // surface here — the shared disk itself only needs browse + basic in-place
 // file management (mkdir/delete/rename) and a capacity readout.
 
+// sharedDiskGroup resolves which group's shared pool u browses and mounts,
+// returning that group's id alongside its root path. Normally this is the
+// caller's own group. An admin whose groups have no shared disk configured
+// falls back to the first group that does: admins may already create, rename
+// and delete anywhere inside a pool (requireOwnSharedDiskPath) and manage the
+// group paths themselves, so refusing them the pool merely because they were
+// never added to that group would leave the feature unreachable for the one
+// role meant to administer it. A zero id means nothing is configured
+// anywhere.
+func (a *App) sharedDiskGroup(u *store.User) (int64, string, error) {
+	gid, root, err := a.db.SharedDiskGroupForUser(u.ID)
+	if err != nil {
+		return 0, "", err
+	}
+	if root == "" && u.Role == store.RoleAdmin {
+		return a.db.AnySharedDiskGroup()
+	}
+	return gid, root, nil
+}
+
 // sharedDiskGroupRoot resolves the group-configured shared-disk root for u,
 // without creating anything. Callers that need the caller's own subfolder to
 // exist should use userSharedDiskOwnRoot instead.
 func (a *App) sharedDiskGroupRoot(u *store.User) (string, error) {
-	root, err := a.db.SharedDiskPathForUser(u.ID)
+	_, root, err := a.sharedDiskGroup(u)
 	if err != nil {
 		return "", err
 	}
@@ -352,12 +372,17 @@ func (a *App) sharedDiskMountsFor(u *store.User) ([]dockerx.SharedDiskMount, err
 	if err != nil {
 		return nil, err
 	}
-	root, err := a.sharedDiskGroupRoot(u)
+	gid, root, err := a.sharedDiskGroup(u)
 	if err != nil {
 		return nil, err
 	}
+	if root == "" {
+		return nil, fmt.Errorf("shared disk path is not configured for your group")
+	}
 	ownName := sharedDiskFolderName(u)
-	members, err := a.db.SharedDiskGroupMembers(u.ID)
+	// Members of the group that owns the pool, not of the caller's own group —
+	// the two differ for an admin resolving through the fallback above.
+	members, err := a.db.SharedDiskGroupMembers(gid)
 	if err != nil {
 		return nil, err
 	}

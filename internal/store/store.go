@@ -1206,23 +1206,50 @@ func (db *DB) BackupPathForUser(userID int64) (string, error) {
 	return "", nil
 }
 
-// SharedDiskPathForUser resolves the configured shared-disk root for a
-// user's primary group, mirroring NetdiskPathForUser/BackupPathForUser.
-func (db *DB) SharedDiskPathForUser(userID int64) (string, error) {
-	rows, err := db.Query(`select g.shared_disk_path from groups g join user_groups ug on ug.group_id=g.id
+// SharedDiskGroupForUser resolves the configured shared-disk root for a
+// user's primary group, mirroring NetdiskPathForUser/BackupPathForUser, and
+// returns the owning group's id alongside it so callers can enumerate that
+// group's members (SharedDiskGroupMembers) without resolving twice. A zero id
+// and empty path mean no group the user belongs to has a shared disk.
+func (db *DB) SharedDiskGroupForUser(userID int64) (int64, string, error) {
+	rows, err := db.Query(`select g.id, g.shared_disk_path from groups g join user_groups ug on ug.group_id=g.id
 		where ug.user_id=? and g.shared_disk_path != '' order by g.id limit 1`, userID)
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	defer rows.Close()
 	if rows.Next() {
+		var id int64
 		var path string
-		if err := rows.Scan(&path); err != nil {
-			return "", err
+		if err := rows.Scan(&id, &path); err != nil {
+			return 0, "", err
 		}
-		return strings.TrimSpace(path), nil
+		return id, strings.TrimSpace(path), nil
 	}
-	return "", nil
+	return 0, "", nil
+}
+
+// AnySharedDiskGroup returns the first group that has a shared disk
+// configured, regardless of who belongs to it. Only admins resolve through
+// this (see sharedDiskGroup): they are already allowed to manage every
+// folder in a pool, so an admin who happens not to be a member of the group
+// that owns the shared disk should still reach it rather than being told it
+// isn't configured.
+func (db *DB) AnySharedDiskGroup() (int64, string, error) {
+	rows, err := db.Query(`select id, shared_disk_path from groups where shared_disk_path != '' order by id limit 1`)
+	if err != nil {
+		return 0, "", err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var id int64
+		var path string
+		if err := rows.Scan(&id, &path); err != nil {
+			return 0, "", err
+		}
+		return id, strings.TrimSpace(path), nil
+	}
+	return 0, "", nil
 }
 
 // BackupSchedule is the single-row daily backup schedule config.
@@ -2052,22 +2079,17 @@ func (db *DB) UpdateUserSharedDiskReadWrite(id int64, readWrite bool) error {
 	return err
 }
 
-// SharedDiskGroupMembers returns every user who belongs to the same
-// shared-disk group as userID (the group SharedDiskPathForUser resolves
-// against) — i.e. everyone whose subfolder can appear in that pool — with
-// just enough fields populated (ID, Username, DisplayName, Role,
-// SharedDiskReadWrite) to compute each member's folder name and read-write
-// preference for mount building. See sharedDiskMountsFor.
-func (db *DB) SharedDiskGroupMembers(userID int64) ([]User, error) {
+// SharedDiskGroupMembers returns every user in groupID — i.e. everyone whose
+// subfolder can appear in that group's pool — with just enough fields
+// populated (ID, Username, DisplayName, Role, SharedDiskReadWrite) to compute
+// each member's folder name and read-write preference for mount building.
+// Pass the id resolved by SharedDiskGroupForUser/AnySharedDiskGroup so the
+// members match the pool actually being mounted. See sharedDiskMountsFor.
+func (db *DB) SharedDiskGroupMembers(groupID int64) ([]User, error) {
 	rows, err := db.Query(`select u2.id, u2.username, u2.display_name, u2.role, u2.shared_disk_read_write
 		from users u2
 		join user_groups ug2 on ug2.user_id = u2.id
-		where ug2.group_id = (
-			select g.id from groups g
-			join user_groups ug on ug.group_id = g.id
-			where ug.user_id = ? and g.shared_disk_path != ''
-			order by g.id limit 1
-		)`, userID)
+		where ug2.group_id = ?`, groupID)
 	if err != nil {
 		return nil, err
 	}

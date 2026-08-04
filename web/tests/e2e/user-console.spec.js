@@ -291,6 +291,10 @@ test("settings: a user gets the language panel only", async ({ page }) => {
   await expect(page.locator("#adminLanguageForm"), "system default language is admin-only").toHaveCount(0);
   await expect(page.locator("#feishuForm"), "SSO config is admin-only").toHaveCount(0);
   await expect(page.locator("#newRegistryBtn"), "registries are admin-only").toHaveCount(0);
+  // seed() gives the group no shared-disk root, so the access preference has no
+  // folder to govern and the card is omitted entirely (shared-disk.spec.js
+  // covers the configured case, where the select is present and persists).
+  await expect(page.locator("#sharedDiskAccessForm"), "no shared disk configured").toHaveCount(0);
 
   h.assertClean("the user settings page");
 });

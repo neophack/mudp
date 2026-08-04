@@ -403,6 +403,11 @@ test("netdisk: folder create, navigation, selection, copy/move pickers, share an
     await expect(page.locator(".modal-backdrop.netdisk-picker")).toBeVisible({ timeout: 20000 });
     await expect(page.locator("#pickerConfirm")).toBeVisible();
     await expect(page.locator("#pickerUp")).toBeDisabled();
+    // Only the netdisk is offered as a destination: this group has no backup
+    // or shared-disk root configured, so neither is a place anything can go.
+    await expect(page.locator('[data-picker-disk="netdisk"]')).toHaveCount(1);
+    await expect(page.locator('[data-picker-disk="backup"]')).toHaveCount(0);
+    await expect(page.locator('[data-picker-disk="shareddisk"]')).toHaveCount(0);
     await closeModals(page);
   }
 
@@ -418,12 +423,13 @@ test("netdisk: folder create, navigation, selection, copy/move pickers, share an
   await page.waitForTimeout(300);
   await expect(page.locator("#view tbody tr", { hasText: folder })).toBeVisible();
 
-  // The backup disk is a separate mode with its own toolbar.
-  await page.click('.netdisk-mode-btn[data-mode="backup"]');
-  await expect(page.locator('.netdisk-mode-btn[data-mode="backup"]')).toHaveClass(/active/);
-  await expect(page.locator("#uploadFiles")).toHaveCount(0);
-  await page.click('.netdisk-mode-btn[data-mode="netdisk"]');
-  await expect(page.locator("#uploadFiles")).toHaveCount(1);
+  // seed() configures a netdisk root but no backup or shared-disk root for the
+  // group, so those two modes are hidden outright rather than offered as tabs
+  // that only ever show a "not configured" error. (shared-disk.spec.js covers
+  // the configured case, where the tab is present and switchable.)
+  await expect(page.locator('.netdisk-mode-btn[data-mode="netdisk"]')).toHaveClass(/active/);
+  await expect(page.locator('.netdisk-mode-btn[data-mode="backup"]')).toHaveCount(0);
+  await expect(page.locator('.netdisk-mode-btn[data-mode="shareddisk"]')).toHaveCount(0);
 
   // Finally remove the folder, confirming this time.
   await h.withConfirm(async () => {
