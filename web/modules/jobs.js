@@ -26,7 +26,7 @@ const KIND_LABEL = {
   "netdisk.move": "Netdisk move",
   "netdisk.upload": "Netdisk upload",
   "netdisk.upload.chunked": "Netdisk large-file upload",
-  "netdisk.transfer": "Netdisk ⇄ backup transfer",
+  "netdisk.transfer": "Cross-disk transfer",
   "netdisk.restore": "Restore from backup",
 };
 

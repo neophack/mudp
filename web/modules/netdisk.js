@@ -813,7 +813,7 @@ async function runWithCopyProgress(kind, total, run) {
       const mine = (tasks || [])
         .filter((t) => t.kind === kind && Date.parse(t.startedAt) >= startedAfter)
         .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
-      if (mine) progress.update(mine.done, mine.total, mine.message, mine.unit);
+      if (mine) progress.update(mine.done, mine.total, mine.message, mine.unit, mine.id);
     } catch {
       /* best-effort; the overlay just won't advance this tick */
     }

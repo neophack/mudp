@@ -25,6 +25,8 @@ import { fmtBytes } from "./common.js";
 let overlayEl = null;
 let source = null; // "local" | "poll" | null
 let closeTimer = null;
+let currentTaskId = null; // server task id backing the overlay, once known
+let dismissedTaskId = null; // task id the user manually closed; stays hidden until this task ends
 
 const KIND_TITLE = {
   "netdisk.copy": "Copying…",
@@ -53,6 +55,7 @@ function ensureOverlay(kind) {
       overlayEl.style.bottom = `${20 + uploadEl.getBoundingClientRect().height + 12}px`;
     }
     overlayEl.querySelector(".copy-close").onclick = () => {
+      dismissedTaskId = currentTaskId;
       removeOverlay();
       source = null;
     };
@@ -88,14 +91,17 @@ function removeOverlay() {
 // update() from its own poll and calls end() once its fetch settles.
 export function beginLocalCopy(kind, total) {
   source = "local";
+  currentTaskId = null;
+  dismissedTaskId = null; // a freshly started operation always shows, even if a prior one was dismissed
   let lastUnit = kind === "netdisk.move" ? "items" : "bytes";
   let lastTotal = total;
   ensureOverlay(kind);
   updateOverlay({ done: 0, total, unit: lastUnit });
   return {
-    update(done, totalNow, message, unit) {
+    update(done, totalNow, message, unit, id) {
       if (source !== "local") return; // superseded by another local op; ignore stale ticks
       if (unit) lastUnit = unit;
+      if (id) currentTaskId = id;
       lastTotal = totalNow || lastTotal;
       updateOverlay({ done, total: lastTotal, message, unit: lastUnit });
     },
@@ -107,6 +113,7 @@ export function beginLocalCopy(kind, total) {
         if (source === "local") {
           removeOverlay();
           source = null;
+          currentTaskId = null;
         }
       }, 500);
     },
@@ -125,9 +132,12 @@ export function syncCopyOverlayFromTasks(tasks) {
       removeOverlay();
       source = null;
     }
+    dismissedTaskId = null; // nothing active -- next task to appear is a new one, show it
     return;
   }
   const t = tasks.slice().sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
+  if (t.id === dismissedTaskId) return; // user closed this exact task's overlay; it's still visible in Jobs
+  currentTaskId = t.id;
   source = "poll";
   ensureOverlay(t.kind);
   updateOverlay({ done: t.done || 0, total: t.total || 0, message: t.message, unit: t.unit || "bytes" });

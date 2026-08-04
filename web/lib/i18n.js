@@ -663,7 +663,7 @@ const translations = {
     "task.netdiskMove": "网盘移动",
     "task.netdiskUpload": "网盘上传",
     "task.netdiskUploadChunked": "网盘大文件上传",
-    "task.netdiskTransfer": "网盘⇄备份盘 传输",
+    "task.netdiskTransfer": "跨盘传输",
     "task.netdiskRestore": "从备份盘恢复",
     "task.backupRun": "网盘备份",
 
@@ -2016,7 +2016,7 @@ const translations = {
     "task.netdiskMove": "Netdisk move",
     "task.netdiskUpload": "Netdisk upload",
     "task.netdiskUploadChunked": "Netdisk large-file upload",
-    "task.netdiskTransfer": "Netdisk ⇄ backup transfer",
+    "task.netdiskTransfer": "Cross-disk transfer",
     "task.netdiskRestore": "Restore from backup",
     "task.backupRun": "Netdisk backup",
 

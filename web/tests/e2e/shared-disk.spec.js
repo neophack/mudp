@@ -358,9 +358,16 @@ test("a container's folder mount follows the folder owner's read-write preferenc
     test.skip(!otherRoRes.ok, "container creation failed; cannot verify mount mode");
     const otherRoId = JSON.parse(otherRoRes.body).id;
     const otherRoRaw = await rawMounts(secondApi, otherRoId);
-    const otherRoMount = otherRoRaw.find((m) => m.Destination === `/data/${userFolderName}`);
-    expect(otherRoMount, `expected a mount at /data/${userFolderName} in ${JSON.stringify(otherRoRaw)}`).toBeTruthy();
-    expect(otherRoMount.RW).toBe(false);
+    // A read-only folder gets no override mount of its own -- it's covered by
+    // the read-only base mount at /data, not a per-folder bind (see
+    // sharedDiskMountsFor). Only folders that must be writable get their own
+    // entry, so proving the read-only rule means proving the base is RO and
+    // no override for this folder exists, not finding a dedicated mount.
+    const otherRoBase = otherRoRaw.find((m) => m.Destination === "/data");
+    expect(otherRoBase, `expected the shared-disk base mount at /data in ${JSON.stringify(otherRoRaw)}`).toBeTruthy();
+    expect(otherRoBase.RW).toBe(false);
+    const otherRoOverride = otherRoRaw.find((m) => m.Destination === `/data/${userFolderName}`);
+    expect(otherRoOverride, `expected no override mount at /data/${userFolderName} in ${JSON.stringify(otherRoRaw)}`).toBeUndefined();
 
     // Rule 2b: the user now opts into read-write; the second user's NEXT
     // container reflects the flip — same folder, now read-write.
