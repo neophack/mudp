@@ -216,6 +216,7 @@ function renderBreadcrumb(path) {
   let built = "";
   parts.forEach((part, i) => {
     built = joinPath(built, part);
+    const target = built; // snapshot this iteration's path; `built` keeps mutating after this
     const isLast = i === parts.length - 1;
     const sep = document.createElement("span");
     sep.className = "sep";
@@ -229,7 +230,7 @@ function renderBreadcrumb(path) {
       const btn = document.createElement("button");
       btn.className = "linklike";
       btn.textContent = escapeHtml(part);
-      btn.onclick = () => loadShare(stripPrefix + built);
+      btn.onclick = () => loadShare(stripPrefix + target);
       nav.appendChild(btn);
     }
   });
@@ -270,19 +271,33 @@ function renderItems() {
   document.querySelectorAll(".share-select").forEach((cb) => {
     cb.onchange = () => toggleSelection(cb.dataset.path, cb.checked);
   });
-  const allSelected = state.items.length > 0 && state.items.every((f) => state.selected.has(f.path));
   const selectAllBox = $("#selectAllBox");
   if (selectAllBox) {
-    selectAllBox.checked = allSelected;
     selectAllBox.onchange = (e) => {
       state.items.forEach((f) => {
         if (e.target.checked) state.selected.add(f.path);
         else state.selected.delete(f.path);
       });
-      renderItems();
+      syncRowCheckboxes();
       updateSelectionBar();
     };
   }
+  syncSelectAllCheckboxes();
+}
+
+// syncRowCheckboxes updates each row checkbox's checked state in place, without
+// rebuilding the table (a full re-render on every toggle caused the checkbox
+// the user just clicked to be destroyed/recreated, producing a visible flash).
+function syncRowCheckboxes() {
+  document.querySelectorAll(".share-select").forEach((cb) => {
+    cb.checked = state.selected.has(cb.dataset.path);
+  });
+}
+
+function syncSelectAllCheckboxes() {
+  const allSelected = state.items.length > 0 && state.items.every((f) => state.selected.has(f.path));
+  const selectAllBox = $("#selectAllBox");
+  if (selectAllBox) selectAllBox.checked = allSelected;
   const selectAllToolbar = $("#selectAll");
   if (selectAllToolbar) selectAllToolbar.checked = allSelected;
 }
@@ -290,7 +305,7 @@ function renderItems() {
 function toggleSelection(path, checked) {
   if (checked) state.selected.add(path);
   else state.selected.delete(path);
-  renderItems();
+  syncSelectAllCheckboxes();
   updateSelectionBar();
 }
 
@@ -443,7 +458,8 @@ function bindEvents() {
       if (e.target.checked) state.selected.add(f.path);
       else state.selected.delete(f.path);
     });
-    renderItems();
+    syncRowCheckboxes();
+    syncSelectAllCheckboxes();
     updateSelectionBar();
   };
 
