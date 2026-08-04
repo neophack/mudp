@@ -1214,19 +1214,16 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 			netdiskPath = path
 		}
 	}
-	// Shared-disk (共享盘) mounting is a hard admin gate, unlike MountNetdisk
-	// above: an image only offers it when its preset explicitly opted in, and
-	// that choice — never the request — decides whether it's honored at all.
-	// Once allowed, the user still decides whether to actually bind
-	// (mountSharedDisk); whether each folder ends up read-only or read-write
-	// is not a per-container choice — it follows that folder owner's own
-	// SharedDiskReadWrite preference (an admin's container is the one
-	// exception: always read-write) — see sharedDiskMountsFor.
-	sharedDiskAllowed := img.Preset != nil && img.Preset.MountSharedDisk != nil && *img.Preset.MountSharedDisk
-	mountSharedDisk := false
-	if sharedDiskAllowed && req.MountSharedDisk != nil {
-		mountSharedDisk = *req.MountSharedDisk
-	}
+	// Shared-disk (共享盘) mounting is offered on every container, mirroring
+	// MountNetdisk above: the shared disk is a general-purpose group folder,
+	// not something tied to a particular image, so the request alone decides
+	// whether to bind it. An image preset may still pre-check the option in the
+	// UI as a convenience, but that is not enforced here. Whether each folder
+	// ends up read-only or read-write is not a per-container choice — it
+	// follows that folder owner's own SharedDiskReadWrite preference (an
+	// admin's container is the one exception: always read-write) — see
+	// sharedDiskMountsFor.
+	mountSharedDisk := req.MountSharedDisk != nil && *req.MountSharedDisk
 	var sharedDiskMounts []dockerx.SharedDiskMount
 	if mountSharedDisk {
 		mounts, err := a.sharedDiskMountsFor(u)

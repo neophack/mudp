@@ -137,8 +137,9 @@ export function renderSettings() {
   const mcpCard = admin ? mcpRemotePanel() : "";
 
   // ---- Layout ----
-  // Personal section is always visible; admin section (gridded into two
-  // columns, with the wide registries table spanning both) only for admins.
+  // Personal section is always visible (language and shared-disk access
+  // side-by-side in two columns); admin section (gridded into two columns,
+  // with the wide registries table spanning both) only for admins.
   $("#view").innerHTML =
     `<div class="stack">` +
       sectionHeader(
@@ -146,8 +147,10 @@ export function renderSettings() {
         t("settings.sectionPersonal"),
         t("settings.sectionPersonalSub")
       ) +
-      createUserLanguageSettings(currentLanguage) +
-      sharedDiskAccessCard +
+      `<div class="settings-grid">` +
+        createUserLanguageSettings(currentLanguage) +
+        sharedDiskAccessCard +
+      `</div>` +
       (admin
         ? sectionHeader(
             icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>'),

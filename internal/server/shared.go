@@ -340,10 +340,13 @@ func (a *App) sharedDiskAccessSettings(w http.ResponseWriter, r *http.Request) {
 // SharedDiskReadWrite preference (see UpdateUserSharedDiskReadWrite) — not
 // by who is creating this container. A folder the owner has kept read-only
 // stays read-only even in someone else's container; one they opted into
-// read-write is writable everywhere the shared disk is mounted. The one
-// exception is an admin's own container: it gets read-write on every
-// folder, overriding each owner's preference, so an admin can always fix up
-// or clean up anyone's shared files from inside a container too.
+// read-write is writable everywhere the shared disk is mounted. There are
+// two exceptions: a user's own folder is always read-write in their own
+// container regardless of their preference (the preference only governs
+// how OTHER members' containers mount it), and an admin's own container
+// gets read-write on every folder, overriding each owner's preference, so
+// an admin can always fix up or clean up anyone's shared files from inside
+// a container too.
 func (a *App) sharedDiskMountsFor(u *store.User) ([]dockerx.SharedDiskMount, error) {
 	own, err := a.userSharedDiskOwnRoot(u)
 	if err != nil {
@@ -380,7 +383,7 @@ func (a *App) sharedDiskMountsFor(u *store.User) ([]dockerx.SharedDiskMount, err
 		mounts = append(mounts, dockerx.SharedDiskMount{
 			Source:   source,
 			Name:     entry.Name(),
-			ReadOnly: !isAdminUser && !readWriteByFolder[entry.Name()],
+			ReadOnly: !isAdminUser && !isOwn && !readWriteByFolder[entry.Name()],
 		})
 	}
 	return mounts, nil
