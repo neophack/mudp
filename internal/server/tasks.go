@@ -311,6 +311,12 @@ const taskVisibleAfter = 10 * time.Second
 // userTasks returns the caller's own long-running tasks (every user's, for an
 // admin, matching backupJobsList's convention) that have been running longer
 // than taskVisibleAfter, for the personal "Background jobs" panel.
+//
+// ?all=1 bypasses the taskVisibleAfter delay (still scoped to the caller's own
+// tasks, or every user's for an admin): the floating copy/move progress
+// overlay polls with this set so it can show live counts from the moment an
+// operation starts, rather than waiting out the delay meant to keep routine
+// fast copies from flashing a row in the Jobs panel.
 func (a *App) userTasks(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	if u == nil {
@@ -318,6 +324,7 @@ func (a *App) userTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	admin := u.Role == store.RoleAdmin
+	bypassDelay := r.URL.Query().Get("all") == "1"
 	cutoff := time.Now().Add(-taskVisibleAfter)
 	all := a.collectTasks()
 	out := make([]ActiveTask, 0, len(all))
@@ -326,7 +333,7 @@ func (a *App) userTasks(w http.ResponseWriter, r *http.Request) {
 		if !admin && t.OwnerID != u.ID {
 			continue
 		}
-		if t.StartedAt.After(cutoff) {
+		if !bypassDelay && t.StartedAt.After(cutoff) {
 			continue
 		}
 		// Rebuilt as a fresh literal (rather than copying *t) so the copy never

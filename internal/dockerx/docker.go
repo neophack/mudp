@@ -93,9 +93,13 @@ type Container struct {
 // SharedDiskMount is one per-user subfolder of a shared disk (共享盘) pool to
 // bind into a container. Source is the host path; Name is the folder's own
 // name, used verbatim as the mount's target directory name under /data (see
-// the mount-building block in Create below). Not to be confused with the
-// netdisk's external share-link feature (分享链接) — kept as "SharedDisk" to
-// avoid any naming collision with "Share" elsewhere in this codebase.
+// the mount-building block in Create below). A Name of "" is special: it
+// denotes the whole-pool read-only base mount bound at /data itself, which
+// must precede every per-folder mount so Docker applies the broader
+// read-only view first and the narrower read-write overrides on top of it.
+// Not to be confused with the netdisk's external share-link feature
+// (分享链接) — kept as "SharedDisk" to avoid any naming collision with
+// "Share" elsewhere in this codebase.
 type SharedDiskMount struct {
 	Source   string
 	Name     string
@@ -619,20 +623,27 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{Type: mount.TypeBind, Source: "/dev/shm", Target: "/dev/shm"})
 	}
 	if opts.MountSharedDisk {
-		// One independent bind per member's folder — e.g.
-		//   -v /pool/userother:/data/userother:ro
+		// Two-layer structure (see sharedDiskMountsFor): a read-only bind of
+		// the whole pool at /data so new member subfolders appear in
+		// already-running containers, then one read-write bind per folder
+		// that must be writable, overriding the base:
+		//   -v /pool:/data:ro
 		//   -v /pool/userme:/data/userme:rw
-		// rather than a single root mount, so the container's /data is an
-		// explicit, per-folder enumeration (the caller's own folder writable,
-		// everyone else's read-only) instead of one bind whose write access is
-		// carved out via a nested overlay mount.
+		// Read-only folders need no mount of their own — the base covers
+		// them. The base mount (Name == "") must come first; Docker applies
+		// the broader read-only view and the narrower per-folder mounts
+		// override it. Order is guaranteed by the caller.
 		for _, m := range opts.SharedDiskMounts {
 			source := strings.TrimSpace(m.Source)
-			if source == "" || m.Name == "" {
+			if source == "" {
 				continue
 			}
+			target := "/data/" + m.Name
+			if m.Name == "" {
+				target = "/data"
+			}
 			hostCfg.Mounts = append(hostCfg.Mounts, mount.Mount{
-				Type: mount.TypeBind, Source: source, Target: "/data/" + m.Name, ReadOnly: m.ReadOnly,
+				Type: mount.TypeBind, Source: source, Target: target, ReadOnly: m.ReadOnly,
 			})
 		}
 	}

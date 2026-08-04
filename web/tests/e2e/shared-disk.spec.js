@@ -3,11 +3,13 @@
 // permission that setting controls.
 //
 // The volume-mount workflow in user-workflows.spec.js already proves a named
-// volume mount round-trips into the inspect panel; this spec covers the shared
-// disk specifically:
+// volume mount round-trips into the inspect panel. The backend rejects raw
+// host bind mounts (a user must use the netdisk option or a managed volume),
+// so the wizard's mounts field only ever carries named volumes — that path is
+// covered there, not here. This spec covers the shared disk specifically:
 //
-//   1. A raw bind mount + the shared-disk checkbox both produce real mounts
-//      visible in the inspect panel.
+//   1. The shared-disk checkbox binds the caller's own folder at /data and the
+//      real mount shows up in the inspect panel.
 //   2. In the shared-disk file browser, a user can edit (move/rename/delete)
 //      only their own folder; everyone else's shows copy-only. An admin can
 //      edit every folder.
@@ -91,41 +93,6 @@ test.afterAll(async () => {
   try { fs.rmSync(sharedDiskRoot, { recursive: true, force: true }); } catch { /* best effort */ }
 });
 
-test("a raw bind mount typed into the wizard shows up in the inspect panel", async ({ page }) => {
-  test.setTimeout(120000);
-  test.skip(!fixture.imagePublished, "no image was published for the container wizard to use");
-  const h = installPage(page);
-  await login(page, server.adminUser, server.adminPassword);
-
-  // A throwaway host directory bound into the container at /bind. The create
-  // form accepts "host:container" lines, same syntax a user types after a
-  // volume name — this is the "绑定文件夹" path (a host path instead of a
-  // named volume).
-  const hostDir = path.join(os.tmpdir(), `mudp-e2e-bind-${fixture.runId}`);
-  fs.mkdirSync(hostDir, { recursive: true });
-  await openTab(page, "containers");
-  const containerName = `ui-bind-${fixture.runId}`;
-  await page.click("#newContainerBtn");
-  await page.fill("#newContainer [name='name']", containerName);
-  await page.selectOption("#newContainer [name='image']", fixture.imageName);
-  await page.fill("#newContainer [name='mounts']", `${hostDir}:/bind`);
-  await page.click("#createSubmit");
-
-  await expect(page.locator("#newContainer")).toHaveCount(0, { timeout: 60000 });
-  const row = page.locator("#view tbody tr", { hasText: containerName });
-  await expect(row).toBeVisible({ timeout: 30000 });
-
-  // The inspect panel reflects the real Docker mount, not just what the form
-  // remembered submitting.
-  await row.locator('button[data-act="inspect"]').click();
-  await expect(page.locator(".modal-backdrop.detail-modal")).toBeVisible({ timeout: 20000 });
-  await expect(page.locator(".detail")).toContainText("/bind");
-  await closeModals(page);
-
-  try { fs.rmSync(hostDir, { recursive: true, force: true }); } catch { /* best effort */ }
-  h.assertClean("the bind-mount container workflow");
-});
-
 test("checking 'mount shared disk' binds the caller's own folder at /data and it appears in the inspect panel", async ({ page }) => {
   test.setTimeout(120000);
   test.skip(!fixture.imagePublished, "no image was published for the container wizard to use");
@@ -142,12 +109,13 @@ test("checking 'mount shared disk' binds the caller's own folder at /data and it
   // for every image now that beforeAll has given the group a shared-disk root.
   // (admin-console.spec.js covers the unconfigured case, where it is absent.)
   await expect(page.locator("#sharedDiskSection")).toBeVisible();
-  // label.check inputs are zero-size by design (styles.css draws the visible
-  // box via ::before/::after on the label) — assert visibility on the section
-  // above, and force the click since the raw input itself never passes
-  // Playwright's own visibility check.
+  // label.check inputs are visually hidden (position:absolute; width/height:0
+  // in styles.css) — the visible box is drawn on the label via ::before. So we
+  // click the label (the real hit target) and then assert the linked input's
+  // checked state, instead of driving the zero-size input directly.
+  const sharedDiskLabel = page.locator("#sharedDiskSection label.check");
   const sharedDiskCheckbox = page.locator("#sharedDiskSection [name='mountSharedDisk']");
-  await sharedDiskCheckbox.check({ force: true });
+  await sharedDiskLabel.click();
   await expect(sharedDiskCheckbox).toBeChecked();
   await page.click("#createSubmit");
 
@@ -300,7 +268,10 @@ test("the settings 'shared disk access' select persists read-only and read-write
   test.setTimeout(60000);
   const h = installPage(page);
   await login(page, fixture.user.username, fixture.user.password);
-  await openTab(page, "settings");
+  // A non-admin reaches the settings page under the "scripts" tab (the admin
+  // only "settings" tab is not in their nav — see app.js tabs list). Both render
+  // renderSettings(); only the shared-disk-access card matters here.
+  await openTab(page, "scripts");
 
   const select = page.locator("#sharedDiskAccessSelect");
   await expect(select).toBeVisible();

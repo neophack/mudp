@@ -344,29 +344,40 @@ func (a *App) sharedDiskAccessSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sharedDiskMountsFor enumerates the per-user subfolders currently in u's
-// group shared pool and returns one bind-mount spec per folder, for a
-// container created with the shared disk bound in. The caller's own folder
-// is included (and created if missing). Each folder is mounted
-// independently — Target "/data/<folder>" — rather than binding the whole
-// pool at once, so the container's /data reflects exactly the snapshot of
-// members present when it was created, mirroring how a plain `docker run
-// -v` invocation would enumerate them:
+// sharedDiskMountsFor returns the shared-disk (共享盘) bind-mount specs for a
+// container created with the shared disk bound in. It uses a two-layer
+// structure so that a container reflects not just the members present at
+// create time but also any added later:
 //
-//	-v /pool/userother:/data/userother:ro
-//	-v /pool/userme:/data/userme:rw
+//	-v /pool:/data:ro                  ← whole pool, read-only base
+//	-v /pool/userme:/data/userme:rw    ← only folders that must be writable
 //
-// Whether a given folder is writable is decided by its OWNER's own
-// SharedDiskReadWrite preference (see UpdateUserSharedDiskReadWrite) — not
-// by who is creating this container. A folder the owner has kept read-only
-// stays read-only even in someone else's container; one they opted into
-// read-write is writable everywhere the shared disk is mounted. There are
-// two exceptions: a user's own folder is always read-write in their own
-// container regardless of their preference (the preference only governs
-// how OTHER members' containers mount it), and an admin's own container
-// gets read-write on every folder, overriding each owner's preference, so
-// an admin can always fix up or clean up anyone's shared files from inside
-// a container too.
+// The first spec (Name == "") binds the entire pool root read-only at /data.
+// Docker does not allow adding or removing bind mounts after a container is
+// created, so without this base mount a container built today would never
+// see a subfolder added tomorrow (a new member joining the group). Binding
+// the whole pool once means every new subfolder — created automatically by
+// sharedDiskRootEnsured when a member first opens the shared disk — shows
+// up in every already-running container's /data, read-only by default.
+//
+// Folders that stay read-only need no mount of their own — the base already
+// covers them — so they are skipped. A folder only gets its own mount when
+// it must be read-write, overlaying the base to grant writes. Whether a
+// folder is writable is decided by its OWNER's own SharedDiskReadWrite
+// preference (see UpdateUserSharedDiskReadWrite) — not by who is creating
+// this container. A folder the owner has kept read-only stays read-only
+// even in someone else's container; one they opted into read-write is
+// writable everywhere the shared disk is mounted. There are two exceptions:
+// a user's own folder is always read-write in their own container
+// regardless of their preference (the preference only governs how OTHER
+// members' containers mount it), and an admin's own container gets
+// read-write on every folder, overriding each owner's preference, so an
+// admin can always fix up or clean up anyone's shared files from inside a
+// container too.
+//
+// The base mount must precede the per-folder ones in the returned slice so
+// Docker applies the broader read-only view first and the narrower
+// read-write overrides on top of it.
 func (a *App) sharedDiskMountsFor(u *store.User) ([]dockerx.SharedDiskMount, error) {
 	own, err := a.userSharedDiskOwnRoot(u)
 	if err != nil {
@@ -395,21 +406,28 @@ func (a *App) sharedDiskMountsFor(u *store.User) ([]dockerx.SharedDiskMount, err
 		return nil, err
 	}
 	isAdminUser := u.Role == store.RoleAdmin
-	mounts := make([]dockerx.SharedDiskMount, 0, len(entries))
+	// The whole-pool read-only base mount (appended below) already makes every
+	// subfolder read-only. So a subfolder only needs its OWN mount when it must
+	// be read-write — overlaying the base to grant writes. Folders that stay
+	// read-only are covered by the base and are skipped here, keeping the mount
+	// list (and thus Docker's frozen HostConfig) to a minimum.
+	mounts := make([]dockerx.SharedDiskMount, 0, len(entries)+1)
+	mounts = append(mounts, dockerx.SharedDiskMount{Source: root, Name: "", ReadOnly: true})
 	for _, entry := range entries {
 		if !entry.IsDir() || isSymlink(filepath.Join(root, entry.Name())) {
 			continue
 		}
-		isOwn := entry.Name() == ownName
-		source := filepath.Join(root, entry.Name())
-		if isOwn {
+		name := entry.Name()
+		// Writable when: it's the caller's own folder, an admin's container
+		// (admin can write everywhere), or the owner opted into read-write.
+		if !(name == ownName || isAdminUser || readWriteByFolder[name]) {
+			continue
+		}
+		source := filepath.Join(root, name)
+		if name == ownName {
 			source = own
 		}
-		mounts = append(mounts, dockerx.SharedDiskMount{
-			Source:   source,
-			Name:     entry.Name(),
-			ReadOnly: !isAdminUser && !isOwn && !readWriteByFolder[entry.Name()],
-		})
+		mounts = append(mounts, dockerx.SharedDiskMount{Source: source, Name: name, ReadOnly: false})
 	}
 	return mounts, nil
 }

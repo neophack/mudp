@@ -6,6 +6,7 @@ import { hashFileCRC32 } from "../lib/hashfile.js";
 import { uploadLargeFile } from "../lib/chunkupload.js";
 import { openYuvViewer } from "../lib/yuv.js";
 import { renderMarkdownInto } from "../lib/viewer.js";
+import { beginLocalCopy } from "../lib/copyProgress.js";
 
 // netdiskMode is "netdisk" (primary SSD, the default), "backup" (the slow
 // mechanical backup disk), or "shareddisk" (共享盘: one pool per group;
@@ -796,6 +797,35 @@ function diskModeOf() {
   return isSharedDiskMode() ? "shareddisk" : isBackupMode() ? "backup" : "netdisk";
 }
 
+// runWithCopyProgress shows the bottom-left floating overlay for the
+// duration of a bulk copy/move/transfer request. The server processes the
+// whole batch in one synchronous HTTP call (see netdiskCopy/netdiskTransfer),
+// so live counts come from a fast side-channel poll of /api/tasks?all=1 (the
+// ?all=1 bypasses the Jobs panel's 10s visibility delay -- this overlay wants
+// to show progress from the moment the request is fired) rather than from
+// the response itself, which only arrives once everything is done.
+async function runWithCopyProgress(kind, total, run) {
+  const progress = beginLocalCopy(kind, total);
+  const startedAfter = Date.now() - 2000; // slack for client/server clock skew
+  const poll = setInterval(async () => {
+    try {
+      const tasks = await api("/api/tasks?all=1");
+      const mine = (tasks || [])
+        .filter((t) => t.kind === kind && Date.parse(t.startedAt) >= startedAfter)
+        .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
+      if (mine) progress.update(mine.done, mine.total, mine.message);
+    } catch {
+      /* best-effort; the overlay just won't advance this tick */
+    }
+  }, 600);
+  try {
+    return await run();
+  } finally {
+    clearInterval(poll);
+    progress.end();
+  }
+}
+
 async function copyItems(items, targetDisk) {
   const sourceDisk = diskModeOf();
   // The shared disk has no same-disk copy endpoint of its own — the folder
@@ -808,10 +838,10 @@ async function copyItems(items, targetDisk) {
   const body = sameDisk
     ? { items, move: false, policy: "rename" }
     : { fromDisk: sourceDisk, toDisk: targetDisk, items, move: false, policy: "rename" };
-  const data = await api(endpoint, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  const kind = sameDisk ? "netdisk.copy" : "netdisk.transfer";
+  const data = await runWithCopyProgress(kind, items.length, () =>
+    api(endpoint, { method: "POST", body: JSON.stringify(body) })
+  );
   clearCurrentSelection();
   const errors = (data.results || []).filter((r) => r.status === "error").length;
   toast(errors ? t("netdisk.copiedNFailed", { n: data.count || 0, err: errors }) : t("netdisk.copiedN", { n: data.count || 0 }), !errors);
@@ -827,10 +857,10 @@ async function moveItems(items, targetDisk) {
   const body = sameDisk
     ? { items, move: true, policy: "rename" }
     : { fromDisk: sourceDisk, toDisk: targetDisk, items, move: true, policy: "rename" };
-  const data = await api(endpoint, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  const kind = sameDisk ? "netdisk.move" : "netdisk.transfer";
+  const data = await runWithCopyProgress(kind, items.length, () =>
+    api(endpoint, { method: "POST", body: JSON.stringify(body) })
+  );
   clearCurrentSelection();
   const errors = (data.results || []).filter((r) => r.status === "error").length;
   toast(errors ? t("netdisk.movedNFailed", { n: data.count || 0, err: errors }) : t("netdisk.movedN", { n: data.count || 0 }), !errors);

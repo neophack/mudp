@@ -781,6 +781,30 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 .upload-file-row.is-error .upload-file-status { color: var(--danger); }
 .upload-file-row.is-uploading .upload-file-status { color: var(--accent); }
 
+/* ---------- Copy/move progress overlay ---------- */
+.copy-overlay {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 70;
+  width: min(360px, calc(100vw - 40px));
+  background: var(--workspace);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+}
+.copy-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.copy-title { font-size: 13px; font-weight: 600; }
+.copy-close {
+  font-size: 16px; line-height: 1; padding: 2px 6px; cursor: pointer;
+  color: var(--muted); background: transparent; border: none; border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+.copy-close:hover { color: var(--ink); background: var(--line-soft); }
+.copy-bar { margin: 8px 0 6px; }
+.copy-meta { font-size: 12px; color: var(--muted); }
+
 /* ---------- Modals ---------- */
 .modal-backdrop {
   position: fixed;

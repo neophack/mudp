@@ -107,6 +107,36 @@ func TestUserTasksGatesByAgeAndOwner(t *testing.T) {
 	}
 }
 
+// TestUserTasksAllBypassesAgeGate verifies ?all=1 (used by the bottom-left
+// copy/move progress overlay to get live counts from the moment a request is
+// fired) surfaces a just-started task immediately, while still respecting the
+// owner scope -- it is not an authorization bypass, only a UX delay bypass.
+func TestUserTasksAllBypassesAgeGate(t *testing.T) {
+	a := newForwardApp(t)
+	a.activeTasks = NewActiveTaskRegistry()
+
+	young, doneYoung := a.activeTasks.start("netdisk.copy", "alice young", &store.User{ID: 1, Username: "alice"})
+	defer doneYoung()
+	_ = young // StartedAt = now, under the normal 10s threshold
+
+	other, doneOther := a.activeTasks.start("netdisk.copy", "bob young", &store.User{ID: 2, Username: "bob"})
+	defer doneOther()
+	_ = other
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks?all=1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), userKey, &store.User{ID: 1, Username: "alice", Role: store.RoleUser}))
+	a.userTasks(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "alice young") {
+		t.Fatalf("?all=1 should surface a just-started task without waiting out the visibility delay: %s", body)
+	}
+	if strings.Contains(body, "bob young") {
+		t.Fatalf("?all=1 must still scope to the caller's own tasks: %s", body)
+	}
+}
+
 // TestChunkUploadRegistrySnapshot verifies progress is derived from the
 // on-disk resume state, and that a session whose state file has been removed
 // (upload completed/aborted through some other path) is dropped silently.

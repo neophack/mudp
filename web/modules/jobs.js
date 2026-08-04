@@ -12,6 +12,7 @@
 
 import { state, api } from "../app.js";
 import { showModal, setModalBody } from "./ui.js";
+import { syncCopyOverlayFromTasks, COPY_MOVE_TASK_KINDS } from "../lib/copyProgress.js";
 
 const KIND_LABEL = {
   "image.pull": "Pull image",
@@ -243,6 +244,11 @@ export function startTaskPolling() {
 
 function mergeUserTasks(serverTasks) {
   if (!Array.isArray(serverTasks)) return;
+  // Drives the bottom-left copy/move progress overlay for operations this
+  // tab didn't itself start -- most notably one still running after the page
+  // was refreshed mid-copy, since a page load re-enters this poll loop but
+  // loses whatever local promise was tracking the in-flight request.
+  syncCopyOverlayFromTasks(serverTasks.filter((t) => COPY_MOVE_TASK_KINDS.has(t.kind)));
   const seen = new Set(serverTasks.map((t) => t.id));
   const kept = [];
   for (const j of state.jobs || []) {
