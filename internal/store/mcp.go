@@ -154,6 +154,34 @@ func (db *DB) DeleteMCPToken(userID int64, admin bool, tokenID int64) error {
 	return nil
 }
 
+// RotateMCPToken replaces a token's cleartext/hash in place, keeping its id,
+// container, owner, label, and expiry. The old cleartext stops authenticating
+// immediately: the hash it maps to no longer exists once this returns. Follows
+// the same ownership rule as DeleteMCPToken — non-admins may only rotate their
+// own tokens.
+func (db *DB) RotateMCPToken(userID int64, admin bool, tokenID int64, cleartext, tokenHash string) error {
+	if admin {
+		res, err := db.Exec(`update mcp_tokens set token_hash=?, token_plaintext=?, last_used_at='' where id=?`, tokenHash, cleartext, tokenID)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return errors.New("token not found")
+		}
+		return nil
+	}
+	res, err := db.Exec(`update mcp_tokens set token_hash=?, token_plaintext=?, last_used_at='' where id=? and owner_id=?`, tokenHash, cleartext, tokenID, userID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errors.New("token not found")
+	}
+	return nil
+}
+
 // MCPTokenTouch marks a token as just used (best-effort, never fails the request).
 func (db *DB) MCPTokenTouch(tokenID int64) error {
 	_, err := db.Exec(`update mcp_tokens set last_used_at=? where id=?`, time.Now().Format(time.RFC3339), tokenID)

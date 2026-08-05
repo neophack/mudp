@@ -240,6 +240,14 @@ func (a *App) Routes() http.Handler {
 	r.With(apiRateLimiter.Middleware).Get("/mcp/{token}/sse", a.mcpSSE)
 	r.With(apiRateLimiter.Middleware).Post("/mcp/{token}/messages", a.mcpMessages)
 
+	// Token-free MCP access for callers already on this listener: only the
+	// container id is needed. Registered here only — the external listener
+	// (mcp_remote.go) defines no route for /mcp/local/... and 404s it, so this
+	// path never becomes reachable from the internet.
+	r.With(apiRateLimiter.Middleware).Post("/mcp/local/{containerId}", a.mcpStreamableHTTPLocal)
+	r.With(apiRateLimiter.Middleware).Get("/mcp/local/{containerId}/sse", a.mcpSSELocal)
+	r.With(apiRateLimiter.Middleware).Post("/mcp/local/{containerId}/messages", a.mcpMessagesLocal)
+
 	// Activated-user business endpoints (any non-pending role).
 	r.Group(func(r chi.Router) {
 		r.Use(apiRateLimiter.Middleware)
@@ -371,6 +379,10 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/mcp/tokens", a.mcpTokenList)
 		r.Post("/api/mcp/tokens", a.mcpTokenCreate)
 		r.Delete("/api/mcp/tokens/{id}", a.mcpTokenDelete)
+		// Mints a fresh cleartext for an existing token, invalidating the old one
+		// immediately — lets an owner rotate a leaked/shared token without losing
+		// its label, container binding, or expiry.
+		r.Post("/api/mcp/tokens/{id}/rotate", a.mcpTokenRotate)
 		// A token's own tool-call history for the LOG dialog. Owners read their
 		// own; the handler enforces ownership server-side for non-admins.
 		r.Get("/api/mcp/tokens/{id}/usage", a.mcpTokenUsage)
