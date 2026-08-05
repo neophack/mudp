@@ -32,7 +32,7 @@ type ImagePreset struct {
 	Ports []string `json:"ports,omitempty"`
 	// Booleans use pointers so the preset can express "leave to user" (nil).
 	Forward8080  *bool `json:"forward8080,omitempty"`
-	Forward80    *bool `json:"forward80,omitempty"`
+	Forward8090  *bool `json:"forward8090,omitempty"`
 	MountNetdisk *bool `json:"mountNetdisk,omitempty"`
 	// MountShm controls whether the host's /dev/shm is bind-mounted into the
 	// container. Pointer so nil leaves the create form's own default (checked) in
@@ -129,7 +129,7 @@ func isEmptyPreset(p *ImagePreset) bool {
 		return true
 	}
 	return p.GPUs == "" && len(p.Env) == 0 && len(p.Ports) == 0 &&
-		p.Forward8080 == nil && p.Forward80 == nil &&
+		p.Forward8080 == nil && p.Forward8090 == nil &&
 		p.MountNetdisk == nil && p.MountShm == nil && p.MountSharedDisk == nil && len(p.Networks) == 0 && len(p.SelectableNetworks) == 0 &&
 		p.RestartPolicy == "" &&
 		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == "" && p.RequireLogin == nil &&

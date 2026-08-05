@@ -114,7 +114,7 @@ type CreateOptions struct {
 	Env         []string
 	GPUs        string
 	Forward8080 bool
-	Forward80   bool
+	Forward8090 bool
 	// RequireLogin, when true, stamps the container so each of its forwarded
 	// ports is login-gated. Server-supplied from the image preset — never taken
 	// from the request, so a user cannot self-grant or self-revoke it.
@@ -540,12 +540,12 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		}
 		publish(hostPort, 8080, "tcp")
 	}
-	if opts.Forward80 {
+	if opts.Forward8090 {
 		hostPort, err := nextPort()
 		if err != nil {
 			return "", err
 		}
-		publish(hostPort, 80, "tcp")
+		publish(hostPort, 8090, "tcp")
 	}
 	labels := map[string]string{
 		ManagedLabel:       "true",
@@ -554,7 +554,7 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		"mudp.image":       opts.ImageName,
 		"mudp.gpu":         opts.GPUs,
 		"mudp.forward8080": fmt.Sprint(opts.Forward8080),
-		"mudp.forward80":   fmt.Sprint(opts.Forward80),
+		"mudp.forward8090": fmt.Sprint(opts.Forward8090),
 	}
 	// Merge user-supplied labels on top of the managed labels, but never let a
 	// caller overwrite the mudp.* keys (ownership/management must stay intact).

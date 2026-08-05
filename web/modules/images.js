@@ -152,7 +152,7 @@ export function openPresetModal(imageId) {
         `<textarea name="ports" spellcheck="false">${escapeHtml((p.ports || []).join("\n"))}</textarea>` +
         `<div class="check-grid">` +
           presetCheck("forward8080", t("images.forward8080"), p.forward8080) +
-          presetCheck("forward80", t("images.forward80"), p.forward80) +
+          presetCheck("forward8090", t("images.forward8090"), p.forward8090) +
           presetCheck("mountNetdisk", t("images.presetNetdisk"), p.mountNetdisk) +
           presetCheck("mountShm", t("images.presetShm"), p.mountShm) +
           presetCheck("mountSharedDisk", t("images.presetSharedDisk"), p.mountSharedDisk) +
@@ -219,7 +219,7 @@ export function openPresetModal(imageId) {
       env: lines(fd.get("env")),
       ports: lines(fd.get("ports")),
       forward8080: form.querySelector('[name=forward8080]').checked || undefined,
-      forward80: form.querySelector('[name=forward80]').checked || undefined,
+      forward8090: form.querySelector('[name=forward8090]').checked || undefined,
       mountNetdisk: form.querySelector('[name=mountNetdisk]').checked || undefined,
       mountShm: form.querySelector('[name=mountShm]').checked || undefined,
       mountSharedDisk: form.querySelector('[name=mountSharedDisk]').checked || undefined,

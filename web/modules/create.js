@@ -70,7 +70,7 @@ export function openCreateModal() {
         `</select>` +
 
         `<label class="check"><input type="checkbox" name="forward8080"> ${t("create.forward8080")}</label>` +
-        `<label class="check"><input type="checkbox" name="forward80"> ${t("create.forward80")}</label>` +
+        `<label class="check"><input type="checkbox" name="forward8090"> ${t("create.forward8090")}</label>` +
         `<label class="check"><input type="checkbox" name="mountNetdisk" checked> ${t("create.mountNetdisk")}</label>` +
         `<label class="check"><input type="checkbox" name="mountShm" checked> ${t("create.mountShm")}</label>` +
         // Offered on every new container — but only once the caller's group
@@ -125,7 +125,7 @@ export function openCreateModal() {
       .filter(Boolean);
 
     payload.forward8080 = fd.has("forward8080");
-    payload.forward80 = fd.has("forward80");
+    payload.forward8090 = fd.has("forward8090");
     payload.mountNetdisk = fd.has("mountNetdisk");
     payload.mountShm = fd.has("mountShm");
     payload.mountSharedDisk = fd.has("mountSharedDisk");
@@ -202,7 +202,7 @@ async function applyPreset(imageName) {
   if (p.ports && p.ports.length) form.querySelector('[name="ports"]').value = p.ports.map((c) => ":" + c).join("\n");
   if (p.restartPolicy) form.querySelector('[name="restartPolicy"]').value = p.restartPolicy;
   form.querySelector('[name="forward8080"]').checked = !!p.forward8080;
-  form.querySelector('[name="forward80"]').checked = !!p.forward80;
+  form.querySelector('[name="forward8090"]').checked = !!p.forward8090;
   if (p.mountNetdisk !== undefined) form.querySelector('[name="mountNetdisk"]').checked = p.mountNetdisk;
   if (p.mountShm !== undefined) form.querySelector('[name="mountShm"]').checked = p.mountShm;
   // A preset that opts in just pre-checks the box as a convenience, mirroring

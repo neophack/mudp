@@ -1055,7 +1055,7 @@ type createRequest struct {
 	Env          []string `json:"env"`
 	GPUs         string   `json:"gpus"`
 	Forward8080  bool     `json:"forward8080"`
-	Forward80    bool     `json:"forward80"`
+	Forward8090  bool     `json:"forward8090"`
 	PortsRaw     string   `json:"ports"`
 	MountsRaw    string   `json:"mounts"`
 	Networks     []string `json:"networks"`
@@ -1306,7 +1306,7 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		// request, for the same reason as RequireLogin above.
 		NoVNCPasswordEnv: presetNoVNCPasswordEnv(img.Preset),
 		Env:              normalizeEnv(req.Env), GPUs: req.GPUs,
-		Forward8080: req.Forward8080, Forward80: req.Forward80,
+		Forward8080: req.Forward8080, Forward8090: req.Forward8090,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,
 		MountSharedDisk: mountSharedDisk, SharedDiskMounts: sharedDiskMounts,
