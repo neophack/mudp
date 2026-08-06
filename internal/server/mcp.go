@@ -18,6 +18,11 @@ import (
 	"mudp/internal/store"
 )
 
+// mcpExternalKeyLen is the byte length of the random external key (10 bytes →
+// 20 hex chars). Shorter than the main token since it is typed/pasted by hand
+// into an Authorization header far more often than the URL token is.
+const mcpExternalKeyLen = 10
+
 // mcpTokenLen is the byte length of the random cleartext token (32 bytes → 64
 // hex chars). Long enough to resist brute force, short enough to paste.
 const mcpTokenLen = 32
@@ -342,6 +347,19 @@ func generateMCPToken() (cleartext, hash string, err error) {
 	return cleartext, hash, nil
 }
 
+// generateMCPExternalKey returns a random hex external key and its SHA-256
+// hash, shorter than generateMCPToken's since it is a manually-copied
+// Authorization header value rather than a URL segment.
+func generateMCPExternalKey() (cleartext, hash string, err error) {
+	b := make([]byte, mcpExternalKeyLen)
+	if _, err := rand.Read(b); err != nil {
+		return "", "", err
+	}
+	cleartext = hex.EncodeToString(b)
+	hash = sha256Hex(cleartext)
+	return cleartext, hash, nil
+}
+
 // --- management API (session-authenticated, CSRF-protected) ---
 
 // mcpTokenList returns the caller's MCP tokens (admin sees all). An optional
@@ -586,7 +604,7 @@ func (a *App) mcpTokenRotateExternal(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "token not found")
 		return
 	}
-	cleartext, hash, err := generateMCPToken()
+	cleartext, hash, err := generateMCPExternalKey()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
