@@ -3255,6 +3255,15 @@ audio.viewer-media {
   /* Click-drag pans the image like a desktop viewer; grab/grabbing signals
      that affordance the way scroll containers alone don't. */
   cursor: grab;
+  /* Panning is done by wheel-zoom + drag (see onWheel/onPointerMove in
+     yuv.js), not by dragging a scrollbar, so the native scrollbar is hidden.
+     overflow stays "auto" because scrollLeft/scrollTop are still how panning
+     and zoom-toward-cursor are implemented under the hood. */
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge/IE */
+}
+.raster-canvas-wrap::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Edge */
 }
 .raster-canvas-wrap.panning {
   cursor: grabbing;
