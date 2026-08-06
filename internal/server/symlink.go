@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"mudp/internal/store"
 )
 
 // CreateSymlink creates a symlink (on Linux) or shortcut file (on Windows) named
@@ -133,8 +135,17 @@ func EnsureUserNetdiskDir(parentDir, username, userID, displayName string) error
 		return nil // Netdisk not configured or user lacks identifying info
 	}
 
-	// Construct the user's directory name the same way netdisk access does.
-	dirName := fmt.Sprintf("%s-%s", sanitizePathPart(username), userID)
+	// Construct the user's directory name the same way netdisk access does:
+	// pinyin-slugified display name (falling back to username) plus id.
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		name = username
+	}
+	dirName := fmt.Sprintf("%s-%s", sanitizePathPart(store.Pinyinize(name)), userID)
+	legacyDirName := fmt.Sprintf("%s-%s", sanitizePathPart(username), userID)
+	if err := migrateLegacyOwnerDir(parentDir, legacyDirName, dirName); err != nil {
+		fmt.Printf("Warning: failed to migrate legacy netdisk dir for user %s: %v\n", displayName, err)
+	}
 	userDir := filepath.Join(parentDir, dirName)
 
 	// Create the user directory if it doesn't exist

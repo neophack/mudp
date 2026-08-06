@@ -60,7 +60,12 @@ func (a *App) userBackupRoot(u *store.User) (string, error) {
 }
 
 func (a *App) ensureUserNetdisk(u *store.User, root string) (string, error) {
-	dir := filepath.Join(root, fmt.Sprintf("%s-%d", sanitizePathPart(u.Username), u.ID))
+	newName := pinyinOwnerDirName(u)
+	legacyName := fmt.Sprintf("%s-%d", sanitizePathPart(u.Username), u.ID)
+	if err := migrateLegacyOwnerDir(root, legacyName, newName); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(root, newName)
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return "", err
 	}
@@ -72,6 +77,53 @@ func (a *App) ensureUserNetdisk(u *store.User, root string) (string, error) {
 	// panel requests, not just at container-creation time.
 	fixNetdiskACL(dir)
 	return dir, nil
+}
+
+// pinyinOwnerDirName derives a user's per-owner subfolder name (netdisk,
+// backup, shared disk): their display name (falling back to username)
+// converted to pinyin so a Chinese name is both filesystem-safe and
+// human-readable, then sanitized and suffixed with their id to keep it
+// unique across owners who share a pinyin spelling.
+func pinyinOwnerDirName(u *store.User) string {
+	name := strings.TrimSpace(u.DisplayName)
+	if name == "" {
+		name = u.Username
+	}
+	return fmt.Sprintf("%s-%d", sanitizePathPart(store.Pinyinize(name)), u.ID)
+}
+
+// migrateLegacyOwnerDir renames a pre-pinyin owner directory (named after the
+// raw account identifier, e.g. a Feishu open id) to its pinyin name the first
+// time it's touched after upgrading, and leaves a symlink at the old path so
+// anything still resolving the legacy path keeps working. A no-op once
+// migrated (the old path becomes a symlink, which is left alone) or if there
+// was never a legacy directory to begin with.
+func migrateLegacyOwnerDir(parentDir, legacyName, newName string) error {
+	if legacyName == "" || newName == "" || legacyName == newName {
+		return nil
+	}
+	legacyPath := filepath.Join(parentDir, legacyName)
+	info, err := os.Lstat(legacyPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil // already migrated, or not a plain directory
+	}
+	newPath := filepath.Join(parentDir, newName)
+	if _, err := os.Lstat(newPath); err == nil {
+		return nil // new path already exists; leave both alone
+	}
+	if err := os.Rename(legacyPath, newPath); err != nil {
+		return fmt.Errorf("migrate legacy owner dir %s to %s: %w", legacyPath, newPath, err)
+	}
+	if err := os.Symlink(newName, legacyPath); err != nil {
+		return fmt.Errorf("symlink legacy owner dir %s -> %s: %w", legacyPath, newName, err)
+	}
+	return nil
 }
 
 func sanitizePathPart(s string) string {

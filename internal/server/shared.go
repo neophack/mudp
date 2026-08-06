@@ -66,18 +66,6 @@ func (a *App) sharedDiskGroupRoot(u *store.User) (string, error) {
 	return root, nil
 }
 
-// sharedDiskFolderName derives the per-user subfolder name inside the shared
-// pool: the user's display name (falling back to username) converted to
-// pinyin so a Chinese name is both filesystem-safe and human-readable, then
-// sanitized the same way netdisk/backup folder names are.
-func sharedDiskFolderName(u *store.User) string {
-	name := strings.TrimSpace(u.DisplayName)
-	if name == "" {
-		name = u.Username
-	}
-	return fmt.Sprintf("%s-%d", sanitizePathPart(store.Pinyinize(name)), u.ID)
-}
-
 // userSharedDiskOwnRoot resolves and creates the caller's own subfolder
 // inside their group's shared pool, mirroring ensureUserNetdisk (including
 // the ACL fix, since a container mounted read-write into this folder can
@@ -87,7 +75,7 @@ func (a *App) userSharedDiskOwnRoot(u *store.User) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(root, sharedDiskFolderName(u))
+	dir := filepath.Join(root, pinyinOwnerDirName(u))
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return "", err
 	}
@@ -127,7 +115,7 @@ func requireOwnSharedDiskPath(u *store.User, rel string) error {
 	if u.Role == store.RoleAdmin {
 		return nil
 	}
-	if firstPathSegment(rel) != sharedDiskFolderName(u) {
+	if firstPathSegment(rel) != pinyinOwnerDirName(u) {
 		return fmt.Errorf("you can only modify files inside your own shared folder")
 	}
 	return nil
@@ -150,7 +138,7 @@ func (a *App) sharedDiskBrowse(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	own := sharedDiskFolderName(u)
+	own := pinyinOwnerDirName(u)
 	items := make([]fileItem, 0, len(entries))
 	for _, entry := range entries {
 		info, err := entry.Info()
@@ -390,7 +378,7 @@ func (a *App) sharedDiskMountsFor(u *store.User) ([]dockerx.SharedDiskMount, err
 	if root == "" {
 		return nil, fmt.Errorf("shared disk path is not configured for your group")
 	}
-	ownName := sharedDiskFolderName(u)
+	ownName := pinyinOwnerDirName(u)
 	// Members of the group that owns the pool, not of the caller's own group —
 	// the two differ for an admin resolving through the fallback above.
 	members, err := a.db.SharedDiskGroupMembers(gid)
@@ -399,7 +387,7 @@ func (a *App) sharedDiskMountsFor(u *store.User) ([]dockerx.SharedDiskMount, err
 	}
 	readWriteByFolder := make(map[string]bool, len(members))
 	for _, m := range members {
-		readWriteByFolder[sharedDiskFolderName(&m)] = m.SharedDiskReadWrite
+		readWriteByFolder[pinyinOwnerDirName(&m)] = m.SharedDiskReadWrite
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
