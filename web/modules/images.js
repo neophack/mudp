@@ -79,10 +79,8 @@ function presetSummary(p) {
   if ((p.ports || []).length) bits.push("ports:" + p.ports.join(","));
   if ((p.devices || []).length) bits.push("dev:" + p.devices.length);
   if ((p.cdiDevices || []).length) bits.push("cdi:" + p.cdiDevices.length);
-  if (p.novncPasswordEnv) {
-    const pwPorts = [p.novncPassword8080 && "8080", p.novncPassword8090 && "8090"].filter(Boolean);
-    bits.push("noVNC:" + p.novncPasswordEnv + (pwPorts.length ? "@" + pwPorts.join(",") : ""));
-  }
+  if (p.novncPasswordEnv8080) bits.push("8080:?" + (p.novncPasswordParam8080 || "password") + "=" + p.novncPasswordEnv8080);
+  if (p.novncPasswordEnv8090) bits.push("8090:?" + (p.novncPasswordParam8090 || "tkn") + "=" + p.novncPasswordEnv8090);
   const loginPorts = [p.requireLogin8080 && "8080", p.requireLogin8090 && "8090"].filter(Boolean);
   if (loginPorts.length) bits.push("login:" + loginPorts.join(","));
   const httpsPorts = [p.https8080 && "8080", p.https8090 && "8090"].filter(Boolean);
@@ -172,13 +170,18 @@ export function openPresetModal(imageId) {
           presetCheck("requireLogin8090", t("images.requireLogin8090"), p.requireLogin8090) +
           presetCheck("https8090", t("images.https8090"), p.https8090) +
         `</div>` +
-        `<label class="field-label">${t("images.novncPasswordLabel")}</label>` +
-        `<input name="novncPasswordEnv" placeholder="VNC_PW" value="${escapeHtml(p.novncPasswordEnv || "")}">` +
-        `<p class="hint">${t("images.novncPasswordHint")}</p>` +
-        `<div class="check-grid">` +
-          presetCheck("novncPassword8080", t("images.novncPassword8080"), p.novncPassword8080) +
-          presetCheck("novncPassword8090", t("images.novncPassword8090"), p.novncPassword8090) +
+        `<label class="field-label">${t("images.novncPassword8080Label")}</label>` +
+        `<div style="display:flex;gap:8px;">` +
+          `<input name="novncPasswordEnv8080" placeholder="VNC_PW" value="${escapeHtml(p.novncPasswordEnv8080 || "")}" style="flex:2;">` +
+          `<input name="novncPasswordParam8080" placeholder="password" value="${escapeHtml(p.novncPasswordParam8080 || "")}" style="flex:1;">` +
         `</div>` +
+        `<p class="hint">${t("images.novncPassword8080Hint")}</p>` +
+        `<label class="field-label">${t("images.novncPassword8090Label")}</label>` +
+        `<div style="display:flex;gap:8px;">` +
+          `<input name="novncPasswordEnv8090" placeholder="JUPYTER_TOKEN" value="${escapeHtml(p.novncPasswordEnv8090 || "")}" style="flex:2;">` +
+          `<input name="novncPasswordParam8090" placeholder="tkn" value="${escapeHtml(p.novncPasswordParam8090 || "")}" style="flex:1;">` +
+        `</div>` +
+        `<p class="hint">${t("images.novncPassword8090Hint")}</p>` +
         (selectableChecks
           ? `<label class="field-label">${t("images.selectableNetworks")}</label><div class="check-grid" id="selectableNetworksGrid">${selectableChecks}</div>` +
             `<p class="hint">${t("images.selectableNetworksHint")}</p>` +
@@ -245,9 +248,10 @@ export function openPresetModal(imageId) {
       requireLogin8090: form.querySelector('[name=requireLogin8090]').checked || undefined,
       https8080: form.querySelector('[name=https8080]').checked || undefined,
       https8090: form.querySelector('[name=https8090]').checked || undefined,
-      novncPasswordEnv: (fd.get("novncPasswordEnv") || "").trim(),
-      novncPassword8080: form.querySelector('[name=novncPassword8080]').checked || undefined,
-      novncPassword8090: form.querySelector('[name=novncPassword8090]').checked || undefined,
+      novncPasswordEnv8080: (fd.get("novncPasswordEnv8080") || "").trim(),
+      novncPasswordParam8080: (fd.get("novncPasswordParam8080") || "").trim(),
+      novncPasswordEnv8090: (fd.get("novncPasswordEnv8090") || "").trim(),
+      novncPasswordParam8090: (fd.get("novncPasswordParam8090") || "").trim(),
       selectableNetworks,
       networks,
       restartPolicy: (fd.get("restartPolicy") || "").trim(),

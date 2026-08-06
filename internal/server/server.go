@@ -1104,13 +1104,44 @@ func presetDevices(p *store.ImagePreset) (devices, cdiDevices []string) {
 	return append([]string(nil), p.Devices...), append([]string(nil), p.CDIDevices...)
 }
 
-// presetNoVNCPasswordEnv returns the env var name an image preset flagged as
-// its noVNC auto-login password source. A nil preset flags nothing.
-func presetNoVNCPasswordEnv(p *store.ImagePreset) string {
+// presetNoVNCPasswordEnv8080 returns the env var name an image preset flagged
+// as its 8080 auto-login secret source. A nil preset flags nothing.
+func presetNoVNCPasswordEnv8080(p *store.ImagePreset) string {
 	if p == nil {
 		return ""
 	}
-	return strings.TrimSpace(p.NoVNCPasswordEnv)
+	return strings.TrimSpace(p.NoVNCPasswordEnv8080)
+}
+
+// presetNoVNCPasswordParam8080 returns the query parameter name an image
+// preset chose for its 8080 auto-login secret (e.g. "password"). A nil
+// preset, or one that left it unset, flags nothing — the caller falls back
+// to dockerx.DefaultNoVNCParam8080.
+func presetNoVNCPasswordParam8080(p *store.ImagePreset) string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.NoVNCPasswordParam8080)
+}
+
+// presetNoVNCPasswordEnv8090 returns the env var name an image preset flagged
+// as its 8090 auto-login secret source. A nil preset flags nothing.
+func presetNoVNCPasswordEnv8090(p *store.ImagePreset) string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.NoVNCPasswordEnv8090)
+}
+
+// presetNoVNCPasswordParam8090 returns the query parameter name an image
+// preset chose for its 8090 auto-login secret (e.g. "tkn"). A nil preset, or
+// one that left it unset, flags nothing — the caller falls back to
+// dockerx.DefaultNoVNCParam8090.
+func presetNoVNCPasswordParam8090(p *store.ImagePreset) string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.NoVNCPasswordParam8090)
 }
 
 // presetBool resolves one of an image preset's pointer-typed booleans
@@ -1316,14 +1347,15 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		RequireLogin8090: img.Preset != nil && presetBool(img.Preset.RequireLogin8090),
 		HTTPS8080:        img.Preset != nil && presetBool(img.Preset.HTTPS8080),
 		HTTPS8090:        img.Preset != nil && presetBool(img.Preset.HTTPS8090),
-		// Which env var (if any) holds the noVNC auto-login password, and which
-		// of 8080/8090 it applies to, are image-level admin decisions, read from
-		// the preset and never from the request, for the same reason as
-		// RequireLogin8080/8090 above.
-		NoVNCPasswordEnv:  presetNoVNCPasswordEnv(img.Preset),
-		NoVNCPassword8080: img.Preset != nil && presetBool(img.Preset.NoVNCPassword8080),
-		NoVNCPassword8090: img.Preset != nil && presetBool(img.Preset.NoVNCPassword8090),
-		Env:               normalizeEnv(req.Env), GPUs: req.GPUs,
+		// Which env var (if any) holds the 8080/8090 auto-login secret, and
+		// which query parameter it is appended as, are image-level admin
+		// decisions, read from the preset and never from the request, for the
+		// same reason as RequireLogin8080/8090 above.
+		NoVNCPasswordEnv8080:   presetNoVNCPasswordEnv8080(img.Preset),
+		NoVNCPasswordParam8080: presetNoVNCPasswordParam8080(img.Preset),
+		NoVNCPasswordEnv8090:   presetNoVNCPasswordEnv8090(img.Preset),
+		NoVNCPasswordParam8090: presetNoVNCPasswordParam8090(img.Preset),
+		Env:                    normalizeEnv(req.Env), GPUs: req.GPUs,
 		Forward8080: req.Forward8080, Forward8090: req.Forward8090,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,

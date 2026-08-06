@@ -66,8 +66,8 @@ func TestIsEmptyPresetSelectableNetworks(t *testing.T) {
 	if !isEmptyPreset(&ImagePreset{}) {
 		t.Fatal("zero-value preset should be considered empty")
 	}
-	if isEmptyPreset(&ImagePreset{NoVNCPassword8080: boolPtr(true)}) {
-		t.Fatal("preset with only NoVNCPassword8080 should not be considered empty")
+	if isEmptyPreset(&ImagePreset{NoVNCPasswordEnv8080: "VNC_PW"}) {
+		t.Fatal("preset with only NoVNCPasswordEnv8080 should not be considered empty")
 	}
 }
 

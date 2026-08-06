@@ -11,6 +11,12 @@ import (
 // starting with a digit, e.g. VNC_PW.
 var envKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// queryParamRe matches a safe query-parameter name: letters/digits/underscore/
+// hyphen, not starting with a digit, e.g. "password" or "tkn". Written
+// unescaped into the open link, so it is kept to a conservative charset that
+// can never break out of the query string (no "=", "&", "?", or whitespace).
+var queryParamRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
+
 // ImagePreset captures an admin-defined default configuration for an image. When a user
 // picks this image in the create-container modal, the preset auto-fills the form so
 // that per-image conventions (e.g. the VNC_PW password env var, the port an app
@@ -93,19 +99,28 @@ type ImagePreset struct {
 	// does: terminating TLS means mudp itself has to own the host socket.
 	HTTPS8080 *bool `json:"https8080,omitempty"`
 	HTTPS8090 *bool `json:"https8090,omitempty"`
-	// NoVNCPasswordEnv names one of this preset's Env keys (e.g. "VNC_PW") whose
-	// resolved value should be appended as "?password=" to the container's
-	// forwarded-port open link, so clicking it logs straight into a noVNC page
-	// instead of stopping at its password prompt. Empty means no auto-login.
-	NoVNCPasswordEnv string `json:"novncPasswordEnv,omitempty"`
-	// NoVNCPassword8080/NoVNCPassword8090 select which of this image's
-	// forwarded 8080/8090 host ports (respectively) NoVNCPasswordEnv's value is
-	// appended to. Independent of each other, so an image running noVNC on only
-	// one of the two ports does not get "?password=" tacked onto an unrelated
-	// service on the other. Both nil/false means the resolved password is
-	// stamped on the container but not appended to either open link.
-	NoVNCPassword8080 *bool `json:"novncPassword8080,omitempty"`
-	NoVNCPassword8090 *bool `json:"novncPassword8090,omitempty"`
+	// NoVNCPasswordEnv8080 names one of this preset's Env keys (e.g. "VNC_PW")
+	// whose resolved value should be appended to the container's forwarded
+	// 8080 open link as a query parameter, so clicking it logs straight into
+	// a noVNC page instead of stopping at its password prompt. Empty means no
+	// auto-login on 8080.
+	NoVNCPasswordEnv8080 string `json:"novncPasswordEnv8080,omitempty"`
+	// NoVNCPasswordParam8080 names the query parameter NoVNCPasswordEnv8080's
+	// value is appended as, e.g. "password" yields "?password=<value>".
+	// Empty defaults to "password" (noVNC's own convention) — see
+	// dockerx.DefaultNoVNCParam8080.
+	NoVNCPasswordParam8080 string `json:"novncPasswordParam8080,omitempty"`
+	// NoVNCPasswordEnv8090 names one of this preset's Env keys (e.g.
+	// "JUPYTER_TOKEN") whose resolved value should be appended to the
+	// container's forwarded 8090 open link as a query parameter. Independent
+	// of NoVNCPasswordEnv8080 — 8080 and 8090 commonly run different services
+	// with different auto-login conventions. Empty means no auto-login on
+	// 8090.
+	NoVNCPasswordEnv8090 string `json:"novncPasswordEnv8090,omitempty"`
+	// NoVNCPasswordParam8090 names the query parameter NoVNCPasswordEnv8090's
+	// value is appended as, e.g. "tkn" yields "?tkn=<value>". Empty defaults
+	// to "tkn" — see dockerx.DefaultNoVNCParam8090.
+	NoVNCPasswordParam8090 string `json:"novncPasswordParam8090,omitempty"`
 }
 
 // MarshalJSON serialises the preset to JSON, returning an empty byte slice for a
@@ -158,8 +173,8 @@ func isEmptyPreset(p *ImagePreset) bool {
 		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == "" &&
 		p.RequireLogin8080 == nil && p.RequireLogin8090 == nil &&
 		p.HTTPS8080 == nil && p.HTTPS8090 == nil &&
-		p.NoVNCPasswordEnv == "" &&
-		p.NoVNCPassword8080 == nil && p.NoVNCPassword8090 == nil
+		p.NoVNCPasswordEnv8080 == "" && p.NoVNCPasswordParam8080 == "" &&
+		p.NoVNCPasswordEnv8090 == "" && p.NoVNCPasswordParam8090 == ""
 }
 
 // ValidatePreset performs lightweight, security-conscious validation of an admin
@@ -178,8 +193,17 @@ func ValidatePreset(p *ImagePreset) error {
 	if err := ValidateEnvTemplates(p.Env); err != nil {
 		return err
 	}
-	if p.NoVNCPasswordEnv != "" && !envKeyRe.MatchString(p.NoVNCPasswordEnv) {
-		return fmt.Errorf("novnc password env %q must be a valid env var name", p.NoVNCPasswordEnv)
+	if p.NoVNCPasswordEnv8080 != "" && !envKeyRe.MatchString(p.NoVNCPasswordEnv8080) {
+		return fmt.Errorf("novnc password env (8080) %q must be a valid env var name", p.NoVNCPasswordEnv8080)
+	}
+	if p.NoVNCPasswordEnv8090 != "" && !envKeyRe.MatchString(p.NoVNCPasswordEnv8090) {
+		return fmt.Errorf("novnc password env (8090) %q must be a valid env var name", p.NoVNCPasswordEnv8090)
+	}
+	if p.NoVNCPasswordParam8080 != "" && !queryParamRe.MatchString(p.NoVNCPasswordParam8080) {
+		return fmt.Errorf("novnc password query param (8080) %q must be a valid query parameter name", p.NoVNCPasswordParam8080)
+	}
+	if p.NoVNCPasswordParam8090 != "" && !queryParamRe.MatchString(p.NoVNCPasswordParam8090) {
+		return fmt.Errorf("novnc password query param (8090) %q must be a valid query parameter name", p.NoVNCPasswordParam8090)
 	}
 	for _, port := range p.Ports {
 		if !isAllDigits(port) {

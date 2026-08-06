@@ -33,19 +33,34 @@ const (
 	ManagedLabel = "mudp.managed"
 	UserLabel    = "mudp.user"
 	NameLabel    = "mudp.name"
-	// NoVNCPasswordLabel stores the resolved value of the env var an image
-	// preset named as its noVNC auto-login password (e.g. VNC_PW), so the
-	// container list can build a "?password=" open link without a per-row
-	// inspect call. Empty/absent means the image did not request this.
-	NoVNCPasswordLabel = "mudp.novnc.password"
-	// NoVNCPasswordPortsLabel records which of this container's forwarded
-	// 8080/8090 host ports NoVNCPasswordLabel's value should be appended to, as
-	// a comma-separated list of container port numbers (e.g. "8080" or
-	// "8080,8090"). Derived from the image preset's per-port
-	// NoVNCPassword8080/NoVNCPassword8090 at create time. A port not listed
-	// here opens without "?password=" even when the container carries a
-	// resolved password.
-	NoVNCPasswordPortsLabel = "mudp.novnc.password_ports"
+	// NoVNCPassword8080Label stores the resolved value of the env var an image
+	// preset named as its 8080 auto-login secret (e.g. VNC_PW), so the
+	// container list can build an open link without a per-row inspect call.
+	// Empty/absent means the image did not request this.
+	NoVNCPassword8080Label = "mudp.novnc.password8080"
+	// NoVNCParam8080Label stores the query parameter name that
+	// NoVNCPassword8080Label's value is appended as (e.g. "password" yields
+	// "?password=<value>"). Empty/absent falls back to DefaultNoVNCParam8080.
+	NoVNCParam8080Label = "mudp.novnc.param8080"
+	// NoVNCPassword8090Label stores the resolved value of the env var an image
+	// preset named as its 8090 auto-login secret (e.g. JUPYTER_TOKEN).
+	// Independent of NoVNCPassword8080Label — 8080 and 8090 commonly run
+	// different services with different auto-login conventions. Empty/absent
+	// means the image did not request this.
+	NoVNCPassword8090Label = "mudp.novnc.tkn8090"
+	// NoVNCParam8090Label stores the query parameter name that
+	// NoVNCPassword8090Label's value is appended as. Empty/absent falls back
+	// to DefaultNoVNCParam8090.
+	NoVNCParam8090Label = "mudp.novnc.param8090"
+)
+
+// DefaultNoVNCParam8080/DefaultNoVNCParam8090 are the query parameter names
+// used to auto-login the 8080/8090 forwarded ports when an image preset
+// names an auto-login env var but leaves the parameter name unset — noVNC's
+// own "?password=" convention for 8080, a token-style "?tkn=" for 8090.
+const (
+	DefaultNoVNCParam8080 = "password"
+	DefaultNoVNCParam8090 = "tkn"
 )
 
 var cleanPart = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
@@ -144,21 +159,27 @@ type CreateOptions struct {
 	// supplied from the image preset, same rationale as RequireLogin8080/8090.
 	HTTPS8080 bool
 	HTTPS8090 bool
-	// NoVNCPasswordEnv names an env var (e.g. "VNC_PW") whose resolved value
-	// should be stamped as NoVNCPasswordLabel, so the container list can open a
-	// noVNC page pre-authenticated via "?password=". Server-supplied from the
+	// NoVNCPasswordEnv8080 names an env var (e.g. "VNC_PW") whose resolved
+	// value should be stamped as NoVNCPassword8080Label, so the container list
+	// can open the 8080 page pre-authenticated. Server-supplied from the
 	// image preset — never taken from the request.
-	NoVNCPasswordEnv string
-	// NoVNCPassword8080/NoVNCPassword8090 select which of the container's
-	// forwarded 8080/8090 host ports (respectively) the resolved noVNC
-	// password is appended to as "?password=" — independent of each other, so
-	// an image running noVNC on only one of the two ports does not get the
-	// query string tacked onto an unrelated service on the other. Server-
-	// supplied from the image preset, same rationale as RequireLogin8080/8090.
-	NoVNCPassword8080 bool
-	NoVNCPassword8090 bool
-	Ports             []string
-	PortPrefix        int
+	NoVNCPasswordEnv8080 string
+	// NoVNCPasswordParam8080 names the query parameter NoVNCPasswordEnv8080's
+	// value is appended as (empty defaults to DefaultNoVNCParam8080,
+	// "password"). Server-supplied from the image preset.
+	NoVNCPasswordParam8080 string
+	// NoVNCPasswordEnv8090 names an env var (e.g. "JUPYTER_TOKEN") whose
+	// resolved value should be stamped as NoVNCPassword8090Label, so the
+	// container list can open the 8090 page pre-authenticated. Independent of
+	// NoVNCPasswordEnv8080, same rationale as RequireLogin8080/8090. Server-
+	// supplied from the image preset.
+	NoVNCPasswordEnv8090 string
+	// NoVNCPasswordParam8090 names the query parameter NoVNCPasswordEnv8090's
+	// value is appended as (empty defaults to DefaultNoVNCParam8090, "tkn").
+	// Server-supplied from the image preset.
+	NoVNCPasswordParam8090 string
+	Ports                  []string
+	PortPrefix             int
 	// Mounts are bind/named-volume mounts: "source:target[:ro]" entries.
 	Mounts       []string
 	NetdiskPath  string
@@ -636,25 +657,30 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			labels[ForwardLoginPortsLabel] = strings.Join(loginPorts, ",")
 		}
 	}
-	// Stamp the resolved noVNC auto-login password (if the image preset named
-	// one), so the container list can build a "?password=" open link without a
-	// second inspect call per row. Server-supplied, same rationale as RequireLogin.
-	// Which of 8080/8090 it is appended to is recorded separately, so a
-	// password meant for one port's noVNC page is not tacked onto an unrelated
-	// service on the other.
-	if key := strings.TrimSpace(opts.NoVNCPasswordEnv); key != "" {
+	// Stamp the resolved 8080/8090 auto-login secrets (if the image preset
+	// named env vars for them), plus the query parameter each is appended as,
+	// so the container list can build the open links without a second inspect
+	// call per row. Server-supplied, same rationale as RequireLogin.
+	// Independent per port, so a secret meant for one port's page is not
+	// tacked onto an unrelated service on the other.
+	if key := strings.TrimSpace(opts.NoVNCPasswordEnv8080); key != "" {
 		if val, ok := lookupEnvValue(opts.Env, key); ok && val != "" {
-			labels[NoVNCPasswordLabel] = val
-			var pwPorts []string
-			if opts.NoVNCPassword8080 {
-				pwPorts = append(pwPorts, "8080")
+			labels[NoVNCPassword8080Label] = val
+			param := strings.TrimSpace(opts.NoVNCPasswordParam8080)
+			if param == "" {
+				param = DefaultNoVNCParam8080
 			}
-			if opts.NoVNCPassword8090 {
-				pwPorts = append(pwPorts, "8090")
+			labels[NoVNCParam8080Label] = param
+		}
+	}
+	if key := strings.TrimSpace(opts.NoVNCPasswordEnv8090); key != "" {
+		if val, ok := lookupEnvValue(opts.Env, key); ok && val != "" {
+			labels[NoVNCPassword8090Label] = val
+			param := strings.TrimSpace(opts.NoVNCPasswordParam8090)
+			if param == "" {
+				param = DefaultNoVNCParam8090
 			}
-			if len(pwPorts) > 0 {
-				labels[NoVNCPasswordPortsLabel] = strings.Join(pwPorts, ",")
-			}
+			labels[NoVNCParam8090Label] = param
 		}
 	}
 	hostCfg := &container.HostConfig{
@@ -1099,25 +1125,26 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 				ports = append(ports, rendered)
 			}
 		}
-		novncPassword := c.Labels[NoVNCPasswordLabel]
-		novncPasswordPorts := parsePortList(c.Labels[NoVNCPasswordPortsLabel])
-		// Only the ports the image preset selected (NoVNCPassword8080/8090) get
-		// the password appended — a port not in the label opens plain even
-		// though the container carries a resolved password for the other one.
-		password8080, password8090 := "", ""
-		if novncPasswordPorts[8080] {
-			password8080 = novncPassword
+		// Each port auto-logs in via its own resolved secret + query parameter
+		// name (default "password" for 8080, "tkn" for 8090; admin-overridable
+		// per image preset). Independent per port.
+		password8080 := c.Labels[NoVNCPassword8080Label]
+		param8080 := c.Labels[NoVNCParam8080Label]
+		if param8080 == "" {
+			param8080 = DefaultNoVNCParam8080
 		}
-		if novncPasswordPorts[8090] {
-			password8090 = novncPassword
+		tkn8090 := c.Labels[NoVNCPassword8090Label]
+		param8090 := c.Labels[NoVNCParam8090Label]
+		if param8090 == "" {
+			param8090 = DefaultNoVNCParam8090
 		}
 		out = append(out, Container{
 			ID: c.ID, Name: display, FullName: full, Owner: c.Labels[UserLabel], Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
-			HTTP8080URL:  withNoVNCPassword(httpURL(c.Ports, forwards, 8080), password8080),
-			HTTP8090URL:  withNoVNCPassword(httpURL(c.Ports, forwards, 8090), password8090),
-			HTTPS8080URL: withNoVNCPassword(httpsURL(forwards, 8080), password8080),
-			HTTPS8090URL: withNoVNCPassword(httpsURL(forwards, 8090), password8090),
+			HTTP8080URL:  withAutoLoginQuery(httpURL(c.Ports, forwards, 8080), param8080, password8080),
+			HTTP8090URL:  withAutoLoginQuery(httpURL(c.Ports, forwards, 8090), param8090, tkn8090),
+			HTTPS8080URL: withAutoLoginQuery(httpsURL(forwards, 8080), param8080, password8080),
+			HTTPS8090URL: withAutoLoginQuery(httpsURL(forwards, 8090), param8090, tkn8090),
 			Forwarded:    forwarded,
 		})
 	}
@@ -1147,14 +1174,15 @@ func lookupEnvValue(env []string, key string) (string, bool) {
 	return "", false
 }
 
-// withNoVNCPassword appends a "?password=" query string to a forwarded-port open
-// URL when the container carries a resolved NoVNCPasswordLabel, so clicking it
-// logs straight into noVNC instead of stopping at its password prompt.
-func withNoVNCPassword(rawURL, password string) string {
-	if rawURL == "" || password == "" {
+// withAutoLoginQuery appends a "?<param>=<value>" query string to a
+// forwarded-port open URL when the container carries a resolved auto-login
+// value, so clicking it logs straight into the page (noVNC's "?password=",
+// or a token-style "?tkn=") instead of stopping at its login prompt.
+func withAutoLoginQuery(rawURL, param, value string) string {
+	if rawURL == "" || value == "" {
 		return rawURL
 	}
-	return rawURL + "/?password=" + url.QueryEscape(password)
+	return rawURL + "/?" + param + "=" + url.QueryEscape(value)
 }
 
 // httpURL returns the host-side http:// URL for the given container private
