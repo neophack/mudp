@@ -4,11 +4,15 @@
 // share page (share.js). Both call openYuvViewer() with the file's raw URL and
 // a body element; this module owns the canvas, the control panel, frame
 // navigation, and on-demand byte fetching via HTTP Range requests (the backend
-// serves YUV through /api/netdisk/raw which supports Range, so we only download
-// the bytes of the frame being shown, not the whole file).
+// serves files through /api/netdisk/raw which supports Range, so we only
+// download the bytes of the frame being shown, not the whole file).
 //
 // Decoders are hand-written (no dependency). Each entry in YUV_FORMATS knows how
 // to compute per-frame byte size and turn a frame's bytes into RGBA.
+//
+// The generic scaffold (canvas, frame nav/playback, zoom, ISP toggle, Range
+// fetching) lives in openRasterFrameViewer and is also reused by the RAW
+// Bayer viewer in lib/raw.js — see that function for the shared contract.
 
 // ---------------- Format table ----------------
 
@@ -342,17 +346,74 @@ export function applyIsp(rgba, options = {}) {
 // openYuvViewer builds the YUV preview UI inside bodyEl. It returns a control
 // object with destroy() so the host can tear down fetches + canvas when the
 // modal closes (registered via onModalClose / resetViewerState).
+//
+// It's a thin config wrapper over openRasterFrameViewer, the generic frame
+// viewer scaffold (canvas, dimension inputs, frame nav/playback, zoom, ISP
+// toggle, Range-based fetching) shared with the RAW Bayer viewer in
+// lib/raw.js — only the format dropdown and the frameSize/decode functions
+// are YUV-specific.
 
 export function openYuvViewer({ name, url, bodyEl }) {
   const parsed = parseYuvInfoFromName(name) || {};
-  const state = {
+  const initialFormat = parsed.format || DEFAULT_FORMAT;
+  // Labels are static English strings from our own table, so no escaping needed.
+  const formatOptionsHtml = Object.keys(YUV_FORMATS)
+    .map((k) => `<option value="${k}"${k === initialFormat ? " selected" : ""}>${YUV_FORMATS[k].label}</option>`)
+    .join("");
+
+  return openRasterFrameViewer({
     url,
+    bodyEl,
     width: parsed.width || 1920,
     height: parsed.height || 1080,
-    format: parsed.format || DEFAULT_FORMAT,
     // Auto-enable the ISP pipeline when the filename signals a raw/linear dump;
     // the user can still toggle it off to compare.
     isp: !!parsed.linear,
+    extraControlsHtml:
+      `<div class="raster-control-group">` +
+        `<label>Format</label>` +
+        `<select id="yuvFormat">${formatOptionsHtml}</select>` +
+      `</div>`,
+    bindExtraControls(root, state, onExtraChange) {
+      state.format = initialFormat;
+      const formatSelect = root.querySelector("#yuvFormat");
+      formatSelect.addEventListener("change", () => {
+        state.format = formatSelect.value;
+        onExtraChange();
+      });
+    },
+    frameSize: (state) => YUV_FORMATS[state.format].frameSize(state.width, state.height),
+    decode: (buf, state) => YUV_FORMATS[state.format].decode(buf, state.width, state.height),
+    statusLabel: (state) => YUV_FORMATS[state.format].label,
+  });
+}
+
+// openRasterFrameViewer is the generic scaffold behind both the YUV and RAW
+// viewers: it owns the canvas, dimension inputs, frame slider/playback, zoom,
+// ISP toggle, and on-demand byte fetching. Callers supply the format-specific
+// pieces: extra control markup + wiring (bindExtraControls), and functions to
+// compute per-frame byte size and decode a frame's bytes to RGBA.
+export function openRasterFrameViewer({
+  url,
+  bodyEl,
+  width,
+  height,
+  isp,
+  extraControlsHtml,
+  bindExtraControls,
+  frameSize,
+  decode,
+  statusLabel,
+  // Optional: called once from destroy() so a caller that attached extra
+  // resources to state in bindExtraControls (e.g. RAW's worker pool) can
+  // release them.
+  onDestroy,
+}) {
+  const state = {
+    url,
+    width,
+    height,
+    isp: !!isp,
     frame: 0,
     frameCount: 0,
     totalBytes: 0,
@@ -369,35 +430,31 @@ export function openYuvViewer({ name, url, bodyEl }) {
     destroyed: false,
   };
 
-  bodyEl.innerHTML = yuvLayoutHtml({ isp: state.isp });
-  const canvas = bodyEl.querySelector("#yuvCanvas");
-  const canvasWrap = bodyEl.querySelector("#yuvCanvasWrap");
+  bodyEl.innerHTML = rasterLayoutHtml({ isp: state.isp, extraControlsHtml });
+  const canvas = bodyEl.querySelector("#rasterCanvas");
+  const canvasWrap = bodyEl.querySelector("#rasterCanvasWrap");
   const ctx = canvas.getContext("2d");
-  const ispCheckbox = bodyEl.querySelector("#yuvIsp");
-  const widthInput = bodyEl.querySelector("#yuvWidth");
-  const heightInput = bodyEl.querySelector("#yuvHeight");
-  const formatSelect = bodyEl.querySelector("#yuvFormat");
-  const frameSlider = bodyEl.querySelector("#yuvFrameSlider");
-  const frameInput = bodyEl.querySelector("#yuvFrameInput");
-  const frameMax = bodyEl.querySelector("#yuvFrameMax");
-  const prevBtn = bodyEl.querySelector("#yuvPrevFrame");
-  const nextBtn = bodyEl.querySelector("#yuvNextFrame");
-  const playBtn = bodyEl.querySelector("#yuvPlayBtn");
-  const loopCheckbox = bodyEl.querySelector("#yuvLoop");
-  const fpsInput = bodyEl.querySelector("#yuvFps");
-  const zoomVal = bodyEl.querySelector("#yuvZoomVal");
-  const zoomResetBtn = bodyEl.querySelector("#yuvZoomReset");
-  const status = bodyEl.querySelector("#yuvStatus");
+  const ispCheckbox = bodyEl.querySelector("#rasterIsp");
+  const widthInput = bodyEl.querySelector("#rasterWidth");
+  const heightInput = bodyEl.querySelector("#rasterHeight");
+  const frameSlider = bodyEl.querySelector("#rasterFrameSlider");
+  const frameInput = bodyEl.querySelector("#rasterFrameInput");
+  const frameMax = bodyEl.querySelector("#rasterFrameMax");
+  const prevBtn = bodyEl.querySelector("#rasterPrevFrame");
+  const nextBtn = bodyEl.querySelector("#rasterNextFrame");
+  const playBtn = bodyEl.querySelector("#rasterPlayBtn");
+  const loopCheckbox = bodyEl.querySelector("#rasterLoop");
+  const fpsInput = bodyEl.querySelector("#rasterFps");
+  const zoomVal = bodyEl.querySelector("#rasterZoomVal");
+  const zoomResetBtn = bodyEl.querySelector("#rasterZoomReset");
+  const status = bodyEl.querySelector("#rasterStatus");
 
-  // Populate the format dropdown with the supported set. Labels are static
-  // English strings from our own table, so no escaping is needed.
-  formatSelect.innerHTML = Object.keys(YUV_FORMATS)
-    .map((k) => `<option value="${k}"${k === state.format ? " selected" : ""}>${YUV_FORMATS[k].label}</option>`)
-    .join("");
   widthInput.value = state.width;
   heightInput.value = state.height;
   if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
   fpsInput.value = state.fps;
+
+  if (bindExtraControls) bindExtraControls(bodyEl, state, recomputeFrameCount);
 
   // Probe the file size (HEAD) so we can compute frame count and validate the
   // width/height/format guess against the actual byte stream.
@@ -408,8 +465,7 @@ export function openYuvViewer({ name, url, bodyEl }) {
   });
 
   function recomputeFrameCount() {
-    const fmt = YUV_FORMATS[state.format];
-    const per = fmt.frameSize(state.width, state.height);
+    const per = frameSize(state);
     if (per <= 0 || state.totalBytes <= 0) {
       state.frameCount = 1;
     } else {
@@ -435,8 +491,7 @@ export function openYuvViewer({ name, url, bodyEl }) {
 
   async function paintCurrentFrame() {
     if (state.destroyed) return;
-    const fmt = YUV_FORMATS[state.format];
-    const per = fmt.frameSize(state.width, state.height);
+    const per = frameSize(state);
     if (state.width <= 0 || state.height <= 0) {
       status.textContent = "Enter a valid width and height.";
       return;
@@ -459,7 +514,10 @@ export function openYuvViewer({ name, url, bodyEl }) {
         status.textContent = `Frame ${state.frame + 1} is truncated (got ${buf.length} of ${per} bytes). Check width/height/format.`;
         return;
       }
-      const rgba = fmt.decode(buf, state.width, state.height);
+      // decode may return a Promise (e.g. RAW's worker-pool demosaic runs off
+      // the main thread); awaiting a plain value is a no-op resolve.
+      const rgba = await decode(buf, state);
+      if (state.destroyed || controller.signal.aborted) return;
       // Run the ISP pipeline when the user enabled it (auto-on for linear/raw
       // dumps). This is a pure transform on the decoded RGBA buffer.
       if (state.isp) {
@@ -467,7 +525,7 @@ export function openYuvViewer({ name, url, bodyEl }) {
       }
       drawFrame(ctx, canvas, rgba, state.width, state.height, state.zoom);
       if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
-      status.textContent = `${state.width}×${state.height} ${YUV_FORMATS[state.format].label} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${state.isp ? " · ISP on" : ""}`;
+      status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${state.isp ? " · ISP on" : ""}`;
     } catch (err) {
       if (state.destroyed || controller.signal.aborted) return;
       status.textContent = `Failed to load frame: ${err.message || err}`;
@@ -482,10 +540,6 @@ export function openYuvViewer({ name, url, bodyEl }) {
     if (w === state.width && h === state.height) return;
     state.width = w;
     state.height = h;
-    recomputeFrameCount();
-  }
-  function onFormatChange() {
-    state.format = formatSelect.value;
     recomputeFrameCount();
   }
   function onFrameChange(v) {
@@ -561,7 +615,6 @@ export function openYuvViewer({ name, url, bodyEl }) {
 
   widthInput.addEventListener("change", onDimChange);
   heightInput.addEventListener("change", onDimChange);
-  formatSelect.addEventListener("change", onFormatChange);
   ispCheckbox.addEventListener("change", onIspToggle);
   frameSlider.addEventListener("input", () => onFrameChange(frameSlider.value));
   frameInput.addEventListener("change", () => onFrameChange(Number(frameInput.value) - 1));
@@ -587,52 +640,50 @@ export function openYuvViewer({ name, url, bodyEl }) {
       state.destroyed = true;
       pause();
       if (state.abort) state.abort.abort();
+      if (onDestroy) onDestroy(state);
     },
   };
 }
 
-function yuvLayoutHtml(initial) {
+function rasterLayoutHtml({ isp, extraControlsHtml }) {
   return (
-    `<div class="viewer-yuv-layout">` +
-      `<div class="yuv-canvas-wrap" id="yuvCanvasWrap"><canvas id="yuvCanvas" class="viewer-page yuv-canvas"></canvas></div>` +
-      `<aside class="yuv-controls">` +
-        `<div class="yuv-control-group">` +
+    `<div class="viewer-raster-layout">` +
+      `<div class="raster-canvas-wrap" id="rasterCanvasWrap"><canvas id="rasterCanvas" class="viewer-page raster-canvas"></canvas></div>` +
+      `<aside class="raster-controls">` +
+        `<div class="raster-control-group">` +
           `<label>Width</label>` +
-          `<input id="yuvWidth" type="number" min="1" step="1">` +
+          `<input id="rasterWidth" type="number" min="1" step="1">` +
         `</div>` +
-        `<div class="yuv-control-group">` +
+        `<div class="raster-control-group">` +
           `<label>Height</label>` +
-          `<input id="yuvHeight" type="number" min="1" step="1">` +
+          `<input id="rasterHeight" type="number" min="1" step="1">` +
         `</div>` +
-        `<div class="yuv-control-group">` +
-          `<label>Format</label>` +
-          `<select id="yuvFormat"></select>` +
-        `</div>` +
-        `<div class="yuv-control-group yuv-checkbox-group">` +
-          `<label class="check"><input type="checkbox" id="yuvIsp"${initial.isp ? " checked" : ""}><span>ISP (auto white balance + gamma)</span></label>` +
+        (extraControlsHtml || "") +
+        `<div class="raster-control-group raster-checkbox-group">` +
+          `<label class="check"><input type="checkbox" id="rasterIsp"${isp ? " checked" : ""}><span>ISP (auto white balance + gamma)</span></label>` +
           `<span class="hint">Enable for raw/linear sensor dumps that look grey or tinted.</span>` +
         `</div>` +
-        `<div class="yuv-control-group">` +
+        `<div class="raster-control-group">` +
           `<label>Playback</label>` +
-          `<div class="yuv-play-bar">` +
-            `<button id="yuvPrevFrame" class="ghost" title="Previous frame">◀</button>` +
-            `<button id="yuvPlayBtn" class="ghost" title="Play / Pause">▶ Play</button>` +
-            `<button id="yuvNextFrame" class="ghost" title="Next frame">▶|</button>` +
+          `<div class="raster-play-bar">` +
+            `<button id="rasterPrevFrame" class="ghost" title="Previous frame">◀</button>` +
+            `<button id="rasterPlayBtn" class="ghost" title="Play / Pause">▶ Play</button>` +
+            `<button id="rasterNextFrame" class="ghost" title="Next frame">▶|</button>` +
           `</div>` +
-          `<div class="yuv-frame-slider-row">` +
-            `<input id="yuvFrameSlider" type="range" min="0" max="0" value="0">` +
-            `<span class="yuv-frame-readout"><input id="yuvFrameInput" type="number" min="1" value="1"><span id="yuvFrameMax" class="hint"> / 1</span></span>` +
+          `<div class="raster-frame-slider-row">` +
+            `<input id="rasterFrameSlider" type="range" min="0" max="0" value="0">` +
+            `<span class="raster-frame-readout"><input id="rasterFrameInput" type="number" min="1" value="1"><span id="rasterFrameMax" class="hint"> / 1</span></span>` +
           `</div>` +
-          `<div class="yuv-fps-row">` +
-            `<label class="check"><input type="checkbox" id="yuvLoop" checked><span>Loop</span></label>` +
-            `<label class="yuv-fps-label">FPS <input id="yuvFps" type="number" min="1" max="120" step="1" value="24"></label>` +
+          `<div class="raster-fps-row">` +
+            `<label class="check"><input type="checkbox" id="rasterLoop" checked><span>Loop</span></label>` +
+            `<label class="raster-fps-label">FPS <input id="rasterFps" type="number" min="1" max="120" step="1" value="24"></label>` +
           `</div>` +
         `</div>` +
-        `<div class="yuv-control-group yuv-zoom-readout">` +
+        `<div class="raster-control-group raster-zoom-readout">` +
           `<label>Zoom (scroll on the image)</label>` +
-          `<div class="yuv-zoom-row"><span id="yuvZoomVal">100%</span><button class="ghost" id="yuvZoomReset" title="Reset zoom">Reset</button></div>` +
+          `<div class="raster-zoom-row"><span id="rasterZoomVal">100%</span><button class="ghost" id="rasterZoomReset" title="Reset zoom">Reset</button></div>` +
         `</div>` +
-        `<div class="yuv-status" id="yuvStatus">Loading…</div>` +
+        `<div class="raster-status" id="rasterStatus">Loading…</div>` +
       `</aside>` +
     `</div>`
   );
@@ -642,8 +693,9 @@ function yuvLayoutHtml(initial) {
 // canvas backing store is sized to the full zoomed pixel dimensions (w*zoom ×
 // h*zoom) so every source pixel maps to a real screen pixel — no browser
 // upscaling, which keeps pixel-peeping sharp at any zoom. The CSS size matches
-// the backing size 1:1, and the surrounding .yuv-canvas-wrap scrolls to reveal
-// the parts that overflow the viewport (the image is never squashed to fit).
+// the backing size 1:1, and the surrounding .raster-canvas-wrap scrolls to
+// reveal the parts that overflow the viewport (the image is never squashed
+// to fit).
 function drawFrame(ctx, canvas, rgba, w, h, zoom) {
   const off = document.createElement("canvas");
   off.width = w;
@@ -695,8 +747,8 @@ async function probeFileSize(url) {
 }
 
 // fetchFrameBytes fetches exactly one frame's bytes via an HTTP Range request.
-// The backend serves YUV through /api/netdisk/raw (http.ServeContent), which
-// honors Range. Falls back to a full GET if Range is not supported.
+// The backend serves raw files through /api/netdisk/raw (http.ServeContent),
+// which honors Range. Falls back to a full GET if Range is not supported.
 async function fetchFrameBytes(url, offset, length, signal) {
   const end = offset + length - 1;
   const res = await fetch(url, {

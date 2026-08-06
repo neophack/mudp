@@ -3229,11 +3229,12 @@ audio.viewer-media {
   background: #1b1c31;
 }
 
-/* ---------- YUV viewer ---------- */
+/* ---------- Raster frame viewer (YUV / RAW Bayer) ---------- */
 /* Two-pane layout: canvas on the left (scrollable, dark), controls on the
    right (fixed width, light). The viewer body already has a dark backdrop so
-   the canvas reads like a video frame; the control panel is a light card. */
-.viewer-yuv-layout {
+   the canvas reads like a video frame; the control panel is a light card.
+   Shared by the YUV and RAW Bayer viewers (lib/yuv.js openRasterFrameViewer). */
+.viewer-raster-layout {
   display: grid;
   grid-template-columns: 1fr 240px;
   width: 100%;
@@ -3246,13 +3247,13 @@ audio.viewer-media {
    margin:auto on the canvas. Using a block canvas with auto margins (rather
    than flex centering) is what makes overflow scroll correctly reach the
    top-left corner — flex centering clips off the start when content overflows. */
-.yuv-canvas-wrap {
+.raster-canvas-wrap {
   overflow: auto;
   padding: 16px;
   background: #1b1c31;
   text-align: center;
 }
-.yuv-canvas {
+.raster-canvas {
   background: #000;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
   /* No max-width/max-height: the canvas is sized in CSS pixels to the zoomed
@@ -3261,7 +3262,7 @@ audio.viewer-media {
   margin: auto;
   image-rendering: pixelated;
 }
-.yuv-controls {
+.raster-controls {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -3270,28 +3271,28 @@ audio.viewer-media {
   border-left: 1px solid var(--line);
   overflow: auto;
 }
-.yuv-control-group {
+.raster-control-group {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.yuv-control-group > label {
+.raster-control-group > label {
   font-size: 11.5px;
   font-weight: 600;
   color: var(--ink-soft);
 }
 /* ISP checkbox group: inline checkbox + an explanatory hint beneath it. */
-.yuv-checkbox-group label.check {
+.raster-checkbox-group label.check {
   font-size: 12.5px;
   font-weight: 600;
   color: var(--ink);
 }
-.yuv-checkbox-group .hint {
+.raster-checkbox-group .hint {
   font-size: 11px;
   line-height: 1.4;
 }
-.yuv-control-group input[type="number"],
-.yuv-control-group select {
+.raster-control-group input[type="number"],
+.raster-control-group select {
   min-height: 32px;
   padding: 4px 8px;
   border: 1px solid var(--border, var(--line));
@@ -3301,45 +3302,45 @@ audio.viewer-media {
   background: #fff;
   font-weight: 600;
 }
-.yuv-control-group select option {
+.raster-control-group select option {
   color: #1f2430;
   background: #fff;
 }
 /* Playback transport: prev / play-pause / next buttons in a row. */
-.yuv-play-bar {
+.raster-play-bar {
   display: flex;
   align-items: center;
   gap: 4px;
 }
-.yuv-play-bar button {
+.raster-play-bar button {
   flex: 1;
   min-height: 30px;
   padding: 0 8px;
   font-size: 12px;
 }
-.yuv-play-bar #yuvPlayBtn {
+.raster-play-bar #rasterPlayBtn {
   flex: 1.6;
   font-weight: 600;
 }
 /* Frame scrubber row: the range slider fills the width, with a compact
    "N / total" number input pinned to the right. */
-.yuv-frame-slider-row {
+.raster-frame-slider-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.yuv-frame-slider-row input[type="range"] {
+.raster-frame-slider-row input[type="range"] {
   flex: 1;
   min-width: 0;
 }
-.yuv-frame-readout {
+.raster-frame-readout {
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 11.5px;
   white-space: nowrap;
 }
-.yuv-frame-readout input[type="number"] {
+.raster-frame-readout input[type="number"] {
   width: 52px;
   min-height: 26px;
   padding: 2px 4px;
@@ -3349,24 +3350,24 @@ audio.viewer-media {
   text-align: center;
 }
 /* FPS + Loop options row. */
-.yuv-fps-row {
+.raster-fps-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   margin-top: 2px;
 }
-.yuv-fps-row label.check {
+.raster-fps-row label.check {
   font-size: 11.5px;
 }
-.yuv-fps-label {
+.raster-fps-label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
   color: var(--ink-soft);
 }
-.yuv-fps-label input[type="number"] {
+.raster-fps-label input[type="number"] {
   width: 48px;
   min-height: 26px;
   padding: 2px 4px;
@@ -3377,24 +3378,24 @@ audio.viewer-media {
 }
 /* Zoom readout: shows current zoom % and a reset button. Zoom itself is driven
    by the mouse wheel over the image, not a slider here. */
-.yuv-zoom-readout .yuv-zoom-row {
+.raster-zoom-readout .raster-zoom-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
-.yuv-zoom-readout #yuvZoomVal {
+.raster-zoom-readout #rasterZoomVal {
   font-size: 13px;
   font-weight: 600;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
-.yuv-zoom-readout button {
+.raster-zoom-readout button {
   min-height: 26px;
   padding: 0 10px;
   font-size: 11.5px;
 }
-.yuv-status {
+.raster-status {
   margin-top: auto;
   padding: 10px 12px;
   border-top: 1px solid var(--line);
@@ -3408,17 +3409,17 @@ audio.viewer-media {
   word-break: break-word;
 }
 /* In fullscreen the control panel keeps its width; the canvas area grows. */
-.modal-backdrop.viewer-fullscreen .viewer-yuv-layout {
+.modal-backdrop.viewer-fullscreen .viewer-raster-layout {
   grid-template-columns: 1fr 260px;
   height: 100%;
 }
 /* On narrow screens stack the controls under the canvas. */
 @media (max-width: 720px) {
-  .viewer-yuv-layout {
+  .viewer-raster-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 1fr auto;
   }
-  .yuv-controls {
+  .raster-controls {
     border-left: none;
     border-top: 1px solid var(--line);
     max-height: 40%;

@@ -1,6 +1,7 @@
 // Standalone public share page. Baidu-Netdisk-style browsing + save-to-directory.
 
 import { openYuvViewer } from "/lib/yuv.js";
+import { openRawViewer } from "/lib/raw.js";
 import { renderMarkdownInto } from "/lib/viewer.js";
 
 const state = {
@@ -554,6 +555,7 @@ function previewKind(name) {
   if (["mp3", "wav", "ogg", "m4a", "flac"].includes(ext)) return "audio";
   if (["mp4", "webm", "m4v", "mov"].includes(ext)) return "video";
   if (ext === "yuv") return "yuv";
+  if (ext === "raw") return "raw";
   if (TEXT_PREVIEW_EXTS.has(ext)) return "text";
   return null;
 }
@@ -565,7 +567,7 @@ function openViewer(path) {
   $("#viewerTitle").textContent = name;
   // Hide the fullscreen button for types that can't use it (text/markdown/audio).
   const fsBtn = $("#viewerFullscreen");
-  if (fsBtn) fsBtn.hidden = !(kind === "pdf" || kind === "video" || kind === "image" || kind === "yuv");
+  if (fsBtn) fsBtn.hidden = !(kind === "pdf" || kind === "video" || kind === "image" || kind === "yuv" || kind === "raw");
   $("#viewerDownload").href = downloadURL(path);
   $("#viewerBackdrop").hidden = false;
   if (!kind) {
@@ -601,6 +603,10 @@ function resetViewerState() {
     yuvController.destroy();
     yuvController = null;
   }
+  if (rawController) {
+    rawController.destroy();
+    rawController = null;
+  }
   $("#viewerBackdrop").classList.remove("viewer-fullscreen");
   const fsBtn = $("#viewerFullscreen");
   if (fsBtn) fsBtn.textContent = "⛶ Fullscreen";
@@ -629,9 +635,12 @@ function toggleViewerFullscreen() {
   if (pdfRenderState && backdrop.querySelector("#pdfPages")) {
     paintPdfPages($("#viewerBody"));
   }
-  // Re-paint the YUV frame so the canvas adapts to the new viewport.
+  // Re-paint the YUV/RAW frame so the canvas adapts to the new viewport.
   if (yuvController) {
     yuvController.repaint();
+  }
+  if (rawController) {
+    rawController.repaint();
   }
 }
 
@@ -656,6 +665,8 @@ async function renderViewerContent(kind, name, url) {
       return;
     case "yuv":
       return renderYuv(url, body, name);
+    case "raw":
+      return renderRaw(url, body, name);
   }
 }
 
@@ -667,6 +678,14 @@ function renderYuv(url, body, name) {
   yuvController = openYuvViewer({ name, url, bodyEl: body });
 }
 
+// renderRaw builds the RAW Bayer viewer. Mirrors renderYuv: the controller is
+// stashed in rawController so toggleViewerFullscreen can repaint and
+// resetViewerState can cancel its in-flight fetch on close.
+function renderRaw(url, body, name) {
+  body.innerHTML = `<div class="viewer-loading">Loading RAW…</div>`;
+  rawController = openRawViewer({ name, url, bodyEl: body });
+}
+
 // pdfRenderState caches the loaded PDF document so a fullscreen toggle can
 // re-render pages at the new width without re-downloading.
 let pdfRenderState = null;
@@ -674,6 +693,9 @@ let pdfRenderState = null;
 // yuvController holds the active YUV viewer's handle so a fullscreen toggle can
 // repaint the frame and resetViewerState can cancel its in-flight fetch.
 let yuvController = null;
+
+// rawController mirrors yuvController for the RAW Bayer viewer.
+let rawController = null;
 
 async function renderPdf(url, body) {
   const pdfjs = window.pdfjsLib;

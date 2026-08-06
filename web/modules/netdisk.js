@@ -5,6 +5,7 @@ import { makeFileIterator, prependIterator, makeDropIterator } from "../lib/uplo
 import { hashFileCRC32 } from "../lib/hashfile.js";
 import { uploadLargeFile } from "../lib/chunkupload.js";
 import { openYuvViewer } from "../lib/yuv.js";
+import { openRawViewer } from "../lib/raw.js";
 import { renderMarkdownInto } from "../lib/viewer.js";
 import { beginLocalCopy } from "../lib/copyProgress.js";
 
@@ -1582,6 +1583,7 @@ function previewKind(name) {
   if (["mp3", "wav", "ogg", "m4a", "flac"].includes(ext)) return "audio";
   if (["mp4", "webm", "m4v", "mov"].includes(ext)) return "video";
   if (ext === "yuv") return "yuv";
+  if (ext === "raw") return "raw";
   if (TEXT_PREVIEW_EXTS.has(ext)) return "text";
   return null;
 }
@@ -1603,7 +1605,7 @@ function openFileViewer(path, fromBackup) {
     showUnsupportedPreviewModal(name, dl);
     return;
   }
-  const supportsFullscreen = kind === "pdf" || kind === "video" || kind === "image" || kind === "yuv";
+  const supportsFullscreen = kind === "pdf" || kind === "video" || kind === "image" || kind === "yuv" || kind === "raw";
   showModalNoShell(
     "netdisk-viewer",
     "wide viewer-modal",
@@ -1670,9 +1672,12 @@ function toggleViewerFullscreen() {
   if (backdrop.querySelector("#pdfPages")) {
     rerenderPdf();
   }
-  // Re-paint the YUV frame so the canvas adapts to the new viewport.
+  // Re-paint the YUV/RAW frame so the canvas adapts to the new viewport.
   if (yuvController) {
     yuvController.repaint();
+  }
+  if (rawController) {
+    rawController.repaint();
   }
 }
 
@@ -1697,6 +1702,8 @@ async function renderViewerContent(kind, path, name, url) {
       return;
     case "yuv":
       return renderYuv(url, body, name);
+    case "raw":
+      return renderRaw(url, body, name);
   }
 }
 
@@ -1708,6 +1715,9 @@ let pdfRenderState = null;
 // yuvController holds the active YUV viewer's control handle so a fullscreen
 // toggle can repaint the frame and resetViewerState can cancel its fetch.
 let yuvController = null;
+
+// rawController mirrors yuvController for the RAW Bayer viewer.
+let rawController = null;
 
 async function renderPdf(url, body) {
   const pdfjs = window.pdfjsLib;
@@ -1784,6 +1794,14 @@ function renderYuv(url, body, name) {
   yuvController = openYuvViewer({ name, url, bodyEl: body });
 }
 
+// renderRaw builds the RAW Bayer viewer. Mirrors renderYuv: the controller is
+// stashed in rawController so toggleViewerFullscreen can repaint and
+// resetViewerState can cancel its in-flight fetch on close.
+function renderRaw(url, body, name) {
+  body.innerHTML = `<div class="viewer-loading">${t("netdisk.viewerLoadRaw")}</div>`;
+  rawController = openRawViewer({ name, url, bodyEl: body });
+}
+
 // resetViewerState releases the cached PDF document and stops any media
 // playback. Registered as the modal teardown callback so it runs on close,
 // backdrop click, and Esc.
@@ -1792,6 +1810,10 @@ function resetViewerState() {
   if (yuvController) {
     yuvController.destroy();
     yuvController = null;
+  }
+  if (rawController) {
+    rawController.destroy();
+    rawController = null;
   }
   const media = document.querySelector(".netdisk-viewer video.viewer-media, .netdisk-viewer audio.viewer-media");
   if (media) {
