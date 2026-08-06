@@ -428,6 +428,19 @@ export function openRasterFrameViewer({
     // viewer never paints into a detached canvas after close.
     abort: null,
     destroyed: false,
+    // Cache of the last decoded (and, if enabled, ISP-processed) RGBA buffer,
+    // keyed by the inputs that affect its pixels (frame/isp/dimensions). Zoom
+    // is purely a display-scale change, so applyZoom() redraws from this
+    // cache instead of re-fetching and re-decoding the frame over the
+    // network on every wheel tick — without it, each zoom step round-trips
+    // through an async fetch before the cursor-anchored scroll correction
+    // can run, and out-of-order completions during fast wheel scrolling make
+    // the image appear to jump/scroll on its own.
+    cachedRgba: null,
+    cachedFrame: -1,
+    cachedIsp: null,
+    cachedWidth: -1,
+    cachedHeight: -1,
   };
 
   bodyEl.innerHTML = rasterLayoutHtml({ isp: state.isp, extraControlsHtml });
@@ -525,6 +538,11 @@ export function openRasterFrameViewer({
         applyIsp(rgba);
       }
       drawFrame(ctx, canvas, rgba, state.width, state.height, state.zoom);
+      state.cachedRgba = rgba;
+      state.cachedFrame = state.frame;
+      state.cachedIsp = state.isp;
+      state.cachedWidth = state.width;
+      state.cachedHeight = state.height;
       if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
       status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${state.isp ? " · ISP on" : ""}`;
     } catch (err) {
@@ -555,8 +573,10 @@ export function openRasterFrameViewer({
   // (viewport coordinates, e.g. from a wheel event), the point of the image
   // under that coordinate is kept under the same screen position after the
   // resize — this is what makes wheel-zoom feel like it zooms "into" the
-  // cursor instead of always growing from the canvas's centered origin. We
-  // have to wait for paintCurrentFrame to finish (it's async — it re-fetches
+  // cursor instead of always growing from the canvas's centered origin. When
+  // a cached decode of the current frame is available (the common case —
+  // only the display scale changed) this redraws synchronously; otherwise it
+  // has to wait for paintCurrentFrame to finish (it's async — it re-fetches
   // and re-decodes the frame) before the canvas has its new size to scroll
   // against.
   function applyZoom(newZoom, anchorClientX, anchorClientY) {
@@ -578,6 +598,25 @@ export function openRasterFrameViewer({
     }
     state.zoom = clamped;
     if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
+    const canRedrawFromCache =
+      state.cachedRgba &&
+      state.cachedFrame === state.frame &&
+      state.cachedIsp === state.isp &&
+      state.cachedWidth === state.width &&
+      state.cachedHeight === state.height;
+    if (canRedrawFromCache) {
+      // Fast path: same pixel data, only the display scale changed. Redraw
+      // synchronously from the cached buffer and apply the scroll correction
+      // immediately — no network round-trip, so there's no window for a
+      // stale/out-of-order completion to jerk the view during fast scrolling.
+      drawFrame(ctx, canvas, state.cachedRgba, state.width, state.height, state.zoom);
+      status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${state.isp ? " · ISP on" : ""}`;
+      if (anchor) {
+        canvasWrap.scrollLeft = anchor.imgX * state.zoom - anchor.viewportX;
+        canvasWrap.scrollTop = anchor.imgY * state.zoom - anchor.viewportY;
+      }
+      return;
+    }
     const painted = paintCurrentFrame();
     if (anchor) {
       painted.then(() => {

@@ -3243,15 +3243,20 @@ audio.viewer-media {
 }
 /* The canvas wrap is a scroll container: when the image is larger than the
    viewport (zoomed in, or intrically big) it scrolls freely in both axes and
-   never squashes the canvas. When the image is smaller it stays centered via
-   margin:auto on the canvas. Using a block canvas with auto margins (rather
-   than flex centering) is what makes overflow scroll correctly reach the
-   top-left corner — flex centering clips off the start when content overflows. */
+   never squashes the canvas. When the image is smaller it stays centered —
+   both horizontally and vertically — via margin:auto on the canvas *inside a
+   flex container*. This is deliberately not align-items/justify-content:
+   center on the wrap: that centers by shifting the scrollable area itself,
+   which clips off the top/left of the content once it overflows (you'd never
+   be able to scroll to the true top-left when zoomed in). A flex child with
+   margin:auto centers the same way when there's slack space, but the auto
+   margins collapse to 0 (never negative) once the content overflows, so
+   scrolling still reaches the real edges. */
 .raster-canvas-wrap {
+  display: flex;
   overflow: auto;
   padding: 16px;
   background: #1b1c31;
-  text-align: center;
   /* Click-drag pans the image like a desktop viewer; grab/grabbing signals
      that affordance the way scroll containers alone don't. */
   cursor: grab;
