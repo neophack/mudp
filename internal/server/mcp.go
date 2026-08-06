@@ -151,7 +151,7 @@ func (a *App) resolveMcpContainer(w http.ResponseWriter, r *http.Request) (mcpTo
 		writeErr(w, http.StatusUnauthorized, "token required")
 		return mcpTokenResolved{}, false
 	}
-	tok, err := a.resolveMCPToken(r, token)
+	tok, err := a.resolveMCPToken(token)
 	if err != nil {
 		if isRemoteMCP(r) {
 			a.recordMcpAttack(r, "invalid or expired token")
@@ -181,11 +181,25 @@ func (a *App) resolveMcpContainer(w http.ResponseWriter, r *http.Request) (mcpTo
 	}
 	// A token that works on the LAN does not automatically work from the
 	// internet: over the external listener the container must also sit on the
-	// administrator's safe network. See mcp_remote.go.
+	// administrator's safe network, and the request must also carry the
+	// token's external key as an Authorization: Bearer header. That header is
+	// a secret separate from the token embedded in this URL — a URL that
+	// leaks through a tunnel's or proxy's access log cannot by itself
+	// authenticate a remote request. See mcp_remote.go.
 	if isRemoteMCP(r) {
 		if ok, reason := a.remoteMCPAllowed(r.Context(), tok.ContainerID); !ok {
 			a.recordMcpAttack(r, reason)
 			writeErr(w, http.StatusForbidden, reason)
+			return mcpTokenResolved{}, false
+		}
+		if tok.externalKeyHash == "" {
+			a.recordMcpAttack(r, "no external key generated for token")
+			writeErr(w, http.StatusForbidden, "external access requires generating an external key for this token")
+			return mcpTokenResolved{}, false
+		}
+		if hdr := bearerTokenFromHeader(r); hdr == "" || sha256Hex(hdr) != tok.externalKeyHash {
+			a.recordMcpAttack(r, "invalid or missing external key")
+			writeErr(w, http.StatusUnauthorized, "invalid or missing external key")
 			return mcpTokenResolved{}, false
 		}
 		// Capture the caller's origin so each tool call this request dispatches is
@@ -199,12 +213,7 @@ func (a *App) resolveMcpContainer(w http.ResponseWriter, r *http.Request) (mcpTo
 }
 
 // resolveMCPToken hashes the cleartext token from the URL and looks it up.
-// It also accepts the token via the Authorization: Bearer header for clients
-// that prefer that transport; when both are present they must match.
-func (a *App) resolveMCPToken(r *http.Request, cleartext string) (mcpTokenResolved, error) {
-	if hdr := bearerTokenFromHeader(r); hdr != "" && hdr != cleartext {
-		return mcpTokenResolved{}, errors.New("token mismatch")
-	}
+func (a *App) resolveMCPToken(cleartext string) (mcpTokenResolved, error) {
 	hash := sha256Hex(cleartext)
 	tok, err := a.db.MCPTokenByHash(hash)
 	if err != nil {
@@ -213,7 +222,7 @@ func (a *App) resolveMCPToken(r *http.Request, cleartext string) (mcpTokenResolv
 	if tok.Expired() {
 		return mcpTokenResolved{}, errors.New("token expired")
 	}
-	return mcpTokenResolved{ID: tok.ID, ContainerID: tok.ContainerID, ContainerName: tok.ContainerName, OwnerID: tok.OwnerID, Label: tok.Label}, nil
+	return mcpTokenResolved{ID: tok.ID, ContainerID: tok.ContainerID, ContainerName: tok.ContainerName, OwnerID: tok.OwnerID, Label: tok.Label, externalKeyHash: tok.ExternalKeyHash}, nil
 }
 
 type mcpTokenResolved struct {
@@ -222,6 +231,10 @@ type mcpTokenResolved struct {
 	ContainerName string
 	OwnerID       int64
 	Label         string
+	// externalKeyHash is the token's stored external-key hash, carried from
+	// resolveMCPToken so resolveMcpContainer can verify the Authorization
+	// header on a remote request without a second database round trip.
+	externalKeyHash string
 	// client is the resolved origin of a remote MCP request (IP + geo), captured
 	// at resolve time and carried into the audit/usage hook so each tool call is
 	// plotted on the Security map. Empty for LAN requests — only the external
@@ -542,6 +555,51 @@ func (a *App) mcpTokenRotate(w http.ResponseWriter, r *http.Request) {
 		"token":     cleartext,
 		"label":     tok.Label,
 		"expiresAt": tok.ExpiresAt,
+	})
+}
+
+// mcpTokenRotateExternal mints a fresh external key for a token — the
+// credential sent as an Authorization: Bearer header on the external (remote)
+// MCP listener. Unlike mcpTokenRotate this never touches the token embedded
+// in the token's /mcp/{token} URL, so LAN clients keep working unchanged; a
+// token with no external key generated yet is simply refused on the remote
+// listener (see resolveMcpContainer). Same ownership rule as mcpTokenRotate.
+//
+// POST /api/mcp/tokens/{id}/rotate-external
+func (a *App) mcpTokenRotateExternal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	u := currentUser(r)
+	if !canMutate(u) {
+		writeErr(w, http.StatusForbidden, "read-only role cannot rotate MCP tokens")
+		return
+	}
+	id := parseID(chi.URLParam(r, "id"))
+	if id == 0 {
+		writeErr(w, http.StatusBadRequest, "invalid token id")
+		return
+	}
+	tok, err := a.db.MCPTokenByID(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "token not found")
+		return
+	}
+	cleartext, hash, err := generateMCPToken()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.db.RotateMCPExternalKey(u.ID, u.Role == "admin", id, cleartext, hash); err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	a.record(r, "mcp.token.rotateExternal", tok.ContainerName+"#"+tok.Label)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":          id,
+		"externalKey": cleartext,
+		"label":       tok.Label,
 	})
 }
 

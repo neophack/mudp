@@ -657,6 +657,72 @@ func TestMCPTokenCRUD(t *testing.T) {
 	}
 }
 
+// TestMCPTokenExternalKey covers the external key: absent until generated,
+// rotatable without disturbing the main token/URL, and enforced by the same
+// ownership rule as RotateMCPToken.
+func TestMCPTokenExternalKey(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateUser("bob", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+		t.Fatal(err)
+	}
+	bob, err := db.Authenticate("bob", "pw-valid-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleartext, hash := "tok-ext1", "ext1hash"
+	id, err := db.CreateMCPToken(bob.ID, "container-id-2", "dev2", "codex", cleartext, hash, "")
+	if err != nil || id == 0 {
+		t.Fatalf("CreateMCPToken: %v (id=%d)", err, id)
+	}
+
+	// No external key until one is generated.
+	got, err := db.MCPTokenByHash(hash)
+	if err != nil {
+		t.Fatalf("MCPTokenByHash: %v", err)
+	}
+	if got.ExternalKey != "" || got.ExternalKeyHash != "" {
+		t.Fatalf("fresh token should have no external key, got %+v", got)
+	}
+
+	// A non-owner cannot generate one.
+	if err := db.RotateMCPExternalKey(1, false, id, "ext-tok-1", "ext-hash-1"); err == nil {
+		t.Fatal("non-owner should not rotate bob's external key")
+	}
+
+	// The owner can, and it does not disturb the main token/hash.
+	if err := db.RotateMCPExternalKey(bob.ID, false, id, "ext-tok-1", "ext-hash-1"); err != nil {
+		t.Fatalf("RotateMCPExternalKey: %v", err)
+	}
+	got, err = db.MCPTokenByHash(hash)
+	if err != nil {
+		t.Fatalf("MCPTokenByHash after rotate: %v", err)
+	}
+	if got.Token != cleartext {
+		t.Errorf("main token changed by external-key rotation: got %q, want %q", got.Token, cleartext)
+	}
+	if got.ExternalKey != "ext-tok-1" || got.ExternalKeyHash != "ext-hash-1" {
+		t.Errorf("external key not stored: %+v", got)
+	}
+
+	// Rotating again replaces the old external key outright.
+	if err := db.RotateMCPExternalKey(bob.ID, false, id, "ext-tok-2", "ext-hash-2"); err != nil {
+		t.Fatalf("second RotateMCPExternalKey: %v", err)
+	}
+	got, err = db.MCPTokenByHash(hash)
+	if err != nil {
+		t.Fatalf("MCPTokenByHash after second rotate: %v", err)
+	}
+	if got.ExternalKey != "ext-tok-2" || got.ExternalKeyHash != "ext-hash-2" {
+		t.Errorf("external key not replaced: %+v", got)
+	}
+
+	// Admins may rotate any token's external key.
+	if err := db.RotateMCPExternalKey(1, true, id, "ext-tok-3", "ext-hash-3"); err != nil {
+		t.Fatalf("admin RotateMCPExternalKey: %v", err)
+	}
+}
+
 // TestMCPTokenListOrphanedOwner is a regression test: legacy databases can hold
 // tokens whose owner was deleted without cascading (foreign_keys was only set
 // on one pooled connection). Listing must tolerate the NULL owner, and the

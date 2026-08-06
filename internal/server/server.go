@@ -387,6 +387,10 @@ func (a *App) Routes() http.Handler {
 		// immediately — lets an owner rotate a leaked/shared token without losing
 		// its label, container binding, or expiry.
 		r.Post("/api/mcp/tokens/{id}/rotate", a.mcpTokenRotate)
+		// Mints a fresh external key — the Authorization: Bearer credential
+		// required on the remote (external) listener — without touching the
+		// token embedded in the /mcp/{token} URL that LAN clients use.
+		r.Post("/api/mcp/tokens/{id}/rotate-external", a.mcpTokenRotateExternal)
 		// A token's own tool-call history for the LOG dialog. Owners read their
 		// own; the handler enforces ownership server-side for non-admins.
 		r.Get("/api/mcp/tokens/{id}/usage", a.mcpTokenUsage)

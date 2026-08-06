@@ -228,7 +228,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 40
+const schemaVersion = 41
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -285,6 +285,7 @@ var migrations = []migration{
 	{38, "add users.pinyin_name", migrateAddUserPinyinName},
 	{39, "add groups.shared_disk_path", migrateAddGroupSharedDiskPath},
 	{40, "add users.shared_disk_read_write", migrateAddUserSharedDiskReadWrite},
+	{41, "add mcp_tokens external key columns", migrateAddMCPTokenExternalKey},
 }
 
 // AllowedTenantKey returns the configured Feishu tenant key that users must
@@ -601,6 +602,20 @@ func migrateCreateMCPTokens(db executor) error {
 // creation was never persisted); new tokens store the cleartext.
 func migrateAddMCPTokenPlaintext(db executor) error {
 	return execIgnoring(db, `alter table mcp_tokens add column token_plaintext text not null default ''`, sqliteDuplicateColumn)
+}
+
+// migrateAddMCPTokenExternalKey adds the credential sent as the
+// Authorization: Bearer header on the external (remote) MCP listener. It is
+// a separate secret from token_hash/token_plaintext — the one embedded in the
+// /mcp/{token} URL — so a URL that leaks through a tunnel's access log cannot
+// by itself authenticate a remote request, and rotating it never disturbs the
+// URL that LAN clients already have configured. Empty until a user generates
+// one for a token.
+func migrateAddMCPTokenExternalKey(db executor) error {
+	if err := execIgnoring(db, `alter table mcp_tokens add column external_key_hash text not null default ''`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
+	return execIgnoring(db, `alter table mcp_tokens add column external_key_plaintext text not null default ''`, sqliteDuplicateColumn)
 }
 
 // migrateDeleteOrphanedMCPTokens removes tokens whose owning user no longer

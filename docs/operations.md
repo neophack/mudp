@@ -123,6 +123,7 @@ Notes:
 
 - The listener binds to `127.0.0.1` only. Nothing but `/mcp/...` and `/healthz` is served on it — the console, the API, and the netdisk are not reachable through the public hostname.
 - A token is refused on the external listener unless its container is attached to the safe network, so enabling external access does not by itself expose any container. Put a container on the safe network to make it reachable; disconnect it to revoke that.
+- On top of the safe-network check, every remote request must also carry the token's **external key** as an `Authorization: Bearer <key>` header. This is a separate secret from the token embedded in the `/mcp/{token}` URL — generated per token via the **GEN** button on the MCP page (only shown once external access is enabled) — so a URL that ends up in a tunnel's or proxy's access log cannot by itself authenticate a remote request. LAN access uses the URL token alone and never needs this header. A token with no external key generated yet is refused on the external listener.
 - The safe network name matches either the Docker network name (`openwrt-lan`) or the display name of a mudp-managed network (`openwrt-lan` for `mudp-<user>-net-openwrt-lan`).
 - Changing the port moves the listener immediately; disabling stops it. Existing tokens are unchanged either way — only where they can be used changes.
 - Users see the domain, and a per-token external link, on the **MCP** page.

@@ -144,13 +144,13 @@ export async function renderMCP() {
   }
   document.querySelectorAll("[data-mcp-view]").forEach((btn) => {
     btn.onclick = () =>
-      onShowConfig(btn.dataset.mcpToken, btn.dataset.mcpName, btn.dataset.mcpLabel, btn.dataset.mcpSafe === "1");
+      onShowConfig(btn.dataset.mcpToken, btn.dataset.mcpExternal, btn.dataset.mcpName, btn.dataset.mcpLabel, btn.dataset.mcpSafe === "1");
   });
   document.querySelectorAll("[data-mcp-del]").forEach((btn) => {
     btn.onclick = () => onDeleteToken(btn.dataset.mcpDel, btn.dataset.mcpName);
   });
-  document.querySelectorAll("[data-mcp-rotate]").forEach((btn) => {
-    btn.onclick = () => onRotateToken(btn.dataset.mcpRotate, btn.dataset.mcpName);
+  document.querySelectorAll("[data-mcp-genkey]").forEach((btn) => {
+    btn.onclick = () => onGenerateExternalKey(btn.dataset.mcpGenkey, btn.dataset.mcpName, btn.dataset.mcpLabel, btn.dataset.mcpSafe === "1");
   });
   document.querySelectorAll("[data-mcp-log]").forEach((btn) => {
     btn.onclick = () => onShowUsage(btn.dataset.mcpLog, btn.dataset.mcpName, btn.dataset.mcpLabel);
@@ -287,6 +287,11 @@ function tokenRow(tk, admin) {
   const liveDot = tk.inUse
     ? `<span class="mcp-live-dot" title="${t("mcp.inUse")}"></span>`
     : "";
+  // The external key (Authorization: Bearer secret) only matters once an
+  // admin has published a remote domain at all; on a purely-LAN deployment
+  // there is nothing for it to authenticate, so the button that generates it
+  // stays hidden rather than offering a control with no effect.
+  const remotePublished = !!(state.mcpRemote && state.mcpRemote.enabled);
   return (
     `<tr>` +
       `<td><div class="primary-line">${liveDot}${escapeHtml(tk.containerName || "-")}</div><div class="secondary-line mono">${escapeHtml((tk.containerId || "").slice(0, 12))}</div></td>` +
@@ -296,10 +301,10 @@ function tokenRow(tk, admin) {
       `<td><div class="secondary-line">${tk.lastUsedAt ? formatDate(tk.lastUsedAt) : t("mcp.never")}</div></td>` +
       `<td>${expCell}</td>` +
       `<td class="actions">` +
-        `<button class="icon" title="${t("mcp.viewConfig")}" data-mcp-view="${escapeHtml(tk.id)}" data-mcp-token="${escapeHtml(tk.token || "")}" data-mcp-name="${escapeHtml(tk.containerName)}" data-mcp-label="${escapeHtml(tk.label)}" data-mcp-safe="${tk.onSafeNetwork ? "1" : "0"}">CFG</button>` +
+        `<button class="icon" title="${t("mcp.viewConfig")}" data-mcp-view="${escapeHtml(tk.id)}" data-mcp-token="${escapeHtml(tk.token || "")}" data-mcp-external="${escapeHtml(tk.externalKey || "")}" data-mcp-name="${escapeHtml(tk.containerName)}" data-mcp-label="${escapeHtml(tk.label)}" data-mcp-safe="${tk.onSafeNetwork ? "1" : "0"}">CFG</button>` +
         `<button class="icon" title="${t("mcp.usageLog")}" data-mcp-log="${escapeHtml(tk.id)}" data-mcp-name="${escapeHtml(tk.containerName)}" data-mcp-label="${escapeHtml(tk.label)}">LOG</button>` +
         (externalUrlFor(tk) ? `<button class="icon mcp-copy-btn" title="${t("mcp.copyExternal")}" data-copy="${escapeHtml(externalUrlFor(tk))}">WWW</button>` : "") +
-        (canMutate() ? `<button class="icon" title="${t("mcp.rotateToken")}" data-mcp-rotate="${escapeHtml(tk.id)}" data-mcp-name="${escapeHtml(tk.containerName)}">GEN</button>` : "") +
+        (canMutate() && remotePublished ? `<button class="icon" title="${t("mcp.generateExternalKey")}" data-mcp-genkey="${escapeHtml(tk.id)}" data-mcp-name="${escapeHtml(tk.containerName)}" data-mcp-label="${escapeHtml(tk.label)}" data-mcp-safe="${tk.onSafeNetwork ? "1" : "0"}">GEN</button>` : "") +
         (canMutate() ? `<button class="icon danger" title="${t("mcp.deleteToken")}" data-mcp-del="${escapeHtml(tk.id)}" data-mcp-name="${escapeHtml(tk.containerName)}">DEL</button>` : "") +
       `</td>` +
     `</tr>`
@@ -334,7 +339,7 @@ async function onCreateToken(e) {
     // minted token still has no external link unless its container is on the
     // safe network.
     const created = (state.mcpTokens || []).find((tk) => tk.id === res.id);
-    onShowConfigRaw(res.token, res.label || "", false, created ? created.onSafeNetwork : false);
+    onShowConfigRaw(res.token, "", res.label || "", false, created ? created.onSafeNetwork : false);
   } catch (err) {
     toast(err.message || t("mcp.createFail"));
   } finally {
@@ -343,21 +348,23 @@ async function onCreateToken(e) {
   }
 }
 
-// onRotateToken mints a fresh cleartext for an existing token: same
-// container, label, and expiry, but the old key stops working immediately.
-// Opens the config modal on the new value, same as right after creation, so
-// the replacement is copyable in one step.
-async function onRotateToken(id, name) {
-  if (!confirm(t("mcp.rotateConfirm", { name }))) return;
+// onGenerateExternalKey mints a fresh external key for an existing token —
+// the Authorization: Bearer credential the remote (external) listener
+// requires — without touching the token embedded in its /mcp/{token} URL, so
+// any LAN config already copied from this token keeps working unchanged.
+// Opens the config modal straight to the External scope so the new value is
+// copyable in one step.
+async function onGenerateExternalKey(id, name, label, onSafeNetwork) {
+  if (!confirm(t("mcp.generateExternalKeyConfirm", { name }))) return;
   try {
-    const res = await api(`/api/mcp/tokens/${id}/rotate`, { method: "POST" });
-    toast(t("mcp.tokenRotated"), true);
+    const res = await api(`/api/mcp/tokens/${id}/rotate-external`, { method: "POST" });
+    toast(t("mcp.externalKeyGenerated"), true);
     await refreshMCPTokens();
     renderView();
     const updated = (state.mcpTokens || []).find((tk) => tk.id === res.id);
-    onShowConfigRaw(res.token, res.label || "", false, updated ? updated.onSafeNetwork : false);
+    onShowConfigRaw(updated ? updated.token : "", res.externalKey, res.label || label || "", false, updated ? updated.onSafeNetwork : onSafeNetwork, "remote");
   } catch (err) {
-    toast(err.message || t("mcp.rotateFail"));
+    toast(err.message || t("mcp.generateExternalKeyFail"));
   }
 }
 
@@ -420,12 +427,12 @@ async function onShowUsage(id, name, label) {
   });
 }
 
-function onShowConfig(token, name, label, onSafeNetwork) {
+function onShowConfig(token, externalKey, name, label, onSafeNetwork) {
   // Tokens created after the plaintext-storage change carry their cleartext, so
   // the full config can be shown again. Older tokens (created when only the hash
   // was stored) have no recoverable cleartext — tell the user to recreate it.
   if (token) {
-    onShowConfigRaw(token, label, false, onSafeNetwork);
+    onShowConfigRaw(token, externalKey, label, false, onSafeNetwork);
     return;
   }
   showModal({
@@ -438,7 +445,15 @@ function onShowConfig(token, name, label, onSafeNetwork) {
   });
 }
 
-function onShowConfigRaw(token, label, placeholder = false, onSafeNetwork = false) {
+// onShowConfigRaw renders the copyable-config dialog. token is the credential
+// embedded in the /mcp/{token} URL — identical on both scopes, since that URL
+// is what LAN clients already have configured and this dialog must never
+// invalidate it. externalKey is a separate secret, generated on demand via
+// the token row's GEN button, sent only as an Authorization: Bearer header
+// and only when External scope is selected; it is "" until generated.
+// initialScope lets a caller (e.g. right after generating a key) open
+// straight to the scope that credential matters for.
+function onShowConfigRaw(token, externalKey, label, placeholder = false, onSafeNetwork = false, initialScope = "local") {
   const remote = state.mcpRemote;
   const localBase = window.location.origin;
   // The published domain, when an admin has one AND this token's container is
@@ -447,39 +462,43 @@ function onShowConfigRaw(token, label, placeholder = false, onSafeNetwork = fals
   // URL that fails at runtime, so this token gets a LAN-only view instead.
   const remoteBase = remote && remote.enabled && onSafeNetwork ? remote.baseUrl || "" : "";
   const labelSlug = label ? label.replace(/[^a-zA-Z0-9_-]/g, "-") || "mudp-container" : "mudp-container";
-  let scope = "local";
+  let scope = remoteBase && initialScope === "remote" ? "remote" : "local";
   let transport = "sse";
   const baseFor = (s) => (s === "remote" && remoteBase ? remoteBase : localBase);
   const sseUrlFor = (base) => `${base}/mcp/${token}/sse`;
   const httpUrlFor = (base) => `${base}/mcp/${token}`;
 
-  // Build the config object for a given transport and base origin.
-  const buildConfig = (transport, base) =>
-    JSON.stringify(
-      {
-        mcpServers: {
-          [labelSlug]: {
-            type: transport === "http" ? "http" : "sse",
-            url: transport === "http" ? httpUrlFor(base) : sseUrlFor(base),
-          },
-        },
-      },
-      null,
-      2,
-    );
+  // Build the config object for a given transport and base origin. On the
+  // remote scope, once an external key exists, the config also sends it as an
+  // Authorization header — a secret separate from the URL token, so a URL
+  // that leaks through a tunnel's or proxy's access log cannot by itself
+  // authenticate a remote request. Nothing extra is needed (or accepted) on
+  // the local scope.
+  const buildConfig = (transport, base, scope) => {
+    const entry = {
+      type: transport === "http" ? "http" : "sse",
+      url: transport === "http" ? httpUrlFor(base) : sseUrlFor(base),
+    };
+    if (scope === "remote" && externalKey) entry.headers = { Authorization: `Bearer ${externalKey}` };
+    return JSON.stringify({ mcpServers: { [labelSlug]: entry } }, null, 2);
+  };
 
-  const buildCurlExample = (transport, base) =>
-    transport === "http"
+  const buildCurlExample = (transport, base, scope) => {
+    const authHeader = scope === "remote" && externalKey ? `  -H "Authorization: Bearer ${externalKey}" \\\n` : "";
+    return transport === "http"
       ? `# Streamable HTTP: one POST per JSON-RPC request.\n` +
         `curl -X POST "${httpUrlFor(base)}" \\\n` +
         `  -H "Content-Type: application/json" \\\n` +
+        authHeader +
         `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`
       : `# 1. Open the SSE stream to get the message endpoint:\n` +
-        `curl -N ${sseUrlFor(base)}\n\n` +
+        `curl -N ${sseUrlFor(base)}${scope === "remote" && externalKey ? ` \\\n  -H "Authorization: Bearer ${externalKey}"` : ""}\n\n` +
         `# 2. POST a JSON-RPC request to the endpoint URL printed above, e.g.:\n` +
         `curl -X POST "${base}/mcp/${token}/messages?session=SESSION_ID" \\\n` +
         `  -H "Content-Type: application/json" \\\n` +
+        authHeader +
         `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`;
+  };
 
   const endpointFor = (transport, base) =>
     transport === "http" ? httpUrlFor(base) : sseUrlFor(base);
@@ -494,17 +513,44 @@ function onShowConfigRaw(token, label, placeholder = false, onSafeNetwork = fals
       ? t("mcp.scopeRemoteHint", { domain: escapeHtml(remote?.domain || ""), safe: escapeHtml(remote?.safeNetwork || "safe") })
       : t("mcp.scopeLocalHint");
 
+  // authHeaderSection renders the copyable Authorization header — as a JSON
+  // fragment (drop into a headers object) or as the raw "Bearer <key>" value
+  // — only on the remote scope, and only once a key exists for this token;
+  // the local scope never needs or shows this at all.
+  const authHeaderSection = (scope) => {
+    if (scope !== "remote") return "";
+    if (!externalKey) {
+      return `<div class="mcp-config-section"><h4>${t("mcp.authHeader")}</h4><p class="hint">${t("mcp.noExternalKeyHint")}</p></div>`;
+    }
+    const json = JSON.stringify({ Authorization: `Bearer ${externalKey}` }, null, 2);
+    const bearer = `Bearer ${externalKey}`;
+    return (
+      `<div class="mcp-config-section">` +
+        `<h4>${t("mcp.authHeader")}</h4>` +
+        `<p class="hint">${t("mcp.authHeaderHint")}</p>` +
+        `<div class="mcp-copy-row">` +
+          `<pre class="mcp-code" id="mcpAuthHeaderJson">${escapeHtml(json)}</pre>` +
+          `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(json)}">${t("common.copy")}</button>` +
+        `</div>` +
+        `<div class="mcp-copy-row">` +
+          `<code class="mcp-code mcp-code-inline" id="mcpAuthHeaderBearer">${escapeHtml(bearer)}</code>` +
+          `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(bearer)}">${t("common.copy")}</button>` +
+        `</div>` +
+      `</div>`
+    );
+  };
+
   // Offered only when an admin published a domain; otherwise there is one
   // possible address and a toggle would just be a dead control.
   const scopeToggle = remoteBase
     ? `<div class="mcp-transport-row">` +
         `<h4>${t("mcp.whereFrom")}</h4>` +
         `<div class="mcp-transport-toggle" role="tablist" aria-label="Access scope">` +
-          `<button class="mcp-scope-btn active" data-scope="local" role="tab" aria-selected="true">${t("mcp.thisNetwork")}</button>` +
-          `<button class="mcp-scope-btn" data-scope="remote" role="tab" aria-selected="false">${t("mcp.external")}</button>` +
+          `<button class="mcp-scope-btn${scope === "local" ? " active" : ""}" data-scope="local" role="tab" aria-selected="${scope === "local"}">${t("mcp.thisNetwork")}</button>` +
+          `<button class="mcp-scope-btn${scope === "remote" ? " active" : ""}" data-scope="remote" role="tab" aria-selected="${scope === "remote"}">${t("mcp.external")}</button>` +
         `</div>` +
       `</div>` +
-      `<p class="hint" id="mcpScopeHint">${scopeHint("local")}</p>`
+      `<p class="hint" id="mcpScopeHint">${scopeHint(scope)}</p>`
     : "";
 
   // When a domain is published but this container is not on the safe network,
@@ -531,24 +577,25 @@ function onShowConfigRaw(token, label, placeholder = false, onSafeNetwork = fals
           `<button class="mcp-transport-btn" data-transport="http" role="tab" aria-selected="false">HTTP</button>` +
         `</div>` +
       `</div>` +
-      `<textarea class="mcp-code mcp-config-editor" id="mcpConfigEditor" spellcheck="false">${escapeHtml(buildConfig("sse", localBase))}</textarea>` +
+      `<textarea class="mcp-code mcp-config-editor" id="mcpConfigEditor" spellcheck="false">${escapeHtml(buildConfig("sse", baseFor(scope), scope))}</textarea>` +
       `<div class="mcp-config-actions">` +
         `<button class="primary mcp-copy-btn" data-copy-target="mcpConfigEditor">${t("mcp.copyConfig")}</button>` +
       `</div>` +
       `<p class="hint" id="mcpTransportHint">${transportHint("sse")}</p>` +
     `</div>` +
+    `<div id="mcpAuthHeaderWrap">${authHeaderSection(scope)}</div>` +
     `<div class="mcp-config-section">` +
       `<h4>${t("mcp.endpoint")}</h4>` +
       `<div class="mcp-copy-row">` +
-        `<code class="mcp-code mcp-code-inline" id="mcpEndpointLabel">${escapeHtml(sseUrlFor(localBase))}</code>` +
-        `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(sseUrlFor(localBase))}" id="mcpEndpointCopy">${t("common.copy")}</button>` +
+        `<code class="mcp-code mcp-code-inline" id="mcpEndpointLabel">${escapeHtml(sseUrlFor(baseFor(scope)))}</code>` +
+        `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(sseUrlFor(baseFor(scope)))}" id="mcpEndpointCopy">${t("common.copy")}</button>` +
       `</div>` +
     `</div>` +
     `<div class="mcp-config-section">` +
       `<h4>${t("mcp.testCurl")}</h4>` +
       `<div class="mcp-copy-row">` +
-        `<pre class="mcp-code" id="mcpCurlExample">${escapeHtml(buildCurlExample("sse", localBase))}</pre>` +
-        `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(buildCurlExample("sse", localBase))}" id="mcpCurlCopy">${t("common.copy")}</button>` +
+        `<pre class="mcp-code" id="mcpCurlExample">${escapeHtml(buildCurlExample("sse", baseFor(scope), scope))}</pre>` +
+        `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(buildCurlExample("sse", baseFor(scope), scope))}" id="mcpCurlCopy">${t("common.copy")}</button>` +
       `</div>` +
     `</div>`;
 
@@ -559,13 +606,13 @@ function onShowConfigRaw(token, label, placeholder = false, onSafeNetwork = fals
     foot: `<button class="primary" data-close>${t("common.done")}</button>`,
   });
 
-  // Rewrite the config editor, endpoint, and curl example from the current
-  // transport + scope, so every copyable artifact in the dialog agrees with the
-  // buttons above it.
+  // Rewrite the config editor, endpoint, curl example, and auth-header section
+  // from the current transport + scope, so every copyable artifact in the
+  // dialog agrees with the buttons above it.
   const applySelection = () => {
     const base = baseFor(scope);
     const editor = document.getElementById("mcpConfigEditor");
-    if (editor) editor.value = buildConfig(transport, base);
+    if (editor) editor.value = buildConfig(transport, base, scope);
     const hint = document.getElementById("mcpTransportHint");
     if (hint) hint.textContent = transportHint(transport);
     const scopeEl = document.getElementById("mcpScopeHint");
@@ -576,9 +623,12 @@ function onShowConfigRaw(token, label, placeholder = false, onSafeNetwork = fals
     if (endpointCopy) endpointCopy.dataset.copy = endpointFor(transport, base);
     const curlEl = document.getElementById("mcpCurlExample");
     const curlCopy = document.getElementById("mcpCurlCopy");
-    const curlText = buildCurlExample(transport, base);
+    const curlText = buildCurlExample(transport, base, scope);
     if (curlEl) curlEl.textContent = curlText;
     if (curlCopy) curlCopy.dataset.copy = curlText;
+    const authWrap = document.getElementById("mcpAuthHeaderWrap");
+    if (authWrap) authWrap.innerHTML = authHeaderSection(scope);
+    bindCopyButtons();
   };
 
   // selectIn marks the clicked button active within its own toggle group.

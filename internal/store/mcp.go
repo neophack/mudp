@@ -21,6 +21,16 @@ type MCPToken struct {
 	CreatedAt     string `json:"createdAt"`
 	LastUsedAt    string `json:"lastUsedAt,omitempty"`
 	ExpiresAt     string `json:"expiresAt,omitempty"`
+	// ExternalKey is the credential sent as `Authorization: Bearer` on the
+	// external (remote) MCP listener. It is a separate secret from Token — the
+	// one embedded in the /mcp/{token} URL — so a URL that leaks through a
+	// tunnel's or proxy's access log cannot by itself authenticate a remote
+	// request, and rotating one never disturbs the other. Empty until
+	// generated; the LAN flow never needs it.
+	ExternalKey string `json:"externalKey,omitempty"`
+	// ExternalKeyHash is the stored hash used to verify the header on incoming
+	// remote requests. Never serialized to clients.
+	ExternalKeyHash string `json:"-"`
 	// OnSafeNetwork reports whether this token's container is currently attached
 	// to the administrator's designated safe network, so external MCP access is
 	// possible for it. Presentation-only: filled in by the token-list handler at
@@ -64,9 +74,9 @@ func (db *DB) CreateMCPToken(ownerID int64, containerID, containerName, label, c
 // token matches.
 func (db *DB) MCPTokenByHash(tokenHash string) (MCPToken, error) {
 	var t MCPToken
-	err := db.QueryRow(`select id, token_plaintext, container_id, container_name, owner_id, label, created_at, last_used_at, expires_at
+	err := db.QueryRow(`select id, token_plaintext, container_id, container_name, owner_id, label, created_at, last_used_at, expires_at, external_key_hash, external_key_plaintext
 		from mcp_tokens where token_hash=?`, tokenHash).Scan(
-		&t.ID, &t.Token, &t.ContainerID, &t.ContainerName, &t.OwnerID, &t.Label, &t.CreatedAt, &t.LastUsedAt, &t.ExpiresAt)
+		&t.ID, &t.Token, &t.ContainerID, &t.ContainerName, &t.OwnerID, &t.Label, &t.CreatedAt, &t.LastUsedAt, &t.ExpiresAt, &t.ExternalKeyHash, &t.ExternalKey)
 	if err != nil {
 		return MCPToken{}, err
 	}
@@ -75,7 +85,7 @@ func (db *DB) MCPTokenByHash(tokenHash string) (MCPToken, error) {
 
 // MCPTokensForUser lists tokens. Admins see every token; others see only their own.
 func (db *DB) MCPTokensForUser(userID int64, admin bool) ([]MCPToken, error) {
-	q := `select t.id, t.token_plaintext, t.container_id, t.container_name, t.owner_id, t.label, t.created_at, t.last_used_at, t.expires_at, coalesce(nullif(u.display_name,''), u.username, '')
+	q := `select t.id, t.token_plaintext, t.container_id, t.container_name, t.owner_id, t.label, t.created_at, t.last_used_at, t.expires_at, t.external_key_plaintext, coalesce(nullif(u.display_name,''), u.username, '')
 		from mcp_tokens t left join users u on u.id = t.owner_id`
 	args := []any{}
 	if !admin {
@@ -94,7 +104,7 @@ func (db *DB) MCPTokensForUser(userID int64, admin bool) ([]MCPToken, error) {
 // MCPTokensForContainer lists tokens for a single container. Admins see all
 // tokens for the container; others see only their own.
 func (db *DB) MCPTokensForContainer(userID int64, admin bool, containerID string) ([]MCPToken, error) {
-	q := `select t.id, t.token_plaintext, t.container_id, t.container_name, t.owner_id, t.label, t.created_at, t.last_used_at, t.expires_at, coalesce(nullif(u.display_name,''), u.username, '')
+	q := `select t.id, t.token_plaintext, t.container_id, t.container_name, t.owner_id, t.label, t.created_at, t.last_used_at, t.expires_at, t.external_key_plaintext, coalesce(nullif(u.display_name,''), u.username, '')
 		from mcp_tokens t left join users u on u.id = t.owner_id
 		where t.container_id=?`
 	args := []any{containerID}
@@ -115,7 +125,7 @@ func scanMCPTokens(rows *sql.Rows) ([]MCPToken, error) {
 	var out []MCPToken
 	for rows.Next() {
 		var t MCPToken
-		if err := rows.Scan(&t.ID, &t.Token, &t.ContainerID, &t.ContainerName, &t.OwnerID, &t.Label, &t.CreatedAt, &t.LastUsedAt, &t.ExpiresAt, &t.Owner); err != nil {
+		if err := rows.Scan(&t.ID, &t.Token, &t.ContainerID, &t.ContainerName, &t.OwnerID, &t.Label, &t.CreatedAt, &t.LastUsedAt, &t.ExpiresAt, &t.ExternalKey, &t.Owner); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -127,9 +137,9 @@ func scanMCPTokens(rows *sql.Rows) ([]MCPToken, error) {
 // token matches. Used to capture audit details before a token is deleted.
 func (db *DB) MCPTokenByID(id int64) (MCPToken, error) {
 	var t MCPToken
-	err := db.QueryRow(`select id, token_plaintext, container_id, container_name, owner_id, label, created_at, last_used_at, expires_at
+	err := db.QueryRow(`select id, token_plaintext, container_id, container_name, owner_id, label, created_at, last_used_at, expires_at, external_key_plaintext
 		from mcp_tokens where id=?`, id).Scan(
-		&t.ID, &t.Token, &t.ContainerID, &t.ContainerName, &t.OwnerID, &t.Label, &t.CreatedAt, &t.LastUsedAt, &t.ExpiresAt)
+		&t.ID, &t.Token, &t.ContainerID, &t.ContainerName, &t.OwnerID, &t.Label, &t.CreatedAt, &t.LastUsedAt, &t.ExpiresAt, &t.ExternalKey)
 	if err != nil {
 		return MCPToken{}, err
 	}
@@ -172,6 +182,35 @@ func (db *DB) RotateMCPToken(userID int64, admin bool, tokenID int64, cleartext,
 		return nil
 	}
 	res, err := db.Exec(`update mcp_tokens set token_hash=?, token_plaintext=?, last_used_at='' where id=? and owner_id=?`, tokenHash, cleartext, tokenID, userID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errors.New("token not found")
+	}
+	return nil
+}
+
+// RotateMCPExternalKey mints a fresh external key for a token — the
+// credential sent as `Authorization: Bearer` on the external (remote) MCP
+// listener — without touching the token embedded in its /mcp/{token} URL.
+// The old external key stops authenticating remote requests immediately.
+// Same ownership rule as RotateMCPToken: non-admins may only rotate their own
+// tokens.
+func (db *DB) RotateMCPExternalKey(userID int64, admin bool, tokenID int64, cleartext, hash string) error {
+	if admin {
+		res, err := db.Exec(`update mcp_tokens set external_key_hash=?, external_key_plaintext=? where id=?`, hash, cleartext, tokenID)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return errors.New("token not found")
+		}
+		return nil
+	}
+	res, err := db.Exec(`update mcp_tokens set external_key_hash=?, external_key_plaintext=? where id=? and owner_id=?`, hash, cleartext, tokenID, userID)
 	if err != nil {
 		return err
 	}
