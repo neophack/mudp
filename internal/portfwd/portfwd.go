@@ -18,6 +18,7 @@
 package portfwd
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -83,6 +84,13 @@ type Rule struct {
 	// carrying this flag is rejected at validation. Honoured only when an auth
 	// gate is installed; otherwise the flag is inert and the relay is open.
 	RequireLogin bool `json:"requireLogin,omitempty"`
+	// TLS, when true, makes the host-side listener speak HTTPS: mudp terminates
+	// TLS itself (using the certificate installed via Manager.SetTLSConfig)
+	// before relaying the decrypted bytes on to the container in plaintext, same
+	// as an ungated forward otherwise. Only meaningful for tcp — a UDP rule
+	// carrying it is rejected at validation — and a rule fails to start rather
+	// than silently serving plaintext if no certificate has been installed.
+	TLS bool `json:"tls,omitempty"`
 }
 
 // Key identifies the host-side socket a rule occupies. Two rules with the same
@@ -135,6 +143,11 @@ func (r Rule) Validate() error {
 	if r.RequireLogin && r.Proto == "udp" {
 		return errors.New("require_login is only supported for tcp forwards")
 	}
+	// TLS termination needs a byte stream to wrap a handshake around; a UDP rule
+	// carrying it is rejected here for the same reason RequireLogin is above.
+	if r.TLS && r.Proto == "udp" {
+		return errors.New("tls is only supported for tcp forwards")
+	}
 	return nil
 }
 
@@ -167,6 +180,11 @@ type Manager struct {
 	// error) and the relay simply closes. Set with SetAuthGate; nil means no
 	// gating, in which case RequireLogin flags are inert and forwards are open.
 	authGate func(rule Rule, client net.Conn) (peeked []byte, allow bool)
+	// tlsConfig, when set, is used to terminate HTTPS on any rule carrying TLS.
+	// nil means no certificate is installed, in which case a TLS rule fails to
+	// start rather than silently serving plaintext on what looks like an https
+	// port. Set with SetTLSConfig.
+	tlsConfig *tls.Config
 }
 
 // NewManager returns a Manager with no listeners running.
@@ -191,6 +209,17 @@ func (m *Manager) SetAuthGate(fn func(rule Rule, client net.Conn) (peeked []byte
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.authGate = fn
+}
+
+// SetTLSConfig installs the certificate used to terminate HTTPS on forwards
+// whose rule carries TLS. Passing nil disables it again — any TLS rule then
+// fails to start until a certificate is installed. A live listener already
+// speaking TLS is unaffected until it is next (re)started, since a *tls.Config
+// is not swapped out from under an accepting listener.
+func (m *Manager) SetTLSConfig(cfg *tls.Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tlsConfig = cfg
 }
 
 // Apply makes the running listeners match rules: it starts what is missing,
@@ -230,7 +259,10 @@ func (m *Manager) Apply(rules []Rule) error {
 
 	for key, e := range m.entries {
 		r, ok := want[key]
-		if ok && e.rule.sameTarget(r) {
+		// TLS is part of the "same" check unlike RequireLogin below: it decides
+		// which transport wraps the listener, so a flip has to restart it rather
+		// than being refreshed on the live entry the way a relay-time flag can be.
+		if ok && e.rule.sameTarget(r) && e.rule.TLS == r.TLS {
 			// Same socket, same destination: keep the listener and its open
 			// connections, but refresh the informational fields plus
 			// RequireLogin/Note/Source/ManualID -- none of those need the
@@ -382,6 +414,13 @@ func (m *Manager) start(r Rule) (*entry, error) {
 	ln, err := net.Listen("tcp", r.ListenAddr())
 	if err != nil {
 		return nil, fmt.Errorf("forward %s/tcp for %s: %w", r.ListenAddr(), r.Name, err)
+	}
+	if r.TLS {
+		if m.tlsConfig == nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("forward %s/tcp for %s: https forwarding requires a certificate to be installed", r.ListenAddr(), r.Name)
+		}
+		ln = tls.NewListener(ln, m.tlsConfig)
 	}
 	e.closer = ln
 	go e.serveTCP(ln)

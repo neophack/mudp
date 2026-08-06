@@ -119,6 +119,10 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 	// any sync before the first request. The gate re-reads auth config on every
 	// connection, so changes take effect without re-installing.
 	app.forward.SetAuthGate(app.newForwardAuthGate())
+	// Install the self-signed certificate used by HTTPS-terminated forwards
+	// (see store.ImagePreset.HTTPS8080/HTTPS8090), same rationale as the auth
+	// gate above: in place before the boot-time reconcile runs.
+	app.setupForwardTLS()
 	// Reflect any operator-configured IP-detection Worker into the CSP so the
 	// browser probe is allowed to call it. Re-synced after every settings save.
 	app.syncIPWorkerCSP()
@@ -1109,6 +1113,13 @@ func presetNoVNCPasswordEnv(p *store.ImagePreset) string {
 	return strings.TrimSpace(p.NoVNCPasswordEnv)
 }
 
+// presetBool resolves one of an image preset's pointer-typed booleans
+// (RequireLogin8080, HTTPS8090, ...) to a concrete value, treating both "no
+// preset" and "field left unset" as false.
+func presetBool(b *bool) bool {
+	return b != nil && *b
+}
+
 // appendUnique appends the entries of extra that base does not already contain,
 // so merging a preset with an admin's explicit list doesn't duplicate devices.
 func appendUnique(base, extra []string) []string {
@@ -1297,15 +1308,22 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 		// Which networks mudp forwards for is an administrator's setting about
 		// the host, never anything the request can influence.
 		ForwardNetworks: a.forwardNetworks(),
-		// Login-gating is an image-level admin decision, read from the preset and
-		// never from the request, so a user cannot lift the gate off a forwarded
-		// port of an image the admin marked as needing a login.
-		RequireLogin: img.Preset != nil && img.Preset.RequireLogin != nil && *img.Preset.RequireLogin,
-		// Which env var (if any) holds the noVNC auto-login password is an
-		// image-level admin decision, read from the preset and never from the
-		// request, for the same reason as RequireLogin above.
-		NoVNCPasswordEnv: presetNoVNCPasswordEnv(img.Preset),
-		Env:              normalizeEnv(req.Env), GPUs: req.GPUs,
+		// Login-gating and HTTPS forwarding are image-level admin decisions, read
+		// from the preset and never from the request, so a user cannot lift the
+		// gate off (or add a TLS listener to) a forwarded port of an image the
+		// admin configured. Per-port: 8080 and 8090 are independent.
+		RequireLogin8080: img.Preset != nil && presetBool(img.Preset.RequireLogin8080),
+		RequireLogin8090: img.Preset != nil && presetBool(img.Preset.RequireLogin8090),
+		HTTPS8080:        img.Preset != nil && presetBool(img.Preset.HTTPS8080),
+		HTTPS8090:        img.Preset != nil && presetBool(img.Preset.HTTPS8090),
+		// Which env var (if any) holds the noVNC auto-login password, and which
+		// of 8080/8090 it applies to, are image-level admin decisions, read from
+		// the preset and never from the request, for the same reason as
+		// RequireLogin8080/8090 above.
+		NoVNCPasswordEnv:  presetNoVNCPasswordEnv(img.Preset),
+		NoVNCPassword8080: img.Preset != nil && presetBool(img.Preset.NoVNCPassword8080),
+		NoVNCPassword8090: img.Preset != nil && presetBool(img.Preset.NoVNCPassword8090),
+		Env:               normalizeEnv(req.Env), GPUs: req.GPUs,
 		Forward8080: req.Forward8080, Forward8090: req.Forward8090,
 		Ports: splitLines(req.PortsRaw), PortPrefix: u.PortPrefix, Mounts: splitLines(req.MountsRaw),
 		Networks: req.Networks, MountNetdisk: mountNetdisk, MountShm: mountShm, NetdiskPath: netdiskPath,

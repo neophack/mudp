@@ -70,19 +70,42 @@ type ImagePreset struct {
 	// Description is a human-readable note about the image shown to users (what it
 	// contains, how to use it). Surfaced in the image list.
 	Description string `json:"description,omitempty"`
-	// RequireLogin marks this image's forwarded host ports as needing a console
-	// login before they can be reached: a browser hitting the port without a
-	// valid session is redirected to the login page. It exists for images that
-	// ship no authentication of their own (a bare web desktop, a dev server),
-	// so an exposed host port is not an open door to the whole LAN. Only TCP/HTTP
-	// forwards can honour it — a UDP or raw-TCP forward cannot check a cookie —
-	// and the forward layer refuses non-HTTP traffic to one of these ports.
-	RequireLogin *bool `json:"requireLogin,omitempty"`
+	// RequireLogin8080/RequireLogin8090 mark this image's forwarded 8080/8090
+	// host port (respectively) as needing a console login before it can be
+	// reached: a browser hitting the port without a valid session is redirected
+	// to the login page. Independent of each other — an image can gate one
+	// port and leave the other open, e.g. a bare desktop on 8080 that needs a
+	// login and a health-check endpoint on 8090 that does not. They exist for
+	// images that ship no authentication of their own (a bare web desktop, a
+	// dev server), so an exposed host port is not an open door to the whole
+	// LAN. Only TCP/HTTP forwards can honour it — a UDP or raw-TCP forward
+	// cannot check a cookie — and the forward layer refuses non-HTTP traffic to
+	// one of these ports.
+	RequireLogin8080 *bool `json:"requireLogin8080,omitempty"`
+	RequireLogin8090 *bool `json:"requireLogin8090,omitempty"`
+	// HTTPS8080/HTTPS8090 additionally open an HTTPS-terminated forward for the
+	// 8080/8090 container port: mudp listens on a second host port, terminates
+	// TLS there with its own self-signed certificate, and relays the decrypted
+	// bytes on to the same container port in plaintext — the container itself
+	// never needs to speak TLS. Independent of Forward8080/Forward8090: an
+	// image can offer the plain port, the HTTPS one, both, or neither. Only
+	// takes effect on a forwarding network, for the same reason RequireLogin
+	// does: terminating TLS means mudp itself has to own the host socket.
+	HTTPS8080 *bool `json:"https8080,omitempty"`
+	HTTPS8090 *bool `json:"https8090,omitempty"`
 	// NoVNCPasswordEnv names one of this preset's Env keys (e.g. "VNC_PW") whose
 	// resolved value should be appended as "?password=" to the container's
 	// forwarded-port open link, so clicking it logs straight into a noVNC page
 	// instead of stopping at its password prompt. Empty means no auto-login.
 	NoVNCPasswordEnv string `json:"novncPasswordEnv,omitempty"`
+	// NoVNCPassword8080/NoVNCPassword8090 select which of this image's
+	// forwarded 8080/8090 host ports (respectively) NoVNCPasswordEnv's value is
+	// appended to. Independent of each other, so an image running noVNC on only
+	// one of the two ports does not get "?password=" tacked onto an unrelated
+	// service on the other. Both nil/false means the resolved password is
+	// stamped on the container but not appended to either open link.
+	NoVNCPassword8080 *bool `json:"novncPassword8080,omitempty"`
+	NoVNCPassword8090 *bool `json:"novncPassword8090,omitempty"`
 }
 
 // MarshalJSON serialises the preset to JSON, returning an empty byte slice for a
@@ -132,8 +155,11 @@ func isEmptyPreset(p *ImagePreset) bool {
 		p.Forward8080 == nil && p.Forward8090 == nil &&
 		p.MountNetdisk == nil && p.MountShm == nil && p.MountSharedDisk == nil && len(p.Networks) == 0 && len(p.SelectableNetworks) == 0 &&
 		p.RestartPolicy == "" &&
-		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == "" && p.RequireLogin == nil &&
-		p.NoVNCPasswordEnv == ""
+		len(p.Devices) == 0 && len(p.CDIDevices) == 0 && p.Description == "" &&
+		p.RequireLogin8080 == nil && p.RequireLogin8090 == nil &&
+		p.HTTPS8080 == nil && p.HTTPS8090 == nil &&
+		p.NoVNCPasswordEnv == "" &&
+		p.NoVNCPassword8080 == nil && p.NoVNCPassword8090 == nil
 }
 
 // ValidatePreset performs lightweight, security-conscious validation of an admin

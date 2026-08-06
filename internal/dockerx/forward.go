@@ -37,11 +37,13 @@ const (
 	// targets. A container is usually on more than one network; this says which
 	// one's IP the relay must follow.
 	ForwardNetLabel = "mudp.forward.net"
-	// ForwardRequireLoginLabel records that this container's forwarded ports
-	// must be login-gated. Derived from the image preset at create time, it is
-	// read back by ForwardRules so the relay honours it on every reconcile. The
-	// value is the literal "true"; anything else (or absent) means ungated.
-	ForwardRequireLoginLabel = "mudp.forward.require_login"
+	// ForwardLoginPortsLabel records which of this container's forwarded
+	// container ports must be login-gated, as a comma-separated list of port
+	// numbers (e.g. "8080,8090"). Derived from the image preset's per-port
+	// RequireLogin8080/RequireLogin8090 at create time, it is read back by
+	// ForwardRules so the relay honours it on every reconcile. A port not
+	// listed here is ungated even if forwarded.
+	ForwardLoginPortsLabel = "mudp.forward.login_ports"
 )
 
 // ForwardSpec is one host→container mapping served by mudp rather than Docker.
@@ -49,16 +51,26 @@ type ForwardSpec struct {
 	HostPort      int
 	ContainerPort int
 	Proto         string
+	// TLS marks a forward as one where mudp terminates HTTPS on HostPort before
+	// relaying the decrypted bytes on to ContainerPort in plaintext, rather than
+	// relaying raw bytes both ways. A container port can have both a plain and
+	// a TLS spec at once, each on its own host port — see
+	// store.ImagePreset.HTTPS8080/HTTPS8090.
+	TLS bool
 }
 
 // String renders a spec the way it is stored in the label and shown in the UI:
-// "10001:8080/tcp".
+// "10001:8080/tcp", or "10001:8080/tcp;tls" for an HTTPS-terminated one.
 func (s ForwardSpec) String() string {
 	proto := s.Proto
 	if proto == "" {
 		proto = "tcp"
 	}
-	return fmt.Sprintf("%d:%d/%s", s.HostPort, s.ContainerPort, proto)
+	rendered := fmt.Sprintf("%d:%d/%s", s.HostPort, s.ContainerPort, proto)
+	if s.TLS {
+		rendered += ";tls"
+	}
+	return rendered
 }
 
 // FormatForwardSpecs renders specs into the label value.
@@ -80,12 +92,20 @@ func ParseForwardSpecs(label string) []ForwardSpec {
 		if raw == "" {
 			continue
 		}
+		tls := false
+		if strings.HasSuffix(raw, ";tls") {
+			tls = true
+			raw = strings.TrimSuffix(raw, ";tls")
+		}
 		proto := "tcp"
 		if i := strings.LastIndex(raw, "/"); i >= 0 {
 			proto = strings.ToLower(strings.TrimSpace(raw[i+1:]))
 			raw = raw[:i]
 		}
 		if proto != "tcp" && proto != "udp" {
+			continue
+		}
+		if tls && proto != "tcp" {
 			continue
 		}
 		host, containerPort, ok := strings.Cut(raw, ":")
@@ -100,7 +120,7 @@ func ParseForwardSpecs(label string) []ForwardSpec {
 		if err != nil || cp < 1 || cp > 65535 {
 			continue
 		}
-		out = append(out, ForwardSpec{HostPort: hp, ContainerPort: cp, Proto: proto})
+		out = append(out, ForwardSpec{HostPort: hp, ContainerPort: cp, Proto: proto, TLS: tls})
 	}
 	return out
 }
@@ -253,12 +273,13 @@ func (d *Client) ForwardRules(ctx context.Context, forwardNetworks []string) ([]
 		if name == "" && len(c.Names) > 0 {
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
-		// A login-gated image stamps its containers; every forward derived from
-		// it inherits the gate. UDP specs on a gated container are dropped here
-		// rather than left for Validate to reject, so one non-HTTP port does not
-		// fail the whole container's reconcile.
-		requireLogin := c.Labels[ForwardRequireLoginLabel] == "true"
+		// A login-gated image stamps which of its container ports need it; every
+		// forward derived from one of those ports inherits the gate. UDP specs on
+		// a gated port are dropped here rather than left for Validate to reject,
+		// so one non-HTTP port does not fail the whole container's reconcile.
+		loginPorts := parsePortList(c.Labels[ForwardLoginPortsLabel])
 		for _, s := range specs {
+			requireLogin := loginPorts[s.ContainerPort]
 			if requireLogin && s.Proto == "udp" {
 				continue
 			}
@@ -272,6 +293,7 @@ func (d *Client) ForwardRules(ctx context.Context, forwardNetworks []string) ([]
 				Name:         name,
 				Source:       "container",
 				RequireLogin: requireLogin,
+				TLS:          s.TLS,
 			})
 		}
 	}
@@ -404,18 +426,58 @@ func forwardIP(c types.Container, network string) string {
 	return ""
 }
 
-// forwardHostPort returns the host port a container's label assigns to one
-// container port, or 0 when that port is not forwarded. Used to render the
-// mapping in the container list and detail views, where Docker itself reports
-// the port as merely exposed.
+// forwardHostPort returns the host port a container's label assigns to the
+// plain (non-TLS) forward of one container port, or 0 when that port has no
+// such forward. Used to render the mapping in the container list and detail
+// views, where Docker itself reports the port as merely exposed.
 func forwardHostPort(specs []ForwardSpec, containerPort int, proto string) int {
 	if proto == "" {
 		proto = "tcp"
 	}
 	for _, s := range specs {
+		if s.TLS {
+			continue
+		}
 		if s.ContainerPort == containerPort && s.Proto == proto {
 			return s.HostPort
 		}
 	}
 	return 0
+}
+
+// forwardHostPortTLS is forwardHostPort's counterpart for the HTTPS-terminated
+// listener a container port may additionally have — its own host port, since
+// mudp needs a distinct socket to speak TLS on before relaying the decrypted
+// bytes to the same container address.
+func forwardHostPortTLS(specs []ForwardSpec, containerPort int, proto string) int {
+	if proto == "" {
+		proto = "tcp"
+	}
+	for _, s := range specs {
+		if !s.TLS {
+			continue
+		}
+		if s.ContainerPort == containerPort && s.Proto == proto {
+			return s.HostPort
+		}
+	}
+	return 0
+}
+
+// parsePortList parses a comma-separated list of port numbers (as written to
+// ForwardLoginPortsLabel) into a lookup set. Malformed entries are skipped
+// rather than failing the whole list, matching ParseForwardSpecs' tolerance
+// for a hand-edited label.
+func parsePortList(label string) map[int]bool {
+	out := map[int]bool{}
+	for _, raw := range strings.Split(label, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if p, err := strconv.Atoi(raw); err == nil && p >= 1 && p <= 65535 {
+			out[p] = true
+		}
+	}
+	return out
 }

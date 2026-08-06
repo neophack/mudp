@@ -66,6 +66,9 @@ func TestIsEmptyPresetSelectableNetworks(t *testing.T) {
 	if !isEmptyPreset(&ImagePreset{}) {
 		t.Fatal("zero-value preset should be considered empty")
 	}
+	if isEmptyPreset(&ImagePreset{NoVNCPassword8080: boolPtr(true)}) {
+		t.Fatal("preset with only NoVNCPassword8080 should not be considered empty")
+	}
 }
 
 func TestEncodeDecodePresetSelectableNetworks(t *testing.T) {
@@ -73,7 +76,7 @@ func TestEncodeDecodePresetSelectableNetworks(t *testing.T) {
 		SelectableNetworks: []string{"mudp_alice_net", "bridge"},
 		Networks:           []string{"mudp_alice_net"},
 		Ports:              []string{"8080"},
-		RequireLogin:       boolPtr(true),
+		RequireLogin8080:   boolPtr(true),
 	}
 	encoded, err := EncodePreset(original)
 	if err != nil {

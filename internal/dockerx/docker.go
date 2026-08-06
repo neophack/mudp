@@ -38,6 +38,14 @@ const (
 	// container list can build a "?password=" open link without a per-row
 	// inspect call. Empty/absent means the image did not request this.
 	NoVNCPasswordLabel = "mudp.novnc.password"
+	// NoVNCPasswordPortsLabel records which of this container's forwarded
+	// 8080/8090 host ports NoVNCPasswordLabel's value should be appended to, as
+	// a comma-separated list of container port numbers (e.g. "8080" or
+	// "8080,8090"). Derived from the image preset's per-port
+	// NoVNCPassword8080/NoVNCPassword8090 at create time. A port not listed
+	// here opens without "?password=" even when the container carries a
+	// resolved password.
+	NoVNCPasswordPortsLabel = "mudp.novnc.password_ports"
 )
 
 var cleanPart = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
@@ -82,7 +90,14 @@ type Container struct {
 	GPUMemoryPct     float64           `json:"gpuMemPct"`
 	HTTP8080URL      string            `json:"http8080Url,omitempty"`
 	HTTP8090URL      string            `json:"http8090Url,omitempty"`
-	CreatedAt        int64             `json:"createdAt"`
+	// HTTPS8080URL/HTTPS8090URL are the https:// open links for a container
+	// port whose image preset enabled an HTTPS-terminated forward (see
+	// store.ImagePreset.HTTPS8080/HTTPS8090). Distinct host ports from
+	// HTTP8080URL/HTTP8090URL — mudp terminates TLS on this one and relays
+	// plaintext to the same container port.
+	HTTPS8080URL string `json:"https8080Url,omitempty"`
+	HTTPS8090URL string `json:"https8090Url,omitempty"`
+	CreatedAt    int64  `json:"createdAt"`
 	// Forwarded reports whether mudp relays this container's host ports itself
 	// rather than Docker publishing them — from its forward label, or adopted
 	// because it currently sits on a network the administrator marked for
@@ -115,17 +130,35 @@ type CreateOptions struct {
 	GPUs        string
 	Forward8080 bool
 	Forward8090 bool
-	// RequireLogin, when true, stamps the container so each of its forwarded
-	// ports is login-gated. Server-supplied from the image preset — never taken
-	// from the request, so a user cannot self-grant or self-revoke it.
-	RequireLogin bool
+	// RequireLogin8080/RequireLogin8090, when true, stamp the container so its
+	// forwarded 8080/8090 port (respectively) is login-gated — independently of
+	// each other, so an image can gate one and leave the other open. Server-
+	// supplied from the image preset — never taken from the request, so a user
+	// cannot self-grant or self-revoke it.
+	RequireLogin8080 bool
+	RequireLogin8090 bool
+	// HTTPS8080/HTTPS8090, when true, additionally open an HTTPS-terminated
+	// forward for the 8080/8090 container port: mudp listens on a second host
+	// port, terminates TLS there with its self-signed certificate, and relays
+	// the decrypted bytes on to the same container port in plaintext. Server-
+	// supplied from the image preset, same rationale as RequireLogin8080/8090.
+	HTTPS8080 bool
+	HTTPS8090 bool
 	// NoVNCPasswordEnv names an env var (e.g. "VNC_PW") whose resolved value
 	// should be stamped as NoVNCPasswordLabel, so the container list can open a
 	// noVNC page pre-authenticated via "?password=". Server-supplied from the
 	// image preset — never taken from the request.
 	NoVNCPasswordEnv string
-	Ports            []string
-	PortPrefix       int
+	// NoVNCPassword8080/NoVNCPassword8090 select which of the container's
+	// forwarded 8080/8090 host ports (respectively) the resolved noVNC
+	// password is appended to as "?password=" — independent of each other, so
+	// an image running noVNC on only one of the two ports does not get the
+	// query string tacked onto an unrelated service on the other. Server-
+	// supplied from the image preset, same rationale as RequireLogin8080/8090.
+	NoVNCPassword8080 bool
+	NoVNCPassword8090 bool
+	Ports             []string
+	PortPrefix        int
 	// Mounts are bind/named-volume mounts: "source:target[:ro]" entries.
 	Mounts       []string
 	NetdiskPath  string
@@ -548,6 +581,28 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		}
 		publish(hostPort, 8090, "tcp")
 	}
+	// HTTPS8080/HTTPS8090 open a second, TLS-terminated listener for the same
+	// container port, on its own host port — only possible on a forwarding
+	// network, since terminating TLS means mudp itself has to own the socket,
+	// which Docker's own port publishing does not give it. Independent of
+	// Forward8080/Forward8090: the plain port need not be open for the HTTPS
+	// one to be.
+	if opts.HTTPS8080 && forwardNet != "" {
+		hostPort, err := nextPort()
+		if err != nil {
+			return "", err
+		}
+		exposed[nat.Port("8080/tcp")] = struct{}{}
+		forwardSpecs = append(forwardSpecs, ForwardSpec{HostPort: hostPort, ContainerPort: 8080, Proto: "tcp", TLS: true})
+	}
+	if opts.HTTPS8090 && forwardNet != "" {
+		hostPort, err := nextPort()
+		if err != nil {
+			return "", err
+		}
+		exposed[nat.Port("8090/tcp")] = struct{}{}
+		forwardSpecs = append(forwardSpecs, ForwardSpec{HostPort: hostPort, ContainerPort: 8090, Proto: "tcp", TLS: true})
+	}
 	labels := map[string]string{
 		ManagedLabel:       "true",
 		UserLabel:          opts.Username,
@@ -568,17 +623,38 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		labels[ForwardNetLabel] = forwardNet
 		// Login-gating is stamped only when the container actually forwards, so
 		// a gated image run on a non-forwarding network does not carry a stale
-		// flag that would do nothing but confuse an admin reading the labels.
-		if opts.RequireLogin {
-			labels[ForwardRequireLoginLabel] = "true"
+		// label that would do nothing but confuse an admin reading the labels.
+		// Per-port: an image can gate 8080 without gating 8090, or vice versa.
+		var loginPorts []string
+		if opts.RequireLogin8080 {
+			loginPorts = append(loginPorts, "8080")
+		}
+		if opts.RequireLogin8090 {
+			loginPorts = append(loginPorts, "8090")
+		}
+		if len(loginPorts) > 0 {
+			labels[ForwardLoginPortsLabel] = strings.Join(loginPorts, ",")
 		}
 	}
 	// Stamp the resolved noVNC auto-login password (if the image preset named
 	// one), so the container list can build a "?password=" open link without a
 	// second inspect call per row. Server-supplied, same rationale as RequireLogin.
+	// Which of 8080/8090 it is appended to is recorded separately, so a
+	// password meant for one port's noVNC page is not tacked onto an unrelated
+	// service on the other.
 	if key := strings.TrimSpace(opts.NoVNCPasswordEnv); key != "" {
 		if val, ok := lookupEnvValue(opts.Env, key); ok && val != "" {
 			labels[NoVNCPasswordLabel] = val
+			var pwPorts []string
+			if opts.NoVNCPassword8080 {
+				pwPorts = append(pwPorts, "8080")
+			}
+			if opts.NoVNCPassword8090 {
+				pwPorts = append(pwPorts, "8090")
+			}
+			if len(pwPorts) > 0 {
+				labels[NoVNCPasswordPortsLabel] = strings.Join(pwPorts, ",")
+			}
 		}
 	}
 	hostCfg := &container.HostConfig{
@@ -1024,12 +1100,25 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 			}
 		}
 		novncPassword := c.Labels[NoVNCPasswordLabel]
+		novncPasswordPorts := parsePortList(c.Labels[NoVNCPasswordPortsLabel])
+		// Only the ports the image preset selected (NoVNCPassword8080/8090) get
+		// the password appended — a port not in the label opens plain even
+		// though the container carries a resolved password for the other one.
+		password8080, password8090 := "", ""
+		if novncPasswordPorts[8080] {
+			password8080 = novncPassword
+		}
+		if novncPasswordPorts[8090] {
+			password8090 = novncPassword
+		}
 		out = append(out, Container{
 			ID: c.ID, Name: display, FullName: full, Owner: c.Labels[UserLabel], Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
-			HTTP8080URL: withNoVNCPassword(httpURL(c.Ports, forwards, 8080), novncPassword),
-			HTTP8090URL: withNoVNCPassword(httpURL(c.Ports, forwards, 8090), novncPassword),
-			Forwarded:   forwarded,
+			HTTP8080URL:  withNoVNCPassword(httpURL(c.Ports, forwards, 8080), password8080),
+			HTTP8090URL:  withNoVNCPassword(httpURL(c.Ports, forwards, 8090), password8090),
+			HTTPS8080URL: withNoVNCPassword(httpsURL(forwards, 8080), password8080),
+			HTTPS8090URL: withNoVNCPassword(httpsURL(forwards, 8090), password8090),
+			Forwarded:    forwarded,
 		})
 	}
 	for i := range out {
@@ -1084,6 +1173,18 @@ func httpURL(ports []types.Port, forwards []ForwardSpec, privatePort uint16) str
 	}
 	if hp := forwardHostPort(forwards, int(privatePort), "tcp"); hp > 0 {
 		return fmt.Sprintf("http://127.0.0.1:%d", hp)
+	}
+	return ""
+}
+
+// httpsURL returns the host-side https:// URL for a container private port
+// whose image preset enabled an HTTPS-terminated forward (see
+// store.ImagePreset.HTTPS8080/HTTPS8090). Unlike httpURL there is no Docker-
+// published case: Docker cannot terminate TLS, only mudp's own relay can, so
+// this only ever resolves through the forwards list.
+func httpsURL(forwards []ForwardSpec, privatePort uint16) string {
+	if hp := forwardHostPortTLS(forwards, int(privatePort), "tcp"); hp > 0 {
+		return fmt.Sprintf("https://127.0.0.1:%d", hp)
 	}
 	return ""
 }

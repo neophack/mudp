@@ -79,7 +79,14 @@ function presetSummary(p) {
   if ((p.ports || []).length) bits.push("ports:" + p.ports.join(","));
   if ((p.devices || []).length) bits.push("dev:" + p.devices.length);
   if ((p.cdiDevices || []).length) bits.push("cdi:" + p.cdiDevices.length);
-  if (p.novncPasswordEnv) bits.push("noVNC:" + p.novncPasswordEnv);
+  if (p.novncPasswordEnv) {
+    const pwPorts = [p.novncPassword8080 && "8080", p.novncPassword8090 && "8090"].filter(Boolean);
+    bits.push("noVNC:" + p.novncPasswordEnv + (pwPorts.length ? "@" + pwPorts.join(",") : ""));
+  }
+  const loginPorts = [p.requireLogin8080 && "8080", p.requireLogin8090 && "8090"].filter(Boolean);
+  if (loginPorts.length) bits.push("login:" + loginPorts.join(","));
+  const httpsPorts = [p.https8080 && "8080", p.https8090 && "8090"].filter(Boolean);
+  if (httpsPorts.length) bits.push("https:" + httpsPorts.join(","));
   return bits.length ? escapeHtml(bits.join(" · ")) : "—";
 }
 
@@ -156,11 +163,22 @@ export function openPresetModal(imageId) {
           presetCheck("mountNetdisk", t("images.presetNetdisk"), p.mountNetdisk) +
           presetCheck("mountShm", t("images.presetShm"), p.mountShm) +
           presetCheck("mountSharedDisk", t("images.presetSharedDisk"), p.mountSharedDisk) +
-          presetCheck("requireLogin", t("images.requireLogin"), p.requireLogin) +
+        `</div>` +
+        `<label class="field-label">${t("images.loginHttpsLabel")}</label>` +
+        `<p class="hint">${t("images.loginHttpsHint")}</p>` +
+        `<div class="check-grid">` +
+          presetCheck("requireLogin8080", t("images.requireLogin8080"), p.requireLogin8080) +
+          presetCheck("https8080", t("images.https8080"), p.https8080) +
+          presetCheck("requireLogin8090", t("images.requireLogin8090"), p.requireLogin8090) +
+          presetCheck("https8090", t("images.https8090"), p.https8090) +
         `</div>` +
         `<label class="field-label">${t("images.novncPasswordLabel")}</label>` +
         `<input name="novncPasswordEnv" placeholder="VNC_PW" value="${escapeHtml(p.novncPasswordEnv || "")}">` +
         `<p class="hint">${t("images.novncPasswordHint")}</p>` +
+        `<div class="check-grid">` +
+          presetCheck("novncPassword8080", t("images.novncPassword8080"), p.novncPassword8080) +
+          presetCheck("novncPassword8090", t("images.novncPassword8090"), p.novncPassword8090) +
+        `</div>` +
         (selectableChecks
           ? `<label class="field-label">${t("images.selectableNetworks")}</label><div class="check-grid" id="selectableNetworksGrid">${selectableChecks}</div>` +
             `<p class="hint">${t("images.selectableNetworksHint")}</p>` +
@@ -223,8 +241,13 @@ export function openPresetModal(imageId) {
       mountNetdisk: form.querySelector('[name=mountNetdisk]').checked || undefined,
       mountShm: form.querySelector('[name=mountShm]').checked || undefined,
       mountSharedDisk: form.querySelector('[name=mountSharedDisk]').checked || undefined,
-      requireLogin: form.querySelector('[name=requireLogin]').checked || undefined,
+      requireLogin8080: form.querySelector('[name=requireLogin8080]').checked || undefined,
+      requireLogin8090: form.querySelector('[name=requireLogin8090]').checked || undefined,
+      https8080: form.querySelector('[name=https8080]').checked || undefined,
+      https8090: form.querySelector('[name=https8090]').checked || undefined,
       novncPasswordEnv: (fd.get("novncPasswordEnv") || "").trim(),
+      novncPassword8080: form.querySelector('[name=novncPassword8080]').checked || undefined,
+      novncPassword8090: form.querySelector('[name=novncPassword8090]').checked || undefined,
       selectableNetworks,
       networks,
       restartPolicy: (fd.get("restartPolicy") || "").trim(),
