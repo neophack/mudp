@@ -46,7 +46,9 @@ export async function openDetails(id, name) {
         ) +
         detailRow(
           "Mounts",
-          (i.mounts || []).map((m) => escapeHtml(`${m.source} → ${m.target} (${m.type})`)).join(", ") || "-"
+          (i.mounts || [])
+            .map((m) => escapeHtml(`${m.source} → ${m.target} (${m.type}, ${m.readOnly ? "ro" : "rw"})`))
+            .join(", ") || "-"
         ) +
         detailRow("Environment", `<span class="mono detail-env">${escapeHtml((i.env || []).join("\n") || "-")}</span>`) +
       `</dl>` +

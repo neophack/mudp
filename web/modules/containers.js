@@ -206,7 +206,7 @@ function containerRow(c) {
   const num = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
   const conn = [];
   if (c.http8080Url) conn.push(`<a class="port-link" href="${escapeHtml(fixUrl(c.http8080Url))}" target="_blank" rel="noopener">8080 ↗</a>`);
-  if (c.http80Url) conn.push(`<a class="port-link" href="${escapeHtml(fixUrl(c.http80Url))}" target="_blank" rel="noopener">80 ↗</a>`);
+  if (c.http8090Url) conn.push(`<a class="port-link" href="${escapeHtml(fixUrl(c.http8090Url))}" target="_blank" rel="noopener">8090 ↗</a>`);
   // The quick links used to replace the port list, which hid every mapping on a
   // container publishing 80 or 8080 — including the ones mudp forwards. Show
   // both: the links are a shortcut, the mappings are the information.

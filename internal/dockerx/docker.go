@@ -81,7 +81,7 @@ type Container struct {
 	GPUMemoryTotalMB float64           `json:"gpuMemTotalMb"`
 	GPUMemoryPct     float64           `json:"gpuMemPct"`
 	HTTP8080URL      string            `json:"http8080Url,omitempty"`
-	HTTP80URL        string            `json:"http80Url,omitempty"`
+	HTTP8090URL      string            `json:"http8090Url,omitempty"`
 	CreatedAt        int64             `json:"createdAt"`
 	// Forwarded reports whether mudp relays this container's host ports itself
 	// rather than Docker publishing them — from its forward label, or adopted
@@ -231,10 +231,11 @@ type PortBinding struct {
 }
 
 type MountInfo struct {
-	Type   string `json:"type"`
-	Source string `json:"source"`
-	Target string `json:"target"`
-	Mode   string `json:"mode"`
+	Type     string `json:"type"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	Mode     string `json:"mode"`
+	ReadOnly bool   `json:"readOnly"`
 }
 
 type NetworkInfo struct {
@@ -488,7 +489,7 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 			forwardSpecs = append(forwardSpecs, ForwardSpec{HostPort: hostPort, ContainerPort: containerPort, Proto: proto})
 			return
 		}
-		portMap[p] = []nat.PortBinding{{HostPort: strconv.Itoa(hostPort)}}
+		portMap[p] = append(portMap[p], nat.PortBinding{HostPort: strconv.Itoa(hostPort)})
 	}
 	// addPort resolves one mapping from the create form (see parsePortSpec for
 	// the accepted shapes) and publishes it.
@@ -1027,7 +1028,7 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 			ID: c.ID, Name: display, FullName: full, Owner: c.Labels[UserLabel], Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
 			HTTP8080URL: withNoVNCPassword(httpURL(c.Ports, forwards, 8080), novncPassword),
-			HTTP80URL:   withNoVNCPassword(httpURL(c.Ports, forwards, 80), novncPassword),
+			HTTP8090URL: withNoVNCPassword(httpURL(c.Ports, forwards, 8090), novncPassword),
 			Forwarded:   forwarded,
 		})
 	}
@@ -1284,7 +1285,11 @@ func (d *Client) Inspect(ctx context.Context, id string) (InspectInfo, error) {
 		info.Ports = append(info.Ports, PortBinding{HostPort: strconv.Itoa(s.HostPort), PrivatePort: uint16(s.ContainerPort), Type: s.Proto, Forwarded: true})
 	}
 	for _, m := range inspect.Mounts {
-		info.Mounts = append(info.Mounts, MountInfo{Type: string(m.Type), Source: m.Source, Target: m.Destination, Mode: m.Mode})
+		// m.Mode is the raw options string the user supplied at mount time (e.g.
+		// selinux relabeling flags) and is not reliably "ro"/"rw" — for named
+		// volumes it is often empty. m.RW is Docker's own resolved read-write
+		// bit, so it's what the UI's ro/rw badge is built from.
+		info.Mounts = append(info.Mounts, MountInfo{Type: string(m.Type), Source: m.Source, Target: m.Destination, Mode: m.Mode, ReadOnly: !m.RW})
 	}
 	for name, net := range inspect.NetworkSettings.Networks {
 		info.Networks = append(info.Networks, NetworkInfo{Name: name, IPAddress: net.IPAddress, Gateway: net.Gateway, MacAddress: net.MacAddress})
