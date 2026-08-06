@@ -3252,6 +3252,13 @@ audio.viewer-media {
   padding: 16px;
   background: #1b1c31;
   text-align: center;
+  /* Click-drag pans the image like a desktop viewer; grab/grabbing signals
+     that affordance the way scroll containers alone don't. */
+  cursor: grab;
+}
+.raster-canvas-wrap.panning {
+  cursor: grabbing;
+  user-select: none;
 }
 .raster-canvas {
   background: #000;
@@ -3389,6 +3396,10 @@ audio.viewer-media {
   font-weight: 600;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+}
+.raster-zoom-readout .raster-zoom-btns {
+  display: flex;
+  gap: 6px;
 }
 .raster-zoom-readout button {
   min-height: 26px;

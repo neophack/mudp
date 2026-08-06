@@ -446,6 +446,7 @@ export function openRasterFrameViewer({
   const loopCheckbox = bodyEl.querySelector("#rasterLoop");
   const fpsInput = bodyEl.querySelector("#rasterFps");
   const zoomVal = bodyEl.querySelector("#rasterZoomVal");
+  const zoomFitBtn = bodyEl.querySelector("#rasterZoomFit");
   const zoomResetBtn = bodyEl.querySelector("#rasterZoomReset");
   const status = bodyEl.querySelector("#rasterStatus");
 
@@ -550,10 +551,41 @@ export function openRasterFrameViewer({
     frameInput.value = f + 1;
     paintCurrentFrame();
   }
-  function applyZoom(newZoom) {
-    state.zoom = Math.max(0.1, Math.min(64, newZoom));
+  // applyZoom sets the zoom level and repaints. When anchorClientX/Y are given
+  // (viewport coordinates, e.g. from a wheel event), the point of the image
+  // under that coordinate is kept under the same screen position after the
+  // resize — this is what makes wheel-zoom feel like it zooms "into" the
+  // cursor instead of always growing from the canvas's centered origin. We
+  // have to wait for paintCurrentFrame to finish (it's async — it re-fetches
+  // and re-decodes the frame) before the canvas has its new size to scroll
+  // against.
+  function applyZoom(newZoom, anchorClientX, anchorClientY) {
+    const clamped = Math.max(0.1, Math.min(64, newZoom));
+    if (clamped === state.zoom) return;
+    let anchor = null;
+    if (anchorClientX != null && anchorClientY != null) {
+      const canvasRect = canvas.getBoundingClientRect();
+      const wrapRect = canvasWrap.getBoundingClientRect();
+      anchor = {
+        // Position of the cursor within the *source image*, in unzoomed pixels.
+        imgX: (anchorClientX - canvasRect.left) / state.zoom,
+        imgY: (anchorClientY - canvasRect.top) / state.zoom,
+        // Position of the cursor within the scroll container's viewport — this
+        // is what must stay fixed on screen.
+        viewportX: anchorClientX - wrapRect.left,
+        viewportY: anchorClientY - wrapRect.top,
+      };
+    }
+    state.zoom = clamped;
     if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
-    paintCurrentFrame();
+    const painted = paintCurrentFrame();
+    if (anchor) {
+      painted.then(() => {
+        if (state.destroyed) return;
+        canvasWrap.scrollLeft = anchor.imgX * state.zoom - anchor.viewportX;
+        canvasWrap.scrollTop = anchor.imgY * state.zoom - anchor.viewportY;
+      });
+    }
   }
   function onWheel(e) {
     // Ctrl/Cmd + wheel, or plain wheel over the canvas, zooms toward the cursor.
@@ -562,11 +594,65 @@ export function openRasterFrameViewer({
     e.preventDefault();
     const delta = -e.deltaY;
     const factor = delta > 0 ? 1.15 : 1 / 1.15;
-    applyZoom(state.zoom * factor);
+    applyZoom(state.zoom * factor, e.clientX, e.clientY);
+  }
+  // computeFitZoom returns the largest zoom that shows the whole image inside
+  // the current canvas-wrap viewport without cropping either axis. Zoom is a
+  // single scalar applied to both dimensions (see drawFrame), so the image
+  // never stretches — it's always scaled uniformly.
+  function computeFitZoom() {
+    const cs = getComputedStyle(canvasWrap);
+    const padX = parseFloat(cs.paddingLeft || "0") + parseFloat(cs.paddingRight || "0");
+    const padY = parseFloat(cs.paddingTop || "0") + parseFloat(cs.paddingBottom || "0");
+    const availW = Math.max(1, canvasWrap.clientWidth - padX);
+    const availH = Math.max(1, canvasWrap.clientHeight - padY);
+    return Math.min(availW / state.width, availH / state.height);
+  }
+  function fitToWindow() {
+    applyZoom(computeFitZoom());
   }
   function onIspToggle() {
     state.isp = !!ispCheckbox.checked;
     paintCurrentFrame();
+  }
+
+  // --- Drag-to-pan: click and drag the image to scroll it, the way desktop
+  // image viewers (IrfanView, Preview, Photoshop) work — hunting for a
+  // scrollbar to move around a zoomed-in image is not how anyone actually
+  // does it. Restricted to mouse (pointerType === "mouse") so touch devices
+  // keep their native scroll/pinch-zoom gestures untouched.
+  let pan = null;
+  function onPointerDown(e) {
+    if (e.pointerType && e.pointerType !== "mouse") return;
+    if (e.button !== 0) return;
+    pan = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      startScrollLeft: canvasWrap.scrollLeft,
+      startScrollTop: canvasWrap.scrollTop,
+    };
+    canvasWrap.setPointerCapture(e.pointerId);
+    canvasWrap.classList.add("panning");
+    e.preventDefault();
+  }
+  function onPointerMove(e) {
+    if (!pan || pan.pointerId !== e.pointerId) return;
+    canvasWrap.scrollLeft = pan.startScrollLeft - (e.clientX - pan.startX);
+    canvasWrap.scrollTop = pan.startScrollTop - (e.clientY - pan.startY);
+  }
+  function endPan(e) {
+    if (!pan || (e && pan.pointerId !== e.pointerId)) return;
+    canvasWrap.classList.remove("panning");
+    pan = null;
+  }
+  // Double-click toggles between "fit to window" and 100% (actual pixels),
+  // zooming toward the click point — the same toggle desktop viewers bind to
+  // double-click.
+  function onDblClick(e) {
+    const fitZoom = computeFitZoom();
+    const atFit = Math.abs(state.zoom - fitZoom) < 0.01;
+    applyZoom(atFit ? 1 : fitZoom, e.clientX, e.clientY);
   }
 
   // --- Playback: play advances one frame per 1000/fps ms, looping or stopping
@@ -626,10 +712,16 @@ export function openRasterFrameViewer({
     state.fps = Math.max(1, Math.min(120, parseInt(fpsInput.value, 10) || 24));
     fpsInput.value = state.fps;
   });
+  zoomFitBtn.addEventListener("click", fitToWindow);
   zoomResetBtn.addEventListener("click", () => applyZoom(1));
   // Wheel zoom on the canvas area. passive:false so we can preventDefault and
   // stop the page/scroll container from also scrolling while zooming.
   canvasWrap.addEventListener("wheel", onWheel, { passive: false });
+  canvasWrap.addEventListener("pointerdown", onPointerDown);
+  canvasWrap.addEventListener("pointermove", onPointerMove);
+  canvasWrap.addEventListener("pointerup", endPan);
+  canvasWrap.addEventListener("pointercancel", endPan);
+  canvasWrap.addEventListener("dblclick", onDblClick);
 
   return {
     state,
@@ -680,8 +772,14 @@ function rasterLayoutHtml({ isp, extraControlsHtml }) {
           `</div>` +
         `</div>` +
         `<div class="raster-control-group raster-zoom-readout">` +
-          `<label>Zoom (scroll on the image)</label>` +
-          `<div class="raster-zoom-row"><span id="rasterZoomVal">100%</span><button class="ghost" id="rasterZoomReset" title="Reset zoom">Reset</button></div>` +
+          `<label>Zoom (scroll on the image, centered on cursor)</label>` +
+          `<div class="raster-zoom-row">` +
+            `<span id="rasterZoomVal">100%</span>` +
+            `<div class="raster-zoom-btns">` +
+              `<button class="ghost" id="rasterZoomFit" title="Fit image to window">Fit</button>` +
+              `<button class="ghost" id="rasterZoomReset" title="Reset zoom to 100%">Reset</button>` +
+            `</div>` +
+          `</div>` +
         `</div>` +
         `<div class="raster-status" id="rasterStatus">Loading…</div>` +
       `</aside>` +
