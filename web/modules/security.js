@@ -3,7 +3,7 @@
 // world map (Canvas) of access locations plus a filterable event table and the
 // monitor's configuration.
 
-import { $, state, api, toast, t } from "../app.js";
+import { $, state, api, toast, displayNameForUsername, t } from "../app.js";
 import { escapeHtml, formatDate } from "../lib/common.js";
 import { drawWorldMap } from "./worldmap.js";
 
@@ -239,7 +239,7 @@ function logRow(e) {
       `<td><span class="flag">${flag}</span> ${escapeHtml(loc)}${e.isp ? `<div class="secondary-line mono">${escapeHtml(e.isp)}</div>` : ""}</td>` +
       `<td><span class="mono">${escapeHtml(e.ip || "—")}</span>${e.publicIP ? `<div class="secondary-line mono">${escapeHtml(t("security.publicIpShort"))} ${escapeHtml(e.publicIP)}</div>` : ""}${e.clientTimezone ? `<div class="secondary-line">${escapeHtml(e.clientTimezone)}</div>` : ""}</td>` +
       `<td><div>${escapeHtml(deviceBits || "—")}</div>${clientBits ? `<div class="secondary-line">${escapeHtml(clientBits)}</div>` : ""}</td>` +
-      `<td><div class="primary-line">${escapeHtml(e.username || "—")}</div>${e.failureReason ? `<div class="secondary-line">${escapeHtml(e.failureReason)}</div>` : ""}</td>` +
+      `<td><div class="primary-line">${escapeHtml(displayNameForUsername(e.username) || "—")}</div>${e.failureReason ? `<div class="secondary-line">${escapeHtml(e.failureReason)}</div>` : ""}</td>` +
       `<td>${flags}</td>` +
     `</tr>`
   );

@@ -16,6 +16,7 @@ vi.mock("../../app.js", () => ({
   state: { me: { role: "admin" } },
   api: (...args) => apiMock(...args),
   toast: vi.fn(),
+  displayNameForUsername: (u) => u,
   t: (key) => key,
 }));
 

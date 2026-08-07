@@ -652,7 +652,32 @@ func (a *App) accessLogsHandler(w http.ResponseWriter, r *http.Request) {
 	f.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
 	f.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
 	entries, err := a.db.AccessLogs(f)
+	if err == nil {
+		if users, uerr := a.db.Users(); uerr == nil {
+			resolveAccessLogDisplayNames(entries, users)
+		}
+	}
 	respond(w, entries, err)
+}
+
+// resolveAccessLogDisplayNames rewrites access-log usernames that exactly
+// match an account to that account's display name, mirroring
+// resolveDisplayNames for the audit log. A Feishu account's username is its
+// open_id with non-alphanumerics stripped (see auth.FeishuUser.Username) —
+// unreadable on its own — so the Security page should show the person's real
+// name instead.
+func resolveAccessLogDisplayNames(entries []store.AccessLog, users []store.User) {
+	byName := make(map[string]string, len(users))
+	for _, u := range users {
+		if u.DisplayName != "" {
+			byName[u.Username] = u.DisplayName
+		}
+	}
+	for i := range entries {
+		if n, ok := byName[entries[i].Username]; ok {
+			entries[i].Username = n
+		}
+	}
 }
 
 // accessGeoHandler returns deduplicated map points for the access map.
@@ -729,6 +754,9 @@ func (a *App) accessExportHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if users, uerr := a.db.Users(); uerr == nil {
+		resolveAccessLogDisplayNames(entries, users)
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="mudp-access-log.csv"`)

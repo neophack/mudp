@@ -267,13 +267,44 @@ func (a *App) forwardsPage(w http.ResponseWriter, r *http.Request) {
 	if err := a.SyncPortForward(r.Context()); err != nil {
 		warning = err.Error()
 	}
+	rules := a.forward.Status()
+	// A Feishu account's Owner label is its username, which is the account's
+	// open_id with non-alphanumerics stripped (see auth.FeishuUser.Username) —
+	// unreadable on its own. Rewrite it to the account's display name for the
+	// admin page, mirroring resolveDisplayNames for the audit log.
+	if users, uerr := a.db.Users(); uerr == nil {
+		resolveOwnerDisplayNames(rules, targets, users)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"networks": cfg.Networks,
-		"rules":    a.forward.Status(),
+		"rules":    rules,
 		"manual":   manual,
 		"targets":  targets,
 		"warning":  warning,
 	})
+}
+
+// resolveOwnerDisplayNames rewrites rule/target owner values that exactly
+// match a username to the account's display name, when one is set. Used so
+// the admin page shows a person's real name rather than the unreadable
+// username a Feishu login derives from the account's open_id.
+func resolveOwnerDisplayNames(rules []portfwd.Status, targets []dockerx.ContainerTarget, users []store.User) {
+	byName := make(map[string]string, len(users))
+	for _, u := range users {
+		if u.DisplayName != "" {
+			byName[u.Username] = u.DisplayName
+		}
+	}
+	for i := range rules {
+		if n, ok := byName[rules[i].Owner]; ok {
+			rules[i].Owner = n
+		}
+	}
+	for i := range targets {
+		if n, ok := byName[targets[i].Owner]; ok {
+			targets[i].Owner = n
+		}
+	}
 }
 
 // forwardAdd stores a manual forward and brings it up. Admin-only: it binds a
