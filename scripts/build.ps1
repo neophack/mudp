@@ -5,6 +5,8 @@ param(
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
+& "$PSScriptRoot/build-wasm.ps1"
+
 $Commit = git rev-parse --short HEAD 2>$null
 if (-not $Commit) { $Commit = "dev" }
 $LdFlags = "-s -w -X mudp/internal/version.Version=$Commit"

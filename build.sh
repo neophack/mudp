@@ -4,6 +4,8 @@ set -euo pipefail
 OUTDIR="${1:-dist}"
 mkdir -p "$OUTDIR"
 
+./scripts/build-wasm.sh
+
 GOOS="${GOOS:-$(go env GOOS)}"
 GOARCH="${GOARCH:-$(go env GOARCH)}"
 

@@ -4,6 +4,7 @@ dist/
 disk/
 mudp.exe
 web/node_modules/
+web/wasm/
 web/test-results/
 web/playwright-report/
 web/coverage/

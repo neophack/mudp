@@ -5,9 +5,12 @@
 // inputs, frame navigation/playback, zoom, Range-based fetch, and the ISP
 // auto-white-balance + gamma pipeline) — this module only supplies the
 // RAW-specific pieces: filename parsing, the Bayer color-filter-array layout,
-// and the demosaic decoder.
+// and the demosaic decode call. The demosaic itself runs in the Go-compiled
+// WASM module (see cmd/rasterwasm, internal/raster/bayer.go), via
+// lib/wasmRaster.js.
 
 import { openRasterFrameViewer } from "./yuv.js";
+import * as wasmRaster from "./wasmRaster.js";
 
 // ---------------- Filename parsing ----------------
 
@@ -66,57 +69,13 @@ export function rawFrameSize(width, height, bitDepth) {
 }
 
 // decodeBayer demosaics a single-channel Bayer buffer into RGBA via bilinear
-// interpolation: a sample pixel keeps its own channel value; the other two
-// channels at that pixel are averaged from same-color neighbors (edge-clamped
-// at the image border). This is a fast, dependency-free approximation good
-// enough for previewing — not a full ISP-grade demosaic.
-//
-// rowStart/rowEnd (default: the whole image) let a caller decode just a
-// horizontal band — used by decodeBayerParallel to split the work across a
-// Worker pool. The returned array covers only that band (height = rowEnd -
-// rowStart); sample()/colorAt() still index with the *absolute* y so the CFA
-// parity and edge-clamping stay correct regardless of the band's offset.
-export function decodeBayer(buf, width, height, bitDepth, patternKey, rowStart = 0, rowEnd = height) {
-  const pattern = BAYER_PATTERNS[patternKey] || BAYER_PATTERNS[DEFAULT_PATTERN];
-  const bps = bytesPerSample(bitDepth);
-  const maxVal = (1 << bitDepth) - 1;
-  const view = bps === 1 ? buf : new Uint16Array(buf.buffer, buf.byteOffset, buf.byteLength >> 1);
-
-  const sample = (x, y) => {
-    const cx = x < 0 ? 0 : x >= width ? width - 1 : x;
-    const cy = y < 0 ? 0 : y >= height ? height - 1 : y;
-    return view[cy * width + cx];
-  };
-  const colorAt = (x, y) => pattern[y & 1][x & 1];
-
-  const out = new Uint8ClampedArray(width * (rowEnd - rowStart) * 4);
-  for (let y = rowStart; y < rowEnd; y++) {
-    for (let x = 0; x < width; x++) {
-      const c = colorAt(x, y);
-      let r, g, b;
-      if (c === "G") {
-        g = sample(x, y);
-        // The color immediately to the left tells us this G site's CFA
-        // orientation: that axis carries one color, the perpendicular axis
-        // carries the other.
-        const horiz = colorAt(x - 1, y);
-        const hVal = (sample(x - 1, y) + sample(x + 1, y)) / 2;
-        const vVal = (sample(x, y - 1) + sample(x, y + 1)) / 2;
-        if (horiz === "R") { r = hVal; b = vVal; } else { b = hVal; r = vVal; }
-      } else {
-        const own = sample(x, y);
-        g = (sample(x - 1, y) + sample(x + 1, y) + sample(x, y - 1) + sample(x, y + 1)) / 4;
-        const diag = (sample(x - 1, y - 1) + sample(x + 1, y - 1) + sample(x - 1, y + 1) + sample(x + 1, y + 1)) / 4;
-        if (c === "R") { r = own; b = diag; } else { b = own; r = diag; }
-      }
-      const o = ((y - rowStart) * width + x) * 4;
-      out[o] = (r / maxVal) * 255;
-      out[o + 1] = (g / maxVal) * 255;
-      out[o + 2] = (b / maxVal) * 255;
-      out[o + 3] = 255;
-    }
-  }
-  return out;
+// interpolation, in the WASM module (internal/raster/bayer.go has the actual
+// algorithm doc). rowStart/rowEnd (default: the whole image) let a caller
+// decode just a horizontal band — used by decodeBayerParallel to split the
+// work across a Worker pool; the promise resolves to a buffer covering only
+// that band (height = rowEnd - rowStart).
+export async function decodeBayer(buf, width, height, bitDepth, patternKey, rowStart = 0, rowEnd = height) {
+  return wasmRaster.bayerDecode(patternKey, bitDepth, width, height, rowStart, rowEnd, buf);
 }
 
 // ---------------- Parallel decode (Web Worker pool) ----------------

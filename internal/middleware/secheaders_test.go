@@ -10,7 +10,7 @@ import (
 
 // baselineCSP is the exact policy served when no IP worker origin is set.
 const baselineCSP = "default-src 'self'; " +
-	"script-src 'self'; " +
+	"script-src 'self' 'wasm-unsafe-eval'; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data: blob:; " +
 	"media-src 'self' blob:; " +

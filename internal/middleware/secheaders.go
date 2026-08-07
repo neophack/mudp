@@ -65,7 +65,10 @@ func buildCSP() string {
 		connectSrc += " " + extra
 	}
 	return "default-src 'self'; " +
-		"script-src 'self'; " +
+		// 'wasm-unsafe-eval' allows WebAssembly.instantiate (the raster YUV/RAW
+		// decoder — see cmd/rasterwasm) without granting plain 'unsafe-eval'
+		// (arbitrary eval()/Function() of strings stays blocked).
+		"script-src 'self' 'wasm-unsafe-eval'; " +
 		"style-src 'self' 'unsafe-inline'; " +
 		"img-src 'self' data: blob:; " +
 		"media-src 'self' blob:; " +

@@ -7,62 +7,57 @@
 // serves files through /api/netdisk/raw which supports Range, so we only
 // download the bytes of the frame being shown, not the whole file).
 //
-// Decoders are hand-written (no dependency). Each entry in YUV_FORMATS knows how
-// to compute per-frame byte size and turn a frame's bytes into RGBA.
+// Pixel decoding (YUV->RGB, the ISP pass) runs in the Go-compiled WASM module
+// from lib/wasmRaster.js, not in JS -- see cmd/rasterwasm and
+// internal/raster for the actual algorithms. This file just knows each
+// format's per-frame byte size and hands the raw bytes off to WASM.
 //
 // The generic scaffold (canvas, frame nav/playback, zoom, ISP toggle, Range
 // fetching) lives in openRasterFrameViewer and is also reused by the RAW
 // Bayer viewer in lib/raw.js — see that function for the shared contract.
 
+import * as wasmRaster from "./wasmRaster.js";
+
 // ---------------- Format table ----------------
 
-// Each format carries:
-//   frameSize(w, h) -> bytes per frame
-//   decode(buf, w, h) -> Uint8ClampedArray of RGBA (w*h*4)
+// Each format carries a label and frameSize(w, h) -> bytes per frame. Actual
+// decoding to RGBA happens in WASM (wasmRaster.yuvDecode), keyed by the same
+// format string.
 const YUV_FORMATS = {
   // Planar 4:2:0, 12 bits/pixel. Y plane then Cb then Cr (a.k.a. I420).
   i420: {
     label: "I420 (YUV420P)",
     frameSize: (w, h) => w * h + 2 * ((w / 2) | 0) * ((h / 2) | 0),
-    // Layout is Y, U, V: U comes right after Y, V after that.
-    decode: (b, w, h) => decodePlanar420(b, w, h, 0, w * h, (w * h) + ((w / 2) | 0) * ((h / 2) | 0)),
   },
   // Planar 4:2:0 with V before U.
   yv12: {
     label: "YV12 (YVU420P)",
     frameSize: (w, h) => w * h + 2 * ((w / 2) | 0) * ((h / 2) | 0),
-    // Layout is Y, V, U: V comes right after Y, U after that.
-    decode: (b, w, h) => decodePlanar420(b, w, h, 0, (w * h) + ((w / 2) | 0) * ((h / 2) | 0), w * h),
   },
   // Semi-planar 4:2:0, interleaved UV (a.k.a. NV12). Common on Android/camera.
   nv12: {
     label: "NV12 (YUV420SP)",
     frameSize: (w, h) => w * h + 2 * ((w / 2) | 0) * ((h / 2) | 0),
-    decode: (b, w, h) => decodeSemiPlanar420(b, w, h, false),
   },
   // Semi-planar 4:2:0, interleaved VU (a.k.a. NV21). Android default camera.
   nv21: {
     label: "NV21 (YVU420SP)",
     frameSize: (w, h) => w * h + 2 * ((w / 2) | 0) * ((h / 2) | 0),
-    decode: (b, w, h) => decodeSemiPlanar420(b, w, h, true),
   },
   // Packed 4:2:2, 16 bits/pixel. Y0 U0 Y1 V0 per 2 horizontal pixels.
   yuyv: {
     label: "YUYV (YUY2)",
     frameSize: (w, h) => 2 * w * h,
-    decode: (b, w, h) => decodePacked422(b, w, h, [0, 1, 3]),
   },
   // Packed 4:2:2 with U first.
   uyvy: {
     label: "UYVY",
     frameSize: (w, h) => 2 * w * h,
-    decode: (b, w, h) => decodePacked422(b, w, h, [1, 0, 2]),
   },
   // Planar 4:4:4, 24 bits/pixel. Full-resolution U and V.
   yuv444: {
     label: "YUV444P",
     frameSize: (w, h) => 3 * w * h,
-    decode: (b, w, h) => decodePlanar444(b, w, h),
   },
 };
 
@@ -144,201 +139,20 @@ export function guessYuvFormat(name) {
   return (info && info.format) || DEFAULT_FORMAT;
 }
 
-// ---------------- Decoders ----------------
-//
-// YUV→RGB conversion uses the BT.601 studio-swing formula. We clamp per-pixel
-// via Uint8ClampedArray so the caller can write the result straight into an
-// ImageData buffer.
-
-function yuvToRgb(y, u, v) {
-  // u/v are 0..255 centered at 128.
-  const uu = u - 128;
-  const vv = v - 128;
-  const r = y + 1.402 * vv;
-  const g = y - 0.344 * uu - 0.714 * vv;
-  const b = y + 1.772 * uu;
-  return [r, g, b];
-}
-
-function decodePlanar420(buf, w, h, yOff, uOff, vOff) {
-  const out = new Uint8ClampedArray(w * h * 4);
-  const hw = (w / 2) | 0;
-  for (let j = 0; j < h; j++) {
-    for (let i = 0; i < w; i++) {
-      const ci = (i >> 1);
-      const cj = (j >> 1);
-      const y = buf[yOff + j * w + i];
-      const u = buf[uOff + cj * hw + ci];
-      const v = buf[vOff + cj * hw + ci];
-      const [r, g, b] = yuvToRgb(y, u, v);
-      const o = (j * w + i) * 4;
-      out[o] = r;
-      out[o + 1] = g;
-      out[o + 2] = b;
-      out[o + 3] = 255;
-    }
-  }
-  return out;
-}
-
-function decodeSemiPlanar420(buf, w, h, vuFirst) {
-  const out = new Uint8ClampedArray(w * h * 4);
-  const hw = (w / 2) | 0;
-  const uvOff = w * h;
-  for (let j = 0; j < h; j++) {
-    for (let i = 0; i < w; i++) {
-      const ci = (i >> 1);
-      const cj = (j >> 1);
-      const y = buf[j * w + i];
-      const uvIdx = uvOff + (cj * hw + ci) * 2;
-      // In NV12 the pair is (U,V); in NV21 it is (V,U).
-      const u = vuFirst ? buf[uvIdx + 1] : buf[uvIdx];
-      const v = vuFirst ? buf[uvIdx] : buf[uvIdx + 1];
-      const [r, g, b] = yuvToRgb(y, u, v);
-      const o = (j * w + i) * 4;
-      out[o] = r;
-      out[o + 1] = g;
-      out[o + 2] = b;
-      out[o + 3] = 255;
-    }
-  }
-  return out;
-}
-
-// yuvOffsets: indices into a 4-byte macro-pixel for [Y, U, V] respectively.
-function decodePacked422(buf, w, h, idx) {
-  const out = new Uint8ClampedArray(w * h * 4);
-  for (let j = 0; j < h; j++) {
-    for (let i = 0; i < w; i++) {
-      const macro = ((j * w + i) >> 1) * 4; // 4 bytes per 2 horizontal pixels
-      const y = buf[macro + idx[0]];
-      const u = buf[macro + idx[1]];
-      const v = buf[macro + idx[2]];
-      const [r, g, b] = yuvToRgb(y, u, v);
-      const o = (j * w + i) * 4;
-      out[o] = r;
-      out[o + 1] = g;
-      out[o + 2] = b;
-      out[o + 3] = 255;
-      // The second pixel in the macro shares U,V; it has its own Y one byte later.
-      if (i + 1 < w) {
-        const y2 = buf[macro + idx[0] + 2];
-        const [r2, g2, b2] = yuvToRgb(y2, u, v);
-        const o2 = (j * w + i + 1) * 4;
-        out[o2] = r2;
-        out[o2 + 1] = g2;
-        out[o2 + 2] = b2;
-        out[o2 + 3] = 255;
-        i++; // handled both pixels
-      }
-    }
-  }
-  return out;
-}
-
-function decodePlanar444(buf, w, h) {
-  const out = new Uint8ClampedArray(w * h * 4);
-  const uOff = w * h;
-  const vOff = 2 * w * h;
-  for (let j = 0; j < h; j++) {
-    for (let i = 0; i < w; i++) {
-      const y = buf[j * w + i];
-      const u = buf[uOff + j * w + i];
-      const v = buf[vOff + j * w + i];
-      const [r, g, b] = yuvToRgb(y, u, v);
-      const o = (j * w + i) * 4;
-      out[o] = r;
-      out[o + 1] = g;
-      out[o + 2] = b;
-      out[o + 3] = 255;
-    }
-  }
-  return out;
-}
-
 export { YUV_FORMATS };
 
 // ---------------- ISP (image signal processing) ----------------
 //
 // Raw sensor YUV dumps ("Linear_...yuv") are linear-light and un-white-balanced:
 // a plain YUV→RGB map looks dark, desaturated, and tinted. applyIsp runs a
-// minimal but effective pipeline directly on the decoded RGBA buffer:
-//
-//   1. Auto white balance (gray-world): scale R/G/B so their channel averages
-//      converge — removes the color cast.
-//   2. sRGB gamma (OETF, γ≈2.2): lifts dark mid-tones into the perceptual range
-//      where the image looks naturally exposed instead of crushed.
-//   3. Saturation boost: raw conversions come out muted; a mild gain on chroma
-//      distance from the pixel's luma restores vivid color.
-//
-// All three are O(n) single-pass over the pixel buffer; on a 968×776 frame this
-// is well under a frame, so toggling the checkbox re-renders instantly.
-
-// Precomputed sRGB gamma LUT (input 0..255 linear → 0..255 sRGB). Linear input
-// below ~0.0031 is handled by the linear segment of the sRGB transfer function.
-const SRGB_GAMMA_LUT = (() => {
-  const lut = new Uint8ClampedArray(256);
-  for (let i = 0; i < 256; i++) {
-    const v = i / 255;
-    // Convert linear-light to sRGB-encoded. Values below the breakpoint use a
-    // linear ramp; above it use the 2.4-power curve.
-    const enc = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-    lut[i] = Math.round(enc * 255);
-  }
-  return lut;
-})();
-
-// applyIsp transforms an RGBA buffer in place. options.saturation is a multiplier
-// around 1.0 (1.4 = +40% saturation). Returns the same buffer for chaining.
-export function applyIsp(rgba, options = {}) {
+// minimal but effective pipeline (auto white balance, sRGB gamma, saturation
+// boost) on the decoded RGBA buffer — see internal/raster/isp.go for the
+// algorithm, which now runs in WASM (wasmRaster.applyIsp) instead of here.
+// options.saturation is a multiplier around 1.0 (1.4 = +40% saturation).
+// Returns the processed buffer.
+export async function applyIsp(rgba, options = {}) {
   const saturation = options.saturation != null ? options.saturation : 1.4;
-  const n = rgba.length / 4;
-
-  // --- Pass 1: accumulate channel sums for gray-world white balance. ---
-  let sumR = 0, sumG = 0, sumB = 0;
-  for (let p = 0; p < n; p++) {
-    const o = p * 4;
-    sumR += rgba[o];
-    sumG += rgba[o + 1];
-    sumB += rgba[o + 2];
-  }
-  // Gray-world gains: scale each channel so its mean equals the overall mean.
-  // Guard against divide-by-zero on a fully black frame (leave gains at 1).
-  const avg = (sumR + sumG + sumB) / (3 * n) || 1;
-  const gainR = avg / (sumR / n || 1);
-  const gainG = avg / (sumG / n || 1);
-  const gainB = avg / (sumB / n || 1);
-
-  // --- Pass 2: white balance → gamma → saturation, write back. ---
-  for (let p = 0; p < n; p++) {
-    const o = p * 4;
-    // White balance (clamp to 0..255 — Uint8ClampedArray does this on assign).
-    let r = rgba[o] * gainR;
-    let g = rgba[o + 1] * gainG;
-    let b = rgba[o + 2] * gainB;
-    if (r > 255) r = 255; if (r < 0) r = 0;
-    if (g > 255) g = 255; if (g < 0) g = 0;
-    if (b > 255) b = 255; if (b < 0) b = 0;
-    // sRGB gamma via LUT.
-    r = SRGB_GAMMA_LUT[r | 0];
-    g = SRGB_GAMMA_LUT[g | 0];
-    b = SRGB_GAMMA_LUT[b | 0];
-    // Saturation: pull toward / push away from the pixel's luma.
-    if (saturation !== 1) {
-      const y = 0.299 * r + 0.587 * g + 0.114 * b;
-      r = y + (r - y) * saturation;
-      g = y + (g - y) * saturation;
-      b = y + (b - y) * saturation;
-      if (r > 255) r = 255; if (r < 0) r = 0;
-      if (g > 255) g = 255; if (g < 0) g = 0;
-      if (b > 255) b = 255; if (b < 0) b = 0;
-    }
-    rgba[o] = r;
-    rgba[o + 1] = g;
-    rgba[o + 2] = b;
-    // alpha unchanged
-  }
-  return rgba;
+  return wasmRaster.applyIsp(rgba, saturation);
 }
 
 // ---------------- Viewer ----------------
@@ -383,7 +197,7 @@ export function openYuvViewer({ name, url, bodyEl }) {
       });
     },
     frameSize: (state) => YUV_FORMATS[state.format].frameSize(state.width, state.height),
-    decode: (buf, state) => YUV_FORMATS[state.format].decode(buf, state.width, state.height),
+    decode: (buf, state) => wasmRaster.yuvDecode(state.format, state.width, state.height, buf),
     statusLabel: (state) => YUV_FORMATS[state.format].label,
   });
 }
@@ -528,14 +342,15 @@ export function openRasterFrameViewer({
         status.textContent = `Frame ${state.frame + 1} is truncated (got ${buf.length} of ${per} bytes). Check width/height/format.`;
         return;
       }
-      // decode may return a Promise (e.g. RAW's worker-pool demosaic runs off
-      // the main thread); awaiting a plain value is a no-op resolve.
-      const rgba = await decode(buf, state);
+      // decode is async — it awaits the WASM module (and, for RAW, the
+      // worker-pool demosaic running off the main thread).
+      let rgba = await decode(buf, state);
       if (state.destroyed || controller.signal.aborted) return;
       // Run the ISP pipeline when the user enabled it (auto-on for linear/raw
       // dumps). This is a pure transform on the decoded RGBA buffer.
       if (state.isp) {
-        applyIsp(rgba);
+        rgba = await applyIsp(rgba);
+        if (state.destroyed || controller.signal.aborted) return;
       }
       drawFrame(ctx, canvas, rgba, state.width, state.height, state.zoom);
       state.cachedRgba = rgba;
@@ -837,7 +652,11 @@ function drawFrame(ctx, canvas, rgba, w, h, zoom) {
   const off = document.createElement("canvas");
   off.width = w;
   off.height = h;
-  off.getContext("2d").putImageData(new ImageData(rgba, w, h), 0, 0);
+  // rgba comes back from WASM as a Uint8Array (js.CopyBytesToGo requires
+  // that exact type); ImageData requires Uint8ClampedArray. Wrap the same
+  // underlying ArrayBuffer instead of copying.
+  const clamped = new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.length);
+  off.getContext("2d").putImageData(new ImageData(clamped, w, h), 0, 0);
 
   const dispW = Math.max(1, Math.round(w * zoom));
   const dispH = Math.max(1, Math.round(h * zoom));

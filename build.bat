@@ -6,6 +6,12 @@ if not "%~1"=="" set OUTDIR=%~1
 
 if not exist "%OUTDIR%" mkdir "%OUTDIR%"
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-wasm.ps1
+if errorlevel 1 (
+  echo build-wasm failed
+  exit /b 1
+)
+
 for /f %%i in ('git rev-parse --short HEAD 2^>nul') do set COMMIT=%%i
 if not defined COMMIT set COMMIT=dev
 
