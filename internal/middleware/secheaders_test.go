@@ -10,7 +10,7 @@ import (
 
 // baselineCSP is the exact policy served when no IP worker origin is set.
 const baselineCSP = "default-src 'self'; " +
-	"script-src 'self' 'wasm-unsafe-eval'; " +
+	"script-src 'self'; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data: blob:; " +
 	"media-src 'self' blob:; " +
@@ -46,10 +46,10 @@ func TestSecurityHeadersPlainHTTP(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	want := map[string]string{
-		"X-Content-Type-Options": "nosniff",
-		"X-Frame-Options":        "DENY",
-		"Referrer-Policy":        "no-referrer",
-		"Permissions-Policy":     "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Referrer-Policy":         "no-referrer",
+		"Permissions-Policy":      "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
 		"Content-Security-Policy": baselineCSP,
 	}
 	for name, v := range want {

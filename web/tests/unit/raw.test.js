@@ -31,7 +31,7 @@ describe("rawFrameSize", () => {
   });
 });
 
-// decodeBayer's demosaic algorithm now runs in WASM — see
+// decodeBayer's demosaic algorithm now runs server-side — see
 // internal/raster/bayer_test.go for the ported flat-field, 16-bit
 // little-endian, and row-band-vs-whole-frame regression tests that used to
 // live here.

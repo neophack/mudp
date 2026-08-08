@@ -530,6 +530,15 @@ function rawURL(path) {
   return `/api/netdisk/share/raw?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(path)}${pw}&ts=${Date.now()}`;
 }
 
+// rasterURL is the server-side YUV/RAW decode endpoint for the public share
+// page: the backend decodes one frame and returns a JPEG, so a share visitor
+// previews the file without the owner's raw bytes leaving the server. Carries
+// the same token/password as rawURL.
+function rasterURL(path) {
+  const pw = state.password ? `&password=${encodeURIComponent(state.password)}` : "";
+  return `/api/netdisk/share/raster?token=${encodeURIComponent(state.token)}&path=${encodeURIComponent(path)}${pw}&ts=${Date.now()}`;
+}
+
 function closeTopModal() {
   // Viewer is topmost (it covers the others when open).
   if (!$("#viewerBackdrop").hidden) closeViewer();
@@ -582,7 +591,7 @@ function openViewer(path) {
     return;
   }
   $("#viewerBody").innerHTML = `<div class="viewer-loading">Loading…</div>`;
-  renderViewerContent(kind, name, rawURL(path)).catch((err) => {
+  renderViewerContent(kind, name, rawURL(path), path).catch((err) => {
     const body = $("#viewerBody");
     if (body) body.innerHTML = `<div class="viewer-error">${escapeHtml(err.message || "Failed to load file")}</div>`;
   });
@@ -644,7 +653,7 @@ function toggleViewerFullscreen() {
   }
 }
 
-async function renderViewerContent(kind, name, url) {
+async function renderViewerContent(kind, name, url, path) {
   const body = $("#viewerBody");
   if (!body) return;
   switch (kind) {
@@ -664,26 +673,28 @@ async function renderViewerContent(kind, name, url) {
       body.innerHTML = `<video class="viewer-media" controls preload="metadata" src="${url}"></video>`;
       return;
     case "yuv":
-      return renderYuv(url, body, name);
+      return renderYuv(url, rasterURL(path), body, name);
     case "raw":
-      return renderRaw(url, body, name);
+      return renderRaw(url, rasterURL(path), body, name);
   }
 }
 
 // renderYuv builds the YUV viewer. The returned controller is stashed in
 // yuvController so toggleViewerFullscreen can repaint the frame and
-// resetViewerState can cancel its in-flight fetch on close.
-function renderYuv(url, body, name) {
+// resetViewerState can cancel its in-flight fetch on close. rasterUrl is the
+// server-side decode endpoint; url is the byte-serving raw endpoint used only
+// for the file-size probe.
+function renderYuv(url, rasterUrl, body, name) {
   body.innerHTML = `<div class="viewer-loading">Loading YUV…</div>`;
-  yuvController = openYuvViewer({ name, url, bodyEl: body });
+  yuvController = openYuvViewer({ name, url, rasterUrl, bodyEl: body });
 }
 
 // renderRaw builds the RAW Bayer viewer. Mirrors renderYuv: the controller is
 // stashed in rawController so toggleViewerFullscreen can repaint and
 // resetViewerState can cancel its in-flight fetch on close.
-function renderRaw(url, body, name) {
+function renderRaw(url, rasterUrl, body, name) {
   body.innerHTML = `<div class="viewer-loading">Loading RAW…</div>`;
-  rawController = openRawViewer({ name, url, bodyEl: body });
+  rawController = openRawViewer({ name, url, rasterUrl, bodyEl: body });
 }
 
 // pdfRenderState caches the loaded PDF document so a fullscreen toggle can

@@ -228,6 +228,7 @@ func (a *App) Routes() http.Handler {
 	r.With(loginRateLimiter.Middleware).Get("/api/netdisk/share/public", a.netdiskSharePublic)
 	r.With(loginRateLimiter.Middleware).Get("/api/netdisk/share/download", a.netdiskShareDownload)
 	r.With(loginRateLimiter.Middleware).Get("/api/netdisk/share/raw", a.netdiskShareRaw)
+	r.With(loginRateLimiter.Middleware).Get("/api/netdisk/share/raster", a.netdiskShareRasterFrame)
 	r.With(loginRateLimiter.Middleware).Get("/pan/{token}", a.netdiskSharePage)
 	r.Handle("/api/dashboard", a.requireRole(rankUser, a.dashboard))
 	// Resolves one IP to a location for the dashboard's "your IP" display;
@@ -338,6 +339,9 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/netdisk/chunk/abort", a.netdiskChunkAbort)
 		r.Get("/api/netdisk/download", a.netdiskDownload)
 		r.Get("/api/netdisk/raw", a.netdiskRaw)
+		// Server-side YUV/RAW decode -> single-frame JPEG preview (replaces the old
+		// client-side WASM decoder; see internal/server/raster.go).
+		r.Get("/api/netdisk/raster", a.netdiskRasterFrame)
 		r.Get("/api/netdisk/quota", a.netdiskQuota)
 		r.Get("/api/netdisk/shares", a.netdiskShares)
 		r.Post("/api/netdisk/share", a.netdiskShareCreate)
@@ -354,6 +358,7 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/netdisk/backup/restore", a.netdiskBackupRestore)
 		r.Get("/api/netdisk/backup/download", a.netdiskBackupDownload)
 		r.Get("/api/netdisk/backup/raw", a.netdiskBackupRaw)
+		r.Get("/api/netdisk/backup/raster", a.netdiskBackupRasterFrame)
 		r.Get("/api/backup/jobs", a.backupJobsList)
 		r.Post("/api/backup/jobs/cancel", a.backupJobCancel)
 		// Shared disk (共享盘): one pool per group; every member gets a

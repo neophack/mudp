@@ -1,9 +1,9 @@
 // Package raster decodes raw YUV and Bayer sensor pixel dumps into RGBA, and
 // applies the ISP touch-up pass used to preview linear/raw captures. This is
 // a straight port of the algorithms that used to live in web/lib/yuv.js and
-// web/lib/raw.js; it's compiled twice, once into the mudp binary (for `go
-// test`) and once to WebAssembly (cmd/rasterwasm) so the browser can call it
-// directly instead of running the equivalent loops in interpreted JS.
+// web/lib/raw.js; it's compiled into the mudp binary and called server-side by
+// internal/server/raster.go, which decodes one frame and returns it to the
+// browser as a JPEG (the client no longer runs a WASM decoder).
 package raster
 
 // clampByte matches the clamp-on-assign behavior of a JS Uint8ClampedArray.

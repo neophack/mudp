@@ -1,28 +1,29 @@
-// YUV raw-file viewer: parses raw YUV byte streams and renders them on a canvas.
+// YUV raw-file viewer: previews raw YUV byte streams by rendering them on a
+// canvas.
 //
 // Used by both the in-app netdisk viewer (modules/netdisk.js) and the public
-// share page (share.js). Both call openYuvViewer() with the file's raw URL and
-// a body element; this module owns the canvas, the control panel, frame
-// navigation, and on-demand byte fetching via HTTP Range requests (the backend
-// serves files through /api/netdisk/raw which supports Range, so we only
-// download the bytes of the frame being shown, not the whole file).
+// share page (share.js). Both call openYuvViewer() with two URLs for the file:
+//   - rawURL  — the byte-serving endpoint (/api/netdisk/raw), used only to
+//               learn the file size (and thus the frame count) via a Range
+//               probe. The bytes themselves are never shipped to the browser.
+//   - rasterURL — the server-side decode endpoint (/api/netdisk/raster) that
+//               decodes one frame and returns it as a JPEG.
 //
-// Pixel decoding (YUV->RGB, the ISP pass) runs in the Go-compiled WASM module
-// from lib/wasmRaster.js, not in JS -- see cmd/rasterwasm and
-// internal/raster for the actual algorithms. This file just knows each
-// format's per-frame byte size and hands the raw bytes off to WASM.
+// Decoding (YUV->RGB, the ISP pass) now runs entirely in the backend
+// (internal/raster), which is the same code that used to be compiled to WASM.
+// This file just knows each format's per-frame byte size (to compute the frame
+// count from the probed file size) and asks the backend for a JPEG per frame.
 //
-// The generic scaffold (canvas, frame nav/playback, zoom, ISP toggle, Range
-// fetching) lives in openRasterFrameViewer and is also reused by the RAW
-// Bayer viewer in lib/raw.js — see that function for the shared contract.
-
-import * as wasmRaster from "./wasmRaster.js";
+// The generic scaffold (canvas, frame nav/playback, zoom, ISP toggle, JPEG
+// fetching, cached wheel-zoom) lives in openRasterFrameViewer and is also
+// reused by the RAW Bayer viewer in lib/raw.js — see that function for the
+// shared contract.
 
 // ---------------- Format table ----------------
 
-// Each format carries a label and frameSize(w, h) -> bytes per frame. Actual
-// decoding to RGBA happens in WASM (wasmRaster.yuvDecode), keyed by the same
-// format string.
+// Each format carries a label and frameSize(w, h) -> bytes per frame. This
+// mirrors internal/server/raster.go's yuvFrameSize so the frontend's frame
+// count matches the offsets the backend reads. Decoding itself is server-side.
 const YUV_FORMATS = {
   // Planar 4:2:0, 12 bits/pixel. Y plane then Cb then Cr (a.k.a. I420).
   i420: {
@@ -141,20 +142,6 @@ export function guessYuvFormat(name) {
 
 export { YUV_FORMATS };
 
-// ---------------- ISP (image signal processing) ----------------
-//
-// Raw sensor YUV dumps ("Linear_...yuv") are linear-light and un-white-balanced:
-// a plain YUV→RGB map looks dark, desaturated, and tinted. applyIsp runs a
-// minimal but effective pipeline (auto white balance, sRGB gamma, saturation
-// boost) on the decoded RGBA buffer — see internal/raster/isp.go for the
-// algorithm, which now runs in WASM (wasmRaster.applyIsp) instead of here.
-// options.saturation is a multiplier around 1.0 (1.4 = +40% saturation).
-// Returns the processed buffer.
-export async function applyIsp(rgba, options = {}) {
-  const saturation = options.saturation != null ? options.saturation : 1.4;
-  return wasmRaster.applyIsp(rgba, saturation);
-}
-
 // ---------------- Viewer ----------------
 //
 // openYuvViewer builds the YUV preview UI inside bodyEl. It returns a control
@@ -163,11 +150,11 @@ export async function applyIsp(rgba, options = {}) {
 //
 // It's a thin config wrapper over openRasterFrameViewer, the generic frame
 // viewer scaffold (canvas, dimension inputs, frame nav/playback, zoom, ISP
-// toggle, Range-based fetching) shared with the RAW Bayer viewer in
-// lib/raw.js — only the format dropdown and the frameSize/decode functions
-// are YUV-specific.
+// toggle, JPEG fetching) shared with the RAW Bayer viewer in lib/raw.js — only
+// the format dropdown, the frameSize function, and the per-frame raster URL
+// builder are YUV-specific.
 
-export function openYuvViewer({ name, url, bodyEl }) {
+export function openYuvViewer({ name, url, rasterUrl, bodyEl }) {
   const parsed = parseYuvInfoFromName(name) || {};
   const initialFormat = parsed.format || DEFAULT_FORMAT;
   // Labels are static English strings from our own table, so no escaping needed.
@@ -177,11 +164,12 @@ export function openYuvViewer({ name, url, bodyEl }) {
 
   return openRasterFrameViewer({
     url,
+    rasterUrl,
     bodyEl,
     width: parsed.width || 1920,
     height: parsed.height || 1080,
     // Auto-enable the ISP pipeline when the filename signals a raw/linear dump;
-    // the user can still toggle it off to compare.
+    // the user can still toggle it off to compare. The ISP pass runs server-side.
     isp: !!parsed.linear,
     extraControlsHtml:
       `<div class="raster-control-group">` +
@@ -197,18 +185,26 @@ export function openYuvViewer({ name, url, bodyEl }) {
       });
     },
     frameSize: (state) => YUV_FORMATS[state.format].frameSize(state.width, state.height),
-    decode: (buf, state) => wasmRaster.yuvDecode(state.format, state.width, state.height, buf),
+    frameURL: (state) =>
+      `${rasterUrl}&width=${state.width}&height=${state.height}&frame=${state.frame}` +
+      `&format=${encodeURIComponent(state.format)}&isp=${state.isp ? 1 : 0}`,
     statusLabel: (state) => YUV_FORMATS[state.format].label,
   });
 }
 
 // openRasterFrameViewer is the generic scaffold behind both the YUV and RAW
 // viewers: it owns the canvas, dimension inputs, frame slider/playback, zoom,
-// ISP toggle, and on-demand byte fetching. Callers supply the format-specific
+// ISP toggle, and on-demand JPEG fetching. Callers supply the format-specific
 // pieces: extra control markup + wiring (bindExtraControls), and functions to
-// compute per-frame byte size and decode a frame's bytes to RGBA.
+// compute per-frame byte size (frameSize — only for the frame-count math) and
+// build the backend decode URL for the current frame (frameURL).
+//
+// Decoding is server-side: each paint fetches one JPEG from frameURL, decodes
+// it to an ImageBitmap, and draws it onto the canvas at the current zoom. The
+// raw sensor bytes never reach the browser.
 export function openRasterFrameViewer({
   url,
+  rasterUrl,
   bodyEl,
   width,
   height,
@@ -216,15 +212,15 @@ export function openRasterFrameViewer({
   extraControlsHtml,
   bindExtraControls,
   frameSize,
-  decode,
+  frameURL,
   statusLabel,
   // Optional: called once from destroy() so a caller that attached extra
-  // resources to state in bindExtraControls (e.g. RAW's worker pool) can
-  // release them.
+  // resources to state in bindExtraControls can release them.
   onDestroy,
 }) {
   const state = {
     url,
+    rasterUrl,
     width,
     height,
     isp: !!isp,
@@ -238,19 +234,19 @@ export function openRasterFrameViewer({
     fps: 24,
     loop: true,
     playTimer: null,
-    // activeFetchAbort lets destroy() cancel an in-flight Range request so the
+    // activeFetchAbort lets destroy() cancel an in-flight JPEG request so the
     // viewer never paints into a detached canvas after close.
     abort: null,
     destroyed: false,
-    // Cache of the last decoded (and, if enabled, ISP-processed) RGBA buffer,
-    // keyed by the inputs that affect its pixels (frame/isp/dimensions). Zoom
-    // is purely a display-scale change, so applyZoom() redraws from this
-    // cache instead of re-fetching and re-decoding the frame over the
-    // network on every wheel tick — without it, each zoom step round-trips
-    // through an async fetch before the cursor-anchored scroll correction
-    // can run, and out-of-order completions during fast wheel scrolling make
-    // the image appear to jump/scroll on its own.
-    cachedRgba: null,
+    // Cache of the last decoded frame's ImageBitmap, keyed by the inputs that
+    // affect its pixels (frame/isp/dimensions/format). Zoom is purely a
+    // display-scale change, so applyZoom() redraws from this cache instead of
+    // re-fetching the JPEG over the network on every wheel tick — without it,
+    // each zoom step round-trips through an async fetch before the
+    // cursor-anchored scroll correction can run, and out-of-order completions
+    // during fast wheel scrolling make the image appear to jump/scroll on its
+    // own.
+    cachedBitmap: null,
     cachedFrame: -1,
     cachedIsp: null,
     cachedWidth: -1,
@@ -284,8 +280,10 @@ export function openRasterFrameViewer({
 
   if (bindExtraControls) bindExtraControls(bodyEl, state, recomputeFrameCount);
 
-  // Probe the file size (HEAD) so we can compute frame count and validate the
-  // width/height/format guess against the actual byte stream.
+  // Probe the file size (a single-byte Range request against the byte-serving
+  // raw endpoint) so we can compute frame count and validate the
+  // width/height/format guess against the actual byte stream. The raw bytes
+  // themselves are never downloaded.
   probeFileSize(url).then((size) => {
     if (state.destroyed) return;
     state.totalBytes = size;
@@ -333,27 +331,21 @@ export function openRasterFrameViewer({
     if (state.abort) state.abort.abort();
     const controller = new AbortController();
     state.abort = controller;
-    const offset = state.frame * per;
     status.textContent = `Loading frame ${state.frame + 1}/${state.frameCount}…`;
     try {
-      const buf = await fetchFrameBytes(url, offset, per, controller.signal);
-      if (state.destroyed || controller.signal.aborted) return;
-      if (buf.length < per) {
-        status.textContent = `Frame ${state.frame + 1} is truncated (got ${buf.length} of ${per} bytes). Check width/height/format.`;
+      const bitmap = await fetchFrameBitmap(frameURL(state), controller.signal);
+      if (state.destroyed || controller.signal.aborted) {
+        bitmap?.close?.();
         return;
       }
-      // decode is async — it awaits the WASM module (and, for RAW, the
-      // worker-pool demosaic running off the main thread).
-      let rgba = await decode(buf, state);
-      if (state.destroyed || controller.signal.aborted) return;
-      // Run the ISP pipeline when the user enabled it (auto-on for linear/raw
-      // dumps). This is a pure transform on the decoded RGBA buffer.
-      if (state.isp) {
-        rgba = await applyIsp(rgba);
-        if (state.destroyed || controller.signal.aborted) return;
+      drawFrame(ctx, canvas, bitmap, state.width, state.height, state.zoom);
+      // Replace the previously cached bitmap (if any) and release it; an
+      // ImageBitmap owns GPU/native memory, so closing avoids leaks across
+      // many frame changes.
+      if (state.cachedBitmap && state.cachedBitmap !== bitmap) {
+        state.cachedBitmap.close?.();
       }
-      drawFrame(ctx, canvas, rgba, state.width, state.height, state.zoom);
-      state.cachedRgba = rgba;
+      state.cachedBitmap = bitmap;
       state.cachedFrame = state.frame;
       state.cachedIsp = state.isp;
       state.cachedWidth = state.width;
@@ -389,11 +381,10 @@ export function openRasterFrameViewer({
   // under that coordinate is kept under the same screen position after the
   // resize — this is what makes wheel-zoom feel like it zooms "into" the
   // cursor instead of always growing from the canvas's centered origin. When
-  // a cached decode of the current frame is available (the common case —
-  // only the display scale changed) this redraws synchronously; otherwise it
-  // has to wait for paintCurrentFrame to finish (it's async — it re-fetches
-  // and re-decodes the frame) before the canvas has its new size to scroll
-  // against.
+  // a cached decode of the current frame is available (the common case — only
+  // the display scale changed) this redraws synchronously; otherwise it has to
+  // wait for paintCurrentFrame to finish (it's async — it re-fetches the
+  // JPEG) before the canvas has its new size to scroll against.
   function applyZoom(newZoom, anchorClientX, anchorClientY) {
     const clamped = Math.max(0.1, Math.min(64, newZoom));
     if (clamped === state.zoom) return;
@@ -414,17 +405,17 @@ export function openRasterFrameViewer({
     state.zoom = clamped;
     if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
     const canRedrawFromCache =
-      state.cachedRgba &&
+      state.cachedBitmap &&
       state.cachedFrame === state.frame &&
       state.cachedIsp === state.isp &&
       state.cachedWidth === state.width &&
       state.cachedHeight === state.height;
     if (canRedrawFromCache) {
       // Fast path: same pixel data, only the display scale changed. Redraw
-      // synchronously from the cached buffer and apply the scroll correction
+      // synchronously from the cached bitmap and apply the scroll correction
       // immediately — no network round-trip, so there's no window for a
       // stale/out-of-order completion to jerk the view during fast scrolling.
-      drawFrame(ctx, canvas, state.cachedRgba, state.width, state.height, state.zoom);
+      drawFrame(ctx, canvas, state.cachedBitmap, state.width, state.height, state.zoom);
       status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${state.isp ? " · ISP on" : ""}`;
       if (anchor) {
         canvasWrap.scrollLeft = anchor.imgX * state.zoom - anchor.viewportX;
@@ -586,6 +577,10 @@ export function openRasterFrameViewer({
       state.destroyed = true;
       pause();
       if (state.abort) state.abort.abort();
+      if (state.cachedBitmap) {
+        state.cachedBitmap.close?.();
+        state.cachedBitmap = null;
+      }
       if (onDestroy) onDestroy(state);
     },
   };
@@ -641,23 +636,15 @@ function rasterLayoutHtml({ isp, extraControlsHtml }) {
   );
 }
 
-// drawFrame paints the RGBA buffer onto the canvas at the requested zoom. The
-// canvas backing store is sized to the full zoomed pixel dimensions (w*zoom ×
-// h*zoom) so every source pixel maps to a real screen pixel — no browser
-// upscaling, which keeps pixel-peeping sharp at any zoom. The CSS size matches
-// the backing size 1:1, and the surrounding .raster-canvas-wrap scrolls to
-// reveal the parts that overflow the viewport (the image is never squashed
-// to fit).
-function drawFrame(ctx, canvas, rgba, w, h, zoom) {
-  const off = document.createElement("canvas");
-  off.width = w;
-  off.height = h;
-  // rgba comes back from WASM as a Uint8Array (js.CopyBytesToGo requires
-  // that exact type); ImageData requires Uint8ClampedArray. Wrap the same
-  // underlying ArrayBuffer instead of copying.
-  const clamped = new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.length);
-  off.getContext("2d").putImageData(new ImageData(clamped, w, h), 0, 0);
-
+// drawFrame paints the decoded frame onto the canvas at the requested zoom.
+// The canvas backing store is sized to the full zoomed pixel dimensions
+// (w*zoom × h*zoom) so every source pixel maps to a real screen pixel — no
+// browser upscaling, which keeps pixel-peeping sharp at any zoom. The CSS size
+// matches the backing size 1:1, and the surrounding .raster-canvas-wrap
+// scrolls to reveal the parts that overflow the viewport (the image is never
+// squashed to fit). `bitmap` is an ImageBitmap decoded from the backend's
+// JPEG response.
+function drawFrame(ctx, canvas, bitmap, w, h, zoom) {
   const dispW = Math.max(1, Math.round(w * zoom));
   const dispH = Math.max(1, Math.round(h * zoom));
   canvas.width = dispW;
@@ -667,7 +654,7 @@ function drawFrame(ctx, canvas, rgba, w, h, zoom) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.imageSmoothingEnabled = false; // nearest-neighbor for pixel-peeping zoom
   ctx.clearRect(0, 0, dispW, dispH);
-  ctx.drawImage(off, 0, 0, w, h, 0, 0, dispW, dispH);
+  ctx.drawImage(bitmap, 0, 0, w, h, 0, 0, dispW, dispH);
 }
 
 // probeFileSize learns the file's total byte length without downloading it.
@@ -702,23 +689,24 @@ async function probeFileSize(url) {
   }
 }
 
-// fetchFrameBytes fetches exactly one frame's bytes via an HTTP Range request.
-// The backend serves raw files through /api/netdisk/raw (http.ServeContent),
-// which honors Range. Falls back to a full GET if Range is not supported.
-async function fetchFrameBytes(url, offset, length, signal) {
-  const end = offset + length - 1;
-  const res = await fetch(url, {
-    credentials: "same-origin",
-    headers: { Range: `bytes=${offset}-${end}` },
-    signal,
-  });
-  if (res.status === 206 || res.status === 200) {
-    const buf = new Uint8Array(await res.arrayBuffer());
-    // A 200 (server ignored Range) returns the whole file; slice our frame out.
-    if (res.status === 200) {
-      return buf.subarray(offset, offset + length);
+// fetchFrameBitmap fetches one decoded frame as a JPEG from the backend raster
+// endpoint and decodes it to an ImageBitmap ready to draw. Abortable so rapid
+// frame changes cancel the previous in-flight request. Throws on a non-OK
+// response (the body carries a JSON error message from the server).
+async function fetchFrameBitmap(url, signal) {
+  const res = await fetch(url, { credentials: "same-origin", signal });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const err = await res.json();
+      if (err && err.error) detail = err.error;
+    } catch {
+      /* response had no JSON body; keep the status code */
     }
-    return buf;
+    throw new Error(detail);
   }
-  throw new Error(`Unexpected response ${res.status}`);
+  const blob = await res.blob();
+  // createImageBitmap is the cheapest path: it decodes off the main thread and
+  // hands back a handle the canvas can draw without an intermediate <img>.
+  return createImageBitmap(blob);
 }

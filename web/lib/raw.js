@@ -1,16 +1,15 @@
-// RAW Bayer-file viewer: parses raw single-channel Bayer sensor dumps and
-// renders them on a canvas by demosaicing to RGB.
+// RAW Bayer-file viewer: previews raw single-channel Bayer sensor dumps by
+// demosaicing them to RGB.
 //
 // Reuses the generic frame-viewer scaffold from lib/yuv.js (canvas, dimension
-// inputs, frame navigation/playback, zoom, Range-based fetch, and the ISP
+// inputs, frame navigation/playback, zoom, JPEG fetching, and the ISP
 // auto-white-balance + gamma pipeline) — this module only supplies the
 // RAW-specific pieces: filename parsing, the Bayer color-filter-array layout,
-// and the demosaic decode call. The demosaic itself runs in the Go-compiled
-// WASM module (see cmd/rasterwasm, internal/raster/bayer.go), via
-// lib/wasmRaster.js.
+// and the per-frame byte size used to compute the frame count. The demosaic
+// itself runs server-side (internal/raster/bayer.go) via the
+// /api/netdisk/raster endpoint, which returns one decoded JPEG per frame.
 
 import { openRasterFrameViewer } from "./yuv.js";
-import * as wasmRaster from "./wasmRaster.js";
 
 // ---------------- Filename parsing ----------------
 
@@ -58,8 +57,8 @@ const DEFAULT_BIT_DEPTH = 16;
 // bytesPerSample: 8-bit dumps pack one sample per byte; anything above 8 bits
 // is conventionally stored unpacked in a 16-bit little-endian container
 // (RAW10/RAW12/RAW14/RAW16 all commonly ship this way from ISP capture
-// tools), so we read 2 bytes per sample and normalize using the declared bit
-// depth's value range.
+// tools), so we read 2 bytes per sample. This mirrors
+// internal/server/raster.go's rawFrameSize.
 function bytesPerSample(bitDepth) {
   return bitDepth <= 8 ? 1 : 2;
 }
@@ -68,102 +67,13 @@ export function rawFrameSize(width, height, bitDepth) {
   return width * height * bytesPerSample(bitDepth);
 }
 
-// decodeBayer demosaics a single-channel Bayer buffer into RGBA via bilinear
-// interpolation, in the WASM module (internal/raster/bayer.go has the actual
-// algorithm doc). rowStart/rowEnd (default: the whole image) let a caller
-// decode just a horizontal band — used by decodeBayerParallel to split the
-// work across a Worker pool; the promise resolves to a buffer covering only
-// that band (height = rowEnd - rowStart).
-export async function decodeBayer(buf, width, height, bitDepth, patternKey, rowStart = 0, rowEnd = height) {
-  return wasmRaster.bayerDecode(patternKey, bitDepth, width, height, rowStart, rowEnd, buf);
-}
-
-// ---------------- Parallel decode (Web Worker pool) ----------------
-//
-// decodeBayer is an O(width*height) per-pixel loop with several neighbor
-// reads per pixel — on a multi-megapixel sensor dump (the case this viewer
-// targets) that's tens of millions of reads, enough to visibly stall the UI
-// thread. decodeBayerParallel splits the frame into one horizontal band per
-// pooled worker and demosaics the bands concurrently, then stitches the
-// results back together.
-
-// Below this pixel count the per-message clone/postMessage overhead isn't
-// worth it — decode single-threaded instead.
-const PARALLEL_THRESHOLD_PIXELS = 400_000;
-
-function workerPoolSize() {
-  const cores = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4;
-  return Math.max(1, Math.min(8, cores));
-}
-
-// createWorkerPool spins up the pool once per viewer instance so repeated
-// frame decodes (scrubbing, playback) reuse warm workers instead of paying
-// worker-startup cost every frame. Returns [] when Workers aren't available
-// (e.g. a non-browser test runtime) so callers can fall back transparently.
-export function createWorkerPool() {
-  if (typeof Worker === "undefined") return [];
-  const workers = [];
-  for (let i = 0; i < workerPoolSize(); i++) {
-    workers.push(new Worker(new URL("./rawDecodeWorker.js", import.meta.url), { type: "module" }));
-  }
-  return workers;
-}
-
-export function terminateWorkerPool(workers) {
-  if (!workers) return;
-  for (const w of workers) w.terminate();
-}
-
-// decodeBayerParallel dispatches one row-band per worker in the pool and
-// resolves once every band is back, or falls back to the synchronous decode
-// when there's no pool, a single-worker pool, or the image is too small for
-// the split to pay off.
-export function decodeBayerParallel(workers, buf, width, height, bitDepth, patternKey) {
-  if (!workers || workers.length < 2 || width * height < PARALLEL_THRESHOLD_PIXELS) {
-    return Promise.resolve(decodeBayer(buf, width, height, bitDepth, patternKey));
-  }
-  const n = workers.length;
-  const bandHeight = Math.ceil(height / n);
-  const jobs = [];
-  for (let i = 0; i < n; i++) {
-    const rowStart = i * bandHeight;
-    if (rowStart >= height) break;
-    const rowEnd = Math.min(height, rowStart + bandHeight);
-    const worker = workers[i];
-    jobs.push(
-      new Promise((resolve, reject) => {
-        const onMessage = (e) => {
-          worker.removeEventListener("message", onMessage);
-          worker.removeEventListener("error", onError);
-          resolve(e.data);
-        };
-        const onError = (err) => {
-          worker.removeEventListener("message", onMessage);
-          worker.removeEventListener("error", onError);
-          reject(err);
-        };
-        worker.addEventListener("message", onMessage);
-        worker.addEventListener("error", onError);
-        worker.postMessage({ buf, width, height, bitDepth, patternKey, rowStart, rowEnd });
-      }),
-    );
-  }
-  return Promise.all(jobs).then((results) => {
-    const out = new Uint8ClampedArray(width * height * 4);
-    for (const { rgba, rowStart } of results) {
-      out.set(rgba, rowStart * width * 4);
-    }
-    return out;
-  });
-}
-
 // ---------------- Viewer ----------------
 
 // openRawViewer builds the RAW Bayer preview UI inside bodyEl, reusing
 // openRasterFrameViewer for everything except the bit-depth/Bayer-pattern
-// controls and the demosaic decode. Returns the same {state, repaint,
+// controls and the per-frame raster URL. Returns the same {state, repaint,
 // destroy} handle as openYuvViewer.
-export function openRawViewer({ name, url, bodyEl }) {
+export function openRawViewer({ name, url, rasterUrl, bodyEl }) {
   const parsed = parseRawInfoFromName(name) || {};
   const initialBitDepth = parsed.bitDepth || DEFAULT_BIT_DEPTH;
   const initialPattern = parsed.bayerPattern || DEFAULT_PATTERN;
@@ -177,13 +87,15 @@ export function openRawViewer({ name, url, bodyEl }) {
 
   return openRasterFrameViewer({
     url,
+    rasterUrl,
     bodyEl,
     width: parsed.width || 1920,
     height: parsed.height || 1080,
     // Undemosaiced linear Bayer data is always dark and tinted straight off
     // the sensor (no gamma, no white balance), so the ISP pipeline defaults
     // on regardless of whether the filename says "Linear" — the user can
-    // still switch it off to compare against the raw values.
+    // still switch it off to compare against the raw values. The ISP pass
+    // runs server-side.
     isp: true,
     extraControlsHtml:
       `<div class="raster-control-group">` +
@@ -197,9 +109,6 @@ export function openRawViewer({ name, url, bodyEl }) {
     bindExtraControls(root, state, onExtraChange) {
       state.bitDepth = initialBitDepth;
       state.bayerPattern = initialPattern;
-      // One pool per open viewer, reused across every frame it decodes;
-      // terminated in onDestroy below.
-      state.workers = createWorkerPool();
       const bitSelect = root.querySelector("#rawBitDepth");
       const patternSelect = root.querySelector("#rawBayerPattern");
       bitSelect.addEventListener("change", () => {
@@ -212,8 +121,10 @@ export function openRawViewer({ name, url, bodyEl }) {
       });
     },
     frameSize: (state) => rawFrameSize(state.width, state.height, state.bitDepth),
-    decode: (buf, state) => decodeBayerParallel(state.workers, buf, state.width, state.height, state.bitDepth, state.bayerPattern),
+    frameURL: (state) =>
+      `${rasterUrl}&width=${state.width}&height=${state.height}&frame=${state.frame}` +
+      `&bitDepth=${state.bitDepth}&bayerPattern=${encodeURIComponent(state.bayerPattern)}` +
+      `&isp=${state.isp ? 1 : 0}`,
     statusLabel: (state) => `RAW ${state.bitDepth}-bit ${state.bayerPattern}`,
-    onDestroy: (state) => terminateWorkerPool(state.workers),
   });
 }

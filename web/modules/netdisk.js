@@ -1562,8 +1562,22 @@ function rawURL(path) {
   return `/api/netdisk/raw?path=${encodeURIComponent(path)}&ts=${Date.now()}`;
 }
 
+// rasterURL is the server-side YUV/RAW decode endpoint: the backend decodes one
+// frame and returns a JPEG, so only the compressed image crosses the network
+// (not the raw sensor bytes). The viewer appends width/height/frame/format/etc.
+// per paint. Mirrors rawURL's shape so share/auth resolution is identical.
+function rasterURL(path) {
+  return `/api/netdisk/raster?path=${encodeURIComponent(path)}&ts=${Date.now()}`;
+}
+
 function backupRawURL(path) {
   return `/api/netdisk/backup/raw?path=${encodeURIComponent(path)}&ts=${Date.now()}`;
+}
+
+// backupRasterURL mirrors backupRawURL for the server-side decode endpoint so
+// backup YUV/RAW previews use the same JPEG path as the live netdisk viewer.
+function backupRasterURL(path) {
+  return `/api/netdisk/backup/raster?path=${encodeURIComponent(path)}&ts=${Date.now()}`;
 }
 
 const TEXT_PREVIEW_EXTS = new Set([
@@ -1701,10 +1715,19 @@ async function renderViewerContent(kind, path, name, url) {
       body.innerHTML = `<video class="viewer-media" controls preload="metadata" src="${url}"></video>`;
       return;
     case "yuv":
-      return renderYuv(url, body, name);
+      return renderYuv(url, rasterUrlFor(path, url), body, name);
     case "raw":
-      return renderRaw(url, body, name);
+      return renderRaw(url, rasterUrlFor(path, url), body, name);
   }
+}
+
+// rasterUrlFor returns the server-side decode (JPEG) URL for a netdisk or
+// backup file, inferred from which raw URL the viewer was opened with. The raw
+// URL is still passed to the viewer for the byte-size probe that computes the
+// frame count; only the per-frame decode switches to the raster endpoint.
+function rasterUrlFor(path, rawUrl) {
+  if (rawUrl.includes("/backup/")) return backupRasterURL(path);
+  return rasterURL(path);
 }
 
 // pdfRenderState holds the current document + viewport scale so a fullscreen
@@ -1789,17 +1812,19 @@ async function renderText(url, body) {
 // renderYuv builds the YUV viewer. The returned controller is stashed in
 // yuvController so toggleViewerFullscreen can ask it to repaint at the new
 // container size and resetViewerState can cancel its in-flight fetch on close.
-function renderYuv(url, body, name) {
+// rasterUrl is the server-side decode endpoint; url is the byte-serving raw
+// endpoint used only for the file-size probe.
+function renderYuv(url, rasterUrl, body, name) {
   body.innerHTML = `<div class="viewer-loading">${t("netdisk.viewerLoadYuv")}</div>`;
-  yuvController = openYuvViewer({ name, url, bodyEl: body });
+  yuvController = openYuvViewer({ name, url, rasterUrl, bodyEl: body });
 }
 
 // renderRaw builds the RAW Bayer viewer. Mirrors renderYuv: the controller is
 // stashed in rawController so toggleViewerFullscreen can repaint and
 // resetViewerState can cancel its in-flight fetch on close.
-function renderRaw(url, body, name) {
+function renderRaw(url, rasterUrl, body, name) {
   body.innerHTML = `<div class="viewer-loading">${t("netdisk.viewerLoadRaw")}</div>`;
-  rawController = openRawViewer({ name, url, bodyEl: body });
+  rawController = openRawViewer({ name, url, rasterUrl, bodyEl: body });
 }
 
 // resetViewerState releases the cached PDF document and stops any media

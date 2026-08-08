@@ -8,39 +8,35 @@
 // frame/isp/dimensions) when only the display scale changed, applying the
 // scroll correction synchronously, and only falls back to the async
 // fetch+decode path when the cache doesn't match the current frame.
+//
+// Decoding moved server-side: the scaffold now fetches a JPEG per frame
+// (fetchFrameBitmap) instead of raw bytes + a client decode. This test stubs
+// fetch + createImageBitmap so the wheel-zoom caching contract is still
+// exercised end to end.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { openRasterFrameViewer } from "../../lib/yuv.js";
 
-const PER_FRAME = 4; // arbitrary byte count; decode() below ignores the actual bytes
+// A throwaway stand-in for a decoded frame. The scaffold only forwards it to
+// ctx.drawImage, which the mock context records as a no-op.
+const FAKE_BITMAP = { __fakeBitmap: true };
 
 function makeMockCtx() {
   return {
     setTransform: () => {},
     clearRect: () => {},
     drawImage: () => {},
-    putImageData: () => {},
     imageSmoothingEnabled: true,
   };
 }
 
-function makeFetchMock(totalBytes) {
-  return vi.fn(async (url, opts) => {
-    const range = opts?.headers?.Range || "";
-    if (range === "bytes=0-0") {
-      // probeFileSize's size probe.
-      return {
-        status: 206,
-        headers: { get: (k) => (k === "Content-Range" ? `bytes 0-0/${totalBytes}` : null) },
-      };
-    }
-    // fetchFrameBytes's per-frame Range request.
-    return {
-      status: 206,
-      headers: { get: () => null },
-      arrayBuffer: async () => new ArrayBuffer(PER_FRAME),
-    };
-  });
+function makeFetchMock() {
+  return vi.fn(async () => ({
+    // The scaffold's fetchFrameBitmap only needs ok + blob(); the body itself
+    // is irrelevant because createImageBitmap is stubbed below.
+    ok: true,
+    blob: async () => new Blob(),
+  }));
 }
 
 async function flush() {
@@ -48,28 +44,50 @@ async function flush() {
 }
 
 let fetchMock;
+let createImageBitmapMock;
 let viewer;
 let originalGetContext;
+let originalCreateImageBitmap;
 
 function frameFetchCalls() {
-  return fetchMock.mock.calls.filter(([, opts]) => opts?.headers?.Range !== "bytes=0-0");
+  return fetchMock.mock.calls.filter(([url]) => typeof url === "string" && url.includes("frame="));
 }
 
 function openViewer({ totalBytes }) {
-  fetchMock = makeFetchMock(totalBytes);
+  fetchMock = makeFetchMock();
   vi.stubGlobal("fetch", fetchMock);
+  createImageBitmapMock = vi.fn(async () => FAKE_BITMAP);
+  vi.stubGlobal("createImageBitmap", createImageBitmapMock);
+
+  // probeFileSize issues a single-byte Range probe against the raw URL; the
+  // scaffold keys frame-count math off its parsed total. The frame-count
+  // itself is irrelevant to the wheel-zoom cache, so we feed it 1 frame worth
+  // of bytes (or 2 frames in the cache-miss case).
+  const realFetch = fetchMock;
+  vi.stubGlobal("fetch", async (url, opts) => {
+    const range = opts?.headers?.Range || "";
+    if (range === "bytes=0-0") {
+      return {
+        status: 206,
+        headers: { get: (k) => (k === "Content-Range" ? `bytes 0-0/${totalBytes}` : null) },
+      };
+    }
+    return realFetch(url, opts);
+  });
+
   const bodyEl = document.createElement("div");
   document.body.appendChild(bodyEl);
   viewer = openRasterFrameViewer({
     url: "/api/netdisk/raw?path=test.yuv",
+    rasterUrl: "/api/netdisk/raster?path=test.yuv",
     bodyEl,
     width: 2,
     height: 2,
     isp: false,
     extraControlsHtml: "",
     bindExtraControls: null,
-    frameSize: () => PER_FRAME,
-    decode: () => new Uint8ClampedArray(2 * 2 * 4).fill(128),
+    frameSize: () => 1, // 1 byte per frame -> totalBytes == frame count
+    frameURL: (state) => `/api/netdisk/raster?frame=${state.frame}`,
     statusLabel: () => "test",
   });
   return {
@@ -84,28 +102,24 @@ beforeEach(() => {
   // jsdom ships no <canvas> rasteriser; stand in a no-op recording context,
   // same approach worldmap.test.js uses.
   HTMLCanvasElement.prototype.getContext = () => makeMockCtx();
-  vi.stubGlobal(
-    "ImageData",
-    class {
-      constructor(data, width, height) {
-        this.data = data;
-        this.width = width;
-        this.height = height;
-      }
-    },
-  );
+  originalCreateImageBitmap = globalThis.createImageBitmap;
 });
 
 afterEach(() => {
   if (viewer) viewer.destroy();
   viewer = null;
   HTMLCanvasElement.prototype.getContext = originalGetContext;
+  if (originalCreateImageBitmap !== undefined) {
+    globalThis.createImageBitmap = originalCreateImageBitmap;
+  } else {
+    delete globalThis.createImageBitmap;
+  }
   vi.unstubAllGlobals();
 });
 
 describe("openRasterFrameViewer wheel-zoom caching", () => {
   it("redraws zoom-only changes from the cached frame instead of re-fetching over the network", async () => {
-    const { canvasWrap } = openViewer({ totalBytes: PER_FRAME }); // 1 frame
+    const { canvasWrap } = openViewer({ totalBytes: 1 }); // 1 frame
     await flush();
     expect(viewer.state.cachedFrame).toBe(0);
     expect(frameFetchCalls().length).toBe(1);
@@ -121,7 +135,7 @@ describe("openRasterFrameViewer wheel-zoom caching", () => {
   });
 
   it("applies the cursor-anchored scroll correction synchronously on a cache hit", async () => {
-    const { canvasWrap } = openViewer({ totalBytes: PER_FRAME });
+    const { canvasWrap } = openViewer({ totalBytes: 1 });
     await flush();
     const zoomBefore = viewer.state.zoom;
 
@@ -138,7 +152,7 @@ describe("openRasterFrameViewer wheel-zoom caching", () => {
   });
 
   it("falls back to an async repaint (and re-fetches) when the cache doesn't match the current frame", async () => {
-    const { canvasWrap, frameSlider } = openViewer({ totalBytes: PER_FRAME * 2 }); // 2 frames
+    const { canvasWrap, frameSlider } = openViewer({ totalBytes: 2 }); // 2 frames
     await flush();
     expect(frameFetchCalls().length).toBe(1);
 

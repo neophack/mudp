@@ -19,10 +19,13 @@ var bayerPatterns = map[string][2][2]byte{
 // enough for previewing — not a full ISP-grade demosaic.
 //
 // rowStart/rowEnd (pass 0, height for the whole image) let a caller decode
-// just a horizontal band — used to split the work across a Worker pool in the
-// browser. The returned slice covers only that band (height = rowEnd -
-// rowStart); sampling still indexes with the *absolute* y so the CFA parity
-// and edge-clamping stay correct regardless of the band's offset.
+// just a horizontal band — a leftover from when the browser split a frame
+// across a Web Worker pool. The server decoder always decodes the whole frame
+// (0, height), but the band form is kept for the row-band unit tests and
+// callers that may want it later. The returned slice covers only that band
+// (height = rowEnd - rowStart); sampling still indexes with the *absolute* y
+// so the CFA parity and edge-clamping stay correct regardless of the band's
+// offset.
 func BayerDecode(buf []byte, w, h, bitDepth int, patternKey string, rowStart, rowEnd int) []byte {
 	pattern, ok := bayerPatterns[patternKey]
 	if !ok {
