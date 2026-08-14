@@ -26,12 +26,18 @@ func writeFullState(t *testing.T, dst string, size, chunkSize int64, total int) 
 		Size:        size,
 		ChunkSize:   chunkSize,
 		TotalChunks: total,
+		UploadID:    testUploadID,
 		Received:    map[int]bool{},
 	}
 	if err := writeChunkState(dst, st); err != nil {
 		t.Fatalf("writeChunkState: %v", err)
 	}
 }
+
+// testUploadID is the fixed random handle writeFullState mints, so tests can
+// build chunk/complete/abort requests against hand-crafted states without
+// running init first (the real handlers always generate one via crypto/rand).
+const testUploadID = "test-upload-id-0123456789abcdef"
 
 // segmentsFor writes N segments of `data` split into total chunks, each CRC32'd.
 func writeSegments(t *testing.T, dst string, data []byte, chunkSize int64, total int) {
@@ -43,7 +49,7 @@ func writeSegments(t *testing.T, dst string, data []byte, chunkSize int64, total
 			end = int64(len(data))
 		}
 		seg := data[start:end]
-		if _, err := writeChunkSegment(dst, i, strings.NewReader(string(seg)), crc32Hex(seg)); err != nil {
+		if _, err := writeChunkSegment(dst, i, strings.NewReader(string(seg)), crc32Hex(seg), int64(len(seg))); err != nil {
 			t.Fatalf("writeChunkSegment %d: %v", i, err)
 		}
 	}
@@ -52,7 +58,7 @@ func writeSegments(t *testing.T, dst string, data []byte, chunkSize int64, total
 func TestChunkSegment_WritesAndVerifies(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "big.bin")
 	data := []byte("0123456789ABCDEF") // 16 bytes
-	if _, err := writeChunkSegment(dst, 0, strings.NewReader(string(data)), crc32Hex(data)); err != nil {
+	if _, err := writeChunkSegment(dst, 0, strings.NewReader(string(data)), crc32Hex(data), int64(len(data))); err != nil {
 		t.Fatalf("writeChunkSegment: %v", err)
 	}
 	got, err := os.ReadFile(chunkSegmentPath(dst, 0))
@@ -67,7 +73,7 @@ func TestChunkSegment_WritesAndVerifies(t *testing.T) {
 func TestChunkSegment_MismatchRemovesSegment(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "bad.bin")
 	data := []byte("corrupt me")
-	if _, err := writeChunkSegment(dst, 0, strings.NewReader(string(data)), "00000000"); err == nil {
+	if _, err := writeChunkSegment(dst, 0, strings.NewReader(string(data)), "00000000", int64(len(data))); err == nil {
 		t.Fatal("expected checksum error, got nil")
 	}
 	if _, err := os.Stat(chunkSegmentPath(dst, 0)); !os.IsNotExist(err) {
@@ -216,7 +222,7 @@ func TestHandleChunkComplete_ReadsJSONBody(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{
 		"name":      "big.bin",
-		"uploadId":  encodeUploadID(dir, "big.bin"),
+		"uploadId":  testUploadID,
 		"fileCRC32": crc32Hex(data),
 	})
 	req := httptest.NewRequest(http.MethodPost, "/chunk/complete", bytes.NewReader(body))
@@ -251,13 +257,13 @@ func TestHandleChunkAbort_ReadsJSONBody(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "partial.bin")
 	writeFullState(t, dst, 24, 8, 3)
-	if _, err := writeChunkSegment(dst, 0, strings.NewReader("AAAABBBB"), ""); err != nil {
+	if _, err := writeChunkSegment(dst, 0, strings.NewReader("AAAABBBB"), "", 8); err != nil {
 		t.Fatalf("writeChunkSegment: %v", err)
 	}
 
 	body, _ := json.Marshal(map[string]string{
 		"name":     "partial.bin",
-		"uploadId": encodeUploadID(dir, "partial.bin"),
+		"uploadId": testUploadID,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/chunk/abort", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -292,7 +298,7 @@ func TestHandleChunk_ConcurrentUploadsDontLoseUpdates(t *testing.T) {
 	const total = 20
 	size := int64(chunkSize * total)
 	writeFullState(t, dst, size, chunkSize, total)
-	uploadID := encodeUploadID(dir, name)
+	uploadID := testUploadID
 
 	data := make([]byte, size)
 	for i := range data {
@@ -352,8 +358,8 @@ func TestHandleChunk_ConcurrentUploadsDontLoseUpdates(t *testing.T) {
 // body's "name" field (the in-volume file path). r.FormValue merges query and
 // body values under one key and returns the query value first, so reading
 // "name" that way silently substituted the volume identifier for the file
-// path — cleanUserPath/encodeUploadID then disagreed with what /chunk/init
-// returned, and every chunk 400'd with "uploadId does not match name".
+// path — the state's random uploadId then disagreed with what /chunk/init
+// had returned, and every chunk 400'd with "uploadId does not match name".
 // Netdisk uploads never set a "name" query parameter, so this never surfaced
 // there.
 func TestHandleChunk_URLQueryNameDoesNotShadowFormName(t *testing.T) {
@@ -364,7 +370,7 @@ func TestHandleChunk_URLQueryNameDoesNotShadowFormName(t *testing.T) {
 	const total = 1
 	size := int64(chunkSize)
 	writeFullState(t, dst, size, chunkSize, total)
-	uploadID := encodeUploadID(dir, name)
+	uploadID := testUploadID
 
 	seg := []byte("ABCDEFGH")
 	body := &bytes.Buffer{}

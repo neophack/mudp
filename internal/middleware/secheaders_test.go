@@ -39,7 +39,7 @@ func setWorkerOrigin(t *testing.T, origin string) {
 
 func TestSecurityHeadersPlainHTTP(t *testing.T) {
 	setWorkerOrigin(t, "") // guarantee the baseline CSP regardless of test order
-	handler := SecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := SecurityHeaders(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	rec := httptest.NewRecorder()
@@ -64,24 +64,42 @@ func TestSecurityHeadersPlainHTTP(t *testing.T) {
 }
 
 func TestSecurityHeadersHSTSOnSecureRequest(t *testing.T) {
-	cases := []struct {
-		name   string
-		secure func(*http.Request)
-	}{
-		{"TLS connection", func(r *http.Request) { r.TLS = &tls.ConnectionState{} }},
-		{"X-Forwarded-Proto https", func(r *http.Request) { r.Header.Set("X-Forwarded-Proto", "https") }},
-		{"X-Forwarded-Proto case-insensitive", func(r *http.Request) { r.Header.Set("X-Forwarded-Proto", "HTTPS") }},
+	// httptest.NewRequest's default RemoteAddr peer; trusting it lets the
+	// X-Forwarded-Proto cases model a configured reverse proxy.
+	peerTrusted, err := ParseTrustedProxies("192.0.2.1")
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
-	for _, c := range cases {
-		handler := SecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ok := func(trusted *TrustedProxies) http.Handler {
+		return SecurityHeaders(trusted)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
+	}
+	cases := []struct {
+		name    string
+		trusted *TrustedProxies
+		secure  func(*http.Request)
+		hsts    bool
+	}{
+		{"TLS connection", nil, func(r *http.Request) { r.TLS = &tls.ConnectionState{} }, true},
+		{"X-Forwarded-Proto https from trusted proxy", peerTrusted, func(r *http.Request) { r.Header.Set("X-Forwarded-Proto", "https") }, true},
+		{"X-Forwarded-Proto case-insensitive from trusted proxy", peerTrusted, func(r *http.Request) { r.Header.Set("X-Forwarded-Proto", "HTTPS") }, true},
+		// docs/SECURITY-AUDIT.md L-5: a DIRECT client forging the header must
+		// not earn HSTS on a plaintext response — that would pin a host that
+		// may not serve HTTPS yet.
+		{"X-Forwarded-Proto https from untrusted peer (spoofed)", nil, func(r *http.Request) { r.Header.Set("X-Forwarded-Proto", "https") }, false},
+	}
+	for _, c := range cases {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		c.secure(req)
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		if got, want := rec.Header().Get("Strict-Transport-Security"), "max-age=31536000; includeSubDomains"; got != want {
-			t.Errorf("%s: Strict-Transport-Security = %q, want %q", c.name, got, want)
+		ok(c.trusted).ServeHTTP(rec, req)
+		got := rec.Header().Get("Strict-Transport-Security")
+		if c.hsts && got != "max-age=31536000; includeSubDomains" {
+			t.Errorf("%s: Strict-Transport-Security = %q, want the HSTS header", c.name, got)
+		}
+		if !c.hsts && got != "" {
+			t.Errorf("%s: Strict-Transport-Security = %q, want absent", c.name, got)
 		}
 	}
 }
@@ -90,7 +108,7 @@ func TestSecurityHeadersHSTSOnSecureRequest(t *testing.T) {
 // the middleware's policy must not be what the response ends up carrying.
 func TestSecurityHeadersDoesNotClobberHandlerCSP(t *testing.T) {
 	const handlerCSP = "default-src 'none'; sandbox"
-	handler := SecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := SecurityHeaders(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", handlerCSP)
 		w.WriteHeader(http.StatusOK)
 	}))

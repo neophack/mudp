@@ -104,6 +104,9 @@ export async function apiClient(baseURL, username, password) {
   const csrf = cookies.find((c) => c.name === "mudp_csrf")?.value || (await res.json()).csrfToken;
   return {
     ctx,
+    // The double-submit token, exposed for raw ctx.post calls (multipart etc.)
+    // that bypass the post() helper.
+    csrf,
     get: async (url) => {
       const r = await ctx.get(url);
       return r.ok() ? r.json() : null;
