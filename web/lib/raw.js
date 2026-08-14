@@ -2,14 +2,15 @@
 // demosaicing them to RGB.
 //
 // Reuses the generic frame-viewer scaffold from lib/yuv.js (canvas, dimension
-// inputs, frame navigation/playback, zoom, JPEG fetching, and the ISP
-// auto-white-balance + gamma pipeline) — this module only supplies the
-// RAW-specific pieces: filename parsing, the Bayer color-filter-array layout,
-// and the per-frame byte size used to compute the frame count. The demosaic
-// itself runs server-side (internal/raster/bayer.go) via the
+// inputs, frame navigation/playback, zoom, JPEG fetching, the collapsible ISP
+// parameter panel, and the ISP pipeline itself) — this module only supplies
+// the RAW-specific pieces: filename parsing, the Bayer color-filter-array
+// layout, and the per-frame byte size used to compute the frame count. The
+// full ISP pipeline (directional demosaic, BLC, WB, CCM, gamma, chroma NR,
+// sharpening — see internal/raster/miniisp.go) runs server-side via the
 // /api/netdisk/raster endpoint, which returns one decoded JPEG per frame.
 
-import { openRasterFrameViewer } from "./yuv.js";
+import { openRasterFrameViewer, ispQuerySuffix } from "./yuv.js";
 
 // ---------------- Filename parsing ----------------
 
@@ -97,6 +98,9 @@ export function openRawViewer({ name, url, rasterUrl, bodyEl }) {
     // still switch it off to compare against the raw values. The ISP pass
     // runs server-side.
     isp: true,
+    // rawMode shows the Bayer-only panel controls (black level, chroma NR,
+    // gray mode) and seeds the panel with the board-calibrated defaults.
+    rawMode: true,
     extraControlsHtml:
       `<div class="raster-control-group">` +
         `<label>Bit depth</label>` +
@@ -124,7 +128,7 @@ export function openRawViewer({ name, url, rasterUrl, bodyEl }) {
     frameURL: (state) =>
       `${rasterUrl}&width=${state.width}&height=${state.height}&frame=${state.frame}` +
       `&bitDepth=${state.bitDepth}&bayerPattern=${encodeURIComponent(state.bayerPattern)}` +
-      `&isp=${state.isp ? 1 : 0}`,
+      `&isp=${state.isp ? 1 : 0}${ispQuerySuffix(state)}`,
     statusLabel: (state) => `RAW ${state.bitDepth}-bit ${state.bayerPattern}`,
   });
 }

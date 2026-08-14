@@ -2,12 +2,16 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"image"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"mudp/internal/raster"
 )
 
 // TestYuvFrameSizeParity checks the Go per-frame byte formulas against the
@@ -219,3 +223,244 @@ func TestServeRasterFrameJPEGRejectsSymlink(t *testing.T) {
 // (image.Decode is used inline in the table cases above; it recognizes the
 // JPEG the handler wrote because the image/jpeg driver registers itself via
 // init when raster.go imports the package.)
+
+// TestParseRasterParamsIspManual covers the collapsible ISP panel's parameter
+// keys: any ispX key switches to manual mode layered over the kind's
+// defaults, values clamp to sane bounds, and malformed input is rejected.
+func TestParseRasterParamsIspManual(t *testing.T) {
+	t.Run("raw manual full set", func(t *testing.T) {
+		p, msg := parseRasterParams(map[string][]string{
+			"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "bayerPattern": {"RGGB"}, "isp": {"1"},
+			"ispBlc":           {"10,20,30,40"},
+			"ispGainR":         {"1.5"},
+			"ispGainB":         {"0.8"},
+			"ispCcm":           {"1,0,0,0,1,0,0,0,1"},
+			"ispGamma":         {"2.0"},
+			"ispSat":           {"1.3"},
+			"ispContrast":      {"1.1"},
+			"ispBright":        {"-5"},
+			"ispChromaNr":      {"2"},
+			"ispSharpen":       {"1.5"},
+			"ispSharpenRadius": {"4"},
+			"ispChromaSupp":    {"30"},
+			"ispGray":          {"1"},
+		})
+		if msg != "" {
+			t.Fatalf("unexpected error: %s", msg)
+		}
+		m := p.IspManual
+		if m == nil {
+			t.Fatal("expected manual ISP params")
+		}
+		if m.Blc != [4]int{10, 20, 30, 40} || m.GainR != 1.5 || m.GainB != 0.8 || m.Gamma != 2.0 ||
+			m.Saturation != 1.3 || m.Contrast != 1.1 || m.Brightness != -5 || m.ChromaNrRadius != 2 ||
+			m.Sharpen != 1.5 || m.SharpenRadius != 4 || m.ChromaSuppLow != 30 || !m.GrayMode {
+			t.Errorf("parsed manual params = %+v", m)
+		}
+		if m.Ccm != [9]float64{1, 0, 0, 0, 1, 0, 0, 0, 1} {
+			t.Errorf("ccm = %v", m.Ccm)
+		}
+		if m.MaxVal != 4095 {
+			t.Errorf("raw manual MaxVal = %d, want 4095 from bitDepth 12", m.MaxVal)
+		}
+	})
+	t.Run("yuv manual keeps yuv defaults for absent keys", func(t *testing.T) {
+		p, msg := parseRasterParams(map[string][]string{
+			"width": {"8"}, "height": {"8"}, "format": {"i420"}, "isp": {"1"},
+			"ispGamma": {"2.6"},
+		})
+		if msg != "" {
+			t.Fatalf("unexpected error: %s", msg)
+		}
+		m := p.IspManual
+		if m == nil {
+			t.Fatal("expected manual ISP params")
+		}
+		want := raster.DefaultYuvIspParams()
+		want.Gamma = 2.6
+		if *m != want {
+			t.Errorf("yuv manual = %+v, want %+v", *m, want)
+		}
+	})
+	t.Run("no isp keys stays auto", func(t *testing.T) {
+		p, msg := parseRasterParams(map[string][]string{
+			"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "isp": {"1"},
+		})
+		if msg != "" {
+			t.Fatalf("unexpected error: %s", msg)
+		}
+		if p.IspManual != nil {
+			t.Error("IspManual should be nil without ispX keys")
+		}
+	})
+	t.Run("clamps out-of-range values", func(t *testing.T) {
+		p, msg := parseRasterParams(map[string][]string{
+			"width": {"8"}, "height": {"8"}, "bitDepth": {"12"},
+			"ispGainR": {"99"}, "ispGainB": {"0.0001"}, "ispGamma": {"-5"},
+			"ispSat": {"9"}, "ispChromaNr": {"5000"}, "ispSharpenRadius": {"0"},
+		})
+		if msg != "" {
+			t.Fatalf("unexpected error: %s", msg)
+		}
+		m := p.IspManual
+		if m.GainR != 8 || m.GainB != 0.1 || m.Gamma != 0.05 || m.Saturation != 4 ||
+			m.ChromaNrRadius != 64 || m.SharpenRadius != 1 {
+			t.Errorf("clamped params = %+v", m)
+		}
+	})
+	t.Run("sharpen zero disables", func(t *testing.T) {
+		p, msg := parseRasterParams(map[string][]string{
+			"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "ispSharpen": {"0"},
+		})
+		if msg != "" {
+			t.Fatalf("unexpected error: %s", msg)
+		}
+		if p.IspManual.EnableSharpen {
+			t.Error("ispSharpen=0 should disable the sharpen stage")
+		}
+	})
+	t.Run("malformed values rejected", func(t *testing.T) {
+		for _, q := range []map[string][]string{
+			{"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "ispBlc": {"1,2,3"}},
+			{"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "ispBlc": {"1,2,3,x"}},
+			{"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "ispCcm": {"1,2,3"}},
+			{"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "ispCcm": {"1,2,3,4,5,6,7,8,x"}},
+			{"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "ispGainR": {"abc"}},
+			{"width": {"8"}, "height": {"8"}, "format": {"i420"}, "ispGamma": {"NaN"}},
+		} {
+			if _, msg := parseRasterParams(q); msg == "" {
+				t.Errorf("expected an error for %v", q)
+			}
+		}
+	})
+	t.Run("awb flag", func(t *testing.T) {
+		p, msg := parseRasterParams(map[string][]string{
+			"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "awb": {"1"},
+		})
+		if msg != "" {
+			t.Fatalf("unexpected error: %s", msg)
+		}
+		if !p.Awb {
+			t.Error("awb=1 not parsed")
+		}
+	})
+}
+
+// TestServeRasterFrameJPEGRawIspManualGray: a manual ispGray=1 preview must
+// come back grayscale (R==G==B within JPEG tolerance).
+func TestServeRasterFrameJPEGRawIspManualGray(t *testing.T) {
+	const w, h = 8, 8
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "frame.raw")
+	buf := make([]byte, rawFrameSize(w, h, 16))
+	for i := 0; i < w*h; i++ {
+		buf[i*2] = 0x80 // 128 in a 16-bit container
+	}
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		t.Fatalf("write synthetic raw: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/netdisk/raster?path=frame.raw&width=8&height=8&bitDepth=16&bayerPattern=RGGB&isp=1&ispGray=1&ispGamma=1", nil)
+	params, msg := parseRasterParams(req.URL.Query())
+	if msg != "" {
+		t.Fatalf("parse: %s", msg)
+	}
+	serveRasterFrameJPEG(rec, req, path, params)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	img, _, err := image.Decode(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode jpeg: %v", err)
+	}
+	r, g, b, _ := img.At(4, 4).RGBA()
+	if absInt(int(r>>8)-int(g>>8)) > 2 || absInt(int(g>>8)-int(b>>8)) > 2 {
+		t.Errorf("gray mode pixel = (%d,%d,%d), want R≈G≈B", r>>8, g>>8, b>>8)
+	}
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// writeSyntheticRaw writes a single-frame 16-bit LE Bayer dump where R sites
+// hold lo and every other site holds hi (RGGB).
+func writeSyntheticRaw(t *testing.T, path string, w, h int, lo, hi int) {
+	t.Helper()
+	buf := make([]byte, rawFrameSize(w, h, 16))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			v := hi
+			if y%2 == 0 && x%2 == 0 { // R site in RGGB
+				v = lo
+			}
+			i := (y*w + x) * 2
+			buf[i] = byte(v & 0xFF)
+			buf[i+1] = byte(v >> 8)
+		}
+	}
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		t.Fatalf("write synthetic raw: %v", err)
+	}
+}
+
+// TestServeRasterFrameJPEGAwb covers the panel's Gray-world AWB button: the
+// same raster endpoint with awb=1 returns JSON gains instead of a JPEG. The
+// RAW request carries manual zero black levels so the synthetic R=100/G=B=200
+// field yields exactly gainR=2, gainB=1.
+func TestServeRasterFrameJPEGAwb(t *testing.T) {
+	const w, h = 8, 8
+	tmp := t.TempDir()
+	rawPath := filepath.Join(tmp, "frame.raw")
+	writeSyntheticRaw(t, rawPath, w, h, 100, 200)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/netdisk/raster?path=frame.raw&width=8&height=8&bitDepth=16&bayerPattern=RGGB&awb=1&ispBlc=0,0,0,0", nil)
+	params, msg := parseRasterParams(req.URL.Query())
+	if msg != "" {
+		t.Fatalf("parse: %s", msg)
+	}
+	serveRasterFrameJPEG(rec, req, rawPath, params)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var res struct {
+		GainR float64 `json:"gainR"`
+		GainB float64 `json:"gainB"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal awb response: %v", err)
+	}
+	if res.GainR != 2 || res.GainB != 1 {
+		t.Errorf("awb gains = %v/%v, want 2/1", res.GainR, res.GainB)
+	}
+
+	// YUV variant: a flat mid-gray frame is already neutral → 1/1.
+	yuvPath := filepath.Join(tmp, "frame.yuv")
+	writeSyntheticYUV(t, yuvPath, 4, 4, 1)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet,
+		"/api/netdisk/raster?path=frame.yuv&width=4&height=4&format=i420&awb=1", nil)
+	params, msg = parseRasterParams(req.URL.Query())
+	if msg != "" {
+		t.Fatalf("parse: %s", msg)
+	}
+	serveRasterFrameJPEG(rec, req, yuvPath, params)
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal yuv awb response: %v", err)
+	}
+	if res.GainR != 1 || res.GainB != 1 {
+		t.Errorf("yuv awb gains = %v/%v, want 1/1", res.GainR, res.GainB)
+	}
+}

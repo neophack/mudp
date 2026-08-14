@@ -14,10 +14,10 @@
 // This file just knows each format's per-frame byte size (to compute the frame
 // count from the probed file size) and asks the backend for a JPEG per frame.
 //
-// The generic scaffold (canvas, frame nav/playback, zoom, ISP toggle, JPEG
-// fetching, cached wheel-zoom) lives in openRasterFrameViewer and is also
-// reused by the RAW Bayer viewer in lib/raw.js — see that function for the
-// shared contract.
+// The generic scaffold (canvas, frame nav/playback, zoom, ISP toggle + the
+// collapsible ISP parameter panel, JPEG fetching, cached wheel-zoom) lives in
+// openRasterFrameViewer and is also reused by the RAW Bayer viewer in
+// lib/raw.js — see that function for the shared contract.
 
 // ---------------- Format table ----------------
 
@@ -142,6 +142,96 @@ export function guessYuvFormat(name) {
 
 export { YUV_FORMATS };
 
+// ---------------- ISP parameter panel ----------------
+//
+// The collapsible panel under the master ISP checkbox exposes the ported
+// MiniIsp pipeline's tunables (see internal/raster/miniisp.go). Until the user
+// touches a control the viewer stays in "auto" mode and sends no ispX
+// parameters — the backend then runs the kind's defaults (board-calibrated
+// for RAW, neutral for YUV). The first edit flips to manual mode and every
+// subsequent frame request carries the full parameter set.
+
+// CCM presets, mirrored from internal/raster/miniisp.go. Index 0 is "manual"
+// (the 3x3 matrix inputs become editable); the RAW default is the board's
+// 4032K calibration (index 2).
+export const ISP_CCM_PRESETS = [
+  { label: "Manual" },
+  { label: "Identity", ccm: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+  { label: "Board 4032K", ccm: [0.996, -0.078, 0.082, 0.0, 1.066, -0.066, 0.195, -0.598, 1.402] },
+  { label: "sRGB typical", ccm: [1.66, -0.55, -0.11, -0.25, 1.45, -0.2, -0.07, -0.28, 1.35] },
+  { label: "High saturation", ccm: [1.85, -0.7, -0.15, -0.32, 1.62, -0.3, -0.1, -0.38, 1.48] },
+];
+
+// defaultIspPanelValues returns the panel's initial values. RAW mirrors the
+// board-calibrated defaults (MiniIsp.cpp Params::reset) so an untouched panel
+// matches what the backend serves in auto mode; YUV uses the neutral RGB-domain
+// defaults (the Bayer-only stages are irrelevant there).
+export function defaultIspPanelValues(isRaw) {
+  return isRaw
+    ? {
+        blc: [39, 225, 225, 48],
+        gainR: 1.07,
+        gainB: 1.12,
+        ccmPreset: 2,
+        ccm: [...ISP_CCM_PRESETS[2].ccm],
+        gamma: 2.27,
+        saturation: 1.15,
+        contrast: 1.22,
+        brightness: 0,
+        chromaNr: 3,
+        sharpenOn: true,
+        sharpen: 1.0,
+        sharpenRadius: 5,
+        chromaSupp: 60,
+        gray: false,
+      }
+    : {
+        blc: [0, 0, 0, 0],
+        gainR: 1,
+        gainB: 1,
+        ccmPreset: 1,
+        ccm: [...ISP_CCM_PRESETS[1].ccm],
+        gamma: 2.2,
+        saturation: 1.15,
+        contrast: 1.0,
+        brightness: 0,
+        chromaNr: 3,
+        sharpenOn: true,
+        sharpen: 1.0,
+        sharpenRadius: 5,
+        chromaSupp: 0,
+        gray: false,
+      };
+}
+
+// ispQuerySuffix serializes the manual ISP parameters into raster-endpoint
+// query keys (empty in auto mode). Must stay in sync with
+// parseIspManual in internal/server/raster.go.
+export function ispQuerySuffix(state) {
+  if (!state.ispManual) return "";
+  const p = state.ispParams;
+  const parts = [
+    `ispGainR=${p.gainR}`,
+    `ispGainB=${p.gainB}`,
+    `ispCcm=${p.ccm.map((v) => +v.toFixed(4)).join(",")}`,
+    `ispGamma=${p.gamma}`,
+    `ispSat=${p.saturation}`,
+    `ispContrast=${p.contrast}`,
+    `ispBright=${p.brightness}`,
+    `ispSharpen=${p.sharpenOn ? p.sharpen : 0}`,
+    `ispSharpenRadius=${p.sharpenRadius}`,
+    `ispChromaSupp=${p.chromaSupp}`,
+  ];
+  if (state.rawMode) {
+    parts.unshift(
+      `ispBlc=${p.blc.join(",")}`,
+      `ispChromaNr=${p.chromaNr}`,
+      `ispGray=${p.gray ? 1 : 0}`,
+    );
+  }
+  return `&${parts.join("&")}`;
+}
+
 // ---------------- Viewer ----------------
 //
 // openYuvViewer builds the YUV preview UI inside bodyEl. It returns a control
@@ -187,7 +277,7 @@ export function openYuvViewer({ name, url, rasterUrl, bodyEl }) {
     frameSize: (state) => YUV_FORMATS[state.format].frameSize(state.width, state.height),
     frameURL: (state) =>
       `${rasterUrl}&width=${state.width}&height=${state.height}&frame=${state.frame}` +
-      `&format=${encodeURIComponent(state.format)}&isp=${state.isp ? 1 : 0}`,
+      `&format=${encodeURIComponent(state.format)}&isp=${state.isp ? 1 : 0}${ispQuerySuffix(state)}`,
     statusLabel: (state) => YUV_FORMATS[state.format].label,
   });
 }
@@ -209,6 +299,9 @@ export function openRasterFrameViewer({
   width,
   height,
   isp,
+  // rawMode shows the Bayer-only panel controls (black level, chroma NR,
+  // gray mode) and seeds the panel with the board-calibrated defaults.
+  rawMode,
   extraControlsHtml,
   bindExtraControls,
   frameSize,
@@ -224,10 +317,18 @@ export function openRasterFrameViewer({
     width,
     height,
     isp: !!isp,
+    rawMode: !!rawMode,
     frame: 0,
     frameCount: 0,
     totalBytes: 0,
     zoom: 1,
+    // Manual ISP panel state: ispParams mirrors the panel controls,
+    // ispManual flips on the first user edit (until then no ispX params are
+    // sent and the backend runs its defaults), and ispRev keys the frame
+    // cache so a parameter change invalidates the cached bitmap.
+    ispParams: defaultIspPanelValues(!!rawMode),
+    ispManual: false,
+    ispRev: 0,
     // Playback: play/pause state, target frames-per-second, loop toggle, and
     // the timer id of the pending play tick (cleared on pause/destroy).
     playing: false,
@@ -248,12 +349,12 @@ export function openRasterFrameViewer({
     // own.
     cachedBitmap: null,
     cachedFrame: -1,
-    cachedIsp: null,
+    cachedIspKey: "",
     cachedWidth: -1,
     cachedHeight: -1,
   };
 
-  bodyEl.innerHTML = rasterLayoutHtml({ isp: state.isp, extraControlsHtml });
+  bodyEl.innerHTML = rasterLayoutHtml({ isp: state.isp, rawMode: state.rawMode, extraControlsHtml });
   const canvas = bodyEl.querySelector("#rasterCanvas");
   const canvasWrap = bodyEl.querySelector("#rasterCanvasWrap");
   const ctx = canvas.getContext("2d");
@@ -272,6 +373,28 @@ export function openRasterFrameViewer({
   const zoomFitBtn = bodyEl.querySelector("#rasterZoomFit");
   const zoomResetBtn = bodyEl.querySelector("#rasterZoomReset");
   const status = bodyEl.querySelector("#rasterStatus");
+  const colorTip = bodyEl.querySelector("#rasterColorTip");
+
+  // ISP panel plumbing. paintCurrentFrame is defined below via function
+  // hoisting, so the debounce timer can reference it directly.
+  let ispDebounceTimer = null;
+  function scheduleIspRepaint() {
+    if (ispDebounceTimer) clearTimeout(ispDebounceTimer);
+    // Sliders fire "input" continuously while dragging; each repaint is a
+    // server round-trip, so coalesce bursts into one trailing request.
+    ispDebounceTimer = setTimeout(() => {
+      ispDebounceTimer = null;
+      paintCurrentFrame();
+    }, 250);
+  }
+  function markIspManual() {
+    state.ispManual = true;
+    state.ispRev++;
+    if (state.isp) scheduleIspRepaint();
+  }
+  function ispCacheKey() {
+    return `${state.isp ? 1 : 0}:${state.ispManual ? state.ispRev : "auto"}`;
+  }
 
   widthInput.value = state.width;
   heightInput.value = state.height;
@@ -347,11 +470,11 @@ export function openRasterFrameViewer({
       }
       state.cachedBitmap = bitmap;
       state.cachedFrame = state.frame;
-      state.cachedIsp = state.isp;
+      state.cachedIspKey = ispCacheKey();
       state.cachedWidth = state.width;
       state.cachedHeight = state.height;
       if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
-      status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${state.isp ? " · ISP on" : ""}`;
+      status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${ispStatusSuffix(state)}`;
     } catch (err) {
       if (state.destroyed || controller.signal.aborted) return;
       status.textContent = `Failed to load frame: ${err.message || err}`;
@@ -407,7 +530,7 @@ export function openRasterFrameViewer({
     const canRedrawFromCache =
       state.cachedBitmap &&
       state.cachedFrame === state.frame &&
-      state.cachedIsp === state.isp &&
+      state.cachedIspKey === ispCacheKey() &&
       state.cachedWidth === state.width &&
       state.cachedHeight === state.height;
     if (canRedrawFromCache) {
@@ -416,10 +539,9 @@ export function openRasterFrameViewer({
       // immediately — no network round-trip, so there's no window for a
       // stale/out-of-order completion to jerk the view during fast scrolling.
       drawFrame(ctx, canvas, state.cachedBitmap, state.width, state.height, state.zoom);
-      status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${state.isp ? " · ISP on" : ""}`;
+      status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${ispStatusSuffix(state)}`;
       if (anchor) {
-        canvasWrap.scrollLeft = anchor.imgX * state.zoom - anchor.viewportX;
-        canvasWrap.scrollTop = anchor.imgY * state.zoom - anchor.viewportY;
+        applyAnchorScroll(anchor);
       }
       return;
     }
@@ -427,10 +549,24 @@ export function openRasterFrameViewer({
     if (anchor) {
       painted.then(() => {
         if (state.destroyed) return;
-        canvasWrap.scrollLeft = anchor.imgX * state.zoom - anchor.viewportX;
-        canvasWrap.scrollTop = anchor.imgY * state.zoom - anchor.viewportY;
+        applyAnchorScroll(anchor);
       });
     }
+  }
+  // applyAnchorScroll sets scrollLeft/scrollTop so that the image point
+  // recorded in anchor stays under the cursor's viewport position. The
+  // scroll container (.raster-canvas-wrap) has padding, and the canvas (a
+  // flex child with margin:auto) starts at that padding offset inside the
+  // content area. When the canvas overflows (the normal zoomed-in case)
+  // flex margins collapse to 0, so the canvas's content-area origin is at
+  // (padLeft, padTop). The scroll math must include this offset, otherwise
+  // every wheel tick drifts the image by one padding-width toward the top-left.
+  function applyAnchorScroll(anchor) {
+    const cs = getComputedStyle(canvasWrap);
+    const padLeft = parseFloat(cs.paddingLeft) || 0;
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    canvasWrap.scrollLeft = padLeft + anchor.imgX * state.zoom - anchor.viewportX;
+    canvasWrap.scrollTop = padTop + anchor.imgY * state.zoom - anchor.viewportY;
   }
   function onWheel(e) {
     // Ctrl/Cmd + wheel, or plain wheel over the canvas, zooms toward the cursor.
@@ -458,7 +594,193 @@ export function openRasterFrameViewer({
   }
   function onIspToggle() {
     state.isp = !!ispCheckbox.checked;
+    updateIspPanelDisabled();
     paintCurrentFrame();
+  }
+
+  // ---- Collapsible ISP parameter panel ----
+  // All controls live inside #rasterIspPanel (a <details>, collapsed by
+  // default). They write into state.ispParams and go through markIspManual(),
+  // which flips the viewer into manual mode and schedules a debounced repaint.
+  const ispPanel = bodyEl.querySelector("#rasterIspPanel");
+  const ispInputs = () => Array.from(ispPanel.querySelectorAll("input, select, button"));
+  const ispVal = (id) => ispPanel.querySelector(`#${id}Val`);
+
+  // Readouts for each slider, formatted per kind of value.
+  const readoutFormats = {
+    ispGainR: (v) => (+v).toFixed(2),
+    ispGainB: (v) => (+v).toFixed(2),
+    ispGamma: (v) => (+v).toFixed(2),
+    ispSaturation: (v) => (+v).toFixed(2),
+    ispContrast: (v) => (+v).toFixed(2),
+    ispBrightness: (v) => `${Math.round(+v)}`,
+    ispChromaNr: (v) => `${Math.round(+v)}`,
+    ispSharpen: (v) => (+v).toFixed(2),
+    ispSharpenRadius: (v) => `${Math.round(+v)}`,
+    ispChromaSupp: (v) => `${Math.round(+v)}`,
+  };
+
+  function syncIspControls() {
+    const p = state.ispParams;
+    const num = (id, v) => {
+      const el = ispPanel.querySelector(`#${id}`);
+      if (el) el.value = v;
+    };
+    if (state.rawMode) {
+      num("ispBlcR", p.blc[0]);
+      num("ispBlcGr", p.blc[1]);
+      num("ispBlcGb", p.blc[2]);
+      num("ispBlcB", p.blc[3]);
+      num("ispChromaNr", p.chromaNr);
+    }
+    num("ispGainR", p.gainR);
+    num("ispGainB", p.gainB);
+    num("ispGamma", p.gamma);
+    num("ispSaturation", p.saturation);
+    num("ispContrast", p.contrast);
+    num("ispBrightness", p.brightness);
+    num("ispSharpen", p.sharpen);
+    num("ispSharpenRadius", p.sharpenRadius);
+    num("ispChromaSupp", p.chromaSupp);
+    num("ispCcmPreset", p.ccmPreset);
+    for (let i = 0; i < 9; i++) num(`ispCcm${i}`, p.ccm[i]);
+    const sharpenOn = ispPanel.querySelector("#ispSharpenOn");
+    if (sharpenOn) sharpenOn.checked = p.sharpenOn;
+    const gray = ispPanel.querySelector("#ispGray");
+    if (gray) gray.checked = p.gray;
+    const matrixRow = ispPanel.querySelector("#ispCcmMatrixRow");
+    if (matrixRow) matrixRow.hidden = p.ccmPreset !== 0;
+    for (const [id, fmt] of Object.entries(readoutFormats)) {
+      const el = ispPanel.querySelector(`#${id}`);
+      const out = ispVal(id);
+      if (el && out) out.textContent = fmt(el.value);
+    }
+    updateIspPanelDisabled();
+  }
+
+  // The panel only has effect while the master ISP checkbox is on, and the
+  // sharpen strength/radius controls only while sharpening is enabled.
+  function updateIspPanelDisabled() {
+    const sharpenOn = state.ispParams.sharpenOn;
+    for (const el of ispInputs()) {
+      if (el.id === "ispSharpenOn" || el.id === "ispGray" || el.id === "ispCcmPreset") {
+        el.disabled = !state.isp;
+        continue;
+      }
+      const sharpenChild = el.id === "ispSharpen" || el.id === "ispSharpenRadius";
+      el.disabled = !state.isp || (sharpenChild && !sharpenOn);
+    }
+  }
+
+  function bindSlider(id, apply) {
+    const el = ispPanel.querySelector(`#${id}`);
+    if (!el) return;
+    el.addEventListener("input", () => {
+      apply(el.value);
+      const out = ispVal(id);
+      if (out) out.textContent = readoutFormats[id](el.value);
+      markIspManual();
+    });
+  }
+
+  function bindNumber(id, apply) {
+    const el = ispPanel.querySelector(`#${id}`);
+    if (!el) return;
+    // "change" (not "input"): typed/pasted values shouldn't repaint on every
+    // keystroke of a half-typed number.
+    el.addEventListener("change", () => {
+      apply(el.value);
+      markIspManual();
+    });
+  }
+
+  if (state.rawMode) {
+    for (let i = 0; i < 4; i++) {
+      bindNumber(["ispBlcR", "ispBlcGr", "ispBlcGb", "ispBlcB"][i], (v) => {
+        state.ispParams.blc[i] = Math.max(0, Math.min(65535, parseInt(v, 10) || 0));
+      });
+    }
+    bindSlider("ispChromaNr", (v) => {
+      state.ispParams.chromaNr = Math.max(0, Math.min(64, Math.round(+v)));
+    });
+    const gray = ispPanel.querySelector("#ispGray");
+    gray.addEventListener("change", () => {
+      state.ispParams.gray = !!gray.checked;
+      markIspManual();
+    });
+  }
+  bindSlider("ispGainR", (v) => { state.ispParams.gainR = +v; });
+  bindSlider("ispGainB", (v) => { state.ispParams.gainB = +v; });
+  bindSlider("ispGamma", (v) => { state.ispParams.gamma = +v; });
+  bindSlider("ispSaturation", (v) => { state.ispParams.saturation = +v; });
+  bindSlider("ispContrast", (v) => { state.ispParams.contrast = +v; });
+  bindSlider("ispBrightness", (v) => { state.ispParams.brightness = Math.round(+v); });
+  bindSlider("ispSharpen", (v) => { state.ispParams.sharpen = +v; });
+  bindSlider("ispSharpenRadius", (v) => { state.ispParams.sharpenRadius = Math.round(+v); });
+  bindSlider("ispChromaSupp", (v) => { state.ispParams.chromaSupp = Math.round(+v); });
+
+  const sharpenOn = ispPanel.querySelector("#ispSharpenOn");
+  sharpenOn.addEventListener("change", () => {
+    state.ispParams.sharpenOn = !!sharpenOn.checked;
+    updateIspPanelDisabled();
+    markIspManual();
+  });
+
+  const ccmPreset = ispPanel.querySelector("#ispCcmPreset");
+  ccmPreset.addEventListener("change", () => {
+    const idx = parseInt(ccmPreset.value, 10);
+    state.ispParams.ccmPreset = idx;
+    if (ISP_CCM_PRESETS[idx].ccm) state.ispParams.ccm = [...ISP_CCM_PRESETS[idx].ccm];
+    // Re-sync so manual matrix inputs reflect the applied preset when the
+    // user flips back to Manual.
+    syncIspControls();
+    markIspManual();
+  });
+  for (let i = 0; i < 9; i++) {
+    bindNumber(`ispCcm${i}`, (v) => {
+      state.ispParams.ccm[i] = Math.max(-8, Math.min(8, parseFloat(v) || 0));
+    });
+  }
+
+  // Gray-world AWB: ask the backend for gains computed from the current
+  // frame's actual pixels (the browser only ever holds the decoded JPEG).
+  const awbBtn = ispPanel.querySelector("#ispAwbBtn");
+  awbBtn.addEventListener("click", async () => {
+    if (state.destroyed || !state.isp) return;
+    awbBtn.disabled = true;
+    status.textContent = "Computing gray-world AWB…";
+    try {
+      const res = await fetch(`${frameURL(state)}&awb=1`, { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const gains = await res.json();
+      if (state.destroyed) return;
+      state.ispParams.gainR = +gains.gainR;
+      state.ispParams.gainB = +gains.gainB;
+      syncIspControls();
+      markIspManual();
+    } catch (err) {
+      if (!state.destroyed) status.textContent = `AWB failed: ${err.message || err}`;
+    } finally {
+      if (!state.destroyed) awbBtn.disabled = false;
+    }
+  });
+
+  // Reset restores the kind's defaults and drops back to auto mode (an
+  // untouched panel is exactly "the defaults", so no ispX params are sent).
+  const resetBtn = ispPanel.querySelector("#ispResetBtn");
+  resetBtn.addEventListener("click", () => {
+    state.ispParams = defaultIspPanelValues(state.rawMode);
+    state.ispManual = false;
+    state.ispRev++;
+    syncIspControls();
+    if (state.isp) paintCurrentFrame();
+  });
+
+  syncIspControls();
+
+  function ispStatusSuffix(s) {
+    if (!s.isp) return "";
+    return s.ispManual ? " · ISP manual" : " · ISP on";
   }
 
   // --- Drag-to-pan: click and drag the image to scroll it, the way desktop
@@ -567,6 +889,34 @@ export function openRasterFrameViewer({
   canvasWrap.addEventListener("pointerup", endPan);
   canvasWrap.addEventListener("pointercancel", endPan);
   canvasWrap.addEventListener("dblclick", onDblClick);
+  // --- Color value tooltip: shows R,G,B + hex under the cursor when hovering
+  // over the canvas. Uses a single-pixel getImageData read — cheap enough for
+  // mousemove, no full-frame copy needed. The tip uses position:fixed so it
+  // always tracks the cursor in viewport coordinates, immune to scroll/zoom
+  // changes that would otherwise shift a position:absolute element inside the
+  // scroll container.
+  canvas.addEventListener("mousemove", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const px = Math.floor(e.clientX - rect.left);
+    const py = Math.floor(e.clientY - rect.top);
+    if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) {
+      colorTip.hidden = true;
+      return;
+    }
+    const [r, g, b] = ctx.getImageData(px, py, 1, 1).data;
+    const hex = `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1).toUpperCase()}`;
+    colorTip.textContent = `R${r} G${g} B${b}  ${hex}`;
+    colorTip.hidden = false;
+    let tipX = e.clientX + 14;
+    let tipY = e.clientY + 14;
+    const tipW = colorTip.offsetWidth || 180;
+    const tipH = colorTip.offsetHeight || 22;
+    if (tipX + tipW > window.innerWidth) tipX = e.clientX - tipW - 6;
+    if (tipY + tipH > window.innerHeight) tipY = e.clientY - tipH - 6;
+    colorTip.style.left = `${tipX}px`;
+    colorTip.style.top = `${tipY}px`;
+  });
+  canvas.addEventListener("mouseleave", () => { colorTip.hidden = true; });
 
   return {
     state,
@@ -576,6 +926,10 @@ export function openRasterFrameViewer({
     destroy() {
       state.destroyed = true;
       pause();
+      if (ispDebounceTimer) {
+        clearTimeout(ispDebounceTimer);
+        ispDebounceTimer = null;
+      }
       if (state.abort) state.abort.abort();
       if (state.cachedBitmap) {
         state.cachedBitmap.close?.();
@@ -586,10 +940,10 @@ export function openRasterFrameViewer({
   };
 }
 
-function rasterLayoutHtml({ isp, extraControlsHtml }) {
+function rasterLayoutHtml({ isp, rawMode, extraControlsHtml }) {
   return (
     `<div class="viewer-raster-layout">` +
-      `<div class="raster-canvas-wrap" id="rasterCanvasWrap"><canvas id="rasterCanvas" class="viewer-page raster-canvas"></canvas></div>` +
+      `<div class="raster-canvas-wrap" id="rasterCanvasWrap"><canvas id="rasterCanvas" class="viewer-page raster-canvas"></canvas><span class="raster-color-tip" id="rasterColorTip" hidden></span></div>` +
       `<aside class="raster-controls">` +
         `<div class="raster-control-group">` +
           `<label>Width</label>` +
@@ -601,9 +955,9 @@ function rasterLayoutHtml({ isp, extraControlsHtml }) {
         `</div>` +
         (extraControlsHtml || "") +
         `<div class="raster-control-group raster-checkbox-group">` +
-          `<label class="check"><input type="checkbox" id="rasterIsp"${isp ? " checked" : ""}><span>ISP (auto white balance + gamma)</span></label>` +
-          `<span class="hint">Enable for raw/linear sensor dumps that look grey or tinted.</span>` +
+          `<label class="check"><input type="checkbox" id="rasterIsp"${isp ? " checked" : ""}><span>ISP</span></label>` +
         `</div>` +
+        ispPanelHtml(rawMode) +
         `<div class="raster-control-group">` +
           `<label>Playback</label>` +
           `<div class="raster-play-bar">` +
@@ -633,6 +987,83 @@ function rasterLayoutHtml({ isp, extraControlsHtml }) {
         `<div class="raster-status" id="rasterStatus">Loading…</div>` +
       `</aside>` +
     `</div>`
+  );
+}
+
+// ispPanelHtml renders the collapsible ISP parameter panel — a native
+// <details> with no "open" attribute, so it starts collapsed. Bayer-only
+// stages (black level, chroma NR, gray mode) render for RAW files only; the
+// values are seeded from defaultIspPanelValues by syncIspControls().
+function ispPanelHtml(rawMode) {
+  const sliderRow = (id, label, min, max, step, title) =>
+    `<div class="isp-row" title="${title || ""}">` +
+      `<label for="${id}">${label}<span class="isp-val" id="${id}Val"></span></label>` +
+      `<input type="range" id="${id}" min="${min}" max="${max}" step="${step}">` +
+    `</div>`;
+  const blcInputs = ["R", "Gr", "Gb", "B"]
+    .map((ch, i) => {
+      const id = ["ispBlcR", "ispBlcGr", "ispBlcGb", "ispBlcB"][i];
+      return `<input type="number" id="${id}" min="0" max="65535" step="1" title="Black level ${ch}">`;
+    })
+    .join("");
+  const ccmMatrix = Array.from({ length: 9 }, (_, i) =>
+    `<input type="number" id="ispCcm${i}" step="0.01" title="CCM ${Math.floor(i / 3)},${i % 3}">`,
+  ).join("");
+  const presetOptions = ISP_CCM_PRESETS
+    .map((p, i) => `<option value="${i}">${p.label}</option>`)
+    .join("");
+  return (
+    `<details id="rasterIspPanel" class="raster-isp-panel">` +
+      `<summary>ISP parameters</summary>` +
+      `<div class="raster-isp-body">` +
+        (rawMode
+          ? `<div class="isp-row isp-row-multi" title="Black level correction per CFA channel (R/Gr/Gb/B). Sensor black floor; subtract before anything else.">` +
+              `<label>Black level R/Gr/Gb/B</label>` +
+              `<div class="isp-inputs">${blcInputs}</div>` +
+            `</div>`
+          : "") +
+        sliderRow("ispGainR", "WB gain R", "0.1", "8", "0.01",
+          "White balance gain for the red channel (G is fixed at 1.0).") +
+        sliderRow("ispGainB", "WB gain B", "0.1", "8", "0.01",
+          "White balance gain for the blue channel (G is fixed at 1.0).") +
+        `<div class="isp-row isp-actions">` +
+          `<button type="button" class="ghost" id="ispAwbBtn" title="Compute gray-world white balance gains from this frame's pixels (server-side).">Gray-world AWB</button>` +
+          `<button type="button" class="ghost" id="ispResetBtn" title="Restore the default ISP parameters for this file kind.">Reset</button>` +
+        `</div>` +
+        sliderRow("ispGamma", "Gamma", "0.5", "4", "0.01",
+          "Gamma encoding: output = pow(v, 1/gamma). 2.2 ≈ sRGB.") +
+        sliderRow("ispSaturation", "Saturation", "0", "2", "0.01",
+          "Color saturation around luma (1.0 = unchanged, 0 = grayscale).") +
+        sliderRow("ispContrast", "Contrast", "0.5", "2", "0.01",
+          "Linear stretch around mid gray (1.0 = unchanged).") +
+        sliderRow("ispBrightness", "Brightness", "-100", "100", "1",
+          "Offset added after gamma.") +
+        `<div class="isp-row" title="Color correction matrix applied in the linear domain.">` +
+          `<label for="ispCcmPreset">CCM preset</label>` +
+          `<select id="ispCcmPreset">${presetOptions}</select>` +
+        `</div>` +
+        `<div class="isp-row isp-row-multi" id="ispCcmMatrixRow" hidden>` +
+          `<label>CCM matrix (row-major)</label>` +
+          `<div class="isp-ccm-grid">${ccmMatrix}</div>` +
+        `</div>` +
+        (rawMode
+          ? sliderRow("ispChromaNr", "Chroma NR radius", "0", "8", "1",
+              "Box-blur radius on the chroma-difference planes (0 = off). Smooths color noise.") +
+            `<div class="isp-row isp-row-check" title="Skip the demosaic and show the raw Bayer as grayscale.">` +
+              `<label class="check"><input type="checkbox" id="ispGray"><span>Gray mode (raw Bayer)</span></label>` +
+            `</div>`
+          : "") +
+        `<div class="isp-row isp-row-check" title="Multi-band luma unsharp mask (high/mid/low-mid bands with luma-dependent gain).">` +
+          `<label class="check"><input type="checkbox" id="ispSharpenOn"><span>Sharpen</span></label>` +
+        `</div>` +
+        sliderRow("ispSharpen", "Sharpen strength", "0", "4", "0.05",
+          "Overall sharpen multiplier (1.0 = calibrated default).") +
+        sliderRow("ispSharpenRadius", "Sharpen radius", "1", "10", "1",
+          "Mid-band unsharp radius in pixels (high band is fixed 3x3).") +
+        sliderRow("ispChromaSupp", "Shadow chroma suppress", "0", "128", "1",
+          "Below this luma, color collapses toward gray (0 = off).") +
+      `</div>` +
+    `</details>`
   );
 }
 

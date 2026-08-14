@@ -3237,6 +3237,12 @@ audio.viewer-media {
 .viewer-raster-layout {
   display: grid;
   grid-template-columns: 1fr 240px;
+  /* The single row must be exactly the layout's height, never content-sized:
+     an implicit "auto" row grows to the tallest item, so an expanded ISP panel
+     would push the row past the viewport and the control column's
+     overflow:auto would never engage (no scrollbar, unreachable controls).
+     minmax(0,1fr) pins the row so each column scrolls internally instead. */
+  grid-template-rows: minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -3255,6 +3261,10 @@ audio.viewer-media {
 .raster-canvas-wrap {
   display: flex;
   overflow: auto;
+  /* min-height:0 lets this grid item shrink to the (minmax(0,1fr)) row height
+     instead of its content height, so overflow:auto is what clamps it. */
+  min-height: 0;
+  min-width: 0;
   padding: 16px;
   background: #1b1c31;
   /* Click-drag pans the image like a desktop viewer; grab/grabbing signals
@@ -3283,6 +3293,22 @@ audio.viewer-media {
   margin: auto;
   image-rendering: pixelated;
 }
+/* Floating color-value tooltip that follows the cursor over the raster canvas.
+   Shows the R,G,B components and hex of the pixel under the pointer. Uses
+   position:fixed with viewport coordinates so it always tracks the mouse
+   regardless of zoom level or scroll position. */
+.raster-color-tip {
+  position: fixed;
+  pointer-events: none;
+  font: 600 11.5px/1 "SFMono-Regular", Consolas, monospace;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.78);
+  padding: 3px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+  z-index: 90;
+  backdrop-filter: blur(4px);
+}
 .raster-controls {
   display: flex;
   flex-direction: column;
@@ -3290,7 +3316,26 @@ audio.viewer-media {
   padding: 16px;
   background: #fff;
   border-left: 1px solid var(--line);
+  /* Override the app-wide sidebar rule (aside { height:100vh; position:sticky;
+     overflow:hidden } near the top of this file): that rule is written for the
+     navigation sidebar but matches this <aside> too, pinning it to 100vh —
+     taller than the viewer's grid row — which pushed it out of the modal and
+     broke the row-height constraint the scrollbar below depends on. */
+  height: auto;
+  position: static;
+  /* min-height:0 lets the column shrink to the grid row height; combined with
+     overflow:auto this is what produces the scrollbar once the expanded ISP
+     panel (which is content-height, never fixed-height) outgrows the
+     viewport — every control stays reachable by scrolling. */
+  min-height: 0;
   overflow: auto;
+}
+/* Children keep their natural heights instead of being flex-crushed when the
+   expanded ISP panel makes the column overflow: without flex-shrink:0 the
+   column squashes the panel (its content then spills over the controls below
+   it with no scrollbar); with it the column simply becomes scrollable. */
+.raster-controls > * {
+  flex-shrink: 0;
 }
 .raster-control-group {
   display: flex;
@@ -3326,6 +3371,135 @@ audio.viewer-media {
 .raster-control-group select option {
   color: #1f2430;
   background: #fff;
+}
+/* Collapsible ISP parameter panel: a native <details> so it costs nothing to
+   keep collapsed (the default — no "open" attribute in the markup), styled to
+   read as a subgroup of the raster controls rather than a separate card. */
+.raster-isp-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.raster-isp-panel summary {
+  padding: 7px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.raster-isp-panel summary::before {
+  content: "▸";
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+.raster-isp-panel[open] summary::before {
+  transform: rotate(90deg);
+}
+.raster-isp-panel summary::-webkit-details-marker {
+  display: none;
+}
+.raster-isp-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+/* One parameter per row: label (with live value readout) above a full-width
+   slider. tabular-nums keeps the readout from jittering while dragging. */
+.isp-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.isp-row > label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.isp-row .isp-val {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.isp-row input[type="range"] {
+  width: 100%;
+  min-width: 0;
+}
+/* Rows that hold several small inputs (black levels) or a 3x3 matrix. */
+.isp-row-multi .isp-inputs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+.isp-inputs input {
+  width: 100%;
+  min-height: 26px;
+  padding: 2px 3px;
+  border: 1px solid var(--border, var(--line));
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  text-align: center;
+}
+.isp-ccm-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+.isp-ccm-grid input {
+  width: 100%;
+  min-height: 26px;
+  padding: 2px 3px;
+  border: 1px solid var(--border, var(--line));
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.isp-row select {
+  min-height: 28px;
+  padding: 2px 6px;
+  border: 1px solid var(--border, var(--line));
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  background: #fff;
+}
+.isp-row-check label.check {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink);
+  justify-content: flex-start;
+}
+.isp-actions {
+  display: flex;
+  gap: 6px;
+}
+.isp-actions button {
+  flex: 1;
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 11.5px;
+}
+/* Panel controls reflect the master ISP toggle / sharpen checkbox: disabled
+   inputs dim so it's obvious the panel is inert while ISP is off. */
+.raster-isp-panel input:disabled,
+.raster-isp-panel select:disabled,
+.raster-isp-panel button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 /* Playback transport: prev / play-pause / next buttons in a row. */
 .raster-play-bar {
