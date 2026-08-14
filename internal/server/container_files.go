@@ -92,7 +92,10 @@ func (a *App) containerFilesDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 // streamTarFile copies the named member out of the tar stream to w. The Docker
-// archive of a single file contains exactly one entry holding its bytes.
+// archive of a single file contains exactly one entry holding its bytes; the
+// match is on the entry NAME only — never on "it's a regular file", which
+// would let a crafted archive serve some other member's bytes under the
+// expected download filename (docs/SECURITY-AUDIT.md L-2).
 func streamTarFile(w io.Writer, rc io.Reader, name string) error {
 	tr := tar.NewReader(rc)
 	for {
@@ -100,7 +103,7 @@ func streamTarFile(w io.Writer, rc io.Reader, name string) error {
 		if err != nil {
 			return err
 		}
-		if path.Base(strings.TrimSuffix(hdr.Name, "/")) == name || hdr.Typeflag == tar.TypeReg {
+		if path.Base(strings.TrimSuffix(hdr.Name, "/")) == name && hdr.Typeflag == tar.TypeReg {
 			// Cap the copy at hdr.Size (authoritative for tar regular files)
 			// so a forged/crafted archive cannot stream unbounded bytes and
 			// exhaust server memory (decompression-bomb, CWE-409).
@@ -128,6 +131,17 @@ func streamContainerTarAsZip(w io.Writer, rc io.Reader) {
 		if name == "" {
 			continue
 		}
+		// Member-name containment (docs/SECURITY-AUDIT.md L-3): a hostile
+		// container can emit entries with traversal-shaped names, which would
+		// land in the zip verbatim and escape the extraction root on the
+		// DOWNLOADING user's machine (client-side ZipSlip). Same guard style
+		// as extractContainerTar below — anything that cleans to outside the
+		// archive root is dropped.
+		cleaned := path.Clean(name)
+		if cleaned == ".." || cleaned == "." || strings.HasPrefix(cleaned, "../") || path.IsAbs(cleaned) {
+			continue
+		}
+		name = cleaned
 		fi := hdr.FileInfo()
 		fh, err := zw.CreateHeader(&zip.FileHeader{
 			Name:     name,

@@ -86,7 +86,10 @@ func (a *App) remoteMCPRoutes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(a.recoverPanic)
 	r.Use(middleware.RequestLogger)
-	r.Use(middleware.SecurityHeaders)
+	// Every request here arrives via the loopback tunnel daemon (see
+	// loopbackTrusted below), so its X-Forwarded-Proto vouches for the real
+	// client leg when the tunnel is HTTPS-fronted.
+	r.Use(middleware.SecurityHeaders(loopbackTrusted))
 
 	// Every request reaches this listener from the tunnel daemon on loopback, so
 	// without honouring its forwarding header the entire internet would share a

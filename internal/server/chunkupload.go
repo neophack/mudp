@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Resumable chunked uploads for large files (>= ~1GB). The protocol is
@@ -31,6 +33,25 @@ import (
 
 const mudppartSuffix = ".mudppart" // state file + segment prefix
 
+// Hard bounds on the declared upload layout (docs/SECURITY-AUDIT.md M-1/M-2).
+// The size/chunkSize/totalChunks triple comes from the client, and every
+// server-side loop (missing chunks, segment cleanup, assembly) is O(totalChunks)
+// — so init refuses layouts that are arithmetically impossible or absurdly
+// large, per-chunk writes are pinned to their declared byte range, and the
+// assembled file is re-checked against the declared size before it is accepted.
+const (
+	// maxUploadChunks bounds TotalChunks so missingChunks/removeChunkArtifacts
+	// can never be turned into a multi-GB allocation / million-syscall loop by
+	// a hostile client (100k chunks * 100 MiB ≈ 9.5 PB — far beyond any real
+	// upload, so the cap can never reject an honest one).
+	maxUploadChunks = 100_000
+	// maxDeclaredChunkSize matches the per-chunk request body cap in
+	// handleChunk (160 MiB): a bigger declared chunk could never be delivered
+	// in one POST anyway, so agreeing on the ceiling here keeps the layout
+	// honest end to end.
+	maxDeclaredChunkSize = 160 << 20
+)
+
 // chunkUploadState is the on-disk resume record. Stored as JSON at <dst>.mudppart.
 type chunkUploadState struct {
 	Size        int64        `json:"size"`        // total file size in bytes
@@ -38,9 +59,15 @@ type chunkUploadState struct {
 	TotalChunks int          `json:"totalChunks"` // number of chunks
 	FileCRC32   string       `json:"fileCRC32"`   // expected whole-file crc32 ("" if unknown)
 	Received    map[int]bool `json:"received"`    // index -> received
+	// UploadID is the random opaque handle returned by init and echoed by
+	// chunk/complete/abort. It deliberately encodes NOTHING about the server
+	// filesystem — the earlier scheme used the resolved absolute path, which
+	// disclosed the netdisk layout (and Docker volume mountpoints) to any
+	// activated user (docs/SECURITY-AUDIT.md M-3).
+	UploadID string `json:"uploadId"`
 	// RelPath is the user-relative destination (e.g. "docs/big.bin"). It is the
 	// source of truth for where segments and the final file live; the uploadId a
-	// client carries is just an opaque encoding of this path.
+	// client carries is just an opaque handle matched against UploadID above.
 	RelPath string `json:"relPath" ` //nolint:revive
 }
 
@@ -92,16 +119,20 @@ func chunkSegmentPath(dst string, index int) string {
 	return fmt.Sprintf("%s.%d", chunkStatePath(dst), index)
 }
 
-// encodeUploadID turns a user-relative path into the opaque token the client
-// carries between init/chunk/complete/abort. It is NOT security — the handlers
-// re-resolve and confine the path on every call — it just avoids sending the
-// raw path back and forth and gives the client a stable handle.
-func encodeUploadID(root, rel string) string {
-	return filepath.Join(root, rel) // resolved absolute path serves as the id
+// newUploadID mints the random opaque handle for one upload session.
+func newUploadID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // readChunkState loads the resume record, returning (nil, os.IsNotExist) when
-// there is no in-progress upload for dst.
+// there is no in-progress upload for dst. States whose layout violates the
+// hard bounds (e.g. written by a pre-hardening server under a hostile client)
+// are rejected outright: every O(TotalChunks) loop downstream must stay
+// genuinely bounded even for state files that predate the init validation.
 func readChunkState(dst string) (*chunkUploadState, error) {
 	data, err := os.ReadFile(chunkStatePath(dst))
 	if err != nil {
@@ -110,6 +141,9 @@ func readChunkState(dst string) (*chunkUploadState, error) {
 	var st chunkUploadState
 	if err := json.Unmarshal(data, &st); err != nil {
 		return nil, err
+	}
+	if st.TotalChunks <= 0 || st.TotalChunks > maxUploadChunks || st.ChunkSize <= 0 || st.ChunkSize > maxDeclaredChunkSize || st.Size < 0 {
+		return nil, fmt.Errorf("invalid resume state for %s", filepath.Base(dst))
 	}
 	if st.Received == nil {
 		st.Received = map[int]bool{}
@@ -138,7 +172,24 @@ func writeChunkState(dst string, st *chunkUploadState) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, statePath)
+	return renameWithRetry(tmp, statePath)
+}
+
+// renameWithRetry wraps os.Rename with a short retry loop. On Windows,
+// replacing a file that is momentarily open elsewhere — a concurrent
+// readChunkState, the search indexer or AV — fails with ACCESS_DENIED even
+// though nothing is wrong; readers here hold the file for microseconds, so a
+// few backed-off retries turns an intermittent 400 ("rename ... Access is
+// denied", see docs/SECURITY-AUDIT.md reliability note) into a plain success.
+func renameWithRetry(oldname, newname string) error {
+	var err error
+	for attempt := 0; attempt < 6; attempt++ {
+		if err = os.Rename(oldname, newname); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+	}
+	return err
 }
 
 // receivedList returns the sorted list of received chunk indices for reporting.
@@ -176,9 +227,14 @@ func chunkByteRange(st *chunkUploadState, index int) (int64, int64) {
 // writeChunkSegment writes one chunk's bytes to its segment file, hashing as it
 // goes. expectedCRC32 ("") disables per-chunk verification. The segment is
 // always written from offset 0 (a chunk is an independent unit, not appended),
-// so a retransmit cleanly replaces a prior bad segment. Returns the computed
-// CRC32.
-func writeChunkSegment(dst string, index int, src io.Reader, expectedCRC32 string) (string, error) {
+// so a retransmit cleanly replaces a prior bad segment. expectedLen is the
+// chunk's declared byte count (chunkByteRange): a body that is short (truncated
+// upload) or long (quota-bypass attempt, docs/SECURITY-AUDIT.md M-1) is
+// rejected and the segment removed. Returns the computed CRC32.
+func writeChunkSegment(dst string, index int, src io.Reader, expectedCRC32 string, expectedLen int64) (string, error) {
+	if expectedLen < 0 {
+		return "", fmt.Errorf("chunk %d: invalid declared length", index)
+	}
 	segPath := chunkSegmentPath(dst, index)
 	if err := os.MkdirAll(filepath.Dir(segPath), 0o750); err != nil {
 		return "", err
@@ -188,11 +244,18 @@ func writeChunkSegment(dst string, index int, src io.Reader, expectedCRC32 strin
 		return "", err
 	}
 	hash := crc32.NewIEEE()
-	_, copyErr := io.Copy(io.MultiWriter(f, hash), src)
+	n, copyErr := io.Copy(io.MultiWriter(f, hash), src)
 	_ = f.Close()
 	if copyErr != nil {
 		_ = os.Remove(segPath)
 		return "", copyErr
+	}
+	// Length pin: the bytes on disk must be exactly what the declared layout
+	// promised for this index. Anything else — a short body from a flaky link
+	// or an oversized body smuggling past the quota projection — is discarded.
+	if n != expectedLen {
+		_ = os.Remove(segPath)
+		return "", fmt.Errorf("chunk %d: got %d bytes, want %d", index, n, expectedLen)
 	}
 	sum := hex.EncodeToString(hash.Sum(nil))
 	if expectedCRC32 != "" && !equalFoldHex(sum, expectedCRC32) {
@@ -220,6 +283,7 @@ func assembleChunks(dst string, st *chunkUploadState, expectedFileCRC32 string) 
 	}
 	hash := crc32.NewIEEE()
 	mw := io.MultiWriter(out, hash)
+	var written int64
 	for i := 0; i < st.TotalChunks; i++ {
 		seg, err := os.Open(chunkSegmentPath(dst, i))
 		if err != nil {
@@ -233,11 +297,26 @@ func assembleChunks(dst string, st *chunkUploadState, expectedFileCRC32 string) 
 			_ = os.Remove(dst)
 			return "", fmt.Errorf("copy segment %d: %w", i, err)
 		}
+		fi, serr := seg.Stat()
 		_ = seg.Close()
+		if serr != nil {
+			_ = out.Close()
+			_ = os.Remove(dst)
+			return "", fmt.Errorf("stat segment %d: %w", i, serr)
+		}
+		written += fi.Size()
 	}
 	if err := out.Close(); err != nil {
 		_ = os.Remove(dst)
 		return "", err
+	}
+	// Final size pin (docs/SECURITY-AUDIT.md M-1): the assembled file must be
+	// exactly the declared Size. This is the definitive quota-bypass closure —
+	// even if some path ever slipped an oversized segment through, the finished
+	// file is still rejected and removed here.
+	if written != st.Size {
+		_ = os.Remove(dst)
+		return "", fmt.Errorf("%w: assembled %d bytes, declared %d", ErrChecksumMismatch, written, st.Size)
 	}
 	sum := hex.EncodeToString(hash.Sum(nil))
 	if expectedFileCRC32 != "" && !equalFoldHex(sum, expectedFileCRC32) {
@@ -308,6 +387,25 @@ func handleChunkInit(w http.ResponseWriter, dir, rawName string, req chunkInitRe
 		writeErr(w, http.StatusBadRequest, "invalid size/chunkSize/totalChunks")
 		return
 	}
+	// Layout hardening (docs/SECURITY-AUDIT.md M-1/M-2): the declared triple
+	// must be arithmetically consistent — totalChunks == ceil(size/chunkSize) —
+	// and each component within its cap. Without this, a client could declare
+	// a tiny size to pass the quota projection, then deliver arbitrarily many
+	// oversized chunks; or declare an enormous totalChunks and make every
+	// complete/abort allocate an O(n) missing-list. (size == 0 is rejected
+	// implicitly: ceil(0/x) == 0 != totalChunks >= 1.)
+	if req.ChunkSize > maxDeclaredChunkSize {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("chunkSize exceeds %d bytes", maxDeclaredChunkSize))
+		return
+	}
+	if req.TotalChunks > maxUploadChunks {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("totalChunks exceeds %d", maxUploadChunks))
+		return
+	}
+	if want := (req.Size + req.ChunkSize - 1) / req.ChunkSize; int64(req.TotalChunks) != want {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("totalChunks %d does not match size/chunkSize (want %d)", req.TotalChunks, want))
+		return
+	}
 	// Resolve the destination within dir and confine it.
 	dst, _, err := cleanUserPath(dir, name)
 	if err != nil {
@@ -341,6 +439,19 @@ func handleChunkInit(w http.ResponseWriter, dir, rawName string, req chunkInitRe
 			Received:    map[int]bool{},
 		}
 	}
+	// (Re)mint the opaque handle. Fresh states always get one; resumed states
+	// keep theirs so an interrupted client's handle stays valid, except for
+	// states written before the handle existed (pre-upgrade in-flight uploads),
+	// which are upgraded in place on the resume-init that is already required
+	// after any server restart.
+	if st.UploadID == "" {
+		id, ierr := newUploadID()
+		if ierr != nil {
+			writeErr(w, http.StatusInternalServerError, ierr.Error())
+			return
+		}
+		st.UploadID = id
+	}
 	// Quota/disk projection: only the not-yet-received bytes are new.
 	if quotaCheck != nil {
 		if err := quotaCheck(req.Size - alreadyReceived); err != nil {
@@ -353,7 +464,7 @@ func handleChunkInit(w http.ResponseWriter, dir, rawName string, req chunkInitRe
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"uploadId":    encodeUploadID(dir, name),
+		"uploadId":    st.UploadID,
 		"resume":      alreadyReceived > 0,
 		"received":    receivedList(st),
 		"chunkSize":   st.ChunkSize,
@@ -406,15 +517,16 @@ func handleChunk(w http.ResponseWriter, r *http.Request, dir string) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// uploadID must match the resolved destination for this dir+name. This is the
-	// only integrity check on the id (the path itself is re-confined above).
-	if uploadID != encodeUploadID(dir, name) {
-		writeErr(w, http.StatusBadRequest, "uploadId does not match name")
-		return
-	}
 	st, err := readChunkState(dst)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "no in-progress upload; call init first")
+		return
+	}
+	// uploadID is the random handle init minted for this exact destination. The
+	// path itself is re-confined above, so this is an integrity check, not the
+	// confinement (docs/SECURITY-AUDIT.md M-3: the handle carries no path).
+	if uploadID != st.UploadID {
+		writeErr(w, http.StatusBadRequest, "uploadId does not match name")
 		return
 	}
 	if idx < 0 || idx >= st.TotalChunks {
@@ -446,7 +558,10 @@ func handleChunk(w http.ResponseWriter, r *http.Request, dir string) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	sum, werr := writeChunkSegment(dst, idx, src, multipartValue(r, "hash"))
+	// Pin the segment to its declared byte range (chunkByteRange): a short or
+	// oversized body is rejected by writeChunkSegment itself.
+	segStart, segEnd := chunkByteRange(st, idx)
+	sum, werr := writeChunkSegment(dst, idx, src, multipartValue(r, "hash"), segEnd-segStart)
 	_ = src.Close()
 	if werr != nil {
 		writeErr(w, http.StatusBadRequest, werr.Error())
@@ -501,13 +616,13 @@ func handleChunkComplete(w http.ResponseWriter, r *http.Request, dir string, onD
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if uploadID != encodeUploadID(dir, name) {
-		writeErr(w, http.StatusBadRequest, "uploadId does not match name")
-		return
-	}
 	st, err := readChunkState(dst)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "no in-progress upload")
+		return
+	}
+	if uploadID != st.UploadID {
+		writeErr(w, http.StatusBadRequest, "uploadId does not match name")
 		return
 	}
 	// Missing chunks is a conflict (client jumped ahead): report the gaps so the
@@ -557,11 +672,12 @@ func handleChunkAbort(w http.ResponseWriter, r *http.Request, dir string, onDone
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if uploadID != encodeUploadID(dir, name) {
-		writeErr(w, http.StatusBadRequest, "uploadId does not match name")
-		return
-	}
 	if st, err := readChunkState(dst); err == nil {
+		// Only the handle init minted for this destination may abort it.
+		if uploadID != st.UploadID {
+			writeErr(w, http.StatusBadRequest, "uploadId does not match name")
+			return
+		}
 		removeChunkArtifacts(dst, st)
 	}
 	if onDone != nil {

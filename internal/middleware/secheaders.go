@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -85,29 +86,47 @@ func buildCSP() string {
 // Handlers that serve user-supplied file bodies (netdisk download/preview) set
 // their own stricter Content-Type/CSP/nosniff combination; this middleware does
 // not overwrite a policy a handler has already chosen.
-func SecurityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
-		// Deny device APIs the console never uses, so an injected script cannot
-		// reach them either.
-		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
-		if isSecure(r) {
-			// Only meaningful over TLS, and harmful to send on plain HTTP since a
-			// browser would pin a host that may not serve HTTPS yet.
-			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		}
-		if h.Get("Content-Security-Policy") == "" {
-			h.Set("Content-Security-Policy", buildCSP())
-		}
-		next.ServeHTTP(w, r)
-	})
+//
+// trusted is the operator-configured proxy set (MUDP_TRUSTED_PROXIES). HSTS is
+// emitted for TLS requests, and — when the request ARRIVED FROM a trusted
+// reverse proxy — for requests the proxy vouches were HTTPS via
+// X-Forwarded-Proto. A direct client cannot earn HSTS by forging that header
+// (docs/SECURITY-AUDIT.md L-5): emitting it on plain HTTP would pin a host
+// that may not serve HTTPS yet.
+func SecurityHeaders(trusted *TrustedProxies) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Referrer-Policy", "no-referrer")
+			// Deny device APIs the console never uses, so an injected script cannot
+			// reach them either.
+			h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+			if isSecure(r, trusted) {
+				// Only meaningful over TLS, and harmful to send on plain HTTP since a
+				// browser would pin a host that may not serve HTTPS yet.
+				h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
+			if h.Get("Content-Security-Policy") == "" {
+				h.Set("Content-Security-Policy", buildCSP())
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
-// isSecure mirrors httpx.IsSecureRequest without importing it, keeping the
-// middleware package free of a cycle.
-func isSecure(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+// isSecure reports whether the response should be treated as HTTPS-served:
+// either the connection itself is TLS, or the request came from a trusted
+// reverse proxy that says the client leg was HTTPS. The proxy gate mirrors the
+// ClientIP discipline in ratelimit.go — without it, any direct client could
+// spoof X-Forwarded-Proto: https.
+func isSecure(r *http.Request, trusted *TrustedProxies) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if !strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return false
+	}
+	return trusted.trusts(net.ParseIP(remoteIP(r)))
 }

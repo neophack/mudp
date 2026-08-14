@@ -38,10 +38,10 @@ func CSRFProtect(next http.Handler) http.Handler {
 			httpx.WriteErr(w, &httpx.HandlerError{Status: http.StatusForbidden, Message: "CSRF token missing"})
 			return
 		}
+		// Header-only (docs/SECURITY-AUDIT.md L-4): the shipped frontend always
+		// sends X-CSRF-Token, and an URL fallback would leak the token into
+		// access logs, proxy logs and browser history.
 		token := r.Header.Get(csrfHeaderName)
-		if token == "" {
-			token = r.URL.Query().Get("csrf_token")
-		}
 		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(token)) != 1 {
 			httpx.WriteErr(w, &httpx.HandlerError{Status: http.StatusForbidden, Message: "CSRF token mismatch"})
 			return

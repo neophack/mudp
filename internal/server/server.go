@@ -178,7 +178,6 @@ func (a *App) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(a.recoverPanic)
 	r.Use(middleware.RequestLogger)
-	r.Use(middleware.SecurityHeaders)
 
 	// Rate limiting keys on the client address. Behind a reverse proxy every
 	// request would otherwise share the proxy's address and one busy client
@@ -189,6 +188,10 @@ func (a *App) Routes() http.Handler {
 		log.Printf("WARNING: ignoring MUDP_TRUSTED_PROXIES: %v", err)
 		trusted, _ = middleware.ParseTrustedProxies("")
 	}
+	// The same trust set gates HSTS: X-Forwarded-Proto is only believed when
+	// the request arrived from one of these peers, so a direct client cannot
+	// pin a plaintext host by forging the header (docs/SECURITY-AUDIT.md L-5).
+	r.Use(middleware.SecurityHeaders(trusted))
 	apiRateLimiter := middleware.DefaultAPIRateLimiter().TrustProxies(trusted)
 	loginRateLimiter := middleware.StrictRateLimiter().TrustProxies(trusted)
 	// Remember the proxy set so handlers can resolve the real client IP
@@ -206,7 +209,6 @@ func (a *App) Routes() http.Handler {
 	// Public auth surface (no session required).
 	r.With(loginRateLimiter.Middleware).Get("/api/login", a.login) // POST also handled below
 	r.With(loginRateLimiter.Middleware).Post("/api/login", a.login)
-	r.Post("/api/logout", a.logout)
 	r.Get("/api/me", a.me)
 	r.Get("/api/setup/status", a.setupStatus)
 	r.Post("/api/setup/init", a.setupInit)
@@ -260,6 +262,11 @@ func (a *App) Routes() http.Handler {
 		r.Use(a.activatedMiddleware)
 		r.Use(middleware.CSRFProtect)
 
+		// Logout lives INSIDE the auth+CSRF group (docs/SECURITY-AUDIT.md L-1):
+		// it is a state-changing route, and leaving it outside let any
+		// cross-site form force a victim's logout. The frontend's api() helper
+		// already attaches the CSRF header and self-heals a stale token.
+		r.Post("/api/logout", a.logout)
 		r.Get("/api/containers", a.containers)
 		r.Post("/api/containers", a.containers)
 		r.Post("/api/containers/create/stream", a.createStream)
