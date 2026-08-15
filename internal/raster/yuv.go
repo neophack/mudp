@@ -60,16 +60,34 @@ func YuvDecode(format string, buf []byte, w, h int) []byte {
 	}
 }
 
+// A 4:2:0 chroma plane is floor(w/2) x floor(h/2), so an odd luma width or
+// height leaves a final column/row with no chroma sample of its own. Clamping
+// the subsampled coordinate makes it reuse the last one — the conventional
+// handling, and what keeps these reads inside the buffer the frame-size
+// formula actually allocates. Without the clamp, an odd dimension indexed one
+// chroma row/column past the plane and panicked the request.
+//
+// When w or h is 1 the chroma plane is empty; those frames decode as luma-only
+// (neutral 128 chroma) rather than indexing a zero-length plane.
+const neutralChroma = byte(128)
+
 func decodePlanar420(buf []byte, w, h, yOff, uOff, vOff int) []byte {
 	out := make([]byte, w*h*4)
-	hw := w / 2
+	hw, hh := w/2, h/2
+	hasChroma := hw > 0 && hh > 0
 	for j := 0; j < h; j++ {
+		cj := 0
+		if hasChroma {
+			cj = clampInt(j>>1, 0, hh-1)
+		}
 		for i := 0; i < w; i++ {
-			ci := i >> 1
-			cj := j >> 1
 			y := buf[yOff+j*w+i]
-			u := buf[uOff+cj*hw+ci]
-			v := buf[vOff+cj*hw+ci]
+			u, v := neutralChroma, neutralChroma
+			if hasChroma {
+				ci := clampInt(i>>1, 0, hw-1)
+				u = buf[uOff+cj*hw+ci]
+				v = buf[vOff+cj*hw+ci]
+			}
 			r, g, b := yuvToRgb(y, u, v)
 			setPixel(out, (j*w+i)*4, r, g, b)
 		}
@@ -79,20 +97,26 @@ func decodePlanar420(buf []byte, w, h, yOff, uOff, vOff int) []byte {
 
 func decodeSemiPlanar420(buf []byte, w, h int, vuFirst bool) []byte {
 	out := make([]byte, w*h*4)
-	hw := w / 2
+	hw, hh := w/2, h/2
+	hasChroma := hw > 0 && hh > 0
 	uvOff := w * h
 	for j := 0; j < h; j++ {
+		cj := 0
+		if hasChroma {
+			cj = clampInt(j>>1, 0, hh-1)
+		}
 		for i := 0; i < w; i++ {
-			ci := i >> 1
-			cj := j >> 1
 			y := buf[j*w+i]
-			uvIdx := uvOff + (cj*hw+ci)*2
-			var u, v byte
-			// In NV12 the pair is (U,V); in NV21 it is (V,U).
-			if vuFirst {
-				u, v = buf[uvIdx+1], buf[uvIdx]
-			} else {
-				u, v = buf[uvIdx], buf[uvIdx+1]
+			u, v := neutralChroma, neutralChroma
+			if hasChroma {
+				ci := clampInt(i>>1, 0, hw-1)
+				uvIdx := uvOff + (cj*hw+ci)*2
+				// In NV12 the pair is (U,V); in NV21 it is (V,U).
+				if vuFirst {
+					u, v = buf[uvIdx+1], buf[uvIdx]
+				} else {
+					u, v = buf[uvIdx], buf[uvIdx+1]
+				}
 			}
 			r, g, b := yuvToRgb(y, u, v)
 			setPixel(out, (j*w+i)*4, r, g, b)
@@ -102,11 +126,20 @@ func decodeSemiPlanar420(buf []byte, w, h int, vuFirst bool) []byte {
 }
 
 // idx holds the indices into a 4-byte macro-pixel for [Y, U, V] respectively.
+//
+// A macro-pixel packs 2 horizontal pixels into 4 bytes, so an odd width leaves
+// a half-used macro at the end of each row and rows are strided by
+// ceil(w/2)*4 — see packed422Stride, which yuvFrameSize matches. Deriving the
+// macro offset from a global pixel counter instead (as this did originally)
+// makes every row after the first straddle the previous row's trailing macro
+// and runs past the end of the buffer on the last row.
 func decodePacked422(buf []byte, w, h int, idx [3]int) []byte {
 	out := make([]byte, w*h*4)
+	stride := Packed422Stride(w)
 	for j := 0; j < h; j++ {
-		for i := 0; i < w; i++ {
-			macro := ((j*w + i) >> 1) * 4 // 4 bytes per 2 horizontal pixels
+		row := j * stride
+		for i := 0; i < w; i += 2 {
+			macro := row + (i>>1)*4
 			y := buf[macro+idx[0]]
 			u := buf[macro+idx[1]]
 			v := buf[macro+idx[2]]
@@ -117,11 +150,20 @@ func decodePacked422(buf []byte, w, h int, idx [3]int) []byte {
 				y2 := buf[macro+idx[0]+2]
 				r2, g2, b2 := yuvToRgb(y2, u, v)
 				setPixel(out, (j*w+i+1)*4, r2, g2, b2)
-				i++ // handled both pixels
 			}
 		}
 	}
 	return out
+}
+
+// Packed422Stride is the row stride in bytes of a packed 4:2:2 frame: whole
+// 4-byte macro-pixels, one per pair of horizontal pixels, rounded up. Equal to
+// 2*w for even widths.
+func Packed422Stride(w int) int {
+	if w <= 0 {
+		return 0
+	}
+	return ((w + 1) / 2) * 4
 }
 
 func decodePlanar444(buf []byte, w, h int) []byte {

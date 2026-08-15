@@ -334,14 +334,14 @@ func ProcessBayer(buf []byte, w, h, bitDepth int, patternKey string, p IspParams
 		return clampInt(v, 0, h-1)
 	}
 
-	// Phase neighborhood color table: for each 2x2 phase, the colors of the
-	// horizontal and vertical axis neighbors.
-	var horizCol, vertCol [4]int
+	// Phase neighborhood color table: for each 2x2 phase, the color of the
+	// horizontal axis neighbor. The vertical neighbor is implied — at a G site
+	// the two axes always carry the opposite colors of each other.
+	var horizCol [4]int
 	for py := 0; py < 2; py++ {
 		for px := 0; px < 2; px++ {
 			ph := py*2 + px
 			horizCol[ph] = cfa.color[py*2+(px^1)]
-			vertCol[ph] = cfa.color[(py^1)*2+px]
 		}
 	}
 

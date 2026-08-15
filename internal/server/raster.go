@@ -28,6 +28,10 @@ import (
 // its frame slider/scrubbing, zoom/pan, playback, and ISP toggle — only the
 // per-frame fetch switched from "raw bytes + client decode" to "one JPEG".
 
+// maxRasterPixels bounds the frame size serveRasterFrameJPEG will decode. See
+// the check there for why an unbounded value is fatal rather than merely slow.
+const maxRasterPixels = 64 << 20
+
 // rasterFrameParams carries everything serveRasterFrameJPEG needs to decode a
 // single frame. The Kind is either "yuv" (use Format) or "raw" (use BitDepth +
 // BayerPattern); the two modes mirror openYuvViewer / openRawViewer in the
@@ -60,7 +64,9 @@ func yuvFrameSize(format string, w, h int) int {
 	hh := h / 2
 	switch format {
 	case "yuyv", "uyvy": // packed 4:2:2, 16 bits/pixel
-		return 2 * w * h
+		// Rows are strided by whole 4-byte macro-pixels, so an odd width pads
+		// to the next pair. Identical to 2*w*h for even widths.
+		return raster.Packed422Stride(w) * h
 	case "yuv444": // planar 4:4:4, 24 bits/pixel
 		return 3 * w * h
 	default: // i420/yv12/nv12/nv21 planar/semi-planar 4:2:0, 12 bits/pixel
@@ -94,6 +100,16 @@ func (p rasterFrameParams) frameSize() int {
 func serveRasterFrameJPEG(w http.ResponseWriter, r *http.Request, full string, p rasterFrameParams) {
 	if p.Width <= 0 || p.Height <= 0 {
 		writeErr(w, http.StatusBadRequest, "invalid width/height")
+		return
+	}
+	// Width/height are raw query parameters and the decode path allocates on
+	// the order of 36 bytes per pixel (the ISP pipeline's working planes), so
+	// an unbounded value does not fail as a recovered panic — it aborts the
+	// whole process with an out-of-memory fatal error, and the share route
+	// reaches this code without an account. Cap the frame first. 64 MP is
+	// roughly an order of magnitude past the largest dump these viewers open.
+	if int64(p.Width)*int64(p.Height) > maxRasterPixels {
+		writeErr(w, http.StatusBadRequest, "frame dimensions are too large to preview")
 		return
 	}
 	perFrame := p.frameSize()
@@ -183,6 +199,13 @@ func serveRasterFrameJPEG(w http.ResponseWriter, r *http.Request, full string, p
 
 	// raster produces R/G/B/A in that byte order, which is exactly
 	// image.RGBA's pixel layout, so we hand it the slice directly (no copy).
+	// A decoder that bailed out (nil) or returned fewer pixels than the Rect
+	// claims would make jpeg.Encode index past the end of Pix, so check the
+	// length rather than letting that surface as a recovered panic.
+	if len(rgba) < 4*p.Width*p.Height {
+		writeErr(w, http.StatusBadRequest, "frame could not be decoded with these parameters")
+		return
+	}
 	img := &image.RGBA{Pix: rgba, Stride: 4 * p.Width, Rect: image.Rect(0, 0, p.Width, p.Height)}
 
 	// A fresh per-request buffer so cancellation/early-return can't leak a

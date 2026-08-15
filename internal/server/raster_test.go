@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"net/http"
 	"net/http/httptest"
@@ -462,5 +463,70 @@ func TestServeRasterFrameJPEGAwb(t *testing.T) {
 	}
 	if res.GainR != 1 || res.GainB != 1 {
 		t.Errorf("yuv awb gains = %v/%v, want 1/1", res.GainR, res.GainB)
+	}
+}
+
+// TestServeRasterFrameJPEGOddDimensions covers odd width/height end to end.
+// These reach the handler straight from the viewer's dimension inputs (and
+// from a share link's query string), and used to panic the request inside the
+// YUV decoders rather than returning an image.
+func TestServeRasterFrameJPEGOddDimensions(t *testing.T) {
+	for _, format := range []string{"i420", "yv12", "nv12", "nv21", "yuyv", "uyvy", "yuv444"} {
+		for _, d := range [][2]int{{7, 5}, {1, 1}, {3, 2}} {
+			w, h := d[0], d[1]
+			t.Run(fmt.Sprintf("%s_%dx%d", format, w, h), func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "frame.yuv")
+				per := yuvFrameSize(format, w, h)
+				if err := os.WriteFile(path, make([]byte, per), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/api/netdisk/raster", nil)
+				serveRasterFrameJPEG(rec, req, path, rasterFrameParams{
+					Kind: "yuv", Width: w, Height: h, Format: format,
+				})
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+				}
+				img, _, err := image.Decode(bytes.NewReader(rec.Body.Bytes()))
+				if err != nil {
+					t.Fatalf("decode jpeg: %v", err)
+				}
+				if b := img.Bounds(); b.Dx() != w || b.Dy() != h {
+					t.Errorf("jpeg bounds = %v, want %dx%d", b, w, h)
+				}
+			})
+		}
+	}
+}
+
+// TestServeRasterFrameJPEGRejectsHugeDimensions pins the allocation cap. The
+// decode path allocates tens of bytes per pixel, so an unbounded width/height
+// aborts the process with an out-of-memory fatal error that no recover can
+// catch — the request has to be refused before anything is allocated.
+func TestServeRasterFrameJPEGRejectsHugeDimensions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "frame.yuv")
+	if err := os.WriteFile(path, make([]byte, 64), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range [][2]int{{1 << 20, 1 << 20}, {200000, 200000}, {maxRasterPixels, 2}} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/netdisk/raster", nil)
+		serveRasterFrameJPEG(rec, req, path, rasterFrameParams{
+			Kind: "yuv", Width: d[0], Height: d[1], Format: "i420",
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%dx%d: status = %d, want 400", d[0], d[1], rec.Code)
+		}
+	}
+	// A frame just inside the cap must still be accepted (it fails later, on
+	// the truncated read, not on the dimension check).
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/netdisk/raster", nil)
+	serveRasterFrameJPEG(rec, req, path, rasterFrameParams{
+		Kind: "yuv", Width: 8192, Height: 8192, Format: "i420",
+	})
+	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Errorf("8192x8192: status = %d, want 416 (truncated), not a dimension rejection", rec.Code)
 	}
 }

@@ -53,7 +53,12 @@ function frameFetchCalls() {
   return fetchMock.mock.calls.filter(([url]) => typeof url === "string" && url.includes("frame="));
 }
 
-function openViewer({ totalBytes }) {
+function lastFrameFetchURL() {
+  const calls = frameFetchCalls();
+  return calls.length ? calls[calls.length - 1][0] : "";
+}
+
+function openViewer({ totalBytes, frameURL, bindExtraControls }) {
   fetchMock = makeFetchMock();
   vi.stubGlobal("fetch", fetchMock);
   createImageBitmapMock = vi.fn(async () => FAKE_BITMAP);
@@ -85,9 +90,9 @@ function openViewer({ totalBytes }) {
     height: 2,
     isp: false,
     extraControlsHtml: "",
-    bindExtraControls: null,
+    bindExtraControls: bindExtraControls || null,
     frameSize: () => 1, // 1 byte per frame -> totalBytes == frame count
-    frameURL: (state) => `/api/netdisk/raster?frame=${state.frame}`,
+    frameURL: frameURL || ((state) => `/api/netdisk/raster?frame=${state.frame}`),
     statusLabel: () => "test",
   });
   return {
@@ -171,5 +176,45 @@ describe("openRasterFrameViewer wheel-zoom caching", () => {
     expect(frameFetchCalls().length).toBeGreaterThan(1);
     await flush();
     expect(viewer.state.cachedFrame).toBe(1);
+  });
+});
+
+// The cached bitmap is keyed on the frame's fetch URL, which covers the
+// caller-supplied controls too (YUV format, RAW bit depth / Bayer pattern).
+// Keying on the ISP state alone left those out: after changing the format,
+// a wheel-zoom would take the cache fast path and redraw the *previous*
+// format's decode — and, because the fast path also rewrites the status line,
+// replace the failed fetch's error message with a normal-looking one.
+describe("openRasterFrameViewer frame cache keying", () => {
+  it("invalidates the cache when a caller-supplied control changes the frame URL", async () => {
+    let format = "i420";
+    let onChange = null;
+    const { canvasWrap } = openViewer({
+      totalBytes: 1,
+      frameURL: (state) => `/api/netdisk/raster?frame=${state.frame}&format=${format}`,
+      bindExtraControls: (root, state, notify) => {
+        onChange = notify;
+      },
+    });
+    await flush();
+    expect(frameFetchCalls().length).toBe(1);
+    expect(lastFrameFetchURL()).toContain("format=i420");
+
+    // Change the format, then zoom before its repaint has resolved -- exactly
+    // the window where the i420 bitmap was still sitting in the cache while
+    // the viewer had already moved to nv12.
+    format = "nv12";
+    onChange();
+    const afterChange = frameFetchCalls().length;
+    expect(afterChange).toBeGreaterThan(1);
+
+    canvasWrap.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, clientX: 5, clientY: 5, cancelable: true }));
+
+    // The zoom must not take the cache fast path: the cached bitmap holds
+    // i420 pixels and the viewer is now showing nv12. Taking it would both
+    // redraw the wrong decode and overwrite the status line.
+    expect(frameFetchCalls().length).toBeGreaterThan(afterChange);
+    await flush();
+    expect(lastFrameFetchURL()).toContain("format=nv12");
   });
 });

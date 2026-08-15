@@ -62,3 +62,46 @@ func abs(v int) int {
 	}
 	return v
 }
+
+// TestYuvDecodeOddDimensions guards the odd-width/height case. A 4:2:0 chroma
+// plane is floor(w/2) x floor(h/2) and a packed 4:2:2 row is strided by whole
+// macro-pixels, so an odd dimension used to index past the end of the frame
+// buffer and panic the request — reachable from the viewer's width/height
+// inputs and from a public share link.
+func TestYuvDecodeOddDimensions(t *testing.T) {
+	frameSize := func(format string, w, h int) int {
+		switch format {
+		case "yuyv", "uyvy":
+			return Packed422Stride(w) * h
+		case "yuv444":
+			return 3 * w * h
+		default:
+			return w*h + 2*(w/2)*(h/2)
+		}
+	}
+	formats := []string{"i420", "yv12", "nv12", "nv21", "yuyv", "uyvy", "yuv444"}
+	dims := [][2]int{{3, 3}, {1, 1}, {1, 5}, {5, 1}, {7, 3}, {2, 3}, {3, 2}}
+	for _, format := range formats {
+		for _, d := range dims {
+			w, h := d[0], d[1]
+			buf := make([]byte, frameSize(format, w, h))
+			rgba := YuvDecode(format, buf, w, h)
+			if len(rgba) != w*h*4 {
+				t.Errorf("%s %dx%d: got %d bytes, want %d", format, w, h, len(rgba), w*h*4)
+			}
+		}
+	}
+}
+
+// TestPacked422Stride pins the stride down: even widths must stay at exactly
+// 2*w bytes so existing captures keep their frame count, odd widths round up
+// to a whole macro-pixel.
+func TestPacked422Stride(t *testing.T) {
+	for _, tc := range []struct{ w, want int }{
+		{0, 0}, {-4, 0}, {1, 4}, {2, 4}, {3, 8}, {4, 8}, {1920, 3840}, {1935, 3872},
+	} {
+		if got := Packed422Stride(tc.w); got != tc.want {
+			t.Errorf("Packed422Stride(%d) = %d, want %d", tc.w, got, tc.want)
+		}
+	}
+}

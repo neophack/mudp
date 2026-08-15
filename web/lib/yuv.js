@@ -21,6 +21,13 @@
 
 // ---------------- Format table ----------------
 
+// packed422Stride is the row stride in bytes of a packed 4:2:2 frame: whole
+// 4-byte macro-pixels, one per pair of horizontal pixels, rounded up. Mirrors
+// raster.Packed422Stride in internal/raster/yuv.go.
+function packed422Stride(w) {
+  return w <= 0 ? 0 : (((w + 1) / 2) | 0) * 4;
+}
+
 // Each format carries a label and frameSize(w, h) -> bytes per frame. This
 // mirrors internal/server/raster.go's yuvFrameSize so the frontend's frame
 // count matches the offsets the backend reads. Decoding itself is server-side.
@@ -45,15 +52,17 @@ const YUV_FORMATS = {
     label: "NV21 (YVU420SP)",
     frameSize: (w, h) => w * h + 2 * ((w / 2) | 0) * ((h / 2) | 0),
   },
-  // Packed 4:2:2, 16 bits/pixel. Y0 U0 Y1 V0 per 2 horizontal pixels.
+  // Packed 4:2:2, 16 bits/pixel. Y0 U0 Y1 V0 per 2 horizontal pixels. Rows are
+  // strided by whole 4-byte macro-pixels, so an odd width pads to the next
+  // pair; identical to 2*w*h for even widths.
   yuyv: {
     label: "YUYV (YUY2)",
-    frameSize: (w, h) => 2 * w * h,
+    frameSize: (w, h) => packed422Stride(w) * h,
   },
   // Packed 4:2:2 with U first.
   uyvy: {
     label: "UYVY",
-    frameSize: (w, h) => 2 * w * h,
+    frameSize: (w, h) => packed422Stride(w) * h,
   },
   // Planar 4:4:4, 24 bits/pixel. Full-resolution U and V.
   yuv444: {
@@ -349,9 +358,7 @@ export function openRasterFrameViewer({
     // own.
     cachedBitmap: null,
     cachedFrame: -1,
-    cachedIspKey: "",
-    cachedWidth: -1,
-    cachedHeight: -1,
+    cachedKey: "",
   };
 
   bodyEl.innerHTML = rasterLayoutHtml({ isp: state.isp, rawMode: state.rawMode, extraControlsHtml });
@@ -392,8 +399,16 @@ export function openRasterFrameViewer({
     state.ispRev++;
     if (state.isp) scheduleIspRepaint();
   }
-  function ispCacheKey() {
-    return `${state.isp ? 1 : 0}:${state.ispManual ? state.ispRev : "auto"}`;
+  // The cached bitmap's key is the frame's own fetch URL, which already
+  // encodes every input that decides the decoded pixels: frame index,
+  // dimensions, the ISP toggle and its parameters, and the caller-supplied
+  // controls (YUV format, RAW bit depth / Bayer pattern). Keying on the ISP
+  // state alone left those caller-supplied controls out, so a zoom taken after
+  // a format/pattern change whose fetch failed would redraw the *previous*
+  // pattern's bitmap from cache and overwrite the error message with a
+  // normal-looking status line.
+  function frameCacheKey() {
+    return frameURL(state);
   }
 
   widthInput.value = state.width;
@@ -455,8 +470,11 @@ export function openRasterFrameViewer({
     const controller = new AbortController();
     state.abort = controller;
     status.textContent = `Loading frame ${state.frame + 1}/${state.frameCount}…`;
+    // Capture the key before awaiting so the cache records the URL that was
+    // actually fetched, not whatever the controls hold when it resolves.
+    const key = frameCacheKey();
     try {
-      const bitmap = await fetchFrameBitmap(frameURL(state), controller.signal);
+      const bitmap = await fetchFrameBitmap(key, controller.signal);
       if (state.destroyed || controller.signal.aborted) {
         bitmap?.close?.();
         return;
@@ -470,9 +488,7 @@ export function openRasterFrameViewer({
       }
       state.cachedBitmap = bitmap;
       state.cachedFrame = state.frame;
-      state.cachedIspKey = ispCacheKey();
-      state.cachedWidth = state.width;
-      state.cachedHeight = state.height;
+      state.cachedKey = key;
       if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
       status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${ispStatusSuffix(state)}`;
     } catch (err) {
@@ -527,12 +543,7 @@ export function openRasterFrameViewer({
     }
     state.zoom = clamped;
     if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
-    const canRedrawFromCache =
-      state.cachedBitmap &&
-      state.cachedFrame === state.frame &&
-      state.cachedIspKey === ispCacheKey() &&
-      state.cachedWidth === state.width &&
-      state.cachedHeight === state.height;
+    const canRedrawFromCache = !!state.cachedBitmap && state.cachedKey === frameCacheKey();
     if (canRedrawFromCache) {
       // Fast path: same pixel data, only the display scale changed. Redraw
       // synchronously from the cached bitmap and apply the scroll correction
