@@ -817,11 +817,6 @@ const translations = {
     "mcp.usageTitle": "{name}#{label} 的使用记录",
     "mcp.usageEmpty": "暂无使用记录。该令牌被调用工具后会出现在这里。",
     "mcp.usageFail": "加载使用记录失败",
-    "mcp.localAccess": "本地直连",
-    "mcp.noTokenNeeded": "无需令牌",
-    "mcp.localAccessDesc": "在本网络内，选择一个容器即可直接获取配置——不必先创建令牌。此地址仅在本监听器上有效，永远不会经外部访问域名对外暴露。",
-    "mcp.localConfigTitle": "{name} 的本地直连配置",
-    "mcp.localNoteDone": "将下方配置复制到 AI 工具的 MCP 设置中。此地址无需令牌，仅在本网络内可用。",
 
     // Netdisk
     "netdisk.loadingFiles": "加载文件中…",
@@ -2190,11 +2185,6 @@ const translations = {
     "mcp.usageTitle": "Usage log for {name}#{label}",
     "mcp.usageEmpty": "No usage recorded yet. Tool calls made with this token will appear here.",
     "mcp.usageFail": "Failed to load usage log",
-    "mcp.localAccess": "Local access",
-    "mcp.noTokenNeeded": "No token needed",
-    "mcp.localAccessDesc": "From this network, pick a container to get a config right away — no need to create a token first. This address only works on this listener and is never exposed through the external access domain.",
-    "mcp.localConfigTitle": "Local access config for {name}",
-    "mcp.localNoteDone": "Copy the config below into your AI tool's MCP settings. This address needs no token and only works from this network.",
 
     // Netdisk
     "netdisk.loadingFiles": "Loading files...",

@@ -72,8 +72,6 @@ export async function renderMCP() {
         `</div>` +
       `</section>` +
 
-      localAccessCard(containers) +
-
       remoteAccessCard() +
 
       `<div class="mcp-main-grid">` +
@@ -155,42 +153,7 @@ export async function renderMCP() {
   document.querySelectorAll("[data-mcp-log]").forEach((btn) => {
     btn.onclick = () => onShowUsage(btn.dataset.mcpLog, btn.dataset.mcpName, btn.dataset.mcpLabel);
   });
-  const localBtn = $("#mcpLocalViewBtn");
-  if (localBtn) {
-    localBtn.onclick = () => {
-      const sel = $("#mcpLocalContainer");
-      const id = sel && sel.value;
-      if (!id) {
-        toast(t("mcp.selectContainerFirst"));
-        return;
-      }
-      const c = containers.find((c) => c.id === id);
-      onShowLocalConfig(id, c ? c.name || c.fullName || id.slice(0, 12) : id.slice(0, 12));
-    };
-  }
   bindCopyButtons();
-}
-
-// localAccessCard offers a token-free config for a caller already on this
-// network: pick a container, get a config that hits /mcp/local/{id}/... with
-// no token in it at all. Unlike remoteAccessCard this needs no admin setup —
-// it always works from this listener — so it is shown to every user who can
-// see a container list, mirroring the create-token form's audience.
-function localAccessCard(containers) {
-  return (
-    `<section class="card">` +
-      `<div class="card-head"><h2>${t("mcp.localAccess")}</h2><span class="mcp-card-note">${t("mcp.noTokenNeeded")}</span></div>` +
-      `<div class="card-body">` +
-        `<p class="hint">${t("mcp.localAccessDesc")}</p>` +
-        (containers.length === 0
-          ? `<p class="hint">${t("mcp.noContainers")}</p>`
-          : `<div class="mcp-local-row">` +
-              `<select id="mcpLocalContainer">${containerOptions(containers)}</select>` +
-              `<button class="ghost" id="mcpLocalViewBtn">${t("mcp.viewConfig")}</button>` +
-            `</div>`) +
-      `</div>` +
-    `</section>`
-  );
 }
 
 // bindCopyButtons wires every [data-copy] button in the current DOM. Used by
@@ -651,109 +614,6 @@ function onShowConfigRaw(token, externalKey, label, placeholder = false, onSafeN
     btn.onclick = () => {
       scope = btn.dataset.scope;
       selectIn(".mcp-scope-btn", btn);
-      applySelection();
-    };
-  });
-
-  bindCopyButtons();
-}
-
-// onShowLocalConfig opens the same kind of copyable-config dialog as
-// onShowConfigRaw, but for the token-free /mcp/local/{containerId} routes: no
-// token to display or scope toggle to offer (this only ever works from the
-// network the browser is already on), just a transport choice.
-function onShowLocalConfig(containerId, containerName) {
-  const localBase = window.location.origin;
-  const labelSlug = (containerName || "mudp-container").replace(/[^a-zA-Z0-9_-]/g, "-") || "mudp-container";
-  let transport = "sse";
-  const sseUrl = `${localBase}/mcp/local/${containerId}/sse`;
-  const httpUrl = `${localBase}/mcp/local/${containerId}`;
-  const urlFor = (tr) => (tr === "http" ? httpUrl : sseUrl);
-
-  const buildConfig = (tr) =>
-    JSON.stringify(
-      { mcpServers: { [labelSlug]: { type: tr === "http" ? "http" : "sse", url: urlFor(tr) } } },
-      null,
-      2,
-    );
-
-  const buildCurlExample = (tr) =>
-    tr === "http"
-      ? `# Streamable HTTP: one POST per JSON-RPC request.\n` +
-        `curl -X POST "${httpUrl}" \\\n` +
-        `  -H "Content-Type: application/json" \\\n` +
-        `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`
-      : `# 1. Open the SSE stream to get the message endpoint:\n` +
-        `curl -N ${sseUrl}\n\n` +
-        `# 2. POST a JSON-RPC request to the endpoint URL printed above, e.g.:\n` +
-        `curl -X POST "${localBase}/mcp/local/${containerId}/messages?session=SESSION_ID" \\\n` +
-        `  -H "Content-Type: application/json" \\\n` +
-        `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`;
-
-  const transportHint = (tr) => (tr === "http" ? t("mcp.transportHintHttp") : t("mcp.transportHintSse"));
-
-  const body =
-    `<p class="hint">${t("mcp.localNoteDone")}</p>` +
-    `<div class="mcp-config-section">` +
-      `<div class="mcp-transport-row">` +
-        `<h4>${t("mcp.mcpConfig")}</h4>` +
-        `<div class="mcp-transport-toggle" role="tablist" aria-label="Transport">` +
-          `<button class="mcp-transport-btn active" data-transport="sse" role="tab" aria-selected="true">SSE</button>` +
-          `<button class="mcp-transport-btn" data-transport="http" role="tab" aria-selected="false">HTTP</button>` +
-        `</div>` +
-      `</div>` +
-      `<textarea class="mcp-code mcp-config-editor" id="mcpConfigEditor" spellcheck="false">${escapeHtml(buildConfig("sse"))}</textarea>` +
-      `<div class="mcp-config-actions">` +
-        `<button class="primary mcp-copy-btn" data-copy-target="mcpConfigEditor">${t("mcp.copyConfig")}</button>` +
-      `</div>` +
-      `<p class="hint" id="mcpTransportHint">${transportHint("sse")}</p>` +
-    `</div>` +
-    `<div class="mcp-config-section">` +
-      `<h4>${t("mcp.endpoint")}</h4>` +
-      `<div class="mcp-copy-row">` +
-        `<code class="mcp-code mcp-code-inline" id="mcpEndpointLabel">SSE: ${escapeHtml(sseUrl)}</code>` +
-        `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(sseUrl)}" id="mcpEndpointCopy">${t("common.copy")}</button>` +
-      `</div>` +
-    `</div>` +
-    `<div class="mcp-config-section">` +
-      `<h4>${t("mcp.testCurl")}</h4>` +
-      `<div class="mcp-copy-row">` +
-        `<pre class="mcp-code" id="mcpCurlExample">${escapeHtml(buildCurlExample("sse"))}</pre>` +
-        `<button class="ghost mcp-copy-btn" data-copy="${escapeHtml(buildCurlExample("sse"))}" id="mcpCurlCopy">${t("common.copy")}</button>` +
-      `</div>` +
-    `</div>`;
-
-  showModal({
-    kind: "mcp",
-    title: t("mcp.localConfigTitle", { name: containerName || "" }),
-    body,
-    foot: `<button class="primary" data-close>${t("common.done")}</button>`,
-  });
-
-  const applySelection = () => {
-    const editor = document.getElementById("mcpConfigEditor");
-    if (editor) editor.value = buildConfig(transport);
-    const hint = document.getElementById("mcpTransportHint");
-    if (hint) hint.textContent = transportHint(transport);
-    const endpointLabel = document.getElementById("mcpEndpointLabel");
-    const endpointCopy = document.getElementById("mcpEndpointCopy");
-    if (endpointLabel) endpointLabel.textContent = `${transport.toUpperCase()}: ${urlFor(transport)}`;
-    if (endpointCopy) endpointCopy.dataset.copy = urlFor(transport);
-    const curlEl = document.getElementById("mcpCurlExample");
-    const curlCopy = document.getElementById("mcpCurlCopy");
-    const curlText = buildCurlExample(transport);
-    if (curlEl) curlEl.textContent = curlText;
-    if (curlCopy) curlCopy.dataset.copy = curlText;
-  };
-
-  document.querySelectorAll(".mcp-transport-btn").forEach((btn) => {
-    btn.onclick = () => {
-      transport = btn.dataset.transport;
-      document.querySelectorAll(".mcp-transport-btn").forEach((b) => {
-        const active = b === btn;
-        b.classList.toggle("active", active);
-        b.setAttribute("aria-selected", active ? "true" : "false");
-      });
       applySelection();
     };
   });

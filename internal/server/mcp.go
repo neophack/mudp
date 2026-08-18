@@ -74,76 +74,6 @@ func (a *App) mcpMessages(w http.ResponseWriter, r *http.Request) {
 	a.mcpHub.ServeMessages(w, r)
 }
 
-// mcpStreamableHTTPLocal is the token-free counterpart to mcpStreamableHTTP:
-// a caller already on the console's own network only needs the container id,
-// no MCP token. Registered on the main listener only — the external
-// (tunnel-facing) listener has no route for /mcp/local/... and 404s it, so
-// this path never becomes reachable from the internet regardless of how the
-// safe-network / remote-access settings are configured.
-//
-// POST /mcp/local/{containerId}
-func (a *App) mcpStreamableHTTPLocal(w http.ResponseWriter, r *http.Request) {
-	tok, ok := a.resolveMcpContainerDirect(w, r)
-	if !ok {
-		return
-	}
-	srv := mcp.NewContainerServer(r.Context(), a.docker, tok.ContainerID, tok.ContainerName)
-	srv.SetAuditHook(a.mcpAuditHook(tok))
-	srv.ServeHTTP(w, r)
-}
-
-// mcpSSELocal is the token-free counterpart to mcpSSE.
-//
-// GET /mcp/local/{containerId}/sse
-func (a *App) mcpSSELocal(w http.ResponseWriter, r *http.Request) {
-	tok, ok := a.resolveMcpContainerDirect(w, r)
-	if !ok {
-		return
-	}
-	srv := mcp.NewContainerServer(r.Context(), a.docker, tok.ContainerID, tok.ContainerName)
-	srv.SetAuditHook(a.mcpAuditHook(tok))
-	session := a.mcpHub.OpenSession(srv, r.Context(), tok.ContainerID)
-	defer a.mcpHub.Close(session)
-	base := "/mcp/local/" + chi.URLParam(r, "containerId") + "/messages"
-	mcp.ServeSSE(w, r, session, base)
-}
-
-// mcpMessagesLocal is the token-free counterpart to mcpMessages.
-//
-// POST /mcp/local/{containerId}/messages?session=ID
-func (a *App) mcpMessagesLocal(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.resolveMcpContainerDirect(w, r); !ok {
-		return
-	}
-	a.mcpHub.ServeMessages(w, r)
-}
-
-// resolveMcpContainerDirect validates the {containerId} URL param and confirms
-// the target is still a container mudp manages. Unlike resolveMcpContainer it
-// checks no token at all: this route exists precisely so a caller already
-// trusted enough to reach the console's own listener can skip minting one. It
-// refuses outright on the external listener as a defense-in-depth check —
-// remoteMCPRoutes never registers this handler, so isRemoteMCP should never be
-// true here, but a route added carelessly in the future must not silently
-// turn this into an unauthenticated internet-facing endpoint.
-func (a *App) resolveMcpContainerDirect(w http.ResponseWriter, r *http.Request) (mcpTokenResolved, bool) {
-	if isRemoteMCP(r) {
-		writeErr(w, http.StatusNotFound, "not found")
-		return mcpTokenResolved{}, false
-	}
-	containerID := strings.TrimSpace(chi.URLParam(r, "containerId"))
-	if containerID == "" {
-		writeErr(w, http.StatusBadRequest, "containerId required")
-		return mcpTokenResolved{}, false
-	}
-	if owner := a.docker.ManagedOwner(r.Context(), containerID); owner == "" {
-		writeErr(w, http.StatusNotFound, "container no longer managed")
-		return mcpTokenResolved{}, false
-	}
-	name := a.docker.ContainerName(r.Context(), containerID)
-	return mcpTokenResolved{ContainerID: containerID, ContainerName: name, Label: "local"}, true
-}
-
 // resolveMcpContainer validates the {token} URL param, loads the MCP token,
 // confirms the target container is still managed by mudp, and stamps
 // last-used. On failure it writes the HTTP error and returns ok=false.
@@ -279,10 +209,7 @@ type mcpClientInfo struct {
 // Activity Log and for compatibility.
 func (a *App) mcpAuditHook(tok mcpTokenResolved) func(toolName string, args json.RawMessage) {
 	actor := "mcp-token#" + strconv.FormatInt(tok.ID, 10)
-	if tok.ID == 0 {
-		// Token-free local access carries no owning user or token row at all.
-		actor = "mcp-local"
-	} else if u, err := a.db.UserByID(tok.OwnerID); err == nil && u != nil {
+	if u, err := a.db.UserByID(tok.OwnerID); err == nil && u != nil {
 		actor = targetName(u) + " (mcp:" + tok.Label + ")"
 	}
 	target := tok.ContainerName
