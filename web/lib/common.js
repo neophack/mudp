@@ -74,21 +74,9 @@ export function fmtMB(mb) {
   return `${(mb / 1024).toFixed(2)} GB`;
 }
 
-export function fmtPercent(n, digits = 1) {
-  if (n == null || Number.isNaN(n)) return "-";
-  return `${n.toFixed(digits)}%`;
-}
-
-export function formatDuration(seconds) {
-  if (seconds == null || Number.isNaN(seconds) || seconds < 0) return "-";
-  const s = Math.floor(seconds);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ${m % 60}m`;
-  const d = Math.floor(h / 24);
-  return `${d}d ${h % 24}h`;
+// joinPath joins two non-empty path segments with "/".
+export function joinPath(a, b) {
+  return [a, b].filter(Boolean).join("/");
 }
 
 export function formatDate(iso) {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kballard/go-shellquote"
 	"mudp/internal/dockerx"
 )
 
@@ -314,7 +315,7 @@ func handleExec(ctx context.Context, dc *dockerx.Client, id string, raw json.Raw
 		shell = "/bin/bash"
 	}
 	if strings.TrimSpace(p.Workdir) != "" {
-		cmd = fmt.Sprintf("cd %s && %s", shellQuote(p.Workdir), p.Command)
+		cmd = fmt.Sprintf("cd %s && %s", shellquote.Join(p.Workdir), p.Command)
 	}
 	result, err := dc.Exec(ctx, id, []string{shell, "-c", cmd}, "", nil)
 	if err != nil {

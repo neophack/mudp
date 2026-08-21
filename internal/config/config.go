@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"log"
 	"os"
-	"strings"
 )
 
 type Config struct {
@@ -27,11 +26,6 @@ type Config struct {
 	// server: trusting the header from any peer lets a client forge a new
 	// identity per request and slip past the login rate limit.
 	TrustedProxies string
-	// GeoIPLookup controls whether the server resolves visitor IPs to a
-	// country/city/coordinate via the free ip-api.com endpoint. Off (air-gapped
-	// or no-egress deployments) leaves the location fields blank; the access log
-	// and its map still work, just without geographic detail. Default is on.
-	GeoIPLookup bool
 }
 
 // Load reads configuration from the environment. Missing secrets are generated
@@ -44,7 +38,6 @@ func Load() Config {
 		WebDir:          env("MUDP_WEB_DIR", ""),
 		DefaultLanguage: env("MUDP_DEFAULT_LANGUAGE", "en_US"),
 		TrustedProxies:  env("MUDP_TRUSTED_PROXIES", ""),
-		GeoIPLookup:     envBool("MUDP_GEOIP_LOOKUP", true),
 	}
 
 	cfg.SessionSecret = env("MUDP_SESSION_SECRET", "")
@@ -67,20 +60,6 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// envBool reads a boolean env var. Empty/unset returns the fallback; "0",
-// "false", "no", "off" (case-insensitive) are false, everything else true.
-func envBool(key string, fallback bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	switch strings.ToLower(v) {
-	case "0", "false", "no", "off":
-		return false
-	}
-	return true
 }
 
 func randomSecret() string {

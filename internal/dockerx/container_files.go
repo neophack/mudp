@@ -14,6 +14,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/kballard/go-shellquote"
 )
 
 // FileEntry describes a single file or directory inside a container, mirroring
@@ -89,7 +90,7 @@ func (d *Client) containerFileListExec(ctx context.Context, id, dir string) ([]F
 
 	// stat %A = human mode, %s = size, %Y = mtime epoch, %n = full path.
 	cmd := fmt.Sprintf("find %s -maxdepth 1 -mindepth 1 -exec stat -c '%%A|%%s|%%Y|%%n' {} +",
-		shellQuote(dir))
+		shellquote.Join(dir))
 	execCfg := types.ExecConfig{
 		AttachStdout: true,
 		AttachStderr: true,

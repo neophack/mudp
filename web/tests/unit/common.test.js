@@ -6,8 +6,6 @@ import {
   escapeHtml,
   fmtBytes,
   fmtMB,
-  fmtPercent,
-  formatDuration,
   formatDate,
 } from "../../lib/common.js";
 
@@ -83,25 +81,7 @@ describe("fmtMB", () => {
   });
 });
 
-describe("fmtPercent", () => {
-  it("formats percentages", () => {
-    expect(fmtPercent(12.345)).toBe("12.3%");
-    expect(fmtPercent(0)).toBe("0.0%");
-  });
 
-  it("handles invalid input", () => {
-    expect(fmtPercent(null)).toBe("-");
-  });
-});
-
-describe("formatDuration", () => {
-  it("formats durations", () => {
-    expect(formatDuration(45)).toBe("45s");
-    expect(formatDuration(125)).toBe("2m 5s");
-    expect(formatDuration(3665)).toBe("1h 1m");
-    expect(formatDuration(90061)).toMatch(/^1d /);
-  });
-});
 
 describe("formatDate", () => {
   it("formats ISO dates", () => {

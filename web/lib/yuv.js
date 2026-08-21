@@ -144,11 +144,6 @@ export function parseYuvInfoFromName(name) {
   return info.width || info.height || info.format || info.linear ? info : null;
 }
 
-export function guessYuvFormat(name) {
-  const info = parseYuvInfoFromName(name);
-  return (info && info.format) || DEFAULT_FORMAT;
-}
-
 export { YUV_FORMATS };
 
 // ---------------- ISP parameter panel ----------------

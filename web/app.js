@@ -101,8 +101,8 @@ export const state = {
   mobileNavOpen: false,
 };
 
-// Backward-compatible helpers that operate on global state. New code should use
-// the pure versions from ./lib/common.js when possible.
+// Role checks against the logged-in user in global state. The pure versions
+// live in ./lib/common.js and take the user object explicitly.
 export function isAdmin() {
   return isAdminUser(state.me);
 }

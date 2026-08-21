@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"mudp/internal/auth"
 )
 
 // newTestDB opens an in-file SQLite DB in the test temp dir. Each test gets its
@@ -472,7 +474,7 @@ func TestUserCapacityLimit(t *testing.T) {
 		t.Fatalf("create third user error = %v, want ErrUserCapacityFull", err)
 	}
 
-	if _, err := db.CreateFeishuUser("ou-feishu-1", "feishu-one", "Feishu One"); !errors.Is(err, ErrUserCapacityFull) {
+	if _, err := db.CreateFeishuUserWithProfile(auth.FeishuUser{OpenID: "ou-feishu-1", Name: "Feishu One"}); !errors.Is(err, ErrUserCapacityFull) {
 		t.Fatalf("create feishu user error = %v, want ErrUserCapacityFull", err)
 	}
 
@@ -944,7 +946,7 @@ func TestCreateFeishuUserRetriesUsername(t *testing.T) {
 	if err := db.CreateUser("feishuabc", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
 		t.Fatal(err)
 	}
-	u, err := db.CreateFeishuUser("oid-123", "feishuabc", "Feishu User")
+	u, err := db.CreateFeishuUserWithProfile(auth.FeishuUser{OpenID: "feishu_abc", Name: "Feishu User"})
 	if err != nil {
 		t.Fatalf("CreateFeishuUser: %v", err)
 	}
@@ -964,7 +966,7 @@ func TestCreateFeishuUserAssignsNextPortPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := db.CreateFeishuUser("oid-pp-1", "feishuport", "Feishu Port")
+	u, err := db.CreateFeishuUserWithProfile(auth.FeishuUser{OpenID: "oid-pp-1", Name: "Feishu Port"})
 	if err != nil {
 		t.Fatalf("CreateFeishuUser: %v", err)
 	}
@@ -1220,7 +1222,7 @@ func TestSetupWizardLeavesNoAdmin(t *testing.T) {
 func TestFeishuUserCannotPasswordLogin(t *testing.T) {
 	db := newTestDB(t)
 	const openID = "ou_a1b2c3d4"
-	u, err := db.CreateFeishuUser(openID, "oua1b2c3d4", "Test User")
+	u, err := db.CreateFeishuUserWithProfile(auth.FeishuUser{OpenID: openID, Name: "Test User"})
 	if err != nil {
 		t.Fatalf("CreateFeishuUser: %v", err)
 	}
@@ -1238,7 +1240,7 @@ func TestFeishuUserCannotPasswordLogin(t *testing.T) {
 // An administrator can still hand an SSO user a real password, and it works.
 func TestFeishuUserWithAdminSetPasswordCanLogin(t *testing.T) {
 	db := newTestDB(t)
-	u, err := db.CreateFeishuUser("ou_zzz999", "ouzzz999", "Test User")
+	u, err := db.CreateFeishuUserWithProfile(auth.FeishuUser{OpenID: "ou_zzz999", Name: "Test User"})
 	if err != nil {
 		t.Fatalf("CreateFeishuUser: %v", err)
 	}

@@ -102,8 +102,7 @@ type geoCacheEntry struct {
 // addresses and disabled lookups return a zero geoInfo (location unknown) and
 // never make a network call.
 //
-// "Disabled" is decided by the admin-managed SecuritySettings.GeoIPLookup if it
-// has been set; otherwise it falls back to the MUDP_GEOIP_LOOKUP env flag.
+// "Disabled" is decided by the admin-managed SecuritySettings.GeoIPLookup.
 func (a *App) geoLookup(ip string) geoInfo {
 	if ip == "" {
 		return geoInfo{}
@@ -145,8 +144,7 @@ func (a *App) geoLookup(ip string) geoInfo {
 	return info
 }
 
-// geoEnabled reports whether GeoIP lookups are active, combining the admin
-// setting with the env default. A DB read on every login would be wasteful, so
+// geoEnabled reports whether GeoIP lookups are active per the admin setting. A DB read on every login would be wasteful, so
 // the settings are cached on the App by securitySettings() (refreshed when an
 // admin saves them).
 func (a *App) geoEnabled() bool {

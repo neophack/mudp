@@ -1,5 +1,6 @@
 // Standalone public share page. Baidu-Netdisk-style browsing + save-to-directory.
 
+import { escapeHtml, fmtBytes, joinPath } from "/lib/common.js";
 import { openYuvViewer } from "/lib/yuv.js";
 import { openRawViewer } from "/lib/raw.js";
 import { renderMarkdownInto } from "/lib/viewer.js";
@@ -45,29 +46,13 @@ async function api(path, opts = {}) {
   return data;
 }
 
-function fmtBytes(n) {
-  if (!n) return "0 B";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
-}
-
-function escapeHtml(v) {
-  return String(v ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
-}
-
 function displayName(user) {
   return user?.displayName || user?.username || "";
 }
 
 function getToken() {
   const meta = document.querySelector('meta[name="share-token"]');
-  return meta?.content || window.__SHARE_TOKEN__ || location.pathname.split("/").pop();
-}
-
-function joinPath(a, b) {
-  return [a, b].filter((x) => x != null && x !== "").join("/");
+  return meta?.content || location.pathname.split("/").pop();
 }
 
 const FOLDER_SVG = '<svg viewBox="0 0 24 24"><path d="M3 6.8C3 5.8 3.8 5 4.8 5h5.1l2 2.2h7.3c1 0 1.8.8 1.8 1.8v1H3V6.8Z"/><path d="M3 9h18l-1.2 8.2c-.1 1-1 1.8-2 1.8H6.2c-1 0-1.8-.7-2-1.8L3 9Z"/></svg>';

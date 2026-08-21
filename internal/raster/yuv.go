@@ -78,13 +78,13 @@ func decodePlanar420(buf []byte, w, h, yOff, uOff, vOff int) []byte {
 	for j := 0; j < h; j++ {
 		cj := 0
 		if hasChroma {
-			cj = clampInt(j>>1, 0, hh-1)
+			cj = min(hh-1, max(0, j>>1))
 		}
 		for i := 0; i < w; i++ {
 			y := buf[yOff+j*w+i]
 			u, v := neutralChroma, neutralChroma
 			if hasChroma {
-				ci := clampInt(i>>1, 0, hw-1)
+				ci := min(hw-1, max(0, i>>1))
 				u = buf[uOff+cj*hw+ci]
 				v = buf[vOff+cj*hw+ci]
 			}
@@ -103,13 +103,13 @@ func decodeSemiPlanar420(buf []byte, w, h int, vuFirst bool) []byte {
 	for j := 0; j < h; j++ {
 		cj := 0
 		if hasChroma {
-			cj = clampInt(j>>1, 0, hh-1)
+			cj = min(hh-1, max(0, j>>1))
 		}
 		for i := 0; i < w; i++ {
 			y := buf[j*w+i]
 			u, v := neutralChroma, neutralChroma
 			if hasChroma {
-				ci := clampInt(i>>1, 0, hw-1)
+				ci := min(hw-1, max(0, i>>1))
 				uvIdx := uvOff + (cj*hw+ci)*2
 				// In NV12 the pair is (U,V); in NV21 it is (V,U).
 				if vuFirst {

@@ -94,8 +94,8 @@ const (
 // administrator has not configured a different limit.
 const DefaultUserCapacity = 50
 
-// ErrUserCapacityFull is returned by CreateUser and CreateFeishuUser when the
-// number of existing users has already reached the configured limit.
+// ErrUserCapacityFull is returned by CreateUser and CreateFeishuUserWithProfile
+// when the number of existing users has already reached the configured limit.
 var ErrUserCapacityFull = errors.New("user capacity full")
 
 // PendingGroup is the name of the holding group new Feishu users land in until
@@ -1569,31 +1569,6 @@ func (db *DB) UserByFeishu(openID string) (*User, error) {
 	u.SharedDiskReadWrite = sharedRW != 0
 	u.Groups = db.UserGroupNames(u.ID)
 	return &u, nil
-}
-
-// CreateFeishuUser registers a new user from a Feishu login. The user is placed
-// in the pending group until an admin assigns them a real group. Returns the
-// created user. This backward-compatible wrapper stores only the legacy fields;
-// use CreateFeishuUserWithProfile for the full OIDC profile.
-func (db *DB) CreateFeishuUser(openID, username, displayName string) (*User, error) {
-	fu := auth.FeishuUser{OpenID: openID, Name: displayName, Comment: displayName}
-	if username == "" {
-		username = fu.Username()
-	}
-	base := username
-	for i := 0; i < 10; i++ {
-		if i > 0 {
-			username = fmt.Sprintf("%s-%d", base, i)
-		}
-		u, err := db.createFeishuUserWithUsernameTx(fu, username)
-		if err == nil {
-			return u, nil
-		}
-		if !isUsernameConflict(err) {
-			return nil, err
-		}
-	}
-	return nil, errors.New("could not allocate a unique username")
 }
 
 // CreateFeishuUserWithProfile registers a new user from a Feishu login using the

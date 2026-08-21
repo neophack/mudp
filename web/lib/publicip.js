@@ -322,9 +322,6 @@ async function performDetection(timeoutMs = 4000) {
 // `background` promise that resolves to the refreshed result (or null) when a
 // background refresh is in progress; callers can use it to update the UI
 // silently.
-//
-// (Kept the historical name `detectPublicIP` as a re-export below so existing
-// imports keep working; new callers should prefer detectClientIP.)
 export async function detectClientIP(timeoutMs = 4000) {
   const cached = readIPCache();
   if (cached && isCacheFresh(cached)) {
@@ -351,12 +348,4 @@ export async function detectClientIP(timeoutMs = 4000) {
   const result = await performDetection(timeoutMs);
   writeIPCache(result);
   return { ...result, background: Promise.resolve(null) };
-}
-
-// detectPublicIP is the legacy name; login.js only needs the visitor's WAN
-// address (for the GeoIP cookie), so it returns string[] like before. New code
-// should call detectClientIP for both public and LAN (and geo).
-export async function detectPublicIP(timeoutMs = 4000) {
-  const { public: ips } = await detectClientIP(timeoutMs);
-  return ips;
 }

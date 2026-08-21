@@ -6,6 +6,7 @@ require (
 	github.com/docker/docker v25.0.7+incompatible
 	github.com/docker/go-connections v0.5.0
 	github.com/go-chi/chi/v5 v5.0.12
+	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/opencontainers/image-spec v1.1.0
 	golang.org/x/crypto v0.17.0
@@ -26,7 +27,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/morikuni/aec v1.1.0 // indirect

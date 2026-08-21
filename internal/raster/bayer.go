@@ -37,7 +37,7 @@ func BayerDecode(buf []byte, w, h, bitDepth int, patternKey string, rowStart, ro
 	var sample func(x, y int) float64
 	if bitDepth <= 8 {
 		sample = func(x, y int) float64 {
-			cx, cy := clampInt(x, 0, w-1), clampInt(y, 0, h-1)
+			cx, cy := min(w-1, max(0, x)), min(h-1, max(0, y))
 			return float64(buf[cy*w+cx])
 		}
 	} else {
@@ -45,7 +45,7 @@ func BayerDecode(buf []byte, w, h, bitDepth int, patternKey string, rowStart, ro
 		// little-endian container (RAW10/RAW12/RAW14/RAW16 all commonly ship
 		// this way from ISP capture tools).
 		sample = func(x, y int) float64 {
-			cx, cy := clampInt(x, 0, w-1), clampInt(y, 0, h-1)
+			cx, cy := min(w-1, max(0, x)), min(h-1, max(0, y))
 			o := (cy*w + cx) * 2
 			return float64(uint16(buf[o]) | uint16(buf[o+1])<<8)
 		}
@@ -90,16 +90,6 @@ func BayerDecode(buf []byte, w, h, bitDepth int, patternKey string, rowStart, ro
 		}
 	}
 	return out
-}
-
-func clampInt(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 // mod2 mirrors JS's `x & 1` on a possibly-negative x: two's-complement AND

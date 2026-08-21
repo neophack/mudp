@@ -301,7 +301,7 @@ func parseIspManual(q map[string][]string, kind string, bitDepth int) (*raster.I
 			if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 				return nil, "invalid ispCcm value"
 			}
-			p.Ccm[i] = clampF(v, -8, 8)
+			p.Ccm[i] = min(8, max(-8, v))
 		}
 	}
 
@@ -349,16 +349,6 @@ func parseIspManual(q map[string][]string, kind string, bitDepth int) (*raster.I
 		p.GrayMode = true
 	}
 	return &p, ""
-}
-
-func clampF(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 // parseRasterParams reads the viewer's query string into rasterFrameParams.

@@ -2,7 +2,7 @@
 
 import { state, api, renderPending, refreshAll, render, escapeHtml } from "../app.js";
 import { LANG_CHINESE, SUPPORTED_LANGS, getCurrentLanguage, switchLanguage, t, initI18n } from "../lib/i18n.js";
-import { detectPublicIP } from "../lib/publicip.js";
+import { detectClientIP } from "../lib/publicip.js";
 import { resolveNextRedirect } from "../lib/common.js";
 import { startAutoRefresh } from "./refresh.js";
 import { startBackupJobsPolling } from "./jobs.js";
@@ -56,7 +56,7 @@ const PUBLIC_IP_COOKIE_TTL_MIN = 30;
 async function probePublicIPCookie() {
   let ip = "";
   try {
-    const ips = await detectPublicIP(2500);
+    const { public: ips } = await detectClientIP(2500);
     if (ips.length) ip = ips[0];
   } catch {}
   if (ip) {
@@ -111,7 +111,7 @@ async function trackLoginView() {
     let ip = readPublicIPCookie();
     if (!ip) {
       try {
-        const ips = await detectPublicIP(2500);
+        const { public: ips } = await detectClientIP(2500);
         if (ips.length) ip = ips[0];
       } catch {}
     }

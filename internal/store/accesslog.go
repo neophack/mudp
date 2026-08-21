@@ -427,7 +427,7 @@ type SecuritySettings struct {
 	// Enabled is the master switch. When off, no access entries are recorded and
 	// the admin handlers return empty results.
 	Enabled bool `json:"enabled"`
-	// GeoIPLookup overrides the MUDP_GEOIP_LOOKUP env default at runtime. Off
+	// GeoIPLookup toggles GeoIP resolution at runtime. Off
 	// skips the network call and leaves location fields blank.
 	GeoIPLookup bool `json:"geoipLookup"`
 	// VPNDetect requests the proxy/hosting fields from the GeoIP provider and

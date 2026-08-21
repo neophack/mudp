@@ -154,7 +154,7 @@ func ispGammaLUT(gamma float64) [4096]int {
 	inv := 1 / gamma
 	var lut [4096]int
 	for i := 0; i < 4096; i++ {
-		lut[i] = clampInt(int(math.Pow(float64(i)/4095.0, inv)*255.0+0.5), 0, 255)
+		lut[i] = min(255, max(0, int(math.Pow(float64(i)/4095.0, inv)*255.0+0.5)))
 	}
 	return lut
 }
@@ -214,7 +214,7 @@ func boxBlurF32(plane []float32, w, h, radius int) {
 	}
 	n := float32(2*radius + 1)
 	tmp := make([]float32, len(plane))
-	cl := func(v, hi int) int { return clampInt(v, 0, hi) }
+	cl := func(v, hi int) int { return min(hi, max(0, v)) }
 	// Horizontal.
 	for y := 0; y < h; y++ {
 		row := y * w
@@ -289,12 +289,12 @@ func ProcessBayer(buf []byte, w, h, bitDepth int, patternKey string, p IspParams
 			row := y * w
 			for x := 0; x < w; x++ {
 				v := int(ispSample(buf, bitDepth, row+x)) - p.Blc[cfa.channel[ph0+(x&1)]]
-				v = clampInt(v, 0, maxVal)
+				v = min(maxVal, max(0, v))
 				idx := v * 4095 / maxVal
 				if idx > 4095 {
 					idx = 4095
 				}
-				g8 := clampInt(int((float32(lut[idx])-127.5)*contrast+127.5+bright), 0, 255)
+				g8 := min(255, max(0, int((float32(lut[idx])-127.5)*contrast+127.5+bright)))
 				o := (row + x) * 4
 				out[o] = byte(g8)
 				out[o+1] = byte(g8)
@@ -323,7 +323,7 @@ func ProcessBayer(buf []byte, w, h, bitDepth int, patternKey string, p IspParams
 		} else if v >= w {
 			v = 2*(w-1) - v
 		}
-		return clampInt(v, 0, w-1)
+		return min(w-1, max(0, v))
 	}
 	miry := func(v int) int {
 		if v < 0 {
@@ -331,7 +331,7 @@ func ProcessBayer(buf []byte, w, h, bitDepth int, patternKey string, p IspParams
 		} else if v >= h {
 			v = 2*(h-1) - v
 		}
-		return clampInt(v, 0, h-1)
+		return min(h-1, max(0, v))
 	}
 
 	// Phase neighborhood color table: for each 2x2 phase, the color of the
@@ -353,7 +353,7 @@ func ProcessBayer(buf []byte, w, h, bitDepth int, patternKey string, p IspParams
 		row := y * w
 		for x := 0; x < w; x++ {
 			v := int(ispSample(buf, bitDepth, row+x)) - p.Blc[cfa.channel[ph0+(x&1)]]
-			pPlane[row+x] = float32(clampInt(v, 0, maxVal))
+			pPlane[row+x] = float32(min(maxVal, max(0, v)))
 		}
 	}
 
@@ -461,11 +461,11 @@ func ProcessBayer(buf []byte, w, h, bitDepth int, patternKey string, p IspParams
 			cb := m[6]*fr + m[7]*fg + m[8]*fb
 
 			// Clamp 0..1 → gamma LUT.
-			idx := int(clampf(cr, 0, 1) * 4095)
+			idx := int(min(1, max(0, cr)) * 4095)
 			r8 := lut[idx]
-			idx = int(clampf(cg, 0, 1) * 4095)
+			idx = int(min(1, max(0, cg)) * 4095)
 			g8 := lut[idx]
-			idx = int(clampf(cb, 0, 1) * 4095)
+			idx = int(min(1, max(0, cb)) * 4095)
 			b8 := lut[idx]
 
 			// Saturation (around Rec.601 luma) + contrast (stretch around
@@ -490,9 +490,9 @@ func ProcessBayer(buf []byte, w, h, bitDepth int, patternKey string, p IspParams
 			}
 
 			o := i * 4
-			out[o] = byte(clampInt(r8, 0, 255))
-			out[o+1] = byte(clampInt(g8, 0, 255))
-			out[o+2] = byte(clampInt(b8, 0, 255))
+			out[o] = byte(min(255, max(0, r8)))
+			out[o+1] = byte(min(255, max(0, g8)))
+			out[o+2] = byte(min(255, max(0, b8)))
 			out[o+3] = 255
 		}
 	}
@@ -574,9 +574,9 @@ func ispSharpenRGBA(rgba []byte, w, h int, p IspParams) {
 			continue
 		}
 		o := i * 4
-		rgba[o] = byte(clampInt(int(float32(rgba[o])+d), 0, 255))
-		rgba[o+1] = byte(clampInt(int(float32(rgba[o+1])+d), 0, 255))
-		rgba[o+2] = byte(clampInt(int(float32(rgba[o+2])+d), 0, 255))
+		rgba[o] = byte(min(255, max(0, int(float32(rgba[o])+d))))
+		rgba[o+1] = byte(min(255, max(0, int(float32(rgba[o+1])+d))))
+		rgba[o+2] = byte(min(255, max(0, int(float32(rgba[o+2])+d))))
 	}
 }
 
@@ -605,9 +605,9 @@ func ApplyIspParams(rgba []byte, w, h int, p IspParams) {
 		cg := m[3]*fr + m[4]*fg + m[5]*fb
 		cb := m[6]*fr + m[7]*fg + m[8]*fb
 
-		r8 := lut[int(clampf(float32(cr), 0, 1)*4095)]
-		g8 := lut[int(clampf(float32(cg), 0, 1)*4095)]
-		b8 := lut[int(clampf(float32(cb), 0, 1)*4095)]
+		r8 := lut[int(min(1, max(0, float32(cr)))*4095)]
+		g8 := lut[int(min(1, max(0, float32(cg)))*4095)]
+		b8 := lut[int(min(1, max(0, float32(cb)))*4095)]
 
 		if sat != 1 || contrast != 1 || bright != 0 {
 			luma := 0.299*float64(r8) + 0.587*float64(g8) + 0.114*float64(b8)
@@ -625,22 +625,12 @@ func ApplyIspParams(rgba []byte, w, h int, p IspParams) {
 			}
 		}
 
-		rgba[o] = byte(clampInt(r8, 0, 255))
-		rgba[o+1] = byte(clampInt(g8, 0, 255))
-		rgba[o+2] = byte(clampInt(b8, 0, 255))
+		rgba[o] = byte(min(255, max(0, r8)))
+		rgba[o+1] = byte(min(255, max(0, g8)))
+		rgba[o+2] = byte(min(255, max(0, b8)))
 	}
 
 	ispSharpenRGBA(rgba, w, h, p)
-}
-
-func clampf(v, lo, hi float32) float32 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 // ComputeGrayWorldGains runs gray-world auto white balance over the raw
@@ -680,7 +670,7 @@ func ComputeGrayWorldGains(buf []byte, w, h, bitDepth int, patternKey string, p 
 				for dx := 0; dx < 2; dx++ {
 					xx, yy := x+dx, y+dy
 					v := int(ispSample(buf, bitDepth, row+xx)) - p.Blc[cfa.channel[(yy&1)*2+(xx&1)]]
-					v = clampInt(v, 0, maxVal)
+					v = min(maxVal, max(0, v))
 					switch cfa.color[(yy&1)*2+(xx&1)] {
 					case 0:
 						sumR += float64(v)
@@ -704,7 +694,7 @@ func ComputeGrayWorldGains(buf []byte, w, h, bitDepth int, patternKey string, p 
 	avgB := sumB / nB
 	gr := avgG / math.Max(avgR, 1e-3)
 	gb := avgG / math.Max(avgB, 1e-3)
-	return clampF64(gr, 0.1, 8), clampF64(gb, 0.1, 8)
+	return min(8, max(0.1, gr)), min(8, max(0.1, gb))
 }
 
 // DefaultYuvIspParams returns the manual-mode defaults for the RGB-domain
@@ -748,15 +738,5 @@ func GrayWorldGainsRGBA(rgba []byte) (gainR, gainB float64) {
 	if avgG < 1e-3 {
 		return 1, 1
 	}
-	return clampF64(avgG/math.Max(avgR, 1e-3), 0.1, 8), clampF64(avgG/math.Max(avgB, 1e-3), 0.1, 8)
-}
-
-func clampF64(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
+	return min(8, max(0.1, avgG/math.Max(avgR, 1e-3))), min(8, max(0.1, avgG/math.Max(avgB, 1e-3)))
 }
