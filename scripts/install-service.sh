@@ -65,8 +65,9 @@ MUDP_DB_PATH="${MUDP_DB_PATH:-${MUDP_HOME}/.mudp/mudp.db}"
 MUDP_DB_DIR="$(dirname "$MUDP_DB_PATH")"
 # Extra writable paths for systemd ProtectSystem=strict.
 # Include DATA_DIR and DB directory by default, and /data for optional
-# first-run netdisk paths like /data/admin-1.
-SERVICE_READWRITE_PATHS="${SERVICE_READWRITE_PATHS:-${DATA_DIR} ${MUDP_DB_DIR} /data}"
+# first-run netdisk paths like /data/admin-1. INSTALL_DIR is required by the
+# one-click self-upgrade (binary swap + backup files live next to the binary).
+SERVICE_READWRITE_PATHS="${SERVICE_READWRITE_PATHS:-${DATA_DIR} ${MUDP_DB_DIR} ${INSTALL_DIR} /data}"
 MUDP_ADDR="${MUDP_ADDR:-0.0.0.0:9000}"
 MUDP_SESSION_SECRET="${MUDP_SESSION_SECRET:-}"   # empty → generated at first start (not recommended for production)
 MUDP_ADMIN_USER="${MUDP_ADMIN_USER:-admin}"
@@ -128,10 +129,17 @@ fi
 # ---------------------------------------------------------------------------
 # Install binary
 # ---------------------------------------------------------------------------
+# The install directory is owned by the service user so the in-app one-click
+# upgrade can swap the binary (needs write access to the directory to rename
+# mudp -> mudp.bak and stage the download). This trades a hardened root-owned
+# /opt for a self-upgrading service — the same trust model as letting the
+# service manage its own data directory.
 info "Installing binary to $INSTALL_DIR/mudp ..."
 mkdir -p "$INSTALL_DIR"
 cp "$MUDP_BIN" "$INSTALL_DIR/mudp"
-chown root:root "$INSTALL_DIR/mudp"
+chown "$MUDP_USER":"$MUDP_GROUP" "$INSTALL_DIR"
+chown "$MUDP_USER":"$MUDP_GROUP" "$INSTALL_DIR/mudp"
+chmod 750 "$INSTALL_DIR"
 chmod 755 "$INSTALL_DIR/mudp"
 
 # ---------------------------------------------------------------------------

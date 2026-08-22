@@ -132,6 +132,7 @@ const (
 	NotificationUserApproved    = "user_approved"
 	NotificationUserDeactivated = "user_deactivated"
 	NotificationSystemAlert     = "system_alert"
+	NotificationProcessFinished = "process_finished"
 )
 
 type Image struct {
@@ -228,7 +229,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 41
+const schemaVersion = 43
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -286,6 +287,8 @@ var migrations = []migration{
 	{39, "add groups.shared_disk_path", migrateAddGroupSharedDiskPath},
 	{40, "add users.shared_disk_read_write", migrateAddUserSharedDiskReadWrite},
 	{41, "add mcp_tokens external key columns", migrateAddMCPTokenExternalKey},
+	{42, "create process_watches and users.feishu_webhook", migrateCreateProcessWatches},
+	{43, "create error_events", migrateCreateErrorEvents},
 }
 
 // AllowedTenantKey returns the configured Feishu tenant key that users must

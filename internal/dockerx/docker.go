@@ -1020,45 +1020,58 @@ func selectGPUMetrics(metrics []gpuMetric, spec string) []gpuMetric {
 func (d *Client) TopProcesses(ctx context.Context, containers []Container) []TopProcess {
 	var out []TopProcess
 	for _, c := range containers {
-		top, err := d.c.ContainerTop(ctx, c.ID, []string{"aux"})
-		if err != nil || len(top.Processes) == 0 {
+		procs, err := d.ContainerTop(ctx, c)
+		if err != nil {
 			continue
 		}
-		idx := map[string]int{}
-		for i, t := range top.Titles {
-			idx[strings.ToUpper(t)] = i
-		}
-		for _, p := range top.Processes {
-			get := func(keys ...string) string {
-				for _, k := range keys {
-					if i, ok := idx[k]; ok && i < len(p) {
-						return p[i]
-					}
-				}
-				return ""
-			}
-			cpu, _ := strconv.ParseFloat(strings.TrimSuffix(get("%CPU", "CPU"), "%"), 64)
-			memPct, _ := strconv.ParseFloat(strings.TrimSuffix(get("%MEM", "MEM"), "%"), 64)
-			// RSS is reported in kilobytes by `docker top <id> aux`.
-			rssKb, _ := strconv.ParseFloat(get("RSS"), 64)
-			cmd := get("COMMAND", "CMD")
-			out = append(out, TopProcess{
-				ContainerID:   c.ID,
-				Container:     c.Name,
-				User:          c.Labels[UserLabel],
-				PID:           get("PID"),
-				CPUPercent:    cpu,
-				MemoryMB:      round2(rssKb / 1024),
-				MemoryPercent: memPct,
-				Command:       cmd,
-			})
-		}
+		out = append(out, procs...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CPUPercent > out[j].CPUPercent })
 	if len(out) > 50 {
 		out = out[:50]
 	}
 	return out
+}
+
+// ContainerTop lists the processes running inside one container, parsed the
+// same way TopProcesses does (`docker top <id> aux`). Unlike TopProcesses it
+// keeps every row, unsorted, and reports errors so callers (the process
+// watcher) can distinguish "container stopped" from "no processes".
+func (d *Client) ContainerTop(ctx context.Context, c Container) ([]TopProcess, error) {
+	top, err := d.c.ContainerTop(ctx, c.ID, []string{"aux"})
+	if err != nil {
+		return nil, err
+	}
+	idx := map[string]int{}
+	for i, t := range top.Titles {
+		idx[strings.ToUpper(t)] = i
+	}
+	out := make([]TopProcess, 0, len(top.Processes))
+	for _, p := range top.Processes {
+		get := func(keys ...string) string {
+			for _, k := range keys {
+				if i, ok := idx[k]; ok && i < len(p) {
+					return p[i]
+				}
+			}
+			return ""
+		}
+		cpu, _ := strconv.ParseFloat(strings.TrimSuffix(get("%CPU", "CPU"), "%"), 64)
+		memPct, _ := strconv.ParseFloat(strings.TrimSuffix(get("%MEM", "MEM"), "%"), 64)
+		// RSS is reported in kilobytes by `docker top <id> aux`.
+		rssKb, _ := strconv.ParseFloat(get("RSS"), 64)
+		out = append(out, TopProcess{
+			ContainerID:   c.ID,
+			Container:     c.Name,
+			User:          c.Labels[UserLabel],
+			PID:           get("PID"),
+			CPUPercent:    cpu,
+			MemoryMB:      round2(rssKb / 1024),
+			MemoryPercent: memPct,
+			Command:       get("COMMAND", "CMD"),
+		})
+	}
+	return out, nil
 }
 
 func (d *Client) ListContainers(ctx context.Context, username string, admin bool, forwardNetworks []string) ([]Container, error) {

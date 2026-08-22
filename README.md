@@ -25,6 +25,9 @@ MUDP is a compact, self-hosted **multi-user Docker management platform** — a s
 | **Users & Groups** | 5-role RBAC (admin / operator / help-desk / read-only / user), group membership (Feishu approval flow), password reset, disable/enable, container-cap edit, delete. |
 | **Registries** | Store authenticated registry credentials (Docker Hub, GHCR, private); used automatically for pulls/builds/pushes; test-login button. |
 | **Activity log** | Filterable audit trail (actor / action / target / time) with CSV export. |
+| **Processes** | Every process across your running containers (per-container view too); one-click **exit watches** — when a watched process ends you get an in-app notification and, with a personal Feishu bot webhook configured in Settings, a Feishu message. |
+| **Error monitor** | Sentry-style aggregation of server panics and 5xx responses, grouped per issue with counts, first/last seen, stack viewer, resolve/clear, and CSV export (admin). |
+| **Updates** | Admin-only: the dashboard shows the running version and checks the GitHub latest release (cached 1 h); a newer tag badges "update available" with per-OS download links — and a **one-click upgrade** that downloads the asset for this server's OS/arch (windows/linux × amd64/arm64), swaps it in, restarts, and **rolls back to the previous binary automatically if the new one fails to start** (startup health check; under systemd the restart is left to the unit). |
 | **Settings** | Feishu SSO config and registry management. |
 
 ## Roles & permissions
@@ -105,7 +108,9 @@ GOOS=darwin GOARCH=arm64 ./build.sh
 ```powershell
 # Windows
 go build -o dist/mudp.exe ./cmd/mudp
-# or, to produce both dist/mudp.exe and dist/mudp (Linux) at once:
+# or, to produce all four release assets at once
+#   dist\mudp_x86.exe    (windows/amd64)   dist\mudp_x86_linux    (linux/amd64)
+#   dist\mudp_arm64.exe  (windows/arm64)   dist\mudp_arm64_linux  (linux/arm64)
 .\build.bat   # scripts\build.ps1 is equivalent
 ```
 
@@ -125,6 +130,9 @@ Backend (Go):
 ```powershell
 go test ./...
 go vet ./...
+
+# SQLite concurrency stress test (skipped in -short mode):
+go test ./internal/store/ -run TestSQLiteStressMixedLoad -v
 ```
 
 Frontend (Node.js):
@@ -135,7 +143,7 @@ npm install
 npm run lint      # ESLint: catches JS syntax/undefined/import errors
 npm run test:unit
 npm run test:integration
-npm run test:e2e  # requires the Go binary at dist/mudp.exe (or dist/mudp)
+npm run test:e2e  # requires the Go binary at dist/mudp_x86.exe (or dist/mudp_x86_linux)
 ```
 
 End-to-end tests start the real MUDP binary, log in via Chromium, and navigate the major tabs. They fail automatically on any page JS error or HTTP 5xx response.
@@ -152,6 +160,13 @@ For a single command that runs both suites, use the all-in-one runners: `test.ba
 - Registry tokens are stored at-rest in the SQLite `settings` table. For a single-host deployment this is acceptable; encrypt-at-rest is a flagged follow-up.
 - **Production safety**: Set `MUDP_ADMIN_PASSWORD` and `MUDP_SESSION_SECRET` explicitly to keep credentials and login cookies stable across restarts. When `MUDP_ADMIN_PASSWORD` is omitted, the first-run setup wizard creates the admin account. CSRF tokens are required for all mutating API calls.
 - Set `MUDP_SESSION_SECRET` in production to keep login cookies valid across restarts — otherwise the random default rotates on each launch.
+
+## License (dual licensing)
+
+MUDP is available under a **dual-license** model:
+
+- **Open source — GNU LGPL v3** ([LICENSE.txt](LICENSE.txt)): free for individuals, research, and internal evaluation. Derivative works distributed to third parties must comply with LGPLv3 (source disclosure of modifications to MUDP itself).
+- **Commercial license** ([LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md)): required to ship MUDP inside a commercial product/appliance/SaaS, to sublicense it under different terms, or to keep modifications proprietary without LGPL source-disclosure obligations. Includes updates and priority support. Contact the project maintainers for a quote.
 
 ## Roadmap (out of scope for this release)
 

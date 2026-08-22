@@ -83,6 +83,25 @@ type App struct {
 	secSettingsMu sync.RWMutex
 	secSettings   store.SecuritySettings
 	secLoaded     bool
+	// updateMu guards the cached GitHub latest-release lookup served by
+	// /api/update/check (see update.go).
+	updateMu    sync.Mutex
+	updateCache *updateCheckResponse
+	updateAt    time.Time
+	// processProbe resolves a container's PID→command map for the process
+	// watcher (see processes.go). An App field so the watcher logic can be
+	// tested without a Docker daemon.
+	processProbe func(ctx context.Context, containerID string) (map[string]string, error)
+	// restartPrepare releases the HTTP listener so the upgrade flow
+	// (selfupgrade.go) can hand the port to the replacement process. Wired by
+	// cmd/mudp/main.go.
+	restartPrepare func()
+	// upgradeMu/upgradePhase/… track the one-click self-upgrade in flight.
+	upgradeMu    sync.Mutex
+	upgradePhase string
+	upgradeMsg   string
+	upgradeFrom  string
+	upgradeTo    string
 }
 
 type dirSizeEntry struct {
@@ -114,6 +133,7 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 		dirSizeSemaphore: make(chan struct{}, 1),
 		forward:          portfwd.NewManager(),
 	}
+	app.processProbe = app.defaultProcessProbe
 	// Install the login gate used by RequireLogin forwards. Done here (rather
 	// than in Routes) so the gate is in place for the boot-time reconcile and
 	// any sync before the first request. The gate re-reads auth config on every
@@ -177,6 +197,10 @@ func (a *App) metrics(w http.ResponseWriter, r *http.Request) {
 func (a *App) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(a.recoverPanic)
+	// Inside recoverPanic: panics unwind past this middleware (recorded by
+	// recoverPanic itself), while handler-written 5xx responses are recorded
+	// here — both land in the aggregated error monitor (errmon.go).
+	r.Use(a.recordErrors)
 	r.Use(middleware.RequestLogger)
 
 	// Rate limiting keys on the client address. Behind a reverse proxy every
@@ -409,6 +433,15 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/notifications", a.notifications)
 		r.Post("/api/notifications/read", a.notificationsRead)
 		r.Post("/api/notifications/delete", a.notificationsDelete)
+		// Per-container process listing, exit-watches, and the caller's
+		// personal Feishu notification webhook (see processes.go).
+		r.Get("/api/processes", a.processes)
+		r.Get("/api/containers/processes", a.containerProcesses)
+		r.Post("/api/containers/processes/watch", a.processWatchAdd)
+		r.Post("/api/containers/processes/unwatch", a.processWatchDelete)
+		r.Get("/api/me/feishu_webhook", a.feishuWebhookSettings)
+		r.Post("/api/me/feishu_webhook", a.feishuWebhookSettings)
+		r.Post("/api/me/feishu_webhook/test", a.feishuWebhookTest)
 	})
 
 	// Operator+ : image group visibility (assign images to groups). Pull/build/import are
@@ -532,6 +565,18 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/admin/disks/unmount", a.diskUnmount)
 		r.Post("/api/admin/backup", a.backupData)
 		r.Get("/api/admin/processes", a.adminProcesses)
+		// Version / update availability against the project's GitHub releases.
+		// Admin-only: same rationale as meUser.Version.
+		r.Get("/api/update/check", a.updateCheck)
+		// One-click self-upgrade with automatic rollback on a failed start
+		// (selfupgrade.go). Same admin-only rationale.
+		r.Post("/api/admin/upgrade", a.startUpgrade)
+		r.Get("/api/admin/upgrade", a.upgradeStatus)
+		// Error monitor: aggregated panics and 5xx responses (errmon.go).
+		r.Get("/api/admin/errors", a.errorsList)
+		r.Delete("/api/admin/errors/{id}", a.errorDelete)
+		r.Post("/api/admin/errors/clear", a.errorsClear)
+		r.Get("/api/admin/errors/export", a.errorsExport)
 	})
 
 	// Static UI: embedded FS in production, or disk in dev (MUDP_WEB_DIR).
@@ -666,7 +711,10 @@ type meUser struct {
 	CSRFToken       string `json:"csrfToken,omitempty"`
 	DefaultLanguage string `json:"defaultLanguage"`
 	GroupLanguage   string `json:"groupLanguage,omitempty"`
-	Version         string `json:"version"`
+	// Version is the running build identifier. Admin-only: the build version
+	// (and the update check built on it) is platform information, so it is
+	// empty for every non-admin role.
+	Version string `json:"version"`
 	// Whether the backup/shared disks even have a group-configured root, so
 	// the netdisk UI can hide those modes (and their copy/move destinations,
 	// settings card and create-wizard checkbox) entirely instead of offering
@@ -679,6 +727,8 @@ type meUser struct {
 // go through it: logging in from the login form sets state.me straight from
 // the login response without ever calling /api/me, so anything computed in
 // only one of the two is silently missing until the user reloads the page.
+// The running version is admin-only: non-admins get an empty string (see
+// meUser.Version).
 func (a *App) meResponse(u *store.User, csrfToken string) meUser {
 	var groupLanguage string
 	if len(u.Groups) > 0 {
@@ -686,13 +736,17 @@ func (a *App) meResponse(u *store.User, csrfToken string) meUser {
 	}
 	backupPath, _ := a.db.BackupPathForUser(u.ID)
 	_, sharedDiskPath, _ := a.sharedDiskGroup(u)
+	var currentVersion string
+	if u.Role == "admin" {
+		currentVersion = version.Version
+	}
 	return meUser{
 		User:                 u,
 		Pending:              isPending(u),
 		CSRFToken:            csrfToken,
 		DefaultLanguage:      a.cfg.DefaultLanguage,
 		GroupLanguage:        groupLanguage,
-		Version:              version.Version,
+		Version:              currentVersion,
 		BackupConfigured:     backupPath != "",
 		SharedDiskConfigured: sharedDiskPath != "",
 	}

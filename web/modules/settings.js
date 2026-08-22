@@ -39,6 +39,9 @@ export function renderSettings() {
   if (isAdmin() && !state.allowedCompany.loaded) {
     loadAllowedCompany();
   }
+  if (!state.feishuWebhook.loaded) {
+    loadFeishuWebhook();
+  }
 
   const currentLanguage = getCurrentLanguage();
   const defaultLanguage = state.me?.defaultLanguage || "en_US";
@@ -139,6 +142,23 @@ export function renderSettings() {
 
   const mcpCard = admin ? mcpRemotePanel() : "";
 
+  // Feishu custom-bot webhook for personal process-exit notifications. Saved
+  // per user (POST /api/me/feishu_webhook); the test button sends one message
+  // so the setup can be verified before relying on it.
+  const notifyIcon = icon('<path d="M22 8.5a2.5 2.5 0 0 0-4-2L8.5 12 6 11l-2 .5 1.5 2L4 16l2 .5 2.5-1L18 18a2.5 2.5 0 0 0 4-2Z"/><path d="m8.5 12-3-3"/>');
+  const feishuNotifyCard =
+    `<div class="card"><div class="card-head"><h2>${notifyIcon}${t("settings.feishuNotify")}</h2>` +
+      `<span class="card-head-sub">${t("settings.feishuNotifySub")}</span></div>` +
+      `<div class="card-body"><form id="feishuWebhookForm" class="compact">` +
+        `<p class="hint">${t("settings.feishuNotifyHint")}</p>` +
+        `<input name="webhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" value="${escapeHtml(state.feishuWebhook.url)}">` +
+        `<div class="head-actions">` +
+          `<button>${t("common.save")}</button>` +
+          `<button type="button" class="ghost" id="feishuWebhookTestBtn">${t("settings.testWebhook")}</button>` +
+        `</div>` +
+      `</form></div>` +
+    `</div>`;
+
   // ---- Layout ----
   // Personal section is always visible (language and shared-disk access
   // side-by-side in two columns); admin section (gridded into two columns,
@@ -153,6 +173,7 @@ export function renderSettings() {
       `<div class="settings-grid">` +
         createUserLanguageSettings(currentLanguage) +
         sharedDiskAccessCard +
+        feishuNotifyCard +
       `</div>` +
       (admin
         ? sectionHeader(
@@ -302,6 +323,37 @@ export function renderSettings() {
         state.feishuAdmin.loaded = false;
         loadFeishuAdmin();
         toast(t("settings.feishuSaved"), true);
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+
+  // Handle the personal Feishu notification webhook
+  const feishuWebhookForm = $("#feishuWebhookForm");
+  if (feishuWebhookForm) {
+    feishuWebhookForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        const res = await api("/api/me/feishu_webhook", {
+          method: "POST",
+          body: JSON.stringify({ webhook: fd.get("webhook") || "" }),
+        });
+        state.feishuWebhook = { url: res.webhook || "", loaded: true };
+        toast(t("settings.webhookSaved"), true);
+        renderView();
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+  const feishuWebhookTestBtn = $("#feishuWebhookTestBtn");
+  if (feishuWebhookTestBtn) {
+    feishuWebhookTestBtn.onclick = async () => {
+      try {
+        await api("/api/me/feishu_webhook/test", { method: "POST" });
+        toast(t("settings.webhookTestOk"), true);
       } catch (err) {
         toast(err.message);
       }
@@ -547,6 +599,18 @@ export async function loadRegistries() {
     state.registries = (await api("/api/registries")) || [];
   } catch {
     state.registries = [];
+  }
+  if (state.tab === "scripts") renderView();
+}
+
+// loadFeishuWebhook fetches the caller's personal notification webhook so the
+// settings card can prefill it.
+export async function loadFeishuWebhook() {
+  try {
+    const res = await api("/api/me/feishu_webhook");
+    state.feishuWebhook = { url: res.webhook || "", loaded: true };
+  } catch {
+    state.feishuWebhook = { url: "", loaded: true };
   }
   if (state.tab === "scripts") renderView();
 }

@@ -8,7 +8,7 @@ import { request } from "@playwright/test";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../../../");
-const binaryName = process.platform === "win32" ? "mudp.exe" : "mudp";
+const binaryName = process.platform === "win32" ? "mudp_x86.exe" : "mudp_x86_linux";
 const binaryPath = path.join(repoRoot, "dist", binaryName);
 
 async function waitForPort(port, timeout = 30000) {

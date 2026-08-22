@@ -33,9 +33,13 @@ export function renderHelp() {
     admin ? t("help.tipAdmin") : t("help.tipNonAdmin"),
   ];
 
+  // The version chip is platform information — admins only (meUser.Version is
+  // empty for every other role).
+  const versionChip = admin ? `<span class="hint">v${escapeHtml(version)}</span>` : "";
+
   $("#view").innerHTML =
     `<div class="stack">` +
-      `<div class="card"><div class="card-head"><h2>${t("help.gettingStarted")}</h2><span class="hint">v${escapeHtml(version)}</span></div><div class="card-body">` +
+      `<div class="card"><div class="card-head"><h2>${t("help.gettingStarted")}</h2>${versionChip}</div><div class="card-body">` +
         `<p class="hint" style="margin:0 0 10px">${t("help.intro")}</p>` +
         `<div class="grid two">` +
           `<section class="stack">` +

@@ -5,19 +5,20 @@ param(
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-$Commit = git rev-parse --short HEAD 2>$null
-if (-not $Commit) { $Commit = "dev" }
-$LdFlags = "-s -w -X mudp/internal/version.Version=$Commit"
+$Version = git describe --tags --always 2>$null
+if (-not $Version) { $Version = "dev" }
+$LdFlags = "-s -w -X mudp/internal/version.Version=$Version"
 
-# Same dual output as build.bat: Windows and Linux amd64 binaries.
-$env:GOARCH = "amd64"
-
-$env:GOOS = "windows"
-go build -trimpath -ldflags $LdFlags -o "$OutDir/mudp.exe" ./cmd/mudp
-if ($LASTEXITCODE -ne 0) { throw "build windows failed" }
-Write-Host "Built $OutDir/mudp.exe"
-
-$env:GOOS = "linux"
-go build -trimpath -ldflags $LdFlags -o "$OutDir/mudp" ./cmd/mudp
-if ($LASTEXITCODE -ne 0) { throw "build linux failed" }
-Write-Host "Built $OutDir/mudp"
+# Same four release assets as build.bat: windows/linux x amd64/arm64.
+foreach ($target in @(
+  @{ Goos = "windows"; Goarch = "amd64"; Out = "mudp_x86.exe" },
+  @{ Goos = "linux";   Goarch = "amd64"; Out = "mudp_x86_linux" },
+  @{ Goos = "windows"; Goarch = "arm64"; Out = "mudp_arm64.exe" },
+  @{ Goos = "linux";   Goarch = "arm64"; Out = "mudp_arm64_linux" }
+)) {
+  $env:GOOS = $target.Goos
+  $env:GOARCH = $target.Goarch
+  go build -trimpath -ldflags $LdFlags -o "$OutDir/$($target.Out)" ./cmd/mudp
+  if ($LASTEXITCODE -ne 0) { throw "build $($target.Goos)/$($target.Goarch) failed" }
+  Write-Host "Built $OutDir/$($target.Out)"
+}

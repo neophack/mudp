@@ -24,6 +24,8 @@ import { renderDisks } from "./modules/disks.js";
 import { renderForwards } from "./modules/forwards.js";
 import { renderDatabase } from "./modules/database.js";
 import { renderHardware, stopPolling as stopHardwarePolling } from "./modules/hardware.js";
+import { renderProcesses, stopPolling as stopProcessesPolling } from "./modules/processes.js";
+import { renderErrmon } from "./modules/errmon.js";
 import { renderMCP } from "./modules/mcp.js";
 import { startAutoRefresh, refreshActiveTab } from "./modules/refresh.js";
 import { startBackupJobsPolling, startTaskPolling } from "./modules/jobs.js";
@@ -73,6 +75,7 @@ export const state = {
   mcpMapPoints: null,
   disks: [],
   feishuAdmin: { appId: "", appSecret: "", enabled: false, loaded: false },
+  feishuWebhook: { url: "", loaded: false },
   siteAdmin: { siteName: "", loaded: false },
   userCapacity: { capacity: 50, loaded: false },
   allowedCompany: { tenantKey: "", loaded: false },
@@ -340,6 +343,8 @@ const ICONS = {
   collapse: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'),
   expand: svgIcon('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>'),
   hardware: svgIcon('<path d="M9 3v18"/><path d="M15 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/>'),
+  processes: svgIcon('<line x1="12" x2="12" y1="20" y2="10"/><line x1="18" x2="18" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="16"/>'),
+  errors: svgIcon('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
   help: svgIcon('<path d="M9.09 9a3 3 0 1 1 5.83 1c0 2-3 2-3 4"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="10"/>'),
   mcp: svgIcon('<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'),
   menu: svgIcon('<path d="M4 12h16"/><path d="M4 6h16"/><path d="M4 18h16"/>'),
@@ -366,6 +371,8 @@ function label(tab) {
       database: t("nav.database"),
       scripts: t("nav.settings"),
       hardware: t("nav.hardware"),
+      processes: t("nav.processes"),
+      errors: t("nav.errors"),
       mcp: t("nav.mcp"),
     }[tab] || tab
   );
@@ -391,6 +398,8 @@ function subtitle(tab) {
       database: t("subtitle.database"),
       scripts: t("subtitle.settings"),
       hardware: t("subtitle.hardware"),
+      processes: t("subtitle.processes"),
+      errors: t("subtitle.errors"),
       mcp: t("subtitle.mcp"),
     }[tab] || ""
   );
@@ -399,8 +408,8 @@ function subtitle(tab) {
 export function render() {
   const admin = isAdmin();
   const tabs = admin
-    ? ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "forwards", "stacks", "hardware", "users", "audit", "security", "disks", "database", "scripts", "help"]
-    : ["dashboard", "netdisk", "containers", "mcp", "usage", "images", "volumes", "networks", "stacks", "hardware", "scripts", "help"];
+    ? ["dashboard", "netdisk", "containers", "mcp", "processes", "usage", "images", "volumes", "networks", "forwards", "stacks", "hardware", "users", "audit", "security", "errors", "disks", "database", "scripts", "help"]
+    : ["dashboard", "netdisk", "containers", "mcp", "processes", "usage", "images", "volumes", "networks", "stacks", "hardware", "scripts", "help"];
 
   const collapsed = state.sidebarCollapsed;
   const mobileNavOpen = state.mobileNavOpen;
@@ -453,6 +462,8 @@ export function render() {
       // Stop the hardware monitoring poll loop when navigating away so it
       // doesn't run in the background.
       if (state.tab === "hardware" && btn.dataset.tab !== "hardware") stopHardwarePolling();
+      // Same for the processes page poll loop.
+      if (state.tab === "processes" && btn.dataset.tab !== "processes") stopProcessesPolling();
       state.tab = btn.dataset.tab;
       state.mobileNavOpen = false;
       render();
@@ -534,6 +545,8 @@ export function renderView() {
   if (state.tab === "forwards") return renderForwards();
   if (state.tab === "scripts") return renderSettings();
   if (state.tab === "hardware") return renderHardware();
+  if (state.tab === "processes") return renderProcesses();
+  if (state.tab === "errors") return renderErrmon();
 }
 
 export { renderLogin, renderPending };

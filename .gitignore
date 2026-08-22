@@ -16,3 +16,4 @@ cookies.txt
 .DS_Store
 bkdisk
 sharedisk/
+.zcode/

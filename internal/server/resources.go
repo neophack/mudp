@@ -172,6 +172,11 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 	checkpoint := time.NewTicker(60 * time.Minute)
 	// backupTick fires every minute so we can hit an exact HH:MM schedule.
 	backupTick := time.NewTicker(60 * time.Second)
+	// processWatchTick polls watched container processes for exits (see
+	// processes.go). One initial pass right away so watches registered just
+	// before a shutdown-restart resolve promptly.
+	processWatchTick := time.NewTicker(processWatchInterval)
+	a.watchProcesses(ctx)
 
 	// Run an initial sample and prune so a fresh server has data immediately
 	// and does not start with stale records from a previous process.
@@ -197,12 +202,15 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 				}
 			case <-backupTick.C:
 				a.maybeRunScheduledBackup(ctx)
+			case <-processWatchTick.C:
+				a.watchProcesses(ctx)
 			case <-stop:
 				cache.Stop()
 				sample.Stop()
 				prune.Stop()
 				checkpoint.Stop()
 				backupTick.Stop()
+				processWatchTick.Stop()
 				return
 			}
 		}

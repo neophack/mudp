@@ -19,6 +19,7 @@ import (
 	"mudp/internal/config"
 	"mudp/internal/server"
 	"mudp/internal/store"
+	"mudp/internal/upgrader"
 	"mudp/internal/version"
 )
 
@@ -39,6 +40,16 @@ func main() {
 	defer db.Close()
 
 	if err := db.Migrate(cfg.AdminUser, cfg.AdminPassword); err != nil {
+		// A failed migration on a just-swapped binary means the upgrade cannot
+		// serve: roll the previous version back before dying so a supervisor
+		// (or the old watcher process) restarts the working build.
+		if exe, xerr := os.Executable(); xerr == nil && upgrader.ReadMarker(exe) != nil {
+			if rerr := upgrader.Rollback(exe); rerr != nil {
+				log.Printf("upgrade rollback after migration failure: %v", rerr)
+			} else {
+				log.Printf("migration failed: %v — rolled back to previous binary", err)
+			}
+		}
 		log.Fatalf("migrate database: %v", err)
 	}
 
@@ -79,16 +90,41 @@ func main() {
 		MaxHeaderBytes: 1 << 20, // 1 MiB
 	}
 
+	// The upgrade flow (server/upgrade.go) needs to release this listener
+	// before the replacement process can bind it; hand it a graceful-shutdown
+	// hook wired to srv.
+	app.SetRestartPrepare(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("upgrade shutdown: %v", err)
+		}
+	})
+
+	serveErr := make(chan error, 1)
 	go func() {
 		log.Printf("mudp listening on http://%s", cfg.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server: %v", err)
-		}
+		serveErr <- srv.ListenAndServe()
 	}()
+
+	// Upgrade verification: a marker left by the previous process means this
+	// boot is an upgrade attempt. Serve first; once healthy for a while,
+	// commit (drop backup + marker). If we never become healthy, roll back to
+	// the previous binary and exit non-zero so any supervisor restarts it.
+	if exe, err := os.Executable(); err == nil && upgrader.ReadMarker(exe) != nil {
+		go verifyUpgrade(exe, cfg.Addr)
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	select {
+	case <-stop:
+	case err := <-serveErr:
+		if err != nil && err != http.ErrServerClosed {
+			rollbackFatal(exePath(), err)
+			log.Fatalf("http server: %v", err)
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -98,4 +134,46 @@ func main() {
 	if err := app.Close(); err != nil {
 		log.Printf("close app: %v", err)
 	}
+}
+
+// verifyUpgrade watches a freshly-swapped process: healthy for the stability
+// window commits the upgrade; never-healthy rolls it back and exits so the
+// supervisor (or the old watcher process) brings the previous version back.
+func verifyUpgrade(exe, addr string) {
+	marker := upgrader.ReadMarker(exe)
+	if marker == nil {
+		return
+	}
+	if err := upgrader.WaitHealthy(addr, 30*time.Second); err != nil {
+		rollbackFatal(exe, err)
+		os.Exit(1)
+	}
+	time.Sleep(20 * time.Second)
+	if err := upgrader.Commit(exe); err != nil {
+		log.Printf("upgrade commit: %v", err)
+		return
+	}
+	log.Printf("upgrade to %s verified and committed", marker.To)
+}
+
+func exePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return exe
+}
+
+// rollbackFatal rolls the previous binary back (when this boot was an upgrade
+// attempt) so the next start — by systemd, the old watcher process, or the
+// operator — runs the working version again.
+func rollbackFatal(exe string, cause error) {
+	if exe == "" || upgrader.ReadMarker(exe) == nil {
+		return
+	}
+	if err := upgrader.Rollback(exe); err != nil {
+		log.Printf("rollback after fatal startup error (%v): %v", cause, err)
+		return
+	}
+	log.Printf("startup failed (%v) — rolled back to previous binary", cause)
 }
