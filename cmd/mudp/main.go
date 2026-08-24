@@ -1,13 +1,24 @@
+// mudp entry point. The binary is both a console program (plain `mudp` runs
+// the server in the foreground) and an OS service binary: `mudp install`
+// registers it with the Windows service controller or systemd, after which
+// the supervisor owns restarts — including the restart after a self-upgrade
+// (the upgrade path swaps the files and exits; it never spawns children under
+// a supervisor, so a closing console or session cannot take the replacement
+// down with it).
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 	// Embed the IANA timezone database: Windows hosts have no system zoneinfo,
@@ -16,12 +27,24 @@ import (
 	// mismatch.
 	_ "time/tzdata"
 
+	"github.com/kardianos/service"
+
 	"mudp/internal/config"
 	"mudp/internal/server"
 	"mudp/internal/store"
 	"mudp/internal/upgrader"
 	"mudp/internal/version"
 )
+
+// controlActions are the service-management subcommands handled via
+// service.Control (which talks to the Windows SCM / systemctl).
+var controlActions = map[string]bool{
+	"install":   true,
+	"uninstall": true,
+	"start":     true,
+	"stop":      true,
+	"restart":   true,
+}
 
 func main() {
 	showVersion := flag.Bool("version", false, "print the build version and exit")
@@ -30,6 +53,150 @@ func main() {
 		fmt.Println(version.Version)
 		return
 	}
+
+	if args := flag.Args(); len(args) > 0 {
+		if args[0] == "status" {
+			serviceStatus()
+			return
+		}
+		if controlActions[args[0]] {
+			control(args[0])
+			return
+		}
+	}
+
+	p := &program{stopCh: make(chan struct{}), done: make(chan struct{})}
+	s, err := service.New(p, svcConfig())
+	if err != nil {
+		log.Fatalf("create service: %v", err)
+	}
+	if err := s.Run(); err != nil {
+		log.Fatalf("run mudp: %v", err)
+	}
+}
+
+// svcConfig describes the mudp service for install/uninstall. On Windows the
+// recovery actions restart the service 5s after any failure (a non-zero exit
+// is how the upgrade path signals "restart me"); on Linux the systemd
+// template already defaults to Restart=always.
+func svcConfig() *service.Config {
+	c := &service.Config{
+		Name:        "mudp",
+		DisplayName: "mudp",
+		Description: "mudp container console",
+	}
+	if runtime.GOOS == "windows" {
+		c.Option = service.KeyValue{
+			"StartType":              "automatic",
+			"OnFailure":              "restart",
+			"OnFailureDelayDuration": "5s",
+			"OnFailureResetPeriod":   "86400",
+		}
+	}
+	return c
+}
+
+// control runs a service-management subcommand (requires administrator on
+// Windows, root on Linux).
+func control(action string) {
+	s, err := service.New(&program{stopCh: make(chan struct{}), done: make(chan struct{})}, svcConfig())
+	if err != nil {
+		log.Fatalf("create service: %v", err)
+	}
+	if err := service.Control(s, action); err != nil {
+		fmt.Fprintf(os.Stderr, "mudp service %s failed (administrator/root required?): %v\n", action, err)
+		os.Exit(1)
+	}
+	if action == "install" && runtime.GOOS == "linux" {
+		tuneSystemdUnit()
+	}
+	fmt.Printf("mudp service: %s ok\n", action)
+}
+
+// serviceStatus prints whether the mudp service is installed/running.
+func serviceStatus() {
+	s, err := service.New(&program{stopCh: make(chan struct{}), done: make(chan struct{})}, svcConfig())
+	if err != nil {
+		log.Fatalf("create service: %v", err)
+	}
+	status, err := s.Status()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mudp service status failed: %v\n", err)
+		os.Exit(1)
+	}
+	switch status {
+	case service.StatusRunning:
+		fmt.Println("mudp service: running")
+	case service.StatusStopped:
+		fmt.Println("mudp service: stopped")
+	default:
+		fmt.Println("mudp service: unknown")
+	}
+}
+
+// tuneSystemdUnit rewrites the RestartSec kardianos hardcodes (120s) down to
+// 5s so an upgrade restart comes back in seconds, then reloads systemd.
+func tuneSystemdUnit() {
+	const unitPath = "/etc/systemd/system/mudp.service"
+	data, err := os.ReadFile(unitPath)
+	if err != nil {
+		return
+	}
+	if !strings.Contains(string(data), "RestartSec=120") {
+		return
+	}
+	if err := os.WriteFile(unitPath, []byte(strings.Replace(string(data), "RestartSec=120", "RestartSec=5", 1)), 0o644); err != nil {
+		log.Printf("tune systemd unit: %v", err)
+		return
+	}
+	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		log.Printf("systemctl daemon-reload: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+}
+
+// program adapts the server to the service framework: Start launches the
+// server goroutine, Stop asks it to shut down and waits. In interactive
+// (console) mode the framework calls the same pair, so both modes share one
+// lifecycle.
+type program struct {
+	stopCh chan struct{}
+	done   chan struct{}
+}
+
+func (p *program) Start(s service.Service) error {
+	// Route the standard logger into the service log too (Windows event log /
+	// systemd journal): when running headless as a service this is the only
+	// place startup failures and upgrade progress land.
+	logErrs := make(chan error, 8)
+	if lg, _ := s.Logger(logErrs); lg != nil {
+		log.SetOutput(io.MultiWriter(os.Stderr, serviceLogWriter{lg}))
+	}
+	go func() {
+		for range logErrs {
+		}
+	}()
+	go p.run()
+	return nil
+}
+
+func (p *program) Stop(s service.Service) error {
+	close(p.stopCh)
+	<-p.done
+	return nil
+}
+
+// serviceLogWriter adapts service.Logger to io.Writer for log.SetOutput.
+type serviceLogWriter struct{ lg service.Logger }
+
+func (w serviceLogWriter) Write(b []byte) (int, error) {
+	w.lg.Info(strings.TrimRight(string(b), "\n"))
+	return len(b), nil
+}
+
+// run is the server body: open the store, build the app, serve, and shut
+// down cleanly on p.stopCh, a signal, or a fatal serve error.
+func (p *program) run() {
+	defer close(p.done)
 
 	cfg := config.Load()
 
@@ -103,7 +270,7 @@ func main() {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		log.Printf("mudp listening on http://%s", cfg.Addr)
+		log.Printf("mudp %s listening on http://%s", version.Version, cfg.Addr)
 		serveErr <- srv.ListenAndServe()
 	}()
 
@@ -118,6 +285,7 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	select {
+	case <-p.stopCh:
 	case <-stop:
 	case err := <-serveErr:
 		if err != nil && err != http.ErrServerClosed {
@@ -165,8 +333,8 @@ func exePath() string {
 }
 
 // rollbackFatal rolls the previous binary back (when this boot was an upgrade
-// attempt) so the next start — by systemd, the old watcher process, or the
-// operator — runs the working version again.
+// attempt) so the next start — by the service manager, the old watcher
+// process, or the operator — runs the working version again.
 func rollbackFatal(exe string, cause error) {
 	if exe == "" || upgrader.ReadMarker(exe) == nil {
 		return

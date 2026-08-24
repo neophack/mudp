@@ -7,22 +7,19 @@ mkdir -p "$OUTDIR"
 GOOS="${GOOS:-$(go env GOOS)}"
 GOARCH="${GOARCH:-$(go env GOARCH)}"
 
-# Release asset names are fixed per platform (internal/upgrader.AssetName):
-# mudp_x86.exe / mudp_x86_linux (amd64), mudp_arm64.exe / mudp_arm64_linux
-# (arm64); other targets fall back to a suffixed name.
+# Release assets follow the openp2p convention (internal/upgrader.AssetName):
+# <name>-<os>-<arch>, .exe on Windows; the release workflow packages them as
+# versioned zip / tar.gz archives.
 EXT=""
-case "$GOOS/$GOARCH" in
-  windows/amd64) BASE="mudp_x86"; EXT=".exe" ;;
-  linux/amd64)   BASE="mudp_x86_linux" ;;
-  windows/arm64) BASE="mudp_arm64"; EXT=".exe" ;;
-  linux/arm64)   BASE="mudp_arm64_linux" ;;
-  *)             BASE="mudp-${GOOS}-${GOARCH}"; [ "$GOOS" = "windows" ] && EXT=".exe" ;;
-esac
+[ "$GOOS" = "windows" ] && EXT=".exe"
+BASE="mudp-${GOOS}-${GOARCH}"
 
 OUTPUT="$OUTDIR/${BASE}${EXT}"
-VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
+# The version constant in internal/version/version.go is the single source
+# of truth (openp2p-style: no build-time injection).
+VERSION=$(grep -oP 'var Version = "\K[^"]+' internal/version/version.go)
 
 echo "Building mudp for $GOOS/$GOARCH (version $VERSION)..."
-GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "-s -w -X mudp/internal/version.Version=$VERSION" -o "$OUTPUT" ./cmd/mudp
+GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "-s -w" -o "$OUTPUT" ./cmd/mudp
 
 echo "Built $OUTPUT"

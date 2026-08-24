@@ -12,6 +12,9 @@
 package upgrader
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,7 +26,10 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
+
+	"github.com/kardianos/service"
 )
 
 const releaseAssetBaseURL = "https://github.com/neophack/mudp/releases/download"
@@ -35,26 +41,43 @@ const maxAssetBytes = 512 << 20
 // downloadTimeout bounds the whole asset download.
 const downloadTimeout = 10 * time.Minute
 
-// AssetName maps the running platform to its release asset file name. Empty
-// means the platform has no published binary (auto-upgrade unsupported).
+// AssetName maps the running platform to its release binary file name,
+// openp2p-style `<name>-<os>-<arch>` (mudp-windows-amd64.exe). Empty means
+// the platform has no published binary (auto-upgrade unsupported).
 func AssetName(goos, goarch string) string {
+	ext := ""
+	if goos == "windows" {
+		ext = ".exe"
+	}
 	switch {
 	case goos == "windows" && goarch == "amd64":
-		return "mudp_x86.exe"
-	case goos == "linux" && goarch == "amd64":
-		return "mudp_x86_linux"
+		return "mudp-windows-amd64" + ext
 	case goos == "windows" && goarch == "arm64":
-		return "mudp_arm64.exe"
+		return "mudp-windows-arm64" + ext
+	case goos == "linux" && goarch == "amd64":
+		return "mudp-linux-amd64" + ext
 	case goos == "linux" && goarch == "arm64":
-		return "mudp_arm64_linux"
+		return "mudp-linux-arm64" + ext
 	}
 	return ""
 }
 
-// AssetURL returns the download URL of a tag's asset for the running platform.
-func AssetURL(tag, goos, goarch string) (string, error) {
+// ArchiveName returns the release asset file name for a tag: Windows binaries
+// ship as zip, everything else as tar.gz, both carrying the version —
+// mudp-windows-amd64-v1.2.0.zip, mudp-linux-arm64-v1.2.0.tar.gz.
+func ArchiveName(tag, goos, goarch string) string {
 	name := AssetName(goos, goarch)
-	if name == "" {
+	if strings.HasSuffix(name, ".exe") {
+		return strings.TrimSuffix(name, ".exe") + "-" + tag + ".zip"
+	}
+	return name + "-" + tag + ".tar.gz"
+}
+
+// AssetURL returns the download URL of a tag's release archive for the
+// running platform.
+func AssetURL(tag, goos, goarch string) (string, error) {
+	name := ArchiveName(tag, goos, goarch)
+	if AssetName(goos, goarch) == "" {
 		return "", fmt.Errorf("no release asset for %s/%s", goos, goarch)
 	}
 	return fmt.Sprintf("%s/%s/%s", releaseAssetBaseURL, tag, name), nil
@@ -65,20 +88,29 @@ func Supported() bool {
 	return AssetName(runtime.GOOS, runtime.GOARCH) != ""
 }
 
-// UnderSystemd reports whether the process was started by systemd (which sets
-// INVOCATION_ID / JOURNAL_STREAM). Under systemd the old process must NOT
-// spawn the new binary itself — exiting cleanly lets systemd restart into the
-// already-swapped executable, and the new process's own failure path performs
-// the rollback.
+// UnderSupervisor reports whether the process is managed by a service
+// supervisor: systemd (which sets INVOCATION_ID / JOURNAL_STREAM) or the
+// Windows service controller. Under a supervisor the old process must NOT
+// spawn the new binary itself — a spawned child shares the dying process's
+// console/session and goes down with it. Exiting instead lets the supervisor
+// restart into the already-swapped executable, and the new process's own
+// failure path performs the rollback.
+func UnderSupervisor() bool {
+	return UnderSystemd() || (runtime.GOOS == "windows" && !service.Interactive())
+}
+
+// UnderSystemd reports whether the process was started by systemd.
 func UnderSystemd() bool {
 	return os.Getenv("INVOCATION_ID") != "" || os.Getenv("JOURNAL_STREAM") != ""
 }
 
-// Download fetches url into dest. The result is guaranteed executable: the
-// create mode 0o755 can be weakened by a restrictive umask, and a leftover
-// dest file keeps its old mode on O_TRUNC, so the exec bit is set explicitly
-// afterwards (a no-op on Windows where Chmod only toggles the read-only bit).
-func Download(ctx context.Context, url, dest string) error {
+// Download fetches url into dest. onProgress (optional) receives the running
+// byte count and the total from Content-Length (0 when unknown) as the body
+// streams in. The result is guaranteed executable: the create mode 0o755 can
+// be weakened by a restrictive umask, and a leftover dest file keeps its old
+// mode on O_TRUNC, so the exec bit is set explicitly afterwards (a no-op on
+// Windows where Chmod only toggles the read-only bit).
+func Download(ctx context.Context, url, dest string, onProgress func(read, total int64)) error {
 	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -99,10 +131,35 @@ func Download(ctx context.Context, url, dest string) error {
 	}
 	// A partial download must never be mistaken for a usable binary: write to
 	// the side file and let Swap move it into place only on success.
-	if _, err := io.Copy(f, io.LimitReader(resp.Body, maxAssetBytes)); err != nil {
-		f.Close()
-		os.Remove(dest)
-		return err
+	total := resp.ContentLength
+	var read int64
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := f.Write(buf[:n]); werr != nil {
+				f.Close()
+				os.Remove(dest)
+				return werr
+			}
+			read += int64(n)
+			if read > maxAssetBytes {
+				f.Close()
+				os.Remove(dest)
+				return fmt.Errorf("download exceeds %d bytes", maxAssetBytes)
+			}
+			if onProgress != nil {
+				onProgress(read, total)
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			f.Close()
+			os.Remove(dest)
+			return err
+		}
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(dest)
@@ -117,6 +174,124 @@ func Download(ctx context.Context, url, dest string) error {
 		return fmt.Errorf("make downloaded binary executable: %w", err)
 	}
 	return nil
+}
+
+// ExtractBinary pulls the platform binary out of a release archive (zip on
+// Windows, tar.gz elsewhere) into dest, ready to be swapped in. The archive
+// is expected to contain the binary under its AssetName; a single-member
+// archive under any name is accepted as a fallback.
+func ExtractBinary(archive, dest, goos, goarch string) error {
+	want := AssetName(goos, goarch)
+	var err error
+	if strings.HasSuffix(archive, ".zip") {
+		err = extractFromZip(archive, want, dest)
+	} else {
+		err = extractFromTarGz(archive, want, dest)
+	}
+	if err != nil {
+		return err
+	}
+	if fi, statErr := os.Stat(dest); statErr != nil || fi.Size() == 0 {
+		return fmt.Errorf("archive contained no usable binary")
+	}
+	return os.Chmod(dest, 0o755)
+}
+
+func extractFromZip(archive, want, dest string) error {
+	r, err := zip.OpenReader(archive)
+	if err != nil {
+		return fmt.Errorf("open zip: %w", err)
+	}
+	defer r.Close()
+	var fallback *zip.File
+	for _, f := range r.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if filepath.Base(f.Name) == want {
+			return extractTo(f.Open, dest)
+		}
+		if fallback == nil {
+			fallback = f
+		}
+	}
+	if fallback == nil {
+		return fmt.Errorf("zip contains no file")
+	}
+	return extractTo(fallback.Open, dest)
+}
+
+func extractFromTarGz(archive, want, dest string) error {
+	f, err := os.Open(archive)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("open gzip: %w", err)
+	}
+	defer gz.Close()
+	fallback := false
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read tar: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		if filepath.Base(hdr.Name) == want {
+			return extractTo(func() (io.ReadCloser, error) { return io.NopCloser(tr), nil }, dest)
+		}
+		fallback = true
+	}
+	if !fallback {
+		return fmt.Errorf("tar contains no file")
+	}
+	// Rewind and take the first regular member.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if err := gz.Reset(f); err != nil {
+		return err
+	}
+	tr = tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return fmt.Errorf("tar contains no file")
+		}
+		if err != nil {
+			return err
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			return extractTo(func() (io.ReadCloser, error) { return io.NopCloser(tr), nil }, dest)
+		}
+	}
+}
+
+// extractTo streams an opened archive member into dest.
+func extractTo(open func() (io.ReadCloser, error), dest string) error {
+	src, err := open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, src); err != nil {
+		out.Close()
+		os.Remove(dest)
+		return fmt.Errorf("extract: %w", err)
+	}
+	return out.Close()
 }
 
 // Precheck verifies the upgrade can actually write the files it must replace

@@ -167,11 +167,11 @@ func TestCopyPathWithPolicySkipsExistingSingleFile(t *testing.T) {
 // from the parallel "paths" field or the whole tree lands flat in one folder.
 func TestUploadDestPath(t *testing.T) {
 	dir := t.TempDir()
-	// cleanUserPath returns symlink-resolved paths, so compare against the
-	// canonical form of the temp dir. On Windows t.TempDir() hands back an 8.3
-	// short name ("PENGHO~1") that resolves to its long form; on macOS /var
-	// resolves to /private/var.
-	resolvedDir, err := filepath.EvalSymlinks(dir)
+	// cleanUserPath returns paths from the same resolver production code uses;
+	// compare against that form. On Windows t.TempDir() may hand back an 8.3
+	// short name ("PENGHO~1"), on macOS /var is a symlink to /private/var —
+	// resolveExistingPath handles both the way the product does.
+	resolvedDir, err := resolveExistingPath(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +467,12 @@ func TestCleanUserPathRejectsSymlinkEscape(t *testing.T) {
 // (mkdir/upload/rename destinations are all validated before creation).
 func TestCleanUserPathAllowsNormalPaths(t *testing.T) {
 	root := t.TempDir()
-	resolvedRoot, err := filepath.EvalSymlinks(root)
+	// The expected root is resolved with the same resolver production code
+	// uses. filepath.EvalSymlinks cannot stand in for it: it canonicalises
+	// 8.3 short names (this host's TMP is "C:\Users\PENGHO~1\..."), which
+	// resolveExistingPath deliberately preserves so both sides of the
+	// containment comparison share one path form.
+	resolvedRoot, err := resolveExistingPath(root)
 	if err != nil {
 		t.Fatal(err)
 	}

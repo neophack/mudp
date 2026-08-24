@@ -1,7 +1,10 @@
 // Package version exposes the build identifier shown in the console's help
-// page. Version is overridden at build time via -ldflags
-// "-X mudp/internal/version.Version=<git-describe>"; unset builds (go run,
-// go build without ldflags) fall back to "dev".
+// page and compared by the update check. Following the openp2p model, the
+// constant below is the single source of truth for the version: there is no
+// build-time injection, so every build (CI, local, plain `go build`) reports
+// exactly this string. The format is vMAJOR.MINOR.PATCH (v1.2.0); bump it in
+// the same commit that ships a release, and give the release workflow the
+// same value.
 package version
 
 import (
@@ -9,7 +12,7 @@ import (
 	"strings"
 )
 
-var Version = "dev"
+var Version = "v1.1.1"
 
 // Compare orders two version strings the way release tags do: an optional
 // leading "v", dot-separated numeric segments, and an optional "-" suffix as

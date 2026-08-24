@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"log"
 	"os"
+	"path/filepath"
 )
 
 type Config struct {
@@ -33,7 +34,7 @@ type Config struct {
 func Load() Config {
 	cfg := Config{
 		Addr:            env("MUDP_ADDR", "0.0.0.0:9000"),
-		DBPath:          env("MUDP_DB", "mudp.db"),
+		DBPath:          env("MUDP_DB", defaultDBPath()),
 		DockerHost:      env("MUDP_DOCKER_HOST", ""),
 		WebDir:          env("MUDP_WEB_DIR", ""),
 		DefaultLanguage: env("MUDP_DEFAULT_LANGUAGE", "en_US"),
@@ -60,6 +61,18 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// defaultDBPath anchors the database next to the executable rather than the
+// (arbitrary) working directory: when run as a Windows service the CWD is
+// C:\Windows\System32, and a console started from elsewhere would scatter
+// copies of the database per directory.
+func defaultDBPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "mudp.db"
+	}
+	return filepath.Join(filepath.Dir(exe), "mudp.db")
 }
 
 func randomSecret() string {

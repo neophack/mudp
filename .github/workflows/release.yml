@@ -1,0 +1,141 @@
+# Release — manually triggered multi-platform version publishing, the
+# openp2p model: run this workflow from the Actions tab ("Run workflow"),
+# give it the version to ship, and CI builds, tags and publishes everything.
+#
+# Release assets are openp2p-style versioned archives: Windows binaries as
+# mudp-windows-<arch>-<version>.zip, Linux as mudp-linux-<arch>-<version>.tar.gz
+# (the in-app self-upgrader downloads these archives and extracts the binary
+# — see internal/upgrader.AssetName / ArchiveName). The web UI is embedded by
+# web/embed.go, so a plain Go build produces the complete console.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. v1.2.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  BINARY: mudp
+
+jobs:
+  # Guard the release discipline: the version baked into
+  # internal/version/version.go must match the requested version, because
+  # plain `go build` installs report that default and the update check
+  # compares against it.
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: version.go default must equal the release version
+        run: |
+          VERSION="${{ inputs.version }}"
+          DEFAULT="$(grep -oP 'var Version = "\K[^"]+' internal/version/version.go)"
+          if [ "$DEFAULT" != "$VERSION" ]; then
+            echo "::error::internal/version/version.go reports '$DEFAULT' but the requested version is '$VERSION'. Bump var Version to '$VERSION', commit, and re-run the workflow."
+            exit 1
+          fi
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - run: go vet ./...
+      - run: go test ./...
+
+  build:
+    name: build ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: [check-version, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+    env:
+      CGO_ENABLED: '0'
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Build and package
+        run: |
+          VERSION="${{ inputs.version }}"
+          EXT=""
+          [ "$GOOS" = "windows" ] && EXT=".exe"
+          BIN="${{ env.BINARY }}-${GOOS}-${GOARCH}${EXT}"
+          # No ldflags injection: the version constant in
+          # internal/version/version.go is the single source of truth
+          # (checked by the check-version job).
+          go build -trimpath -ldflags "-s -w" -o "$BIN" ./cmd/mudp
+          if [ "$GOOS" = "windows" ]; then
+            ASSET="${{ env.BINARY }}-${GOOS}-${GOARCH}-${VERSION}.zip"
+            zip "$ASSET" "$BIN"
+          else
+            ./"$BIN" -version  # smoke test (linux binaries run on the runner)
+            ASSET="${{ env.BINARY }}-${GOOS}-${GOARCH}-${VERSION}.tar.gz"
+            tar czf "$ASSET" "$BIN"
+          fi
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for the changelog since the previous tag
+      - name: Tag the release
+        run: |
+          VERSION="${{ inputs.version }}"
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "::error::tag ${VERSION} already exists"
+            exit 1
+          fi
+          git tag "${VERSION}"
+          git push origin "${VERSION}"
+      - uses: actions/download-artifact@v4
+        with:
+          path: release_assets
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd release_assets
+          sha256sum * > SHA256SUMS
+          ls -la
+      - name: Changelog since previous tag
+        run: |
+          PREV="$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)"
+          if [ -n "$PREV" ]; then
+            git log --oneline --no-merges "${PREV}..HEAD" > changelog.txt
+          else
+            git log --oneline --no-merges HEAD > changelog.txt
+          fi
+          cat changelog.txt
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          body_path: changelog.txt
+          fail_on_unmatched_files: true
+          files: |
+            release_assets/*

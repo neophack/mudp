@@ -134,24 +134,33 @@ When Feishu SSO is enabled and has both App ID and App Secret configured, the lo
 
 ## Running as a Service
 
-Linux (systemd):
+mudp ships its own service management on both platforms (administrator/root required). `mudp install` registers it with systemd on Linux and the Windows service controller on Windows, with automatic restart on failure; `mudp uninstall`, `mudp start`, `mudp stop`, `mudp restart` and `mudp status` control it afterwards:
 
 ```bash
-sudo ./scripts/install-service.sh [/path/to/mudp]
+sudo ./mudp install     # Linux: /etc/systemd/system/mudp.service, Restart=always
+mudp.exe install        # Windows (admin): auto-start service, restart 5s after any failure
 ```
 
-The script installs the binary to `/opt/mudp`, writes `/etc/systemd/system/mudp.service` plus an environment file at `/etc/mudp/mudp.env` (generating a stable `MUDP_SESSION_SECRET` when none is supplied), adds the service user to the `docker` group, and enables and starts the service. Re-running it performs an in-place upgrade that preserves the database and data directory (`~/.mudp`), and it prints safe-uninstall and full-uninstall commands at the end.
+The database defaults to `mudp.db` **next to the executable** (not the working directory), so a Windows service — whose working directory is `C:\Windows\System32` — reads the same database as a console run from the same folder. Set `MUDP_DB` for a custom location.
 
-Windows has no built-in service wrapper; register the binary with a service manager such as [NSSM](https://nssm.cc) or `sc.exe`:
+When running under a service manager, the web UI's one-click upgrade swaps the binary files and exits; the supervisor (systemd `Restart=always` / Windows recovery actions) restarts the new version within seconds. The dying process never spawns its replacement, so the restart survives closed consoles and sessions. Logs go to the systemd journal / Windows event log (source `mudp`) in addition to stderr.
 
-```powershell
-nssm install mudp C:\mudp\mudp.exe
-nssm set mudp AppDirectory C:\mudp
-nssm set mudp AppEnvironmentExtra MUDP_ADDR=0.0.0.0:9000 MUDP_DB=C:\mudp\mudp.db MUDP_SESSION_SECRET=<random-hex>
-nssm start mudp
+Linux also supports the richer [scripts/install-service.sh](../scripts/install-service.sh), which generates a stable `MUDP_SESSION_SECRET`, runs under a dedicated user in the `docker` group, and preserves data across in-place upgrades — prefer it when you need those.
+
+## Releasing A Version
+
+Releases are manual, the openp2p model: run the **Release** workflow from the GitHub Actions tab and give it the version to ship (e.g. `v1.2.0`). CI builds all four release assets, runs the test suite first, tags the commit, and publishes a GitHub release with the packaged archives plus `SHA256SUMS`.
+
+```bash
+# 1. bump the version constant in internal/version/version.go
+#    (var Version = "v1.2.0") and commit — the workflow refuses to run if it
+#    does not match the version you type into the dispatch form
+# 2. Actions → Release → Run workflow → version: v1.2.0
 ```
 
-Setting `AppDirectory` (or an absolute `MUDP_DB`) matters: a Windows service starts with `C:\Windows\System32` as its working directory while the default `MUDP_DB` is relative. Also note that graceful shutdown on Windows only happens via Ctrl+C on a console — a service stop or `taskkill` terminates the process immediately (SQLite's WAL recovers on the next start), one more reason to pin `MUDP_SESSION_SECRET`.
+There is no build-time version injection: the `version.go` constant is the single source of truth, so CI binaries, local builds and plain `go build` installs all report the same string. Version format is `vMAJOR.MINOR.PATCH`.
+
+Asset naming and packaging also follow openp2p: binaries are `mudp-<os>-<arch>` (`mudp-windows-amd64.exe`, `mudp-linux-arm64`, …), shipped as versioned archives — `mudp-windows-<arch>-<version>.zip`, `mudp-linux-<arch>-<version>.tar.gz`. The in-app self-upgrader downloads these archives and extracts the binary, so the names are its contract — never rename them. Once the release is published, every running instance sees it via the update check and can upgrade in place (see "Running as a Service" for the restart model).
 
 ## Platform Notes (Windows vs Linux)
 

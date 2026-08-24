@@ -36,17 +36,20 @@ func (a *App) SetRestartPrepare(f func()) {
 	a.restartPrepare = f
 }
 
-// upgradeStatus reports the in-flight (or last known) upgrade phase:
-// idle | running:download | running:restarting | error | (gone once the
-// process exits — the replacement serves "idle" from its own memory).
+// upgradeStatus reports the in-flight (or last known) upgrade phase plus, while
+// downloading, the byte progress: idle | running:download | running:restarting
+// | error | (gone once the process exits — the replacement serves "idle" from
+// its own memory).
 func (a *App) upgradeStatus(w http.ResponseWriter, r *http.Request) {
 	a.upgradeMu.Lock()
 	defer a.upgradeMu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]string{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"phase":   a.upgradePhase,
 		"message": a.upgradeMsg,
 		"from":    a.upgradeFrom,
 		"to":      a.upgradeTo,
+		"read":    a.upgradeRead,
+		"total":   a.upgradeTotal,
 	})
 }
 
@@ -92,6 +95,8 @@ func (a *App) startUpgrade(w http.ResponseWriter, r *http.Request) {
 	a.upgradeMsg = ""
 	a.upgradeFrom = version.Version
 	a.upgradeTo = req.Tag
+	a.upgradeRead = 0
+	a.upgradeTotal = 0
 	a.upgradeMu.Unlock()
 
 	a.db.Audit(currentUser(r).Username, "upgrade.start", req.Tag)
@@ -114,9 +119,22 @@ func (a *App) runUpgrade(exe, tag string) {
 		fail("%v", err)
 		return
 	}
+	// Release assets are versioned archives (zip on Windows, tar.gz on
+	// Linux): download the archive, then extract the binary out of it.
+	archive := upgrader.SidecarPath(exe, ".download")
 	dest := upgrader.SidecarPath(exe, ".new")
-	if err := upgrader.Download(context.Background(), url, dest); err != nil {
+	defer os.Remove(archive)
+	onProgress := func(read, total int64) {
+		a.upgradeMu.Lock()
+		a.upgradeRead, a.upgradeTotal = read, total
+		a.upgradeMu.Unlock()
+	}
+	if err := upgrader.Download(context.Background(), url, archive, onProgress); err != nil {
 		fail("download: %v", err)
+		return
+	}
+	if err := upgrader.ExtractBinary(archive, dest, runtime.GOOS, runtime.GOARCH); err != nil {
+		fail("extract: %v", err)
 		return
 	}
 	if err := upgrader.WriteMarker(exe, upgrader.Marker{From: version.Version, To: tag}); err != nil {
@@ -138,9 +156,21 @@ func (a *App) runUpgrade(exe, tag string) {
 		a.restartPrepare()
 	}
 
-	if upgrader.UnderSystemd() {
-		// systemd restarts into the swapped binary; the new process's own
-		// boot verification handles rollback if it cannot serve.
+	if upgrader.UnderSupervisor() {
+		// The service manager (systemd / Windows SCM) restarts into the
+		// swapped binary; the new process's own boot verification handles
+		// rollback if it cannot serve. The dying process never spawns its
+		// replacement — a spawned child shares the old console/session and
+		// dies with it, which is exactly how a Windows service update could
+		// end up "stopped and never started". systemd units use
+		// Restart=always so exit(0) restarts; the Windows recovery actions
+		// only fire on a non-zero exit, so exit 1 there (the openp2p
+		// approach: update = replace files, then exit and let the
+		// supervisor bring the new version up).
+		if runtime.GOOS == "windows" {
+			log.Printf("upgrade: under service control, exiting for restart")
+			os.Exit(1)
+		}
 		log.Printf("upgrade: under systemd, exiting for restart")
 		os.Exit(0)
 	}

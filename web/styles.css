@@ -846,6 +846,74 @@ table.data td.chk-cell { width: 36px; text-align: center; }
 .modal-tools { display: flex; gap: 8px; align-items: center; }
 .modal-tools select { min-height: 30px; width: auto; }
 
+/* ---------- System update (fnOS-style) ---------- */
+/* Update window: hero (new-version banner) + release-notes list. */
+.upgrade-hero {
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center; gap: 6px; padding: 6px 0 14px;
+}
+.upgrade-hero-icon {
+  width: 54px; height: 54px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 24px; font-weight: 700; color: var(--accent);
+  background: var(--accent-soft);
+}
+.upgrade-hero-title { font-size: 16px; font-weight: 700; }
+.upgrade-hero-sub { font-size: 13px; }
+.upgrade-notes {
+  border: 1px solid var(--line-soft); border-radius: var(--radius-sm);
+  padding: 12px 16px; max-height: 280px; overflow-y: auto;
+}
+.upgrade-notes-title {
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px;
+}
+.upgrade-notes ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; color: var(--ink-soft); }
+.upgrade-manual { font-size: 12px; }
+/* Full-screen upgrade view: locked, blurred backdrop with a centered panel
+   carrying a circular progress ring (fnOS system-update look). */
+.upgrade-overlay {
+  position: fixed; inset: 0; z-index: 90;
+  display: grid; place-items: center; padding: 24px;
+  background: rgba(27, 28, 49, 0.55);
+  backdrop-filter: blur(4px);
+  animation: backdropIn .12s ease;
+}
+.upgrade-panel {
+  width: min(400px, calc(100vw - 48px));
+  background: var(--workspace); border-radius: var(--radius);
+  box-shadow: 0 24px 60px rgba(16, 24, 40, 0.28);
+  padding: 36px 32px 26px;
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  animation: modalIn .16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* Determinate: the element's inline conic-gradient carries the progress;
+   indeterminate: a rotating ::before wedge spins over the track. */
+.upgrade-ring {
+  position: relative; width: 128px; height: 128px; border-radius: 50%;
+  background: var(--line-soft); display: grid; place-items: center;
+}
+.upgrade-ring::before {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+}
+.upgrade-ring.is-spin::before {
+  background: conic-gradient(var(--accent) 0 28%, transparent 28%);
+  animation: upgrade-spin 1s linear infinite;
+}
+.upgrade-ring-hole {
+  position: relative; width: 96px; height: 96px; border-radius: 50%;
+  background: var(--workspace); display: grid; place-items: center;
+}
+.upgrade-ring-hole span { font-size: 22px; font-weight: 700; }
+.upgrade-ring.is-ok { background: var(--ok); }
+.upgrade-ring.is-ok .upgrade-ring-hole span { color: var(--ok); font-size: 44px; }
+.upgrade-ring.is-err { background: var(--danger); }
+.upgrade-ring.is-err .upgrade-ring-hole span { color: var(--danger); font-size: 38px; }
+@keyframes upgrade-spin { to { transform: rotate(360deg); } }
+.upgrade-phase { font-size: 15px; font-weight: 600; margin-top: 12px; overflow-wrap: anywhere; }
+.upgrade-detail { min-height: 18px; font-size: 13px; }
+.upgrade-actions { margin-top: 12px; min-height: 34px; display: flex; gap: 8px; }
+
 /* ---------- Progress steps (create / pull) ---------- */
 .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
 .step {

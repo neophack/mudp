@@ -188,7 +188,7 @@ func TestDownloadOverwritesStaleMode(t *testing.T) {
 	if err := os.WriteFile(dest, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Download(context.Background(), srv.URL, dest); err != nil {
+	if err := Download(context.Background(), srv.URL, dest, nil); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {

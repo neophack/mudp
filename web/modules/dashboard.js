@@ -3,6 +3,7 @@
 
 import { state, api, toast, escapeHtml, isAdmin, displayName, t } from "../app.js";
 import { detectClientIP, readIPCache, isCacheFresh } from "../lib/publicip.js";
+import { openUpgradeModal, isUpgrading } from "./upgrade.js";
 
 export function renderDashboard() {
   const d = state.dashboard;
@@ -239,14 +240,15 @@ function statTile(label, value, sub, icon) {
 
 // versionCard shows the running version and, once /api/update/check answers
 // (server-cached for an hour), the latest GitHub release with a badge and
-// per-OS download links. Rendered with a placeholder and filled async so the
-// dashboard paint never waits on GitHub.
+// per-OS download links. The one-click upgrade itself lives in upgrade.js —
+// the fnOS-style update window opens from this card's button.
 function versionCard() {
   return (
     `<section class="card" id="dash-version-card">` +
       `<div class="card-head"><h2>${t("dash.version")}</h2>` +
         `<div class="head-actions">` +
           `<span id="dash-version-badge" class="hint">${t("dash.checking")}</span>` +
+          `<button class="ghost" id="dashRecheckBtn">${t("dash.recheck")}</button>` +
           `<button class="primary" id="dashUpgradeBtn" style="display:none"></button>` +
         `</div>` +
       `</div>` +
@@ -259,21 +261,29 @@ function versionCard() {
   );
 }
 
-// upgrading guards the upgrade button across dashboard re-renders (the poller
-// rebuilds #view every few seconds; without this the button would re-enable).
-let upgrading = false;
-
 // fillVersionCard resolves the update check into the placeholder spans. Each
 // step re-checks its elements are still in the DOM so the dashboard poller
 // (which rebuilds #view) can't paint stale results over a fresh render.
 // Renders only for admins — /api/update/check is admin-only and meUser.Version
-// is empty for everyone else.
-async function fillVersionCard() {
+// is empty for everyone else. `refresh` asks the server to bypass its cache
+// (the manual check-now button); the automatic dashboard pass uses the cache.
+async function fillVersionCard(refresh = false) {
   if (!isAdmin()) return;
   const latestEl = document.getElementById("dash-version-latest");
   if (!latestEl) return;
-  const res = await api("/api/update/check").catch(() => null);
+  const recheckBtn = document.getElementById("dashRecheckBtn");
+  if (refresh && recheckBtn) {
+    recheckBtn.disabled = true;
+    recheckBtn.textContent = t("dash.checking");
+  }
+  const url = refresh ? "/api/update/check?refresh=1" : "/api/update/check";
+  const res = await api(url).catch(() => null);
+  if (refresh && recheckBtn && document.body.contains(recheckBtn)) {
+    recheckBtn.disabled = false;
+    recheckBtn.textContent = t("dash.recheck");
+  }
   if (!res || !document.body.contains(latestEl)) return;
+  if (refresh) toast(t("dash.rechecked"), true);
   const dlEl = document.getElementById("dash-version-downloads");
   const badgeEl = document.getElementById("dash-version-badge");
   if (res.error) {
@@ -283,6 +293,7 @@ async function fillVersionCard() {
     return;
   }
   latestEl.textContent = res.latest || "—";
+  latestEl.classList.remove("hint");
   if (badgeEl) {
     badgeEl.innerHTML = res.available
       ? `<span class="badge badge-warn"><span class="dot"></span>${t("dash.updateAvailable")}</span>`
@@ -291,67 +302,21 @@ async function fillVersionCard() {
   if (dlEl && res.downloads) {
     dlEl.className = "";
     dlEl.innerHTML =
-      `<a href="${escapeHtml(res.downloads.windows || "#")}" download>mudp_x86.exe</a> · ` +
-      `<a href="${escapeHtml(res.downloads.linux || "#")}" download>mudp_x86_linux</a> · ` +
-      `<a href="${escapeHtml(res.downloads["windows-arm64"] || "#")}" download>mudp_arm64.exe</a> · ` +
-      `<a href="${escapeHtml(res.downloads["linux-arm64"] || "#")}" download>mudp_arm64_linux</a>`;
+      `<a href="${escapeHtml(res.downloads.windows || "#")}" download>mudp-windows-amd64</a> · ` +
+      `<a href="${escapeHtml(res.downloads.linux || "#")}" download>mudp-linux-amd64</a> · ` +
+      `<a href="${escapeHtml(res.downloads["windows-arm64"] || "#")}" download>mudp-windows-arm64</a> · ` +
+      `<a href="${escapeHtml(res.downloads["linux-arm64"] || "#")}" download>mudp-linux-arm64</a>`;
   }
   const btn = document.getElementById("dashUpgradeBtn");
   if (btn && res.available) {
     btn.style.display = "";
-    btn.textContent = upgrading ? t("dash.upgrading") : t("dash.upgrade");
-    btn.disabled = upgrading;
-    btn.onclick = () => triggerUpgrade(res.latest);
+    btn.textContent = isUpgrading() ? t("upgrade.busy") : t("dash.upgrade");
+    btn.disabled = isUpgrading();
+    btn.onclick = () => openUpgradeModal(res);
   }
-}
-
-// triggerUpgrade starts the server-side self-upgrade and polls until the new
-// version answers (success → reload) or the old process reports an error /
-// the window times out (rollback keeps the old version serving).
-async function triggerUpgrade(tag) {
-  if (upgrading) return;
-  upgrading = true;
-  const btn = document.getElementById("dashUpgradeBtn");
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = t("dash.upgrading");
+  if (recheckBtn && document.body.contains(recheckBtn)) {
+    recheckBtn.onclick = () => fillVersionCard(true);
   }
-  try {
-    await api("/api/admin/upgrade", { method: "POST", body: JSON.stringify({ tag }) });
-  } catch (err) {
-    upgrading = false;
-    toast(err.message);
-    return;
-  }
-  // The old process exits mid-upgrade, so expect a stretch of failed fetches.
-  const deadline = Date.now() + 4 * 60 * 1000;
-  const poll = setInterval(async () => {
-    let phase = null;
-    try {
-      const st = await api("/api/admin/upgrade");
-      phase = st.phase;
-      if (phase === "error") {
-        clearInterval(poll);
-        upgrading = false;
-        toast(t("dash.upgradeFailed") + (st.message ? `: ${st.message}` : ""));
-        renderDashboard();
-        return;
-      }
-    } catch { /* old process gone; new one not up yet */ }
-    try {
-      const me = await api("/api/me");
-      if (me && me.version === tag) {
-        clearInterval(poll);
-        toast(t("dash.upgradeDone"), true);
-        setTimeout(() => location.reload(), 800);
-      }
-    } catch { /* still restarting */ }
-    if (Date.now() > deadline) {
-      clearInterval(poll);
-      upgrading = false;
-      toast(t("dash.upgradeTimeout"));
-    }
-  }, 3000);
 }
 
 // Containers-by-state donut. Pure CSS conic-gradient — no chart dependency.

@@ -102,6 +102,9 @@ type App struct {
 	upgradeMsg   string
 	upgradeFrom  string
 	upgradeTo    string
+	// upgradeRead/Total feed the download progress bar (total 0 = unknown).
+	upgradeRead  int64
+	upgradeTotal int64
 }
 
 type dirSizeEntry struct {

@@ -1,6 +1,9 @@
 package upgrader
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -12,10 +15,10 @@ import (
 
 func TestAssetName(t *testing.T) {
 	cases := map[[2]string]string{
-		{"windows", "amd64"}: "mudp_x86.exe",
-		{"linux", "amd64"}:   "mudp_x86_linux",
-		{"windows", "arm64"}: "mudp_arm64.exe",
-		{"linux", "arm64"}:   "mudp_arm64_linux",
+		{"windows", "amd64"}: "mudp-windows-amd64.exe",
+		{"linux", "amd64"}:   "mudp-linux-amd64",
+		{"windows", "arm64"}: "mudp-windows-arm64.exe",
+		{"linux", "arm64"}:   "mudp-linux-arm64",
 		{"darwin", "amd64"}:  "",
 		{"linux", "386"}:     "",
 	}
@@ -30,17 +33,97 @@ func TestAssetName(t *testing.T) {
 	}
 }
 
+func TestArchiveName(t *testing.T) {
+	cases := map[[2]string]string{
+		{"windows", "amd64"}: "mudp-windows-amd64-v1.2.0.zip",
+		{"linux", "amd64"}:   "mudp-linux-amd64-v1.2.0.tar.gz",
+		{"windows", "arm64"}: "mudp-windows-arm64-v1.2.0.zip",
+		{"linux", "arm64"}:   "mudp-linux-arm64-v1.2.0.tar.gz",
+	}
+	for platform, want := range cases {
+		if got := ArchiveName("v1.2.0", platform[0], platform[1]); got != want {
+			t.Errorf("ArchiveName(%s) = %q, want %q", platform, got, want)
+		}
+	}
+}
+
 func TestAssetURL(t *testing.T) {
 	url, err := AssetURL("v1.2.0", "linux", "amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "https://github.com/neophack/mudp/releases/download/v1.2.0/mudp_x86_linux"
+	want := "https://github.com/neophack/mudp/releases/download/v1.2.0/mudp-linux-amd64-v1.2.0.tar.gz"
 	if url != want {
 		t.Fatalf("url = %q, want %q", url, want)
 	}
 	if _, err := AssetURL("v1.2.0", "darwin", "arm64"); err == nil {
 		t.Fatal("darwin should be unsupported")
+	}
+}
+
+func TestExtractBinary(t *testing.T) {
+	payload := []byte("fake mudp binary")
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "out.new")
+
+	// zip (windows-style release archive)
+	zipPath := filepath.Join(dir, "mudp-windows-amd64-v1.2.0.zip")
+	zf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(zf)
+	w, err := zw.Create("mudp-windows-amd64.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write(payload)
+	zw.Close()
+	zf.Close()
+	if err := ExtractBinary(zipPath, dest, "windows", "amd64"); err != nil {
+		t.Fatalf("extract zip: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || string(got) != string(payload) {
+		t.Fatalf("zip extract got %q, %v", got, err)
+	}
+
+	// tar.gz (linux-style release archive)
+	dest = filepath.Join(dir, "out2.new")
+	tgzPath := filepath.Join(dir, "mudp-linux-amd64-v1.2.0.tar.gz")
+	tf, err := os.Create(tgzPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := gzip.NewWriter(tf)
+	tw := tar.NewWriter(gw)
+	hdr := &tar.Header{Name: "mudp-linux-amd64", Mode: 0o755, Size: int64(len(payload))}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	tw.Write(payload)
+	tw.Close()
+	gw.Close()
+	tf.Close()
+	if err := ExtractBinary(tgzPath, dest, "linux", "amd64"); err != nil {
+		t.Fatalf("extract tar.gz: %v", err)
+	}
+	got, err = os.ReadFile(dest)
+	if err != nil || string(got) != string(payload) {
+		t.Fatalf("tar.gz extract got %q, %v", got, err)
+	}
+
+	// An archive with no usable member must be rejected, not silently
+	// swapped in.
+	emptyZip := filepath.Join(dir, "empty.zip")
+	ef, err := os.Create(emptyZip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zip.NewWriter(ef).Close()
+	ef.Close()
+	if err := ExtractBinary(emptyZip, filepath.Join(dir, "out3.new"), "windows", "amd64"); err == nil {
+		t.Fatal("empty archive should fail")
 	}
 }
 
@@ -55,14 +138,19 @@ func TestDownloadWritesFileAndRejectsBadStatus(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "mudp.new")
-	if err := Download(context.Background(), srv.URL+"/good", dest); err != nil {
+	var lastRead, lastTotal int64
+	onProgress := func(read, total int64) { lastRead, lastTotal = read, total }
+	if err := Download(context.Background(), srv.URL+"/good", dest, onProgress); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(dest)
 	if string(data) != "binary-bytes" {
 		t.Fatalf("downloaded %q", data)
 	}
-	if err := Download(context.Background(), srv.URL+"/bad", dest); err == nil {
+	if lastRead != int64(len("binary-bytes")) || lastTotal != int64(len("binary-bytes")) {
+		t.Fatalf("progress = %d/%d, want %d/%d", lastRead, lastTotal, len("binary-bytes"), len("binary-bytes"))
+	}
+	if err := Download(context.Background(), srv.URL+"/bad", dest, nil); err == nil {
 		t.Fatal("404 should error")
 	}
 }

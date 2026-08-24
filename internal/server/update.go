@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 
 	"mudp/internal/upgrader"
@@ -32,6 +33,11 @@ type updateCheckResponse struct {
 	Latest     string            `json:"latest,omitempty"`
 	Available  bool              `json:"available"`
 	CheckedAt  string            `json:"checkedAt,omitempty"`
+	// Notes / ReleasedAt carry the release body and publish time so the update
+	// dialog can show what changed (the "what's new" list) without the browser
+	// calling GitHub itself.
+	Notes      string            `json:"notes,omitempty"`
+	ReleasedAt string            `json:"releasedAt,omitempty"`
 	Downloads  map[string]string `json:"downloads,omitempty"`
 	// AssetURL is the release asset matching THIS server's OS/arch — the
 	// binary /api/admin/upgrade would download and swap in.
@@ -41,11 +47,13 @@ type updateCheckResponse struct {
 
 // updateCheck reports the running version and, by consulting the GitHub
 // latest-release API (cached), whether a newer release exists and where its
-// per-OS assets can be downloaded.
+// per-OS assets can be downloaded. `?refresh=1` skips the cache read (the
+// manual "check now" button) while still refreshing the cached entry.
 func (a *App) updateCheck(w http.ResponseWriter, r *http.Request) {
 	a.updateMu.Lock()
 	defer a.updateMu.Unlock()
-	if a.updateCache != nil {
+	refresh := r.URL.Query().Get("refresh") == "1"
+	if !refresh && a.updateCache != nil {
 		ttl := updateCacheTTL
 		if a.updateCache.Error != "" {
 			ttl = updateErrCacheTTL
@@ -62,10 +70,10 @@ func (a *App) updateCheck(w http.ResponseWriter, r *http.Request) {
 		// Untagged dev builds stay quiet: every tag looks like an update.
 		res.Available = version.Version != "dev" && version.Compare(version.Version, res.Latest) < 0
 		res.Downloads = map[string]string{
-			"windows":       updateAssetURL(res.Latest, "mudp_x86.exe"),
-			"linux":         updateAssetURL(res.Latest, "mudp_x86_linux"),
-			"windows-arm64": updateAssetURL(res.Latest, "mudp_arm64.exe"),
-			"linux-arm64":   updateAssetURL(res.Latest, "mudp_arm64_linux"),
+			"windows":       updateAssetURL(res.Latest, upgrader.ArchiveName(res.Latest, "windows", "amd64")),
+			"linux":         updateAssetURL(res.Latest, upgrader.ArchiveName(res.Latest, "linux", "amd64")),
+			"windows-arm64": updateAssetURL(res.Latest, upgrader.ArchiveName(res.Latest, "windows", "arm64")),
+			"linux-arm64":   updateAssetURL(res.Latest, upgrader.ArchiveName(res.Latest, "linux", "arm64")),
 		}
 		if url, err := upgrader.AssetURL(res.Latest, runtime.GOOS, runtime.GOARCH); err == nil {
 			res.AssetURL = url
@@ -103,13 +111,17 @@ func (a *App) fetchLatestRelease(ctx context.Context) updateCheckResponse {
 		return res
 	}
 	var release struct {
-		TagName string `json:"tag_name"`
+		TagName    string `json:"tag_name"`
+		Body       string `json:"body"`
+		PublishedAt string `json:"published_at"`
 	}
 	if err := json.Unmarshal(body, &release); err != nil || release.TagName == "" {
 		res.Error = "no published release found"
 		return res
 	}
 	res.Latest = release.TagName
+	res.Notes = strings.TrimSpace(release.Body)
+	res.ReleasedAt = release.PublishedAt
 	return res
 }
 

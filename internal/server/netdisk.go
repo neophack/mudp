@@ -187,35 +187,62 @@ func pathWithin(root, p string) bool {
 	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
 }
 
-// resolveExistingPath returns p with every symlink component resolved. Paths
-// that do not exist yet are normal here — mkdir, rename and upload targets are
-// all created after validation — so when EvalSymlinks fails the deepest
-// existing ancestor is resolved and the remaining components are appended
-// verbatim. Those trailing components cannot themselves be links: they do not
-// exist.
+// resolveExistingPath returns p with every existing component resolved through
+// symlinks — and, on Windows, directory junctions, which unprivileged accounts
+// can create and which the OS traverses just like a symlink but
+// filepath.EvalSymlinks does not resolve. os.Readlink recognises both, so the
+// walk below consults it for every component. Components that do not exist yet
+// are appended verbatim: mkdir, rename and upload targets are all created
+// after validation, and a component that does not exist cannot be a link.
 //
 // A resolved-then-open sequence is still theoretically racy (a component could
 // be swapped for a symlink in between), but the window requires the attacker to
 // win a race inside their own directory, and closing it fully needs
 // per-component openat(O_NOFOLLOW), which has no portable Windows equivalent.
 func resolveExistingPath(p string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(p)
-	if err == nil {
-		return resolved, nil
+	return resolveFrom(p, 0)
+}
+
+// maxLinkHops bounds resolution across link chains and cycles, standing in for
+// the kernel's ELOOP.
+const maxLinkHops = 40
+
+func resolveFrom(p string, hops int) (string, error) {
+	if hops > maxLinkHops {
+		return "", fmt.Errorf("too many levels of symbolic links: %s", p)
 	}
-	if !os.IsNotExist(err) {
-		return "", err
-	}
-	parent := filepath.Dir(p)
-	if parent == p {
-		// Reached the filesystem root without finding anything that exists.
-		return p, nil
-	}
-	resolvedParent, err := resolveExistingPath(parent)
+	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(resolvedParent, filepath.Base(p)), nil
+	vol := filepath.VolumeName(abs)
+	base := string(filepath.Separator)
+	if vol != "" {
+		base = vol + string(filepath.Separator)
+	}
+	parts := strings.Split(strings.TrimPrefix(filepath.Clean(abs), base), string(filepath.Separator))
+	resolved := base
+	for i, part := range parts {
+		next := filepath.Join(resolved, part)
+		if _, err := os.Lstat(next); err != nil {
+			if !os.IsNotExist(err) {
+				return "", err
+			}
+			// Nothing from here on exists yet; keep the remaining components
+			// verbatim.
+			return filepath.Join(append([]string{resolved}, parts[i:]...)...), nil
+		}
+		if target, err := os.Readlink(next); err == nil {
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(resolved, target)
+			}
+			if next, err = resolveFrom(target, hops+1); err != nil {
+				return "", err
+			}
+		}
+		resolved = next
+	}
+	return resolved, nil
 }
 
 func (a *App) netdiskList(w http.ResponseWriter, r *http.Request) {

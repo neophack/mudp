@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -68,6 +71,25 @@ type errorStatusRecorder struct {
 func (r *errorStatusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack and Flush forward the underlying writer's streaming abilities, which
+// plain embedding would hide: the container terminal needs Hijacker for its
+// WebSocket upgrade, and the SSE/streaming handlers need Flusher. Once a
+// connection is hijacked no status is ever written through this recorder, so
+// the default 200 stands.
+func (r *errorStatusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("hijacking not supported")
+	}
+	return h.Hijack()
+}
+
+func (r *errorStatusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // recordErrors is mounted just inside recoverPanic: panics unwind past it (and

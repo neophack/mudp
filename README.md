@@ -109,19 +109,21 @@ GOOS=darwin GOARCH=arm64 ./build.sh
 # Windows
 go build -o dist/mudp.exe ./cmd/mudp
 # or, to produce all four release assets at once
-#   dist\mudp_x86.exe    (windows/amd64)   dist\mudp_x86_linux    (linux/amd64)
-#   dist\mudp_arm64.exe  (windows/arm64)   dist\mudp_arm64_linux  (linux/arm64)
+#   dist\mudp-windows-amd64.exe  + .zip   dist\mudp-linux-amd64  + .tar.gz
+#   dist\mudp-windows-arm64.exe  + .zip   dist\mudp-linux-arm64  + .tar.gz
 .\build.bat   # scripts\build.ps1 is equivalent
 ```
 
 ## Run as a service
 
 ```bash
-# Linux (systemd) — installs to /opt/mudp, preserves data on re-run
+mudp install        # Windows (admin) or Linux (root): registers the OS service
+                    # with automatic restart, then `mudp start`
+# Linux alternative with dedicated user + stable session secret:
 sudo ./scripts/install-service.sh [/path/to/mudp]
 ```
 
-On Windows, register `mudp.exe` with [NSSM](https://nssm.cc) or `sc.exe` — see [docs/operations.md](docs/operations.md#running-as-a-service) for both platforms' details and platform notes.
+Both `mudp install` paths make the web UI's one-click upgrade restart-safe: the upgrade swaps the binary and exits, and the service manager brings the new version up — see [docs/operations.md](docs/operations.md#running-as-a-service).
 
 ## Test
 
@@ -143,7 +145,7 @@ npm install
 npm run lint      # ESLint: catches JS syntax/undefined/import errors
 npm run test:unit
 npm run test:integration
-npm run test:e2e  # requires the Go binary at dist/mudp_x86.exe (or dist/mudp_x86_linux)
+npm run test:e2e  # requires the Go binary at dist/mudp-windows-amd64.exe (or dist/mudp-linux-amd64)
 ```
 
 End-to-end tests start the real MUDP binary, log in via Chromium, and navigate the major tabs. They fail automatically on any page JS error or HTTP 5xx response.

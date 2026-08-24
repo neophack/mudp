@@ -1,6 +1,6 @@
 module mudp
 
-go 1.21
+go 1.23.0
 
 require (
 	github.com/docker/docker v25.0.7+incompatible
@@ -10,7 +10,7 @@ require (
 	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/opencontainers/image-spec v1.1.0
 	golang.org/x/crypto v0.17.0
-	golang.org/x/sys v0.16.0
+	golang.org/x/sys v0.34.0
 	golang.org/x/time v0.5.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.19.1
@@ -27,6 +27,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/kardianos/service v1.3.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/morikuni/aec v1.1.0 // indirect

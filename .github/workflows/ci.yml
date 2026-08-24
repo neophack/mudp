@@ -48,7 +48,7 @@ jobs:
         with:
           node-version: '22'
       - name: Build MUDP binary
-        run: go build -o dist/mudp ./cmd/mudp
+        run: go build -o dist/mudp-linux-amd64 ./cmd/mudp
       - name: Install Playwright browsers
         working-directory: web
         run: |
