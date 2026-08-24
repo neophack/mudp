@@ -195,7 +195,12 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 textarea { min-height: 72px; resize: vertical; font-family: inherit; }
-textarea.mono, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 12px; }
+/* Mono runs are URLs, commands and ids with no natural break points; without
+   this the Feishu callback URL alone forces the settings page ~342px wide on a
+   320px phone the moment the font stack resolves wider than Consolas. `anywhere`
+   (unlike break-word) also lowers min-content, so a card or grid holding a long
+   mono token is never pushed past the viewport either. */
+textarea.mono, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 12px; overflow-wrap: anywhere; }
 label.check { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; font-size: 12.5px; color: var(--ink-soft); user-select: none; }
 label.check input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
 
@@ -948,6 +953,7 @@ table.data td.chk-cell { width: 36px; text-align: center; }
   border-radius: var(--radius-sm);
   font-weight: 600;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- Log output ---------- */
