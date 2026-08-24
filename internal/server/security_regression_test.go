@@ -359,15 +359,15 @@ func TestSecuritySessionForgeryRejected(t *testing.T) {
 	_, admin, user := newSecurityTestServer(t)
 
 	t.Run("tampered signature rejected", func(t *testing.T) {
+		// Tamper with the decoded signature bytes, not a base64 character of
+		// the whole cookie: when the decoded length is not a multiple of 3,
+		// the final base64 character carries ignored padding bits, so an
+		// A<->B flip there can decode back to the identical cookie (1 time in
+		// 16 depending on the HMAC output) and would fail open.
 		raw := admin.sessionCookieValue()
-		tampered := []byte(raw)
-		last := tampered[len(tampered)-1]
-		if last == 'A' {
-			tampered[len(tampered)-1] = 'B'
-		} else {
-			tampered[len(tampered)-1] = 'A'
-		}
-		resp, body := rawCookieGet(t, admin.baseURL, "/api/users", string(tampered))
+		decoded := []byte(base64RawURLDecode(t, raw))
+		decoded[len(decoded)-1] ^= 1
+		resp, body := rawCookieGet(t, admin.baseURL, "/api/users", base64RawURLNoPad(string(decoded)))
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("status=%d, want 401; body=%s", resp.StatusCode, body)
 		}
