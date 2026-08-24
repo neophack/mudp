@@ -137,6 +137,9 @@ func (a *App) runUpgrade(exe, tag string) {
 		fail("extract: %v", err)
 		return
 	}
+	// Every path from here ends in os.Exit, which skips the defer above —
+	// drop the archive now or it lingers next to the binary forever.
+	os.Remove(archive)
 	if err := upgrader.WriteMarker(exe, upgrader.Marker{From: version.Version, To: tag}); err != nil {
 		fail("marker: %v", err)
 		return
