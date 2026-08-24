@@ -177,13 +177,16 @@ func Download(ctx context.Context, url, dest string, onProgress func(read, total
 }
 
 // ExtractBinary pulls the platform binary out of a release archive (zip on
-// Windows, tar.gz elsewhere) into dest, ready to be swapped in. The archive
-// is expected to contain the binary under its AssetName; a single-member
-// archive under any name is accepted as a fallback.
+// Windows, tar.gz elsewhere) into dest, ready to be swapped in. The format
+// follows the platform's asset (ArchiveName), never the local file name: the
+// download sidecar keeps the .exe extension on Windows (mudp.download.exe), so
+// a name-based ".zip" check there would try to gunzip a zip. The archive is
+// expected to contain the binary under its AssetName; a single-member archive
+// under any name is accepted as a fallback.
 func ExtractBinary(archive, dest, goos, goarch string) error {
 	want := AssetName(goos, goarch)
 	var err error
-	if strings.HasSuffix(archive, ".zip") {
+	if goos == "windows" {
 		err = extractFromZip(archive, want, dest)
 	} else {
 		err = extractFromTarGz(archive, want, dest)

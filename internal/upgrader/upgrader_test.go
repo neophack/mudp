@@ -88,6 +88,26 @@ func TestExtractBinary(t *testing.T) {
 		t.Fatalf("zip extract got %q, %v", got, err)
 	}
 
+	// Regression: runUpgrade stores the download at SidecarPath(exe,
+	// ".download"), which keeps the .exe extension on Windows. The extractor
+	// must still treat it as a zip (format follows the platform's asset, not
+	// the temp file name) instead of failing with "gzip: invalid header".
+	sidecar := SidecarPath(filepath.Join(dir, "mudp.exe"), ".download")
+	if filepath.Ext(sidecar) != ".exe" {
+		t.Fatalf("test setup: sidecar %q should end in .exe", sidecar)
+	}
+	if err := os.Rename(zipPath, sidecar); err != nil {
+		t.Fatal(err)
+	}
+	dest = filepath.Join(dir, "out-sidecar.new")
+	if err := ExtractBinary(sidecar, dest, "windows", "amd64"); err != nil {
+		t.Fatalf("extract zip from .exe-named sidecar: %v", err)
+	}
+	got, err = os.ReadFile(dest)
+	if err != nil || string(got) != string(payload) {
+		t.Fatalf("sidecar zip extract got %q, %v", got, err)
+	}
+
 	// tar.gz (linux-style release archive)
 	dest = filepath.Join(dir, "out2.new")
 	tgzPath := filepath.Join(dir, "mudp-linux-amd64-v1.2.0.tar.gz")
