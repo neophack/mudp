@@ -82,11 +82,17 @@ jobs:
           # internal/version/version.go is the single source of truth
           # (checked by the check-version job).
           go build -trimpath -ldflags "-s -w" -o "$BIN" ./cmd/mudp
+          if [ "$GOOS" = "linux" ]; then
+            # Smoke-test only binaries this runner can natively execute; the
+            # arm64 build can't run on an x86_64 host (Exec format error).
+            case "$(uname -m):$GOARCH" in
+              x86_64:amd64|aarch64:arm64) ./"$BIN" -version ;;
+            esac
+          fi
           if [ "$GOOS" = "windows" ]; then
             ASSET="${{ env.BINARY }}-${GOOS}-${GOARCH}-${VERSION}.zip"
             zip "$ASSET" "$BIN"
           else
-            ./"$BIN" -version  # smoke test (linux binaries run on the runner)
             ASSET="${{ env.BINARY }}-${GOOS}-${GOARCH}-${VERSION}.tar.gz"
             tar czf "$ASSET" "$BIN"
           fi
