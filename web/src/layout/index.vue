@@ -41,6 +41,9 @@
           <p>{{ pageSubtitle }}</p>
         </div>
         <div class="head-actions">
+          <el-button class="icon-btn" :title="themeTitle" @click="toggleTheme">
+            <v-icon :name="s.isDark ? 'sun' : 'moon'" :size="16" />
+          </el-button>
           <el-badge :value="jobsCount" :hidden="!jobsCount" class="head-badge">
             <el-button class="icon-btn" :title="jobsTitle" @click="jobsVisible = true">
               <v-icon name="jobs" />
@@ -59,19 +62,33 @@
       </div>
     </section>
 
-    <el-drawer v-model="drawer" direction="ltr" size="220px" :with-header="false" class="mobile-nav-drawer">
-      <div class="drawer-nav">
-        <button
-          v-for="item in menuItems"
-          :key="item.name"
-          class="nav-item"
-          :class="{ active: $route.name === item.name }"
-          :data-tab="item.key"
-          @click="navigate(item)"
-        >
-          <span class="ico"><v-icon :name="item.key" /></span>
-          <span class="nav-label">{{ tt("nav." + item.name) }}</span>
-        </button>
+    <el-drawer v-model="drawer" direction="ltr" size="280px" :with-header="false" class="mobile-nav-drawer">
+      <div class="drawer-shell">
+        <div class="drawer-head">
+          <span class="drawer-avatar" aria-hidden="true">{{ userInitial }}</span>
+          <div class="drawer-user">
+            <strong :title="userName">{{ userName }}</strong>
+            <span>{{ roleLine }}</span>
+          </div>
+        </div>
+        <nav class="drawer-nav">
+          <button
+            v-for="item in menuItems"
+            :key="item.name"
+            class="nav-item"
+            :class="{ active: $route.name === item.name }"
+            :data-tab="item.key"
+            @click="navigate(item)"
+          >
+            <span class="ico"><v-icon :name="item.key" /></span>
+            <span class="nav-label">{{ tt("nav." + item.name) }}</span>
+          </button>
+        </nav>
+        <div class="drawer-foot">
+          <button class="drawer-logout" :title="tt('user.logout')" @click="logout">
+            <v-icon name="logout" /><span>{{ tt("user.logout") }}</span>
+          </button>
+        </div>
       </div>
     </el-drawer>
 
@@ -83,7 +100,7 @@
 <script>
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
-import { store, refreshAll, isAdmin } from "@/store";
+import { store, refreshAll, isAdmin, setTheme } from "@/store";
 import { tt } from "@/i18n";
 import { activeJobCount } from "@/jobs";
 import { refreshActiveRoute } from "@/refresh";
@@ -141,6 +158,10 @@ export default {
     userName() {
       return this.s.me?.displayName || this.s.me?.username || "";
     },
+    userInitial() {
+      const name = this.userName.trim();
+      return name ? name[0].toUpperCase() : "?";
+    },
     roleLine() {
       const me = this.s.me;
       return me?.role + (me?.groups?.length ? " - " + me.groups.join(", ") : "");
@@ -163,9 +184,15 @@ export default {
       const n = this.s.unreadCount || 0;
       return n > 99 ? "99+" : n;
     },
+    themeTitle() {
+      return tt("shell.themeToggle", { next: tt("theme." + (this.s.isDark ? "light" : "dark")) });
+    },
   },
   methods: {
     tt,
+    toggleTheme() {
+      setTheme(this.s.isDark ? "light" : "dark");
+    },
     navigate(item) {
       this.drawer = false;
       if (this.$route.name !== item.name) {

@@ -240,7 +240,7 @@ export default {
 .viewer-body { min-height: 320px; max-height: 70vh; overflow: auto; text-align: center; }
 .viewer-body.fullscreen { position: fixed; inset: 0; z-index: 3001; max-height: none; background: #fff; padding: 16px; }
 .viewer-media { max-width: 100%; max-height: 66vh; }
-.viewer-text { text-align: left; background: #f8fafc; border-radius: 8px; padding: 12px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; overflow: auto; max-height: 66vh; }
+.viewer-text { text-align: left; background: var(--fill); border-radius: 8px; padding: 12px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; overflow: auto; max-height: 66vh; }
 .viewer-md { text-align: left; max-height: 66vh; overflow: auto; }
 .viewer-canvas-wrap { text-align: center; }
 .viewer-loading, .viewer-error { color: var(--muted); padding: 40px 0; }

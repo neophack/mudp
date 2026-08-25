@@ -429,7 +429,7 @@ export default {
 .step.done .step-icon { color: var(--ok); }
 .step.error .step-icon { color: var(--danger); }
 .step-msg { color: var(--muted); }
-.error-box { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .create-log { max-height: 220px; }
 .log-output {
   background: #0f172a;

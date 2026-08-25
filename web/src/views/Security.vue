@@ -674,7 +674,7 @@ export default {
 .stat-cards .stat-label { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .mcp-top-buckets { display: flex; gap: 24px; margin-top: 12px; flex-wrap: wrap; }
 .chip-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-.chip { background: #f1f5f9; border: 1px solid var(--line); border-radius: 12px; padding: 2px 10px; font-size: 12px; }
+.chip { background: var(--fill); border: 1px solid var(--line); border-radius: 12px; padding: 2px 10px; font-size: 12px; }
 .mcp-map-legend { display: flex; gap: 12px; margin-left: auto; font-size: 12px; color: var(--muted); }
 .mcp-legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .mcp-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }

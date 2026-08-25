@@ -103,7 +103,7 @@ export default {
   height: 52px;
   margin: 0 auto 10px;
   border-radius: 50%;
-  background: #eff6ff;
+  background: var(--brand-tint);
   box-shadow: inset 0 0 0 2px #bfdbfe;
   display: flex;
   align-items: center;
@@ -114,7 +114,7 @@ export default {
 .upgrade-hero-sub { margin-top: 4px; }
 .upgrade-notes { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
 .upgrade-notes-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
-.upgrade-notes ul { margin: 0; padding-left: 18px; color: #475569; font-size: 12.5px; max-height: 220px; overflow-y: auto; }
+.upgrade-notes ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; max-height: 220px; overflow-y: auto; }
 .upgrade-notes li { margin-bottom: 4px; }
 .upgrade-manual { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
 .upgrade-manual a { margin-left: 6px; }

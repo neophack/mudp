@@ -73,12 +73,15 @@
                 <svg v-else viewBox="0 0 24 24" focusable="false"><path d="M6 3.5h8.4L19 8.1v12.1c0 1-.8 1.8-1.8 1.8H6.8c-1 0-1.8-.8-1.8-1.8V5.3c0-1 .8-1.8 1.8-1.8Z"/><path d="M14 3.8V8h4.2"/><path d="M8.5 12h7M8.5 15h7M8.5 18h4.5"/></svg>
               </span>
               <div class="netdisk-file-text">
-                <div class="primary-line">
-                  <el-button v-if="row.dir" link class="name-link" :title="row.name" @click.stop="navigate(row.path)">{{ row.name }}</el-button>
-                  <el-button v-else-if="previewKind(row.name) && mode !== 'shareddisk'" link class="name-link" :title="row.name" @click.stop="openViewer(row)">{{ row.name }}</el-button>
-                  <a v-else-if="!row.dir && mode !== 'shareddisk'" class="name-link" :href="downloadHref(row)" :title="row.name" @click.stop>{{ row.name }}</a>
-                  <span v-else class="name-link" :title="row.name">{{ row.name }}</span>
-                </div>
+                <!-- Phone: the name is plain text — the whole row is the tap
+                     target, split at the row's midpoint (onRowClick): taps
+                     left of it open the item, taps right of it pop the
+                     action sheet. -->
+                <div v-if="s.isMobile" class="primary-line name-link name-mobile" :title="row.name">{{ row.name }}</div>
+                <el-button v-else-if="row.dir" link class="name-link" :title="row.name" @click.stop="navigate(row.path)">{{ row.name }}</el-button>
+                <el-button v-else-if="previewKind(row.name) && mode !== 'shareddisk'" link class="name-link" :title="row.name" @click.stop="openViewer(row)">{{ row.name }}</el-button>
+                <a v-else-if="!row.dir && mode !== 'shareddisk'" class="name-link" :href="downloadHref(row)" :title="row.name" @click.stop>{{ row.name }}</a>
+                <span v-else class="name-link" :title="row.name">{{ row.name }}</span>
                 <div class="netdisk-file-meta">{{ row.dir ? "-" : fmtBytes(row.size) }} · {{ fmtDate(row.modTime) }}</div>
               </div>
             </div>
@@ -99,15 +102,13 @@
                 v-for="a in rowActions(row)"
                 :key="a.key"
                 link
-                size="small"
                 class="row-action-btn"
                 :class="{ 'danger-text': a.danger }"
+                :icon="a.icon"
                 :title="a.label"
                 :aria-label="a.label"
                 @click="runRowAction(a, row)"
-              >
-                <el-icon :size="16"><component :is="a.icon" /></el-icon>
-              </el-button>
+              />
             </div>
           </template>
         </el-table-column>
@@ -300,7 +301,7 @@ export default {
     actionsColWidth() {
       let n = 1;
       for (const row of this.sortedItems) n = Math.max(n, this.rowActions(row).length);
-      return n * 28 + (n - 1) * 6 + 26;
+      return n * 26 + (n - 1) * 2 + 24;
     },
     fileCount() {
       return this.items.filter((f) => !f.dir).length;
@@ -466,9 +467,26 @@ export default {
     onSelectionChange(rows) {
       this.selection = rows.map((r) => r.path);
     },
-    onRowClick(row) {
+    onRowClick(row, _column, e) {
       if (!store.isMobile) return;
+      // The row splits at its midpoint: left half opens the item (folder
+      // navigation, preview, download), right half pops the action sheet.
+      // Rows with no open action (shared-disk files) pop from both halves.
+      const open = this.openAction(row);
+      if (open) {
+        const rect = (e.target.closest("tr") || e.currentTarget).getBoundingClientRect();
+        if (e.clientX - rect.left < rect.width / 2) {
+          open();
+          return;
+        }
+      }
       this.sheet = { visible: true, row };
+    },
+    openAction(row) {
+      if (row.dir) return () => this.navigate(row.path);
+      if (this.mode === "shareddisk") return null;
+      if (previewKind(row.name)) return () => this.openViewer(row);
+      return () => this.downloadRow(row);
     },
     // One action list per row, shared by the desktop icon column and the
     // phone action sheet so both surfaces can never drift apart.
@@ -773,12 +791,12 @@ export default {
 .netdisk-mode-btn.active { background: var(--brand); color: #fff; }
 .netdisk-count { color: var(--muted); font-size: 12.5px; }
 .netdisk-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.netdisk-hint { background: #f8fafc; border: 1px dashed var(--line); color: var(--muted); font-size: 12.5px; border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; }
-.netdisk-hint.warn { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+.netdisk-hint { background: var(--fill); border: 1px dashed var(--line); color: var(--muted); font-size: 12.5px; border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; }
+.netdisk-hint.warn { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-strong); }
 .netdisk-pathbar { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; flex-wrap: wrap; }
 .netdisk-crumbs { display: flex; align-items: center; flex-wrap: wrap; font-size: 13px; }
 .crumb-sep { color: var(--muted); margin: 0 2px; }
-.netdisk-used { margin-left: auto; font-size: 12.5px; color: #475569; }
+.netdisk-used { margin-left: auto; font-size: 12.5px; color: var(--muted); }
 .quota-bar { display: inline-block; vertical-align: middle; width: 120px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 0 4px; }
 .quota-bar span { display: block; height: 100%; background: var(--brand); }
 .netdisk-card.drag-over { outline: 2px dashed var(--brand); outline-offset: -6px; }
@@ -792,9 +810,7 @@ export default {
    query below), not a second copy. */
 .netdisk-file-meta { display: none; color: var(--muted); font-size: 12px; }
 .name-link { padding: 0; font-weight: 600; }
-.row-actions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
-.row-action-btn { width: 28px; height: 28px; margin-left: 0 !important; padding: 0; flex: 0 0 28px; border-radius: 6px; }
-.row-action-btn:hover { background: var(--line); }
+.name-mobile { color: var(--brand); }
 .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
 .primary-line { font-weight: 600; }

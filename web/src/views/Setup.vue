@@ -1,6 +1,9 @@
 <template>
   <section class="auth-wrap">
-    <div class="auth-pane">
+    <!-- Brand hero: macOS-style aurora panel on wide screens, stacked on top
+         when narrow. The blob layer is pure decoration behind the glass. -->
+    <div class="auth-hero">
+      <div class="hero-bg" aria-hidden="true"><span class="g1"></span><span class="g2"></span><span class="g3"></span><span class="g4"></span></div>
       <div class="login-brand">
         <div class="app-icon" aria-hidden="true">
           <svg viewBox="0 0 32 32">
@@ -10,7 +13,12 @@
         </div>
         <div class="app-name">MUDP</div>
         <div class="app-tagline">{{ tt("setup.welcome") }}</div>
+        <div class="hero-feats">
+          <span v-for="i in 4" :key="i">{{ tt("login.feature" + i) }}</span>
+        </div>
       </div>
+    </div>
+    <div class="auth-pane">
       <form class="auth-card" @submit.prevent="submit">
         <h1>{{ tt("setup.title") }}</h1>
         <label class="field-label">{{ tt("setup.adminUsername") }}</label>

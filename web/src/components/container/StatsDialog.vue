@@ -159,5 +159,5 @@ export default {
 .stat-card-sub .spark-box { height: 28px; }
 .bar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 6px; }
 .bar-fill { height: 100%; background: var(--brand); }
-.error-box { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; }
+.error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 </style>

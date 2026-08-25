@@ -78,8 +78,8 @@ export default {
 .grid.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 800px) { .grid.two { grid-template-columns: minmax(0, 1fr); } }
 .col { display: flex; flex-direction: column; gap: 16px; }
-.card.inner { margin-bottom: 0; box-shadow: none; background: #f8fafc; }
+.card.inner { margin-bottom: 0; box-shadow: none; background: var(--fill); }
 .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
-ol, ul { margin: 0; padding-left: 20px; color: #475569; font-size: 13px; line-height: 1.9; }
+ol, ul { margin: 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.9; }
 </style>

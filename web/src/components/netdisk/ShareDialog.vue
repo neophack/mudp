@@ -150,7 +150,7 @@ export default {
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 8px; }
 .share-code-field { display: flex; gap: 8px; align-items: center; }
 .share-link-row { margin-bottom: 12px; }
-.copy-chip { display: flex; align-items: center; gap: 10px; background: #f1f5f9; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.copy-chip { display: flex; align-items: center; gap: 10px; background: var(--fill); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
 .copy-chip code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .share-name-line { margin-top: -8px; }
 </style>

@@ -39,7 +39,7 @@ export default {
 
 <style scoped>
 .step { display: flex; gap: 10px; align-items: center; font-size: 13px; margin-bottom: 10px; }
-.error-box { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .log-output {
   background: #0f172a;
   color: #cbd5e1;

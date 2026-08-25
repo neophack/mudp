@@ -311,6 +311,6 @@ export default {
 .kv span { color: var(--muted); }
 .sensor-row { padding: 6px 0; border-bottom: 1px dashed var(--line); }
 .dash-row-2 { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
-.error-box { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; }
+.error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 @media (max-width: 1000px) { .hist-row, .dash-row-2 { grid-template-columns: minmax(0, 1fr); } }
 </style>

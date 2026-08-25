@@ -313,11 +313,11 @@ export default {
 .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
 .row2 { display: flex; gap: 8px; }
-.field-label { font-size: 12.5px; color: #475569; font-weight: 600; margin-bottom: 6px; }
+.field-label { font-size: 12.5px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .check.locked { opacity: 0.5; }
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; margin-bottom: 10px; }
 .primary-line { font-weight: 600; }
 .secondary-line { color: var(--muted); font-size: 12px; }
-.error-box { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; }
+.error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 </style>

@@ -154,5 +154,5 @@ dl.detail dd { margin: 0; word-break: break-word; }
 .primary-line { font-weight: 600; }
 .secondary-line { color: var(--muted); font-size: 12px; }
 .warn-text { color: #e6a23c !important; }
-.error-box { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; }
+.error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 </style>

@@ -47,7 +47,34 @@ export const store = reactive({
   // lang is a monotonic counter touched on every language switch so templates
   // calling tt() re-render even though lib/i18n keeps its own plain variable.
   lang: 0,
+  // Resolved appearance flag (theme pref may be "auto"); templates read this
+  // to pick icons/tints without re-deriving it.
+  isDark: false,
+  theme: localStorage.getItem("mudp:theme") || "auto",
 });
+
+// Apply the resolved theme to <html>: data-theme="dark" drives our own tokens
+// and the "dark" class switches Element Plus to its built-in dark palette.
+function applyTheme() {
+  const dark = store.theme === "dark" || (store.theme === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  store.isDark = dark;
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  document.documentElement.classList.toggle("dark", dark);
+}
+
+export function setTheme(pref) {
+  store.theme = pref;
+  localStorage.setItem("mudp:theme", pref);
+  applyTheme();
+}
+
+// Keep "auto" in sync with the OS appearance while the tab is open.
+export function initTheme() {
+  applyTheme();
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (store.theme === "auto") applyTheme();
+  });
+}
 
 export function isAdmin() {
   return isAdminUser(store.me);

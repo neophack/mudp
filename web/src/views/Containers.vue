@@ -9,17 +9,16 @@
         style="width: 240px"
       />
       <el-button v-if="canMutate()" type="primary" @click="createVisible = true">{{ tt("action.newContainer") }}</el-button>
-    </div>
-
-    <!-- State filter pills. Counts come from the full list so they stay stable. -->
-    <div class="filter-bar">
-      <button
-        v-for="f in filters"
-        :key="f.key"
-        class="pill"
-        :class="{ active: s.containerFilter === f.key }"
-        @click="s.containerFilter = f.key"
-      >{{ f.label }} <span class="pill-count">{{ f.n }}</span></button>
+      <!-- State filter pills, pushed right. Counts come from the full list so they stay stable. -->
+      <div class="filter-bar">
+        <button
+          v-for="f in filters"
+          :key="f.key"
+          class="pill"
+          :class="{ active: s.containerFilter === f.key }"
+          @click="s.containerFilter = f.key"
+        >{{ f.label }} <span class="pill-count">{{ f.n }}</span></button>
+      </div>
     </div>
 
     <!-- Batch toolbar appears when one or more containers are selected. -->
@@ -82,19 +81,24 @@
             <div class="secondary-line">{{ tt("containers.gpuLine", { gpu: row.gpu || "none" }) }}</div>
           </template>
         </el-table-column>
-        <el-table-column v-if="!s.isMobile" :label="tt('common.actions')" width="230" fixed="right" class-name="actions-col">
+        <!-- Icon-only actions on a single line; the fixed column is sized from
+             the widest action set on screen (a running row carries the most). -->
+        <el-table-column v-if="!s.isMobile" :label="tt('common.actions')" :width="actionsColWidth" fixed="right" class-name="actions-col">
           <template #default="{ row }">
-            <el-button link icon="Document" :title="tt('containers.actLogs')" @click="open('logs', row)" />
-            <el-button link icon="VideoPlay" class="ok-text" :disabled="row.state === 'running' || pending(row, 'start')" :title="tt('containers.actStart')" @click="action(row, 'start')" />
-            <el-button link icon="VideoPause" class="warn-text" :disabled="(row.state !== 'running' && row.state !== 'paused') || pending(row, 'stop')" :title="tt('containers.actStop')" @click="action(row, 'stop')" />
-            <el-button link icon="Refresh" :disabled="(row.state !== 'running' && row.state !== 'paused') || pending(row, 'restart')" :title="tt('containers.actRestart')" @click="action(row, 'restart')" />
-            <el-button v-if="row.state === 'running'" link icon="Remove" :disabled="pending(row, 'pause')" :title="tt('containers.actPause')" @click="action(row, 'pause')" />
-            <el-button v-if="row.state === 'paused'" link icon="VideoPlay" class="ok-text" :disabled="pending(row, 'unpause')" :title="tt('containers.actUnpause')" @click="action(row, 'unpause')" />
-            <el-button link icon="FolderOpened" :title="tt('containers.actFiles')" @click="open('files', row)" />
-            <el-button v-if="row.state === 'running'" link icon="Monitor" :title="tt('containers.actConsole')" @click="open('terminal', row)" />
-            <el-button v-if="row.state === 'running'" link icon="DataLine" :title="tt('containers.actStats')" @click="open('stats', row)" />
-            <el-button link icon="InfoFilled" :title="tt('containers.actDetails')" @click="open('inspect', row)" />
-            <el-button link icon="Delete" class="danger-text" :disabled="pending(row, 'remove')" :title="tt('containers.actDelete')" @click="action(row, 'remove')" />
+            <div class="row-actions">
+              <el-button
+                v-for="a in rowActions(row)"
+                :key="a.key"
+                link
+                class="row-action-btn"
+                :class="[a.tone ? a.tone + '-text' : '', a.danger ? 'danger-text' : '']"
+                :icon="a.icon"
+                :disabled="a.disabled"
+                :title="a.label"
+                :aria-label="a.label"
+                @click="runRowAction(a, row)"
+              />
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -180,26 +184,14 @@ export default {
       return r.status || this.stateLabel(r);
     },
     sheetItems() {
-      const r = this.sheet.row;
-      if (!r) return [];
-      const items = [
-        { key: "logs", label: tt("containers.actLogs"), icon: "Document" },
-        { key: "start", label: tt("containers.actStart"), icon: "VideoPlay", disabled: r.state === "running" || this.pending(r, "start") },
-        { key: "stop", label: tt("containers.actStop"), icon: "VideoPause", disabled: (r.state !== "running" && r.state !== "paused") || this.pending(r, "stop") },
-        { key: "restart", label: tt("containers.actRestart"), icon: "Refresh", disabled: (r.state !== "running" && r.state !== "paused") || this.pending(r, "restart") },
-        { key: "files", label: tt("containers.actFiles"), icon: "FolderOpened" },
-        { key: "inspect", label: tt("containers.actDetails"), icon: "InfoFilled" },
-      ];
-      if (r.state === "running") {
-        items.push({ key: "pause", label: tt("containers.actPause"), icon: "Remove", disabled: this.pending(r, "pause") });
-        items.push({ key: "terminal", label: tt("containers.actConsole"), icon: "Monitor" });
-        items.push({ key: "stats", label: tt("containers.actStats"), icon: "DataLine" });
-      }
-      if (r.state === "paused") {
-        items.push({ key: "unpause", label: tt("containers.actUnpause"), icon: "VideoPlay", disabled: this.pending(r, "unpause") });
-      }
-      items.push({ key: "remove", label: tt("containers.actDelete"), icon: "Delete", danger: true, disabled: this.pending(r, "remove") });
-      return items;
+      return this.rowActions(this.sheet.row);
+    },
+    // Ten icons at most (a running container); size the fixed column to the
+    // widest set actually rendered so the icons never wrap onto a second line.
+    actionsColWidth() {
+      let n = 1;
+      for (const row of this.filtered) n = Math.max(n, this.rowActions(row).length);
+      return n * 26 + (n - 1) * 2 + 24;
     },
     filtered() {
       const q = (store.search || "").trim().toLowerCase();
@@ -263,15 +255,41 @@ export default {
       if (!store.isMobile) return;
       this.sheet = { visible: true, row };
     },
-    onSheetSelect(item) {
-      const row = this.sheet.row;
-      this.sheet.visible = false;
+    // One action list per row, shared by the desktop icon column and the phone
+    // action sheet so the two surfaces can never drift apart.
+    rowActions(r) {
+      if (!r) return [];
+      const running = r.state === "running";
+      const paused = r.state === "paused";
+      const items = [
+        { key: "logs", label: tt("containers.actLogs"), icon: "Document" },
+        { key: "start", label: tt("containers.actStart"), icon: "VideoPlay", tone: "ok", disabled: running || this.pending(r, "start") },
+        { key: "stop", label: tt("containers.actStop"), icon: "VideoPause", tone: "warn", disabled: (!running && !paused) || this.pending(r, "stop") },
+        { key: "restart", label: tt("containers.actRestart"), icon: "Refresh", disabled: (!running && !paused) || this.pending(r, "restart") },
+      ];
+      if (running) items.push({ key: "pause", label: tt("containers.actPause"), icon: "Remove", disabled: this.pending(r, "pause") });
+      if (paused) items.push({ key: "unpause", label: tt("containers.actUnpause"), icon: "VideoPlay", tone: "ok", disabled: this.pending(r, "unpause") });
+      items.push({ key: "files", label: tt("containers.actFiles"), icon: "FolderOpened" });
+      if (running) {
+        items.push({ key: "terminal", label: tt("containers.actConsole"), icon: "Monitor" });
+        items.push({ key: "stats", label: tt("containers.actStats"), icon: "DataLine" });
+      }
+      items.push({ key: "inspect", label: tt("containers.actDetails"), icon: "InfoFilled" });
+      items.push({ key: "remove", label: tt("containers.actDelete"), icon: "Delete", danger: true, disabled: this.pending(r, "remove") });
+      return items;
+    },
+    runRowAction(item, row) {
       if (!row) return;
       if (["start", "stop", "restart", "pause", "unpause", "remove"].includes(item.key)) {
         this.action(row, item.key);
       } else {
         this.open(item.key, row);
       }
+    },
+    onSheetSelect(item) {
+      const row = this.sheet.row;
+      this.sheet.visible = false;
+      this.runRowAction(item, row);
     },
     open(kind, row) {
       const id = row.id;
@@ -343,7 +361,7 @@ export default {
 </script>
 
 <style scoped>
-.filter-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
 .pill {
   border: 1px solid var(--line);
   background: var(--card);
@@ -353,22 +371,22 @@ export default {
   cursor: pointer;
   color: var(--muted);
 }
-.pill.active { border-color: var(--brand); color: var(--brand); background: #eff6ff; }
+.pill.active { border-color: var(--brand); color: var(--brand); background: var(--brand-tint); }
 .pill-count { opacity: 0.7; margin-left: 4px; }
 .batch-bar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px 14px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  background: var(--brand-tint);
+  border: 1px solid var(--brand-tint-line);
   border-radius: 10px;
   padding: 8px 14px;
   margin-bottom: 12px;
 }
 .batch-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .batch-actions .el-button { margin-left: 0; }
-.batch-count { font-weight: 600; color: #1d4ed8; font-size: 13px; }
+.batch-count { font-weight: 600; color: var(--brand); font-size: 13px; }
 .primary-line { font-weight: 600; }
 .secondary-line { color: var(--muted); font-size: 12px; }
 .port-link { color: var(--brand); }

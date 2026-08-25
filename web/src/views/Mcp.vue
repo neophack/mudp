@@ -580,8 +580,8 @@ export default {
 .mcp-tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
 .mcp-tool-group-title { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
 .mcp-tool { margin-bottom: 6px; }
-.mcp-tool-name { background: #eff6ff; color: var(--brand); border-radius: 4px; padding: 1px 6px; font-size: 11.5px; }
-.mcp-tool-desc { display: block; color: #475569; font-size: 12px; margin-top: 2px; }
+.mcp-tool-name { background: var(--brand-tint); color: var(--brand); border-radius: 4px; padding: 1px 6px; font-size: 11.5px; }
+.mcp-tool-desc { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
 .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
 .mcp-copy-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
@@ -596,7 +596,7 @@ export default {
 .mcp-log-list { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; }
 .mcp-log-list li { border-top: 1px solid var(--line); padding: 8px 0; }
 .mcp-log-head { display: flex; justify-content: space-between; gap: 10px; }
-.mcp-log-tool { background: #eff6ff; color: var(--brand); border-radius: 4px; padding: 1px 6px; font-size: 11.5px; }
+.mcp-log-tool { background: var(--brand-tint); color: var(--brand); border-radius: 4px; padding: 1px 6px; font-size: 11.5px; }
 .mcp-log-args { display: block; color: var(--muted); font-size: 11.5px; margin-top: 4px; word-break: break-all; }
 .primary-line { font-weight: 600; display: flex; align-items: center; }
 .secondary-line { color: var(--muted); font-size: 12px; }
