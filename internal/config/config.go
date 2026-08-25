@@ -17,9 +17,6 @@ type Config struct {
 	// DockerHost overrides the Docker Engine endpoint. Empty = DOCKER_HOST env
 	// or the default local socket, resolved by the Docker SDK.
 	DockerHost string
-	// WebDir, when non-empty, serves the UI from disk (dev mode) instead of the
-	// embedded filesystem. Lets you iterate on web/ without rebuilding.
-	WebDir          string
 	DefaultLanguage string
 	// TrustedProxies lists the peers (IPs or CIDRs, comma separated) whose
 	// X-Forwarded-For header may be believed when attributing a request to a
@@ -36,7 +33,6 @@ func Load() Config {
 		Addr:            env("MUDP_ADDR", "0.0.0.0:9000"),
 		DBPath:          env("MUDP_DB", defaultDBPath()),
 		DockerHost:      env("MUDP_DOCKER_HOST", ""),
-		WebDir:          env("MUDP_WEB_DIR", ""),
 		DefaultLanguage: env("MUDP_DEFAULT_LANGUAGE", "en_US"),
 		TrustedProxies:  env("MUDP_TRUSTED_PROXIES", ""),
 	}

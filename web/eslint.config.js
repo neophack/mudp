@@ -1,4 +1,5 @@
 import js from "@eslint/js";
+import pluginVue from "eslint-plugin-vue";
 import globals from "globals";
 
 export default [
@@ -6,6 +7,27 @@ export default [
     ignores: ["vendor/**", "wasm/**", "node_modules/**", "dist/**", "coverage/**"],
   },
   js.configs.recommended,
+  // Vue 3 SFCs (src/**/*.vue): template parsing + the essential error rules.
+  ...pluginVue.configs["flat/essential"],
+  {
+    files: ["src/**/*.vue"],
+    rules: {
+      // Route views are registered by name in the router; single-word names
+      // ("Netdisk", "Users") are deliberate and collide with no HTML tag we use.
+      "vue/multi-word-component-names": "off",
+      // The few v-html spots render DOMPurify-sanitized markdown/terminal HTML.
+      "vue/no-v-html": "off",
+      // Template formatting is enforced by review, not lint — these pure-style
+      // rules produce thousands of warnings over Element UI attribute lists.
+      "vue/max-attributes-per-line": "off",
+      "vue/singleline-html-element-content-newline": "off",
+      "vue/multiline-html-element-content-newline": "off",
+      "vue/html-self-closing": "off",
+      "vue/html-closing-bracket-spacing": "off",
+      "vue/attributes-order": "off",
+      "vue/order-in-components": "off",
+    },
+  },
   {
     languageOptions: {
       ecmaVersion: 2024,

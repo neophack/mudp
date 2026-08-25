@@ -21,11 +21,11 @@ mudp/
 │   ├── dockerx/                           Docker SDK 封装层（见 §3）
 │   ├── server/                            HTTP 路由与业务处理器（见 §4）
 │   └── store/store.go           (1259 行)  SQLite 存储、schema、迁移、查询
-├── web/                                   前端（go:embed 嵌入二进制）
-│   ├── embed.go                            go:embed 入口
-│   ├── index.html / app.js / styles.css    外壳与样式
-│   ├── vendor/ (xterm.js 等)               本地终端库
-│   └── modules/ (21 个 JS 模块)            各功能视图（见 §5）
+├── web/                                   前端（Vite 构建 → dist/，go:embed 嵌入二进制）
+│   ├── embed.go                            go:embed 入口（dist + share.html + lib + styles.css）
+│   ├── src/ (Vue 3 + Element Plus SPA)    视图/组件/路由/状态（见 §5）
+│   ├── lib/ (i18n、上传流等)               与分享页共用的框架无关模块
+│   └── vendor/ (xterm.js 等)               本地终端库
 ├── docs/                                  文档
 ├── scripts/build.ps1                      构建脚本
 ├── build.bat / README.md / go.mod / go.sum
@@ -46,7 +46,7 @@ mudp/
 - `feishu.go`：飞书 OAuth 登录回调，新用户落库为 `pending`，待管理员分配角色。
 
 ### internal/config
-全部来自环境变量（`MUDP_ADDR`、`MUDP_DB`、`MUDP_ADMIN_USER`、`MUDP_ADMIN_PASSWORD`、`MUDP_DOCKER_HOST`、`MUDP_WEB_DIR`）。未设置 `MUDP_ADMIN_PASSWORD` 时，首次启动会进入 Web 初始化向导创建管理员；设置后则自动创建该账号。会话密钥默认每次启动随机生成——若未设 `MUDP_SESSION_SECRET`，每次重启所有会话失效；日志会输出 WARNING 提示。
+全部来自环境变量（`MUDP_ADDR`、`MUDP_DB`、`MUDP_ADMIN_USER`、`MUDP_ADMIN_PASSWORD`、`MUDP_DOCKER_HOST`）。未设置 `MUDP_ADMIN_PASSWORD` 时，首次启动会进入 Web 初始化向导创建管理员；设置后则自动创建该账号。会话密钥默认每次启动随机生成——若未设 `MUDP_SESSION_SECRET`，每次重启所有会话失效；日志会输出 WARNING 提示。
 
 ### internal/store
 SQLite + modernc.org/sqlite（纯 Go 驱动，无 CGO）。连接池 8 开 4 闲。10 张表：`users / groups / user_groups / images / group_images / audit_logs / stacks / settings(kv) / resource_samples / netdisk_shares`。外键级联开启。
@@ -114,15 +114,22 @@ HTTP 层，chi 路由。见 §4。
 
 ---
 
-## 5. web/modules 前端分析
+## 5. web/src 前端分析
 
-21 个 JS 模块，均为原生 ES Module，无框架、无构建步骤。`app.js`(294) 持全局状态、核心 helper、tab 路由；各 `renderX` 渲染进 `#view`。
+Vue 3 + Element Plus 单页应用（vue3-admin-better 风格布局），Vite 构建，ECharts 承担仪表盘环形图与安全页世界地图（`echarts.registerMap` 注册 `public/world-echarts.json`）。核心结构：
 
-### 前端的主要问题
+- `src/api.js`：fetch 封装，保留原有 CSRF 403→`/api/me` 重试语义；`readSSE` 读 SSE POST 流。
+- `src/store.js`：`Vue.reactive` 轻量全局状态（无 Vuex），`refreshSection`/`refreshAll` 分片拉取。
+- `src/router.js` + `src/boot.js`：history 路由；守卫完成 setup/login/pending 引导，管理员页由 `meta.admin` 门控。
+- `src/views/`（22 个视图）与 `src/components/`（容器/网络/网盘等对话框、`WorldMap.vue`）：与旧版 20 个功能页一一对应。
+- `src/netdiskUpload.js`：上传引擎（分批 multipart + ≥1GiB 分片续传 + CRC32 校验）。
+- `lib/`（i18n、上传流等）保持框架无关，与独立分享页 `share.html` 共用；开发模式 `npm run dev` 由 Vite 代理 `/api` 到 Go 服务。
 
-- **`escapeHtml` 在 16 个文件各拷贝一份**（app.js 导出一份，另有 15 个模块各自定义同名同实现的 8 行函数）：`audit/create/details/images/logs/networks/pending/settings/stacks/stats/terminal/ui/usage/users/volumes` 与 `app.js`。维护隐患：改一处要同步 16 处。
-- **`fmtBytes` 定义两次**（`disks.js:56`、`netdisk.js:170`），**`fmtMB` 两次**（`dashboard.js:197`、`volumes.js:100`），均未导出。
-- **循环依赖**：`app.js` ↔ 所有功能模块（双向）；`ui.js` ↔ `terminal.js`（`ui` 导入 `closeTerminal`，`terminal` 导入 `closeModal`）。靠 ES Module 惰性解析侥幸可用，但阻碍重构。
+### 旧版（web/modules）的问题——已随本次重构消除
+
+- `escapeHtml` 曾在 16 个文件各拷贝一份 → 现仅 `lib/common.js` 一份。
+- `fmtBytes`/`fmtMB` 曾重复定义 → 现集中在共享模块。
+- `app.js` ↔ 各模块循环依赖 → 单向依赖 `store`/`api`，无环。
 
 ---
 
@@ -138,7 +145,7 @@ HTTP 层，chi 路由。见 §4。
 
 ### 中等（可维护性/安全）
 
-6. **`escapeHtml` 复制 16 份**（见 §5），维护与一致性风险。
+6. ~~**`escapeHtml` 复制 16 份**~~（已随 Vue 重构消除，见 §5）。
 7. **`server.go`(1321)/`docker.go`(1154) 过大**，`_ext.go` 约定无意义（见 §3、§4）。
 8. **N+1 查询**：`Users()`(`store.go:368`)、`ImagesForUser()`(`449`)、`StacksForUser()`(`1195`)、`AllNetdiskShares()`(`1057`) 列表为每行发一条 group/owner 名查询；仪表盘 `buildUsage()` 对每用户循环 `ListContainers`，冷缓存时还会各起一次 `nvidia-smi`。
 9. **管理员口令未设置时随机生成**（`config.go`）；会话密钥默认每次启动随机（`config.go`），未设 `MUDP_SESSION_SECRET` 时每次重启登出全部用户，但会输出 WARNING 日志。
@@ -161,7 +168,7 @@ HTTP 层，chi 路由。见 §4。
 
 - `_ext.go` 约定应用不一致，导致容器端点住进镜像文件、审计写辅助住进用户文件；
 - `server.go` 与 `docker.go` 是过度膨胀的杂物间；
-- 前端层把 `escapeHtml` 复制 16 次；
+- 前端层曾把 `escapeHtml` 复制 16 次（重构后已消除）；
 - 迁移系统静默吞错，`widenRoleConstraint` 重建可能摧毁 `port_prefix` 列。
 
 最紧迫的具体 bug 是：`port_prefix` 数据丢失（`store.go` 重建路径）、注册表 JSON blob 竞态、`MarshalEnv` 与文档矛盾的"确定性"。这些在后续功能迭代中应优先修复。

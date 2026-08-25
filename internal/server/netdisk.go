@@ -1220,13 +1220,7 @@ func (a *App) netdiskSharePage(w http.ResponseWriter, r *http.Request) {
 
 	// Try to serve the rich standalone share page. Fall back to the inline page
 	// when the file is unavailable so builds without the frontend asset still work.
-	var raw []byte
-	var err error
-	if a.cfg.WebDir != "" {
-		raw, err = os.ReadFile(filepath.Join(a.cfg.WebDir, "share.html"))
-	} else {
-		raw, err = fs.ReadFile(web.Files, "share.html")
-	}
+	raw, err := fs.ReadFile(web.Files, "share.html")
 	if err == nil && len(raw) > 0 {
 		// Inject the token into the meta tag share.js reads. It used to also be
 		// written into an inline <script>, which would have forced 'unsafe-inline'

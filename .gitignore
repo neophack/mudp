@@ -1,6 +1,9 @@
 mudp.db
 mudp.db-*
-dist/
+/dist/
+!web/dist/
+web/dist/*
+!web/dist/index.html
 disk/
 mudp.exe
 web/node_modules/
@@ -18,3 +21,6 @@ bkdisk
 sharedisk/
 .zcode/
 dist_verify
+web/ui/node_modules
+web/dist/
+*.pem

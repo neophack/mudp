@@ -4,6 +4,9 @@ import { escapeHtml, fmtBytes, joinPath } from "/lib/common.js";
 import { openYuvViewer } from "/lib/yuv.js";
 import { openRawViewer } from "/lib/raw.js";
 import { renderMarkdownInto } from "/lib/viewer.js";
+// Shared with the console viewer: type dispatch + CSV/JSON/Office renderers
+// (docx via mammoth, xlsx via SheetJS, both lazy-loaded from /vendor/).
+import { previewKind, csvToTableHtml, prettyJsonOrNull, renderDocxInto, renderXlsxInto } from "/lib/preview.js";
 
 const state = {
   token: "",
@@ -152,7 +155,8 @@ function renderShareMeta() {
   const s = state.share;
   if (!s) return;
   $("#shareName").textContent = s.name;
-  $("#shareOwner").textContent = `Shared by: ${escapeHtml(s.owner || "Unknown")}`;
+  // textContent already escapes; pre-escaping here double-rendered "A & B".
+  $("#shareOwner").textContent = `Shared by: ${s.owner || "Unknown"}`;
   $("#shareExpiry").innerHTML = s.permanent
     ? `<span class="badge badge-accent">Permanent</span>`
     : s.expired
@@ -503,6 +507,16 @@ function bindEvents() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeTopModal();
   });
+  // Exiting native fullscreen (Esc / browser controls) must also drop the CSS
+  // fullscreen state, or the viewer stays stuck on the white fullscreen layout.
+  document.addEventListener("fullscreenchange", () => {
+    const backdrop = $("#viewerBackdrop");
+    if (!document.fullscreenElement && backdrop && !backdrop.hidden) {
+      backdrop.classList.remove("viewer-fullscreen");
+      const fsBtn = $("#viewerFullscreen");
+      if (fsBtn) fsBtn.textContent = "⛶ Fullscreen";
+    }
+  });
 }
 
 function downloadURL(path) {
@@ -534,26 +548,6 @@ function closeTopModal() {
 
 // ---------- File preview ----------
 
-const TEXT_PREVIEW_EXTS = new Set([
-  "txt", "log", "json", "csv", "tsv", "ini", "conf", "cfg", "yml", "yaml", "toml",
-  "xml", "html", "htm", "css", "js", "mjs", "ts", "go", "py", "rb", "java", "c",
-  "h", "cpp", "hpp", "cc", "sh", "bash", "zsh", "sql", "env", "gitignore",
-]);
-
-function previewKind(name) {
-  const ext = (name.split(".").pop() || "").toLowerCase();
-  if (!ext) return null;
-  if (ext === "pdf") return "pdf";
-  if (ext === "md" || ext === "markdown") return "markdown";
-  if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext)) return "image";
-  if (["mp3", "wav", "ogg", "m4a", "flac"].includes(ext)) return "audio";
-  if (["mp4", "webm", "m4v", "mov"].includes(ext)) return "video";
-  if (ext === "yuv") return "yuv";
-  if (ext === "raw") return "raw";
-  if (TEXT_PREVIEW_EXTS.has(ext)) return "text";
-  return null;
-}
-
 function openViewer(path) {
   const name = path.split("/").pop() || path;
   const kind = previewKind(name);
@@ -561,7 +555,7 @@ function openViewer(path) {
   $("#viewerTitle").textContent = name;
   // Hide the fullscreen button for types that can't use it (text/markdown/audio).
   const fsBtn = $("#viewerFullscreen");
-  if (fsBtn) fsBtn.hidden = !(kind === "pdf" || kind === "video" || kind === "image" || kind === "yuv" || kind === "raw");
+  if (fsBtn) fsBtn.hidden = !["pdf", "video", "image", "yuv", "raw", "csv", "docx", "xlsx"].includes(kind);
   $("#viewerDownload").href = downloadURL(path);
   $("#viewerBackdrop").hidden = false;
   if (!kind) {
@@ -648,6 +642,32 @@ async function renderViewerContent(kind, name, url, path) {
       return renderMarkdownInto(url, body);
     case "text":
       return renderText(url, body);
+    case "json": {
+      const text = await fetchText2MB(url);
+      const pre = document.createElement("pre");
+      pre.className = "viewer-text";
+      // Invalid JSON falls back to the raw text view.
+      pre.textContent = prettyJsonOrNull(text) ?? text;
+      body.innerHTML = "";
+      body.appendChild(pre);
+      return;
+    }
+    case "csv": {
+      const sep = name.toLowerCase().endsWith(".tsv") ? "\t" : ",";
+      const text = await fetchText2MB(url);
+      body.innerHTML = `<div class="viewer-csv"></div>`;
+      // csvToTableHtml escapes every cell itself.
+      body.querySelector(".viewer-csv").innerHTML = csvToTableHtml(text, sep);
+      return;
+    }
+    case "docx":
+    case "xlsx": {
+      body.innerHTML = `<div class="viewer-md viewer-doc"></div>`;
+      const el = body.firstElementChild;
+      if (kind === "docx") await renderDocxInto(url, el);
+      else await renderXlsxInto(url, el);
+      return;
+    }
     case "image":
       body.innerHTML = `<img class="viewer-media" src="${url}" alt="${escapeHtml(name)}" />`;
       return;
@@ -736,15 +756,20 @@ async function paintPdfPages(body) {
 }
 
 async function renderText(url, body) {
+  const text = await fetchText2MB(url);
+  body.innerHTML = `<pre class="viewer-text"></pre>`;
+  body.querySelector("pre").textContent = text;
+}
+
+// fetchText2MB fetches text-like content with the same size cap the console
+// viewer enforces, so a huge log is never pulled into the DOM.
+async function fetchText2MB(url) {
   const res = await fetch(url, { credentials: "same-origin" });
   const len = Number(res.headers.get("Content-Length") || 0);
   if (len > 2 * 1024 * 1024) {
-    body.innerHTML = `<div class="viewer-error">This file is larger than 2 MB. Please download it to view.</div>`;
-    return;
+    throw new Error("This file is larger than 2 MB. Please download it to view.");
   }
-  const text = await res.text();
-  body.innerHTML = `<pre class="viewer-text"></pre>`;
-  body.querySelector("pre").textContent = text;
+  return res.text();
 }
 
 init();

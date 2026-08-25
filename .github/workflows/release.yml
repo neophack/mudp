@@ -6,7 +6,8 @@
 # mudp-windows-<arch>-<version>.zip, Linux as mudp-linux-<arch>-<version>.tar.gz
 # (the in-app self-upgrader downloads these archives and extracts the binary
 # — see internal/upgrader.AssetName / ArchiveName). The web UI is embedded by
-# web/embed.go, so a plain Go build produces the complete console.
+# web/embed.go, so each build leg first builds web/dist with Vite and then a
+# plain Go build produces the complete console.
 name: Release
 
 on:
@@ -72,6 +73,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # The web console is embedded via go:embed, so build it once per matrix
+      # leg before the Go build (fresh checkout → only the placeholder exists).
+      - name: Build web frontend
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
       - name: Build and package
         run: |
           VERSION="${{ inputs.version }}"

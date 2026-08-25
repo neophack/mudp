@@ -869,6 +869,7 @@ const translations = {
     "netdisk.folderCreated": "文件夹已创建",
     "netdisk.newFolderNamePrompt": "新文件夹名称",
     "netdisk.readonlyUpload": "只读账号无法上传",
+    "netdisk.uploadNetdiskOnly": "拖拽上传仅支持在网盘模式下使用",
     "netdisk.uploadInProgress": "已有上传任务进行中",
     "netdisk.backupNoShare": "备份盘不支持分享",
     "netdisk.sharedItems": "已分享的项目",
@@ -1378,6 +1379,7 @@ const translations = {
     "setup.usersPathHint": "此路径作为默认 users 组成员的网盘根目录。如不存在将被创建。",
     "setup.complete": "完成配置",
     "setup.completeToast": "配置完成，请登录。",
+    "setup.credentialsRequired": "管理员用户名和密码为必填项。",
 
     // Dashboard version / update check
     "dash.version": "版本",
@@ -2325,6 +2327,7 @@ const translations = {
     "netdisk.folderCreated": "Folder created",
     "netdisk.newFolderNamePrompt": "New folder name",
     "netdisk.readonlyUpload": "Read-only account cannot upload",
+    "netdisk.uploadNetdiskOnly": "Drag-and-drop upload is only available in Netdisk mode",
     "netdisk.uploadInProgress": "An upload is already in progress",
     "netdisk.backupNoShare": "Backup disk does not support sharing",
     "netdisk.sharedItems": "Shared items",
@@ -2834,6 +2837,7 @@ const translations = {
     "setup.usersPathHint": "This path is used as the root for members of the default users group. It will be created if it does not exist.",
     "setup.complete": "Complete Setup",
     "setup.completeToast": "Setup complete. Please sign in.",
+    "setup.credentialsRequired": "Administrator username and password are required.",
 
     // Dashboard version / update check
     "dash.version": "Version",

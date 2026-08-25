@@ -6,6 +6,11 @@ if not "%~1"=="" set OUTDIR=%~1
 
 if not exist "%OUTDIR%" mkdir "%OUTDIR%"
 
+rem The web console is embedded via go:embed, so it must be built first.
+echo Building web frontend...
+call npm --prefix web run build
+if errorlevel 1 ( echo web build failed & exit /b 1 )
+
 for /f "delims=" %%i in ('go run .\cmd\mudp -version') do set VERSION=%%i
 if not defined VERSION set VERSION=v0.0.0
 

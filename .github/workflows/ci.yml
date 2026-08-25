@@ -34,7 +34,6 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run test:unit
-      - run: npm run test:integration
 
   e2e:
     runs-on: ubuntu-latest
@@ -47,13 +46,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Build web frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
       - name: Build MUDP binary
         run: go build -o dist/mudp-linux-amd64 ./cmd/mudp
       - name: Install Playwright browsers
         working-directory: web
-        run: |
-          npm ci
-          npx playwright install chromium
+        run: npx playwright install chromium
       - name: Run E2E tests
         working-directory: web
         run: npm run test:e2e

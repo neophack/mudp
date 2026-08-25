@@ -31,13 +31,14 @@ test("login and navigate through core tabs", async ({ page }) => {
   await page.goto("/");
 
   // Login page renders.
-  await expect(page.locator("#loginForm")).toBeVisible();
+  await expect(page.locator("form.auth-card")).toBeVisible();
   await page.fill("input[name='username']", "admin");
   await page.fill("input[name='password']", "e2e-secret");
-  await page.click("#loginForm button");
+  await page.click("form.auth-card .auth-submit");
 
   // Dashboard loads. refreshAll() may wait for Docker, so give it room.
-  await expect(page.locator("h1:has-text('Dashboard')")).toBeVisible({ timeout: 30000 });
+  await expect(page.locator("aside nav")).toBeVisible({ timeout: 30000 });
+  await expect(page.locator("h1")).toBeVisible();
 
   // Visit each major tab; they should render without JS errors or 5xx.
   for (const tab of ["Containers", "Images", "Volumes", "Networks", "Stacks"]) {

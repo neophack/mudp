@@ -1,0 +1,574 @@
+/* MUDP console global styles: shell layout, shared primitives, and Element
+   theme adjustments. Brand blue matches the old console (#3370ff). */
+
+:root {
+  --brand: #3370ff;
+  --brand-dark: #2857d6;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --bg: #f1f5f9;
+  --card: #ffffff;
+  --ok: #10b981;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  /* Element Plus theme: brand blue propagates to every component through its
+     CSS variable system, and the compact type scale keeps dense admin tables
+     readable without per-component overrides. */
+  --el-color-primary: #3370ff;
+  --el-color-primary-light-3: #6691ff;
+  --el-color-primary-light-5: #99b2ff;
+  --el-color-primary-light-7: #ccd9ff;
+  --el-color-primary-light-8: #e0e8ff;
+  --el-color-primary-light-9: #eff4ff;
+  --el-color-primary-dark-2: #2857d6;
+  --el-border-radius-base: 6px;
+  --el-font-size-base: 13px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #mudp-app { height: 100%; margin: 0; }
+
+body {
+  font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+}
+
+/* ---------- Shell ---------- */
+
+/* The shell pins to the viewport: the sidebar stays put and only the right
+   pane (.work) scrolls, so long pages never carry the nav away. */
+.shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.shell-aside {
+  width: 224px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0b1220;
+  color: #cbd5e1;
+  transition: width 0.2s ease;
+  overflow: hidden;
+}
+.shell-aside.collapsed { width: 64px; }
+
+.shell-aside .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 14px;
+  color: #fff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.shell-aside .brand .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 0 0 4px rgba(51, 112, 255, 0.25);
+  flex-shrink: 0;
+}
+.shell-aside .brand .brand-text { overflow: hidden; text-overflow: ellipsis; }
+.shell-aside .sidebar-toggle {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: flex;
+}
+.shell-aside .sidebar-toggle:hover { color: #e2e8f0; background: rgba(255, 255, 255, 0.06); }
+
+.shell-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.shell-nav .nav-item, .drawer-nav .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 13.5px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background 0.15s, color 0.15s;
+}
+.shell-nav .nav-item:hover, .drawer-nav .nav-item:hover { background: rgba(255, 255, 255, 0.06); color: #e2e8f0; }
+.shell-nav .nav-item.active, .drawer-nav .nav-item.active { background: rgba(51, 112, 255, 0.18); color: #fff; }
+.shell-nav .nav-item .ico, .drawer-nav .nav-item .ico { display: flex; flex-shrink: 0; }
+
+.shell-aside .profile {
+  padding: 12px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: #64748b;
+  font-size: 12px;
+  overflow: hidden;
+}
+.shell-aside .profile strong { color: #e2e8f0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.shell-aside .profile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shell-aside .profile button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+}
+.shell-aside .profile button:hover { color: #fca5a5; }
+
+.work { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-y: auto; }
+
+.work-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 18px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.work-header .titles { min-width: 0; }
+.work-header h1 { margin: 0; font-size: 18px; font-weight: 650; }
+.work-header p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+.work-header .head-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+.work-header .mobile-nav-toggle {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ink);
+  padding: 4px;
+}
+.head-badge { margin-right: 14px; }
+.head-badge + .head-badge { margin-left: -6px; }
+
+.icon-btn {
+  padding: 8px !important;
+  border: none !important;
+  background: transparent !important;
+  color: var(--muted) !important;
+  display: flex;
+  align-items: center;
+}
+.icon-btn:hover { color: var(--brand) !important; background: #f1f5f9 !important; }
+
+.ghost-btn { border-color: var(--line) !important; color: var(--muted) !important; }
+.ghost-btn:hover { color: var(--brand) !important; border-color: var(--brand) !important; }
+
+.app-main {
+  flex: 1;
+  padding: 14px 18px;
+  min-width: 0;
+}
+
+/* ---------- Cards & primitives ---------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 650; }
+/* Page layouts are grids of .card/.stack columns. Grid and flex children
+   default to min-width:auto, so one wide table pushes its column past the
+   viewport and the card is clipped off-screen. */
+.app-main .card, .app-main .stack { min-width: 0; }
+
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.toolbar .spacer { flex: 1; }
+
+.empty-state {
+  text-align: center;
+  color: var(--muted);
+  padding: 32px 12px;
+  font-size: 13px;
+}
+
+.hint { color: var(--muted); font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+
+.el-button.is-link { color: var(--brand) !important; }
+.el-table th.el-table__cell { background: #f8fafc !important; color: #475569; font-weight: 600; }
+.el-table .el-link { font-size: 12.5px; }
+/* Element pads selection cells 14px on each side; with our 40px-wide selection
+   column that leaves less room than the checkbox itself needs, so the cell
+   clipped it and painted a stray ellipsis in every row. */
+.el-table .el-table-column--selection .cell { padding-left: 0; padding-right: 0; text-align: center; }
+/* Status tags stay on ONE line: full text rides the native title tooltip.
+   Wrapping free-form status ("Exited (127) 2 weeks ago") across lines made
+   rows uneven; ellipsis + title keeps rows compact at every width. */
+.el-table .el-tag {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  height: auto;
+  line-height: 1.6;
+  display: inline-flex;
+  align-items: center;
+}
+/* Phone-width list rows open the bottom action sheet on tap. */
+.el-table tr.row-tappable { cursor: pointer; }
+.el-table tr.row-tappable:active { background: #f1f5f9; }
+
+/* ---------- Bottom action sheet (phone list rows) ---------- */
+
+.action-sheet .el-drawer__body { padding: 0; }
+.sheet-card { padding: 6px 16px calc(16px + env(safe-area-inset-bottom)); }
+.sheet-grab { width: 36px; height: 4px; border-radius: 2px; background: var(--line); margin: 4px auto 10px; }
+.sheet-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 2px; min-width: 0; }
+.sheet-title { font-size: 14px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-subtitle { color: var(--muted); font-size: 12px; }
+.sheet-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.sheet-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+  min-height: 64px;
+}
+.sheet-btn:active { background: #f1f5f9; }
+.sheet-btn.danger { color: var(--danger); border-color: #fecaca; }
+.sheet-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.sheet-btn-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.el-link.el-link--default { color: var(--brand) !important; }
+.el-tag--small { border-radius: 10px; }
+
+/* ---------- Element Plus compact density ---------- */
+
+/* Dense admin tables: tighter cells than Element's defaults, single-line
+   clipping handled per-column by min-width. */
+.el-table { font-size: 12.5px; }
+.el-table .el-table__cell { padding: 5px 0; }
+.el-table .cell { line-height: 1.5; padding: 0 10px; }
+.el-table .el-table__header .cell { padding: 0 10px; }
+
+/* Dialogs: slim header/body rhythm so forms fit one screen. */
+.el-dialog { border-radius: 10px; }
+.el-dialog__header { padding: 13px 16px 9px; margin-right: 0; }
+.el-dialog__title { font-size: 14.5px; font-weight: 650; }
+.el-dialog__body { padding: 10px 16px 14px; }
+.el-dialog__footer { padding: 8px 16px 13px; }
+
+/* Forms and inputs follow the compact scale. */
+.el-form-item { margin-bottom: 13px; }
+.el-message { border-radius: 8px; }
+.el-message-box { border-radius: 10px; }
+
+.el-drawer { background: #0b1220; }
+.drawer-nav { display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; }
+
+.danger-text { color: #f56c6c !important; }
+.warn-text { color: #e6a23c !important; }
+.page-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------- Table row actions ---------- */
+/* Icon-only buttons on one line. Views size their fixed actions column from
+   these metrics (26px per button + 2px between + 24px of cell padding), so
+   changing them here means changing the actionsColWidth formulas too. */
+.row-actions { display: flex; align-items: center; flex-wrap: nowrap; }
+.row-actions .el-button { width: 26px; height: 26px; flex: 0 0 26px; padding: 0; margin: 0; border-radius: 6px; }
+.row-actions .el-button + .el-button { margin-left: 2px; }
+.row-actions .el-button:not(.is-disabled):hover { background: var(--line); }
+/* Tone classes carry !important, so disabled icons need it back to read as disabled. */
+.row-actions .el-button.is-disabled { color: var(--muted) !important; opacity: 0.45; }
+.row-actions .el-button .el-icon { font-size: 16px; }
+
+/* ---------- Jobs panel ---------- */
+
+.job-list { display: flex; flex-direction: column; gap: 10px; max-height: 55vh; overflow-y: auto; }
+.job-item { display: flex; gap: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; align-items: flex-start; }
+.job-item.job-active { background: #fffbeb; border-color: #fde68a; }
+.job-icon { color: var(--muted); display: flex; padding-top: 2px; }
+.job-body { flex: 1; min-width: 0; }
+.job-headline { display: flex; align-items: center; gap: 8px; }
+.job-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-meta { display: flex; gap: 10px; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.job-message { margin-top: 4px; word-break: break-word; }
+.job-actions { flex-shrink: 0; }
+
+/* ---------- Notifications panel ---------- */
+
+.notification-list { display: flex; flex-direction: column; gap: 8px; max-height: 55vh; overflow-y: auto; }
+.notification-item { display: flex; gap: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+.notification-item:hover { background: #f8fafc; }
+.notification-item.unread { background: #eff6ff; border-color: #bfdbfe; }
+.notification-icon { color: var(--brand); display: flex; padding-top: 2px; }
+.notification-body { flex: 1; min-width: 0; }
+.notification-title { font-weight: 600; }
+.notification-message { font-size: 12.5px; margin-top: 2px; }
+.notification-time { margin-top: 4px; }
+
+/* ---------- Copy overlay ---------- */
+
+.copy-overlay {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  width: 300px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+  z-index: 2100;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.copy-head { display: flex; align-items: center; margin-bottom: 8px; }
+.copy-title { font-size: 13px; font-weight: 600; }
+.copy-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+.copy-close:hover { color: #e2e8f0; }
+.copy-bar { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+.copy-bar .bar-fill { height: 100%; background: var(--brand); transition: width 0.3s; }
+.copy-meta { margin-top: 6px; font-size: 11.5px; color: #94a3b8; }
+
+/* ---------- Responsive ---------- */
+
+/* Dialogs are authored with desktop px widths; clamp every one of them to the
+   viewport so nothing overflows on phones. Element sets inline width, but the
+   CSS max-width still constrains it. */
+.el-dialog { max-width: calc(100vw - 20px); }
+.el-message-box { max-width: calc(100vw - 24px); }
+/* Sub-tab switchers (el-radio-button groups) and card headers wrap instead of
+   squeezing their labels onto one crammed line. */
+.el-radio-group { flex-wrap: wrap; row-gap: 4px; }
+.card-head { flex-wrap: wrap; row-gap: 8px; }
+/* Long mono values inside flex rows must be allowed to shrink and wrap. */
+.mono { min-width: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 900px) {
+  .shell-aside { display: none; }
+  .work-header .mobile-nav-toggle { display: flex; }
+  .work-header p { display: none; }
+  .app-main { padding: 12px; }
+  .work-header { padding: 10px 12px; gap: 10px; }
+  .work-header h1 { font-size: 16px; }
+  .work-header .head-actions { gap: 6px; }
+  .head-badge { margin-right: 6px; }
+  .head-badge + .head-badge { margin-left: 0; }
+  .stack > * + * { margin-top: 12px; }
+  .card { padding: 12px; }
+  .netdisk-toolbar, .netdisk-actions, .netdisk-pathbar { gap: 8px; }
+}
+
+@media (max-width: 640px) {
+  .app-main { padding: 10px; }
+  .card { padding: 10px; border-radius: 10px; }
+  /* Element Plus pins fixed columns with sticky positioning inside the table's
+     own horizontal scroller, so wide action columns behave on phones as-is. */
+  .el-button + .el-button { margin-left: 6px; }
+  .check-grid { grid-template-columns: 1fr !important; }
+  .row2 { flex-direction: column; }
+  .viewer-media { max-height: 52vh; }
+  .viewer-text { max-height: 56vh; }
+  /* Inline px widths on toolbar inputs/summarises overflow the pane; let them
+     claim the full row instead. */
+  .toolbar .el-input, .toolbar .el-select, .toolbar .el-date-editor { width: 100% !important; }
+  /* Dialogs go edge-to-edge on phones: Element's inline px width is clamped by
+     the max-width rule above, and the padding shrink keeps forms usable. */
+  .el-dialog { margin-top: 8px !important; }
+  .el-dialog__header { padding: 10px 12px 6px; }
+  .el-dialog__body { padding: 8px 12px 10px; }
+  .el-dialog__footer { padding: 6px 12px 10px; }
+}
+
+/* ---------- Auth pages (login / setup / pending) ---------- */
+/* iOS app-style login: ONE centered vertical column at every width — app
+   icon, name, tagline, then the form. There is no split-hero layout at all. */
+
+.auth-wrap {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2f8 100%);
+}
+.auth-pane {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: calc(env(safe-area-inset-top, 0px) + 40px) 24px calc(env(safe-area-inset-bottom, 0px) + 32px);
+}
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+.login-brand .app-icon {
+  width: 84px;
+  height: 84px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, #4a83ff, #2857d6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 14px 30px rgba(51, 112, 255, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.login-brand .app-icon svg { width: 46px; height: 46px; }
+.login-brand .app-name { font-size: 24px; font-weight: 750; letter-spacing: -0.3px; }
+.login-brand .app-tagline { color: var(--muted); font-size: 13px; text-align: center; max-width: 320px; }
+.auth-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.auth-card h1 { margin: 0 0 4px; font-size: 22px; text-align: center; }
+/* Large filled inputs — 16px text stops iOS Safari's zoom-on-focus. */
+.auth-card .el-input__wrapper {
+  background: #e9edf3;
+  border-radius: 12px;
+  box-shadow: none !important;
+  padding: 4px 14px;
+}
+.auth-card .el-input__wrapper.is-focus { box-shadow: 0 0 0 2.5px rgba(51, 112, 255, 0.28) !important; }
+.auth-card .el-input__inner { height: 42px; font-size: 16px; }
+.auth-submit {
+  width: 100%;
+  height: 50px;
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 12px;
+}
+.login-feishu {
+  width: 100%;
+  height: 48px;
+  font-size: 15px;
+  border-radius: 12px;
+  background: #fff;
+  border-color: var(--line);
+}
+.field-label { font-size: 12.5px; color: #475569; font-weight: 600; text-align: left; }
+.login-divider { text-align: center; color: var(--muted); font-size: 12px; margin: 2px 0; }
+/* iOS segmented control for the language switch. */
+.login-lang {
+  display: flex;
+  width: 100%;
+  max-width: 240px;
+  margin: 10px auto 0;
+  background: #e3e8f0;
+  border-radius: 10px;
+  padding: 2px;
+  gap: 0;
+}
+.lang-btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.lang-btn.active {
+  background: #fff;
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+}
+
+.pending-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
+.pending-card { max-width: 460px; text-align: center; padding: 40px 32px; }
+.pending-card h1 { margin: 14px 0 8px; }
+.pending-card p { color: var(--muted); line-height: 1.8; margin-bottom: 20px; }
+.pending-icon {
+  width: 54px;
+  height: 54px;
+  margin: 0 auto;
+  border-radius: 50%;
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 2px #bfdbfe;
+  position: relative;
+}
+.pending-icon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--brand);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: pending-spin 1.1s linear infinite;
+}
+@keyframes pending-spin { to { transform: rotate(360deg); } }
+
+/* ---------- File preview (CSV / docx / xlsx / markdown) ---------- */
+/* These elements come from v-html (lib/preview.js, marked), so the styles
+   must be global — scoped SFC styles never match generated markup. */
+.preview-table-wrap { overflow: auto; max-height: 62vh; border: 1px solid var(--line); border-radius: 8px; }
+.preview-table { border-collapse: collapse; width: 100%; font-size: 12.5px; text-align: left; }
+.preview-table th, .preview-table td { padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.preview-table th { position: sticky; top: 0; background: #f1f5f9; font-weight: 600; }
+.preview-table tbody tr:hover { background: #f8fafc; }
+.preview-note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+.preview-empty { color: var(--muted); padding: 16px 0; }
+.viewer-doc table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.viewer-doc table td, .viewer-doc table th { border: 1px solid var(--line); padding: 5px 8px; }
+.viewer-doc img { max-width: 100%; }
+.viewer-md { line-height: 1.65; font-size: 13.5px; }
+.viewer-md h1, .viewer-md h2, .viewer-md h3 { margin: 14px 0 8px; font-size: 16px; }
+.viewer-md p { margin: 8px 0; }
+.viewer-md pre { background: #f8fafc; border-radius: 8px; padding: 10px; overflow: auto; font-size: 12.5px; }
+.viewer-md code { background: #f1f5f9; border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
+.viewer-md pre code { background: none; padding: 0; }
+.viewer-md table { border-collapse: collapse; }
+.viewer-md table td, .viewer-md table th { border: 1px solid var(--line); padding: 4px 8px; }
+.viewer-md blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--brand); color: var(--muted); }

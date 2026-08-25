@@ -4,6 +4,10 @@ set -euo pipefail
 OUTDIR="${1:-dist}"
 mkdir -p "$OUTDIR"
 
+# The web console is embedded via go:embed, so it must be built first.
+echo "Building web frontend..."
+npm --prefix web run build
+
 GOOS="${GOOS:-$(go env GOOS)}"
 GOARCH="${GOARCH:-$(go env GOARCH)}"
 

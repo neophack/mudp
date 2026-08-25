@@ -19,7 +19,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -582,38 +581,39 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/admin/errors/export", a.errorsExport)
 	})
 
-	// Static UI: embedded FS in production, or disk in dev (MUDP_WEB_DIR).
+	// Static UI.
 	r.Handle("/*", a.staticHandler())
 	return r
 }
 
-// staticHandler serves the web console from the embedded FS by default, or from
-// cfg.WebDir when set (so frontend edits don't need a rebuild). Unknown paths
-// fall back to index.html so deep links to SPA routes (e.g. /containers) work.
+// staticHandler serves the built Vue SPA from the embedded dist/ tree, falling
+// back to root-level assets (share.js, share.css, lib/ — the standalone share
+// page's helpers) and finally to the SPA's index.html so deep links to client
+// routes (e.g. /containers) work.
 func (a *App) staticHandler() http.Handler {
-	var fsys fs.FS
-	if a.cfg.WebDir != "" {
-		fsys = os.DirFS(a.cfg.WebDir)
-	} else {
-		content, err := fs.Sub(web.Files, ".")
-		if err != nil {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				writeErr(w, http.StatusInternalServerError, "static assets unavailable")
-			})
-		}
-		fsys = content
+	spa, err := fs.Sub(web.Files, "dist")
+	if err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeErr(w, http.StatusInternalServerError, "static assets unavailable")
+		})
 	}
-	fileServer := http.FileServer(http.FS(fsys))
+	spaServer := http.FileServer(http.FS(spa))
+	rootServer := http.FileServer(http.FS(web.Files))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path == "" {
-			path = "index.html"
+		if path != "" {
+			if _, err := fs.Stat(spa, path); err == nil {
+				spaServer.ServeHTTP(w, r)
+				return
+			}
+			if _, err := fs.Stat(web.Files, path); err == nil {
+				rootServer.ServeHTTP(w, r)
+				return
+			}
 		}
-		if _, err := fs.Stat(fsys, path); err != nil {
-			// Let the SPA router handle the client-side route.
-			r.URL.Path = "/"
-		}
-		fileServer.ServeHTTP(w, r)
+		// Let the SPA router handle the client-side route.
+		r.URL.Path = "/"
+		spaServer.ServeHTTP(w, r)
 	})
 }
 

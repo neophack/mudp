@@ -173,21 +173,25 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 	// backupTick fires every minute so we can hit an exact HH:MM schedule.
 	backupTick := time.NewTicker(60 * time.Second)
 	// processWatchTick polls watched container processes for exits (see
-	// processes.go). One initial pass right away so watches registered just
-	// before a shutdown-restart resolve promptly.
+	// processes.go).
 	processWatchTick := time.NewTicker(processWatchInterval)
-	a.watchProcesses(ctx)
-
-	// Run an initial sample and prune so a fresh server has data immediately
-	// and does not start with stale records from a previous process.
-	a.collectResourceSnapshot(ctx)
-	a.pruneOldData(ctx)
-	if n, reclaimed, err := a.docker.PruneImages(ctx); err == nil && n > 0 {
-		log.Printf("pruned %d dangling images (%d bytes reclaimed)", n, reclaimed)
-	}
 
 	stop := make(chan struct{})
 	go func() {
+		// Initial passes (process watch, resource sample, prune) used to run
+		// synchronously before the HTTP listener bound. Every one of them
+		// touches Docker, so a hung daemon (desktop wedge, API proxy stall)
+		// kept the console from ever starting. Run them here instead, under a
+		// bounded context, so the listener binds immediately and a stuck
+		// daemon only delays the first data point instead of the whole server.
+		initCtx, cancelInit := context.WithTimeout(ctx, 60*time.Second)
+		a.watchProcesses(initCtx)
+		a.collectResourceSnapshot(initCtx)
+		a.pruneOldData(initCtx)
+		if n, reclaimed, err := a.docker.PruneImages(initCtx); err == nil && n > 0 {
+			log.Printf("pruned %d dangling images (%d bytes reclaimed)", n, reclaimed)
+		}
+		cancelInit()
 		for {
 			select {
 			case <-cache.C:

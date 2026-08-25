@@ -72,18 +72,24 @@ test("share dialog creates a password-protected link; /pan page gates it behind 
   // extraction code, note the generated code, create the link.
   await login(page, server.adminUser, server.adminPassword);
   await openTab(page, "netdisk");
-  const row = page.locator("table.netdisk-table tbody tr", { hasText: shareFileName }).first();
+  const row = page.locator(".el-table__row", { hasText: shareFileName }).first();
   await expect(row).toBeVisible({ timeout: 20000 });
-  await row.locator('button[title="Share"]').click();
-  await expect(page.locator(".modal-backdrop.netdisk-share")).toBeVisible();
+  // Select the row and share via the toolbar's batch-Share button (the
+  // per-row action lives in el-table's fixed column, which duplicates the
+  // row in a separate table).
+  await row.locator(".el-checkbox__inner").click();
+  await page.locator(".netdisk-actions button", { hasText: /share/i }).first().click();
+  const dialog = page.locator(".el-dialog:visible");
+  await expect(dialog).toBeVisible();
 
-  await page.check("#shareUseCode");
-  shareCode = (await page.locator("#shareCode").inputValue()).trim();
+  // The extraction-code checkbox is on by default with a prefilled code.
+  shareCode = (await dialog.locator(".share-code-field input").inputValue()).trim();
   expect(shareCode.length).toBeGreaterThanOrEqual(4);
 
-  await page.click("#shareCreate");
-  await expect(page.locator(".share-copy-chip code").nth(1)).toBeVisible({ timeout: 20000 });
-  const relLink = ((await page.locator(".share-copy-chip code").nth(0).textContent()) || "").trim();
+  await dialog.locator(".el-dialog__footer .el-button--primary").click();
+  const chip = page.locator(".copy-chip code");
+  await expect(chip.nth(1)).toBeVisible({ timeout: 20000 });
+  const relLink = ((await chip.nth(0).textContent()) || "").trim();
   shareToken = relLink.split("/").pop();
   shareLink = `http://127.0.0.1:${PORT}/pan/${shareToken}`;
   h.assertClean("creating a password-protected share");

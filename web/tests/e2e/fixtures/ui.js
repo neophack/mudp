@@ -3,11 +3,11 @@ import { expect } from "@playwright/test";
 // Tabs the sidebar renders per role, mirroring render() in web/app.js.
 export const ADMIN_TABS = [
   "dashboard", "netdisk", "containers", "mcp", "processes", "usage", "images", "volumes",
-  "networks", "forwards", "stacks", "hardware", "users", "audit", "security", "errors", "disks", "database", "scripts", "help",
+  "networks", "forwards", "stacks", "hardware", "users", "audit", "security", "errors", "disks", "database", "settings", "help",
 ];
 export const USER_TABS = [
   "dashboard", "netdisk", "containers", "mcp", "processes", "usage", "images", "volumes",
-  "networks", "stacks", "hardware", "scripts", "help",
+  "networks", "stacks", "hardware", "settings", "help",
 ];
 // Tabs only an admin may reach.
 export const ADMIN_ONLY_TABS = ADMIN_TABS.filter((t) => !USER_TABS.includes(t));
@@ -92,10 +92,10 @@ export function installPage(page) {
 
 export async function login(page, username, password) {
   await page.goto("/");
-  await expect(page.locator("#loginForm")).toBeVisible();
+  await expect(page.locator("form.auth-card")).toBeVisible();
   await page.fill("input[name='username']", username);
   await page.fill("input[name='password']", password);
-  await page.click("#loginForm button.primary");
+  await page.click("form.auth-card .auth-submit");
   // The shell only appears once /api/me + refreshAll() resolve; refreshAll fans
   // out 6–9 Docker-backed calls (containers, images, dashboard, …) that, on
   // Docker Desktop for Windows under load, can each take several seconds. The
@@ -105,8 +105,8 @@ export async function login(page, username, password) {
 }
 
 export async function logout(page) {
-  await page.click("#logout");
-  await expect(page.locator("#loginForm")).toBeVisible({ timeout: 15000 });
+  await page.click("aside .profile button");
+  await expect(page.locator("form.auth-card")).toBeVisible({ timeout: 15000 });
 }
 
 // openTab clicks a sidebar entry and waits for the view to paint. Tabs are
@@ -114,13 +114,13 @@ export async function logout(page) {
 export async function openTab(page, tab) {
   await page.click(`nav button[data-tab="${tab}"]`);
   await expect(page.locator(`nav button[data-tab="${tab}"]`)).toHaveClass(/active/);
-  await expect(page.locator("#view")).not.toBeEmpty({ timeout: 30000 });
+  await expect(page.locator(".app-main")).not.toBeEmpty({ timeout: 30000 });
   // Self-fetching views (netdisk, usage, disks, hardware) paint asynchronously.
   await page.waitForTimeout(250);
 }
 
 export function modal(page) {
-  return page.locator(".modal-backdrop").last();
+  return page.locator(".el-dialog__wrapper:visible .el-dialog").last();
 }
 
 // closeModals dismisses every open modal. Esc is tried first (ui.js binds it
@@ -129,23 +129,23 @@ export function modal(page) {
 // reaches document, so each [data-close] button is clicked as a fallback.
 export async function closeModals(page) {
   for (let i = 0; i < 8; i++) {
-    if ((await page.locator(".modal-backdrop").count()) === 0) return;
+    if ((await page.locator(".el-dialog__wrapper:visible, .el-message-box__wrapper:visible").count()) === 0) return;
     await page.keyboard.press("Escape");
     await page.waitForTimeout(150);
-    if ((await page.locator(".modal-backdrop").count()) === 0) return;
-    const closeBtn = page.locator(".modal-backdrop [data-close]").last();
+    if ((await page.locator(".el-dialog__wrapper:visible, .el-message-box__wrapper:visible").count()) === 0) return;
+    const closeBtn = page.locator(".el-dialog__wrapper:visible .el-dialog__headerbtn, .el-message-box__wrapper:visible .el-message-box__headerbtn").last();
     if ((await closeBtn.count()) > 0 && (await closeBtn.isVisible())) {
       await closeBtn.click();
       await page.waitForTimeout(150);
     }
   }
-  await expect(page.locator(".modal-backdrop")).toHaveCount(0);
+  await expect(page.locator(".el-dialog__wrapper:visible, .el-message-box__wrapper:visible")).toHaveCount(0);
 }
 
 // describeButtons snapshots the clickable buttons inside a scope, keeping a
 // stable identity (id, then title, then text) for each so the crawler can find
 // them again after a click re-renders the view.
-export async function describeButtons(page, scope = "#view") {
+export async function describeButtons(page, scope = ".app-main") {
   return page.$$eval(
     `${scope} button`,
     (els) =>
@@ -164,7 +164,7 @@ export async function describeButtons(page, scope = "#view") {
 // exercised up to — but never past — their confirmation.
 //
 // Returns the labels actually clicked, so a test can assert it covered the page.
-export async function clickEveryButton(page, { scope = "#view", skip = [] } = {}) {
+export async function clickEveryButton(page, { scope = ".app-main", skip = [] } = {}) {
   const buttons = await describeButtons(page, scope);
   const clicked = [];
   for (const b of buttons) {
@@ -194,7 +194,7 @@ export async function clickEveryButton(page, { scope = "#view", skip = [] } = {}
 
 // toastText waits for the transient toast banner and returns its text.
 export async function toastText(page) {
-  const toast = page.locator(".toast").last();
+  const toast = page.locator(".el-message").last();
   await expect(toast).toBeVisible({ timeout: 15000 });
   return (await toast.textContent()) || "";
 }

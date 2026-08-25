@@ -62,7 +62,6 @@ export async function startServer(opts = {}) {
     MUDP_ADMIN_USER: adminUser,
     MUDP_ADMIN_PASSWORD: adminPassword,
     MUDP_SESSION_SECRET: "e2e-session-secret-must-be-32-bytes-long",
-    MUDP_WEB_DIR: path.join(repoRoot, "web"),
   };
 
   const proc = spawn(binaryPath, [], { env, cwd: repoRoot, stdio: "pipe" });

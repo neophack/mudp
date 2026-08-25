@@ -60,7 +60,6 @@ Open <http://127.0.0.1:9000>. On the first start without `MUDP_ADMIN_PASSWORD`, 
 | `MUDP_ADMIN_USER` | `admin` | Bootstrap admin username. |
 | `MUDP_ADMIN_PASSWORD` | _empty_ | Bootstrap admin password. When empty, the first-run setup wizard is required.
 | `MUDP_DOCKER_HOST` | _empty_ (uses `DOCKER_HOST`) | Override the Docker Engine endpoint. |
-| `MUDP_WEB_DIR` | _empty_ | Serve UI from disk (dev mode) instead of the embed. |
 
 ## Architecture
 
@@ -142,11 +141,13 @@ Frontend (Node.js):
 ```powershell
 cd web
 npm install
-npm run lint      # ESLint: catches JS syntax/undefined/import errors
+npm run lint      # ESLint: catches JS syntax/undefined/import errors, incl. Vue SFC templates
 npm run test:unit
 npm run test:integration
 npm run test:e2e  # requires the Go binary at dist/mudp-windows-amd64.exe (or dist/mudp-linux-amd64)
 ```
+
+The console is a Vue 3 + Element Plus SPA (vue3-admin-better style) under `web/src`, built by Vite into `web/dist` and embedded into the Go binary via `go:embed`. Run `npm --prefix web run build` (or `build.sh` / `build.bat`, which do it for you) before `go build` — otherwise the embed picks up only the `web/dist/index.html` placeholder. For live-reload development, start the backend (`go run ./cmd/mudp`) and `npm --prefix web run dev`; Vite serves the SPA on :5173 and proxies `/api`, `/lib` and `/share.js` to the Go server.
 
 End-to-end tests start the real MUDP binary, log in via Chromium, and navigate the major tabs. They fail automatically on any page JS error or HTTP 5xx response.
 

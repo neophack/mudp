@@ -48,13 +48,16 @@ test("a group name containing a <script> payload renders as inert text, never ex
   const payload = `<script>window.__xssMarker=true</script><img src=x onerror="window.__xssMarker=true">`;
   const groupName = `sec-xss-${fixture.runId}-${payload}`;
 
-  await page.fill("#newGroup [name='name']", groupName);
-  await page.click("#newGroup button");
+  // The Users page's create-group card is the first card in the settings
+  // column; type into its input and submit.
+  const groupInput = page.locator(".users-layout .settings-col .card").first().locator("input").first();
+  await groupInput.fill(groupName);
+  await groupInput.press("Enter");
 
   // The new group shows up in all four per-group tables (netdisk/backup/
   // shared-disk paths, language) once the create POST's response triggers a
   // re-render; any one of them proves the point, so just take the first.
-  const row = page.locator("table.data tr", { hasText: `sec-xss-${fixture.runId}` }).first();
+  const row = page.locator(".el-table__row", { hasText: `sec-xss-${fixture.runId}` }).first();
   await expect(row).toBeVisible({ timeout: 20000 });
 
   // 1. The payload must be visible as literal text (proves it was escaped
@@ -89,8 +92,9 @@ test("an uploaded filename with HTML-special characters renders as inert text in
   await page.evaluate(() => { window.__xssMarker2 = false; });
 
   try {
-    await page.setInputFiles("#uploadFiles", tmpPath);
-    const fileRow = page.locator("table.netdisk-table tbody tr", { hasText: `xss-${fixture.runId}` });
+    const uploadInput = page.locator(".netdisk-actions input[type='file']").first();
+    await uploadInput.setInputFiles(tmpPath);
+    const fileRow = page.locator(".el-table__row", { hasText: `xss-${fixture.runId}` }).first();
     await expect(fileRow).toBeVisible({ timeout: 20000 });
     await expect(fileRow).toContainText(fileName);
   } finally {
