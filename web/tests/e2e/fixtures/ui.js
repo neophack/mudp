@@ -95,6 +95,7 @@ export async function login(page, username, password) {
   await expect(page.locator("form.auth-card")).toBeVisible();
   await page.fill("input[name='username']", username);
   await page.fill("input[name='password']", password);
+  await fillCaptcha(page);
   await page.click("form.auth-card .auth-submit");
   // The shell only appears once /api/me + refreshAll() resolve; refreshAll fans
   // out 6–9 Docker-backed calls (containers, images, dashboard, …) that, on
@@ -102,6 +103,21 @@ export async function login(page, username, password) {
   // earlier 45s ceiling was intermittently too tight and surfaced as a flaky
   // "aside nav not visible" timeout deep into the netdisk tests.
   await expect(page.locator("aside nav")).toBeVisible({ timeout: 90000 });
+}
+
+// Login requires the GIF captcha. The e2e server runs with
+// MUDP_CAPTCHA_TEST_ANSWERS=1, so the answer rides the response headers the
+// SPA itself reads. The form must submit the answer for the challenge IT is
+// showing, so we click the image to refresh and capture that exact response —
+// fetching a separate captcha would desynchronize id and answer.
+export async function fillCaptcha(page) {
+  const [resp] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes("/api/captcha")),
+    page.click(".captcha-img"),
+  ]);
+  const answer = resp.headers()["x-mudp-captcha-answer"];
+  if (!answer) throw new Error("captcha answer header missing; is MUDP_CAPTCHA_TEST_ANSWERS set for the e2e server?");
+  await page.fill("input[name='captcha']", answer);
 }
 
 export async function logout(page) {

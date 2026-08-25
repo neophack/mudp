@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { startServer } from "./fixtures/server.js";
-import { login } from "./fixtures/ui.js";
+import { login, fillCaptcha } from "./fixtures/ui.js";
 
 let server;
 
@@ -34,6 +34,7 @@ test("login and navigate through core tabs", async ({ page }) => {
   await expect(page.locator("form.auth-card")).toBeVisible();
   await page.fill("input[name='username']", "admin");
   await page.fill("input[name='password']", "e2e-secret");
+  await fillCaptcha(page);
   await page.click("form.auth-card .auth-submit");
 
   // Dashboard loads. refreshAll() may wait for Docker, so give it room.
@@ -45,6 +46,31 @@ test("login and navigate through core tabs", async ({ page }) => {
     await page.click(`nav >> text=${tab}`);
     await expect(page.locator(`h1:has-text("${tab}")`)).toBeVisible();
   }
+});
+
+// The GIF captcha gates the username/password form: a wrong code is rejected
+// (and the challenge is consumed + refreshed), a correct one passes.
+test("login captcha rejects wrong code and accepts right one", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("form.auth-card")).toBeVisible();
+
+  // The captcha image renders on the form.
+  await expect(page.locator(".captcha-img img")).toBeVisible();
+
+  // Wrong captcha → back on the login form, error toast shown, fresh image.
+  await page.fill("input[name='username']", "admin");
+  await page.fill("input[name='password']", "e2e-secret");
+  await page.fill("input[name='captcha']", "ZZZZZ");
+  await page.click("form.auth-card .auth-submit");
+  await expect(page.locator(".el-message")).toBeVisible({ timeout: 10000 });
+  await expect(page.locator("form.auth-card")).toBeVisible();
+
+  // Correct captcha (via the test-only answer header) → dashboard.
+  await page.fill("input[name='username']", "admin");
+  await page.fill("input[name='password']", "e2e-secret");
+  await fillCaptcha(page);
+  await page.click("form.auth-card .auth-submit");
+  await expect(page.locator("aside nav")).toBeVisible({ timeout: 30000 });
 });
 
 test("health and metrics endpoints are reachable", async ({ page, request }) => {

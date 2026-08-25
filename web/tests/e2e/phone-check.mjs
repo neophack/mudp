@@ -36,7 +36,13 @@ for (const { name, width, height } of WIDTHS) {
   await page.goto(BASE + "/");
   await page.fill("input[name='username']", "admin");
   await page.fill("input[name='password']", "smoke-secret-123");
-  await page.click("form.auth-card .auth-submit");
+  // Refresh the captcha and submit the answer for the challenge the page shows.
+const [capResp] = await Promise.all([
+  page.waitForResponse((r) => r.url().includes("/api/captcha")),
+  page.click(".captcha-img"),
+]);
+await page.fill("input[name='captcha']", capResp.headers()["x-mudp-captcha-answer"]);
+await page.click("form.auth-card .auth-submit");
   await page.waitForSelector(".work-header", { timeout: 60000 });
   for (const [key, path, h1] of TABS) {
     await page.goto(BASE + path);

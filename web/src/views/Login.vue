@@ -23,6 +23,22 @@
         <h1>{{ tt("login.title") }}</h1>
         <el-input v-model="form.username" name="username" :placeholder="tt('login.username')" autocomplete="username" />
         <el-input v-model="form.password" name="password" type="password" show-password :placeholder="tt('login.password')" autocomplete="current-password" @keyup.enter="submit" />
+        <!-- GIF captcha: image + code side by side; clicking the image or the
+             refresh icon pulls a fresh challenge (the old id is single-use). -->
+        <div class="captcha-row">
+          <el-input
+            v-model="form.captcha"
+            name="captcha"
+            :placeholder="tt('login.captcha')"
+            autocomplete="off"
+            maxlength="5"
+            @keyup.enter="submit"
+          />
+          <button type="button" class="captcha-img" :title="tt('login.captchaRefresh')" @click="loadCaptcha">
+            <img v-if="captchaUrl" :src="captchaUrl" alt="captcha" draggable="false" />
+            <span v-else class="captcha-loading"></span>
+          </button>
+        </div>
         <el-button type="primary" native-type="submit" :loading="busy" class="auth-submit">{{ tt("login.signIn") }}</el-button>
         <template v-if="feishuOn">
           <div class="login-divider">{{ tt("login.or") }}</div>
@@ -138,7 +154,9 @@ export default {
   data() {
     return {
       s: store,
-      form: { username: "", password: "" },
+      form: { username: "", password: "", captcha: "" },
+      captchaId: "",
+      captchaUrl: "",
       feishuOn: false,
       busy: false,
       currentLang: getCurrentLanguage(),
@@ -152,6 +170,7 @@ export default {
     // Probe the visitor's public IP before anything else so the /api/login
     // request carries the cookie. Fire-and-forget.
     probePublicIPCookie();
+    this.loadCaptcha();
     try {
       this.feishuOn = (await api("/api/feishu/config")).enabled;
       store.feishu = this.feishuOn;
@@ -164,6 +183,19 @@ export default {
   },
   methods: {
     tt,
+    // Fetch a fresh challenge via raw fetch (api() only speaks JSON): the body
+    // is the GIF blob, the id rides the X-Mudp-Captcha-Id header.
+    async loadCaptcha() {
+      try {
+        const res = await fetch("/api/captcha", { cache: "no-store" });
+        if (!res.ok) throw new Error("captcha unavailable");
+        const blob = await res.blob();
+        this.captchaId = res.headers.get("X-Mudp-Captcha-Id") || "";
+        if (this.captchaUrl) URL.revokeObjectURL(this.captchaUrl);
+        this.captchaUrl = URL.createObjectURL(blob);
+        this.form.captcha = "";
+      } catch { /* keep the previous image; submit will surface the failure */ }
+    },
     switchLang(lang) {
       localStorage.setItem("mudp_language", lang);
       setLanguage(lang);
@@ -176,7 +208,7 @@ export default {
       if (this.busy) return;
       this.busy = true;
       try {
-        const login = await api("/api/login", { method: "POST", body: JSON.stringify(this.form) });
+        const login = await api("/api/login", { method: "POST", body: JSON.stringify({ ...this.form, captchaId: this.captchaId }) });
         const dest = await afterLogin(login.user || login, login.csrfToken || "");
         if (dest === "pending") return this.$router.push("/pending");
         // A forward-auth redirect sends the browser here with ?next=<original
@@ -189,7 +221,10 @@ export default {
         }
         this.$router.push("/dashboard");
       } catch (err) {
-        ElMessage.error(err.message);
+        // The challenge was consumed either way; always show a fresh one and
+        // map the bare server string to a localized message.
+        this.loadCaptcha();
+        ElMessage.error(err.message === "incorrect captcha" ? tt("login.captchaError") : err.message);
       } finally {
         this.busy = false;
       }

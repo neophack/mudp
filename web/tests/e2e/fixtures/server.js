@@ -62,6 +62,9 @@ export async function startServer(opts = {}) {
     MUDP_ADMIN_USER: adminUser,
     MUDP_ADMIN_PASSWORD: adminPassword,
     MUDP_SESSION_SECRET: "e2e-session-secret-must-be-32-bytes-long",
+    // Login demands the GIF captcha; the test harness reads the answer from
+    // the response header this flag exposes. Test servers only, never prod.
+    MUDP_CAPTCHA_TEST_ANSWERS: "1",
   };
 
   const proc = spawn(binaryPath, [], { env, cwd: repoRoot, stdio: "pipe" });
@@ -97,7 +100,12 @@ export async function startServer(opts = {}) {
 // callers can issue mutating requests without re-reading cookies each time.
 export async function apiClient(baseURL, username, password) {
   const ctx = await request.newContext({ baseURL });
-  const res = await ctx.post("/api/login", { data: { username, password } });
+  // Solve the login captcha via the test-only answer header first.
+  const cap = await ctx.get("/api/captcha");
+  const captchaId = cap.headers()["x-mudp-captcha-id"];
+  const captcha = cap.headers()["x-mudp-captcha-answer"];
+  if (!captchaId || !captcha) throw new Error("captcha headers missing; is MUDP_CAPTCHA_TEST_ANSWERS set for the e2e server?");
+  const res = await ctx.post("/api/login", { data: { username, password, captchaId, captcha } });
   if (!res.ok()) throw new Error(`login as ${username} failed: ${res.status()} ${await res.text()}`);
   const { cookies } = await ctx.storageState();
   const csrf = cookies.find((c) => c.name === "mudp_csrf")?.value || (await res.json()).csrfToken;

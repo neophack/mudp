@@ -137,6 +137,9 @@ const translations = {
     "login.feature4": "飞书单点登录与管理员审批",
     "login.feishuCapacityFull": "用户人数已满，请联系管理员。",
     "login.feishuCompanyNotAllowed": "当前飞书账号所属公司不在允许列表中，请联系管理员。",
+    "login.captcha": "图形验证码",
+    "login.captchaError": "验证码不正确，请重试。",
+    "login.captchaRefresh": "点击刷新验证码",
 
     // Pending approval
     "pending.title": "等待管理员审批",
@@ -1601,6 +1604,9 @@ const translations = {
     "login.feature4": "Feishu single sign-on with admin approval",
     "login.feishuCapacityFull": "User capacity is full. Please contact the administrator.",
     "login.feishuCompanyNotAllowed": "Your Feishu account's company is not allowed. Please contact the administrator.",
+    "login.captcha": "Captcha code",
+    "login.captchaError": "Incorrect captcha. Please try again.",
+    "login.captchaRefresh": "Click to refresh captcha",
 
     // Pending approval
     "pending.title": "Waiting for Admin Approval",

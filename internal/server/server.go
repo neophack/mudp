@@ -91,6 +91,9 @@ type App struct {
 	// watcher (see processes.go). An App field so the watcher logic can be
 	// tested without a Docker daemon.
 	processProbe func(ctx context.Context, containerID string) (map[string]string, error)
+	// captchas backs the login GIF challenge: id → answer, single-use with a
+	// short TTL (see captcha.go).
+	captchas *captchaStore
 	// restartPrepare releases the HTTP listener so the upgrade flow
 	// (selfupgrade.go) can hand the port to the replacement process. Wired by
 	// cmd/mudp/main.go.
@@ -130,6 +133,7 @@ func New(cfg config.Config, db *store.DB) (*App, error) {
 		backupJobs:       NewBackupJobRegistry(),
 		activeTasks:      NewActiveTaskRegistry(),
 		chunkUploads:     NewChunkUploadRegistry(),
+		captchas:         newCaptchaStore(),
 		dirSizeCache:     make(map[string]dirSizeEntry),
 		dirSizeRunning:   make(map[string]bool),
 		dirSizeSemaphore: make(chan struct{}, 1),
@@ -233,6 +237,7 @@ func (a *App) Routes() http.Handler {
 	r.Handle("/metrics", a.requireRole(rankAdmin, a.metrics))
 
 	// Public auth surface (no session required).
+	r.With(loginRateLimiter.Middleware).Get("/api/captcha", a.captchaHandler)
 	r.With(loginRateLimiter.Middleware).Get("/api/login", a.login) // POST also handled below
 	r.With(loginRateLimiter.Middleware).Post("/api/login", a.login)
 	r.Get("/api/me", a.me)
@@ -668,11 +673,21 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	// attempts carry which account was being targeted.
 	ci := a.collectClient(r)
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+		CaptchaID string `json:"captchaId"`
+		Captcha   string `json:"captcha"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Captcha is checked before the password so bots burn the challenge (and
+	// the rate-limit budget) without ever probing credentials. Verification
+	// consumes the challenge either way, so the client refreshes on any failure.
+	if !a.captchas.verify(req.CaptchaID, req.Captcha) {
+		a.recordAccess(ci, store.AccessEventLoginFailed, req.Username, "incorrect captcha", false)
+		writeErr(w, http.StatusUnauthorized, "incorrect captcha")
 		return
 	}
 	u, err := a.db.Authenticate(req.Username, req.Password)

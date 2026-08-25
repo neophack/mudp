@@ -659,6 +659,27 @@ body {
   font-weight: 600;
   border-radius: 12px;
 }
+/* Captcha row: code input shares the large auth inputs; the GIF thumbnail
+   matches their height and reloads on click. */
+.captcha-row { display: flex; gap: 10px; align-items: stretch; }
+.captcha-row .el-input { flex: 1; }
+.captcha-row .el-input .el-input__inner { letter-spacing: 2px; text-transform: uppercase; }
+.captcha-img {
+  flex-shrink: 0;
+  width: 130px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.captcha-img img { width: 100%; height: 50px; object-fit: fill; display: block; }
+.captcha-img:hover { opacity: 0.85; }
+.captcha-loading { width: 22px; height: 22px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: pending-spin 1.1s linear infinite; }
 .login-feishu {
   width: 100%;
   height: 48px;

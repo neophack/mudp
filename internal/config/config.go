@@ -24,6 +24,10 @@ type Config struct {
 	// server: trusting the header from any peer lets a client forge a new
 	// identity per request and slip past the login rate limit.
 	TrustedProxies string
+	// CaptchaTestAnswers exposes each captcha's answer in a response header.
+	// Strictly for automated test harnesses that cannot solve the image; never
+	// enable on a production deployment.
+	CaptchaTestAnswers bool
 }
 
 // Load reads configuration from the environment. Missing secrets are generated
@@ -33,8 +37,9 @@ func Load() Config {
 		Addr:            env("MUDP_ADDR", "0.0.0.0:9000"),
 		DBPath:          env("MUDP_DB", defaultDBPath()),
 		DockerHost:      env("MUDP_DOCKER_HOST", ""),
-		DefaultLanguage: env("MUDP_DEFAULT_LANGUAGE", "en_US"),
-		TrustedProxies:  env("MUDP_TRUSTED_PROXIES", ""),
+		DefaultLanguage:   env("MUDP_DEFAULT_LANGUAGE", "en_US"),
+		TrustedProxies:    env("MUDP_TRUSTED_PROXIES", ""),
+		CaptchaTestAnswers: env("MUDP_CAPTCHA_TEST_ANSWERS", "") != "" && env("MUDP_CAPTCHA_TEST_ANSWERS", "") != "0",
 	}
 
 	cfg.SessionSecret = env("MUDP_SESSION_SECRET", "")

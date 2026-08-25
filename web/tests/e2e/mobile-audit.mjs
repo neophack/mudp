@@ -17,6 +17,12 @@ page.on("pageerror", (e) => errors.push(e.message));
 await page.goto(BASE + "/");
 await page.fill("input[name='username']", "admin");
 await page.fill("input[name='password']", "test123456");
+// Refresh the captcha and submit the answer for the challenge the page shows.
+const [capResp] = await Promise.all([
+  page.waitForResponse((r) => r.url().includes("/api/captcha")),
+  page.click(".captcha-img"),
+]);
+await page.fill("input[name='captcha']", capResp.headers()["x-mudp-captcha-answer"]);
 await page.click("form.auth-card .auth-submit");
 await page.waitForSelector(".work-header", { timeout: 30000 });
 

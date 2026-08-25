@@ -70,10 +70,11 @@ func newSecurityTestServer(t *testing.T) (baseURL string, admin, user *secClient
 	}
 
 	cfg := config.Config{
-		DockerHost:    "tcp://127.0.0.1:1", // deliberately unreachable; nothing here needs Docker
-		SessionSecret: "security-regression-test-session-secret",
-		AdminUser:     "secadmin",
-		AdminPassword: adminPass,
+		DockerHost:        "tcp://127.0.0.1:1", // deliberately unreachable; nothing here needs Docker
+		SessionSecret:     "security-regression-test-session-secret",
+		AdminUser:         "secadmin",
+		AdminPassword:     adminPass,
+		CaptchaTestAnswers: true, // login requires a captcha; tests read the answer header
 	}
 	app, err := New(cfg, db)
 	if err != nil {
@@ -141,8 +142,25 @@ func newSecClient(t *testing.T, baseURL string) *secClient {
 	return &secClient{t: t, baseURL: baseURL, client: &http.Client{Jar: jar, Timeout: 10 * time.Second}}
 }
 
+// fetchCaptcha grabs a fresh challenge using the test-only answer header.
+func (c *secClient) fetchCaptcha() (id, answer string) {
+	c.t.Helper()
+	resp, err := c.client.Get(c.baseURL + "/api/captcha")
+	if err != nil {
+		c.t.Fatalf("get captcha: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	id, answer = resp.Header.Get("X-Mudp-Captcha-Id"), resp.Header.Get("X-Mudp-Captcha-Answer")
+	if id == "" || answer == "" {
+		c.t.Fatalf("captcha response missing id/answer headers (CaptchaTestAnswers off?)")
+	}
+	return id, answer
+}
+
 func (c *secClient) login(username, password string) error {
-	body, _ := json.Marshal(map[string]string{"username": username, "password": password})
+	captchaID, captcha := c.fetchCaptcha()
+	body, _ := json.Marshal(map[string]string{"username": username, "password": password, "captchaId": captchaID, "captcha": captcha})
 	resp, err := c.client.Post(c.baseURL+"/api/login", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -769,10 +787,11 @@ func newSecurityTestServerWithNetdiskRoot(t *testing.T) (baseURL string, admin *
 	root := configureNetdiskRoot(t, db)
 
 	cfg := config.Config{
-		DockerHost:    "tcp://127.0.0.1:1",
-		SessionSecret: "security-regression-test-session-secret",
-		AdminUser:     "secadmin",
-		AdminPassword: adminPass,
+		DockerHost:        "tcp://127.0.0.1:1",
+		SessionSecret:     "security-regression-test-session-secret",
+		AdminUser:         "secadmin",
+		AdminPassword:     adminPass,
+		CaptchaTestAnswers: true,
 	}
 	app, err := New(cfg, db)
 	if err != nil {
