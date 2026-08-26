@@ -17,9 +17,6 @@ type ProcessWatch struct {
 }
 
 func migrateCreateProcessWatches(db executor) error {
-	if err := execIgnoring(db, `alter table users add column feishu_webhook text not null default ''`, sqliteDuplicateColumn); err != nil {
-		return err
-	}
 	stmts := []string{
 		`create table if not exists process_watches (
 			id integer primary key autoincrement,
@@ -111,16 +108,10 @@ func (db *DB) ProcessWatchesForUser(userID int64) ([]ProcessWatch, error) {
 	return out, rows.Err()
 }
 
-// UserFeishuWebhook returns the user's Feishu custom-bot webhook URL for
-// process-exit notifications. Empty when not configured.
-func (db *DB) UserFeishuWebhook(userID int64) (string, error) {
-	var url string
-	err := db.QueryRow(`select feishu_webhook from users where id=?`, userID).Scan(&url)
-	return url, err
-}
-
-// UpdateUserFeishuWebhook saves (or clears, with "") the user's webhook URL.
-func (db *DB) UpdateUserFeishuWebhook(userID int64, url string) error {
-	_, err := db.Exec(`update users set feishu_webhook=? where id=?`, url, userID)
-	return err
+// migrateDropUserFeishuWebhook removes the per-user Feishu custom-bot webhook
+// column: notifications now go through the admin-configured app bot to each
+// user's open_id, so no per-user webhook exists. Ignored when the column was
+// never created (fresh databases).
+func migrateDropUserFeishuWebhook(db executor) error {
+	return execIgnoring(db, `alter table users drop column feishu_webhook`, "no such column")
 }

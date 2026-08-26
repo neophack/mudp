@@ -68,10 +68,7 @@
         <el-table-column :label="tt('common.name')" :min-width="s.isMobile ? 150 : 280">
           <template #default="{ row }">
             <div class="netdisk-file">
-              <span class="netdisk-icon" :class="row.dir ? 'folder' : 'file'">
-                <svg v-if="row.dir" viewBox="0 0 24 24" focusable="false"><path d="M3 6.8C3 5.8 3.8 5 4.8 5h5.1l2 2.2h7.3c1 0 1.8.8 1.8 1.8v1H3V6.8Z"/><path d="M3 9h18l-1.2 8.2c-.1 1-1 1.8-2 1.8H6.2c-1 0-1.8-.7-2-1.8L3 9Z"/></svg>
-                <svg v-else viewBox="0 0 24 24" focusable="false"><path d="M6 3.5h8.4L19 8.1v12.1c0 1-.8 1.8-1.8 1.8H6.8c-1 0-1.8-.8-1.8-1.8V5.3c0-1 .8-1.8 1.8-1.8Z"/><path d="M14 3.8V8h4.2"/><path d="M8.5 12h7M8.5 15h7M8.5 18h4.5"/></svg>
-              </span>
+              <span class="netdisk-icon" v-html="iconSvg(row)"></span>
               <div class="netdisk-file-text">
                 <!-- Phone: the name is plain text — the whole row is the tap
                      target, split at the row's midpoint (onRowClick): taps
@@ -235,6 +232,7 @@ import { api, copyText } from "@/api";
 import { store, canMutate, isAdmin, displayNameForUsername } from "@/store";
 import { tt } from "@/i18n";
 import { fmtBytes, joinPath } from "@/lib/common.js";
+import { fileIconSvg } from "@/lib/fileicon.js";
 import { beginLocalCopy } from "@/overlays";
 import { uploadFilesHandler, dropStream, isUploading } from "@/netdiskUpload";
 import FolderPicker from "@/components/netdisk/FolderPicker.vue";
@@ -367,6 +365,11 @@ export default {
     displayNameForUsername,
     previewKind,
     fmtBytes,
+    // File-type icon per extension (folder, image, video, pdf, …); unknown
+    // extensions render the generic page in the default brand color.
+    iconSvg(row) {
+      return fileIconSvg(row.name, row.dir);
+    },
     fmtDate(ts) {
       const d = new Date(ts);
       if (Number.isNaN(d.getTime())) return "-";
@@ -786,7 +789,7 @@ export default {
 .netdisk-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .netdisk-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .netdisk-mode-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.netdisk-mode-btn { border: none; background: #fff; padding: 7px 14px; font-size: 13px; cursor: pointer; }
+.netdisk-mode-btn { border: none; background: var(--fill); padding: 7px 14px; font-size: 13px; cursor: pointer; color: var(--ink); }
 .netdisk-mode-btn + .netdisk-mode-btn { border-left: 1px solid var(--line); }
 .netdisk-mode-btn.active { background: var(--brand); color: #fff; }
 .netdisk-count { color: var(--muted); font-size: 12.5px; }
@@ -801,9 +804,9 @@ export default {
 .quota-bar span { display: block; height: 100%; background: var(--brand); }
 .netdisk-card.drag-over { outline: 2px dashed var(--brand); outline-offset: -6px; }
 .netdisk-file { display: flex; align-items: center; gap: 10px; }
-.netdisk-icon { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; color: var(--brand); flex-shrink: 0; }
-.netdisk-icon.folder { color: #e6a23c; }
-.netdisk-icon svg { width: 22px; height: 22px; fill: currentColor; }
+/* Size and fill are baked into the fileicon.js markup: the svgs arrive via
+   v-html, which scoped selectors can't reach. */
+.netdisk-icon { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .netdisk-file-text { min-width: 0; }
 /* Size and Modified have their own columns on a wide screen; the meta line
    under the name is the narrow-screen replacement for them (see the media

@@ -7,6 +7,8 @@ import { renderMarkdownInto } from "/lib/viewer.js";
 // Shared with the console viewer: type dispatch + CSV/JSON/Office renderers
 // (docx via mammoth, xlsx via SheetJS, both lazy-loaded from /vendor/).
 import { previewKind, csvToTableHtml, prettyJsonOrNull, renderDocxInto, renderXlsxInto } from "/lib/preview.js";
+// Shared with the console netdisk: per-extension file-type icons.
+import { fileIconSvg } from "/lib/fileicon.js";
 
 const state = {
   token: "",
@@ -58,13 +60,9 @@ function getToken() {
   return meta?.content || location.pathname.split("/").pop();
 }
 
-const FOLDER_SVG = '<svg viewBox="0 0 24 24"><path d="M3 6.8C3 5.8 3.8 5 4.8 5h5.1l2 2.2h7.3c1 0 1.8.8 1.8 1.8v1H3V6.8Z"/><path d="M3 9h18l-1.2 8.2c-.1 1-1 1.8-2 1.8H6.2c-1 0-1.8-.7-2-1.8L3 9Z"/></svg>';
-const FILE_SVG = '<svg viewBox="0 0 24 24"><path d="M6 3.5h8.4L19 8.1v12.1c0 1-.8 1.8-1.8 1.8H6.8c-1 0-1.8-.8-1.8-1.8V5.3c0-1 .8-1.8 1.8-1.8Z"/><path d="M14 3.8V8h4.2"/><path d="M8.5 12h7M8.5 15h7M8.5 18h4.5"/></svg>';
-
 function iconFor(item) {
   const cls = item.dir ? "share-ico folder" : "share-ico file";
-  const svg = item.dir ? FOLDER_SVG : FILE_SVG;
-  return `<span class="${cls}" aria-hidden="true">${svg}</span>`;
+  return `<span class="${cls}" aria-hidden="true">${fileIconSvg(item.name, item.dir)}</span>`;
 }
 
 // ---------- Auth ----------
@@ -347,7 +345,7 @@ function renderPicker() {
   } else {
     const rows = state.pickerItems.map((f) => {
       return `<div class="picker-row" data-open="${escapeHtml(f.path)}">
-        <span class="picker-folder-icon">${FOLDER_SVG}</span>
+        <span class="picker-folder-icon">${fileIconSvg(f.name, true)}</span>
         <span class="picker-folder-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
       </div>`;
     }).join("");
@@ -553,9 +551,10 @@ function openViewer(path) {
   const kind = previewKind(name);
   resetViewerState(); // clears any previous fullscreen / cached PDF
   $("#viewerTitle").textContent = name;
-  // Hide the fullscreen button for types that can't use it (text/markdown/audio).
+  // Hide the fullscreen button for types that can't use it; video is
+  // deliberately fullscreen-free and always plays inline.
   const fsBtn = $("#viewerFullscreen");
-  if (fsBtn) fsBtn.hidden = !["pdf", "video", "image", "yuv", "raw", "csv", "docx", "xlsx"].includes(kind);
+  if (fsBtn) fsBtn.hidden = !["pdf", "image", "yuv", "raw", "csv", "docx", "xlsx"].includes(kind);
   $("#viewerDownload").href = downloadURL(path);
   $("#viewerBackdrop").hidden = false;
   if (!kind) {
@@ -613,8 +612,8 @@ function toggleViewerFullscreen() {
   const isFs = backdrop.classList.toggle("viewer-fullscreen");
   const fsBtn = $("#viewerFullscreen");
   if (fsBtn) fsBtn.textContent = isFs ? "⛶ Exit fullscreen" : "⛶ Fullscreen";
-  // For <video>/<img>, prefer the native Fullscreen API so controls stay usable.
-  const media = backdrop.querySelector("video.viewer-media, img.viewer-media");
+  // For <img>, prefer the native Fullscreen API so controls stay usable.
+  const media = backdrop.querySelector("img.viewer-media");
   if (media && media.requestFullscreen) {
     if (isFs) media.requestFullscreen?.().catch(() => {});
     else if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
@@ -675,7 +674,7 @@ async function renderViewerContent(kind, name, url, path) {
       body.innerHTML = `<audio class="viewer-media" controls preload="metadata" src="${url}"></audio>`;
       return;
     case "video":
-      body.innerHTML = `<video class="viewer-media" controls preload="metadata" src="${url}"></video>`;
+      body.innerHTML = `<video class="viewer-media" controls controlslist="nofullscreen" preload="metadata" src="${url}"></video>`;
       return;
     case "yuv":
       return renderYuv(url, rasterURL(path), body, name);

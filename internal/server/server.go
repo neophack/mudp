@@ -440,15 +440,14 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/notifications", a.notifications)
 		r.Post("/api/notifications/read", a.notificationsRead)
 		r.Post("/api/notifications/delete", a.notificationsDelete)
-		// Per-container process listing, exit-watches, and the caller's
-		// personal Feishu notification webhook (see processes.go).
+		// The caller's Feishu bot send history (see feishu_notify.go).
+		r.Get("/api/me/feishu_messages", a.feishuMessages)
+		r.Post("/api/me/feishu_messages/clear", a.feishuMessagesClear)
+		// Per-container process listing and exit-watches (see processes.go).
 		r.Get("/api/processes", a.processes)
 		r.Get("/api/containers/processes", a.containerProcesses)
 		r.Post("/api/containers/processes/watch", a.processWatchAdd)
 		r.Post("/api/containers/processes/unwatch", a.processWatchDelete)
-		r.Get("/api/me/feishu_webhook", a.feishuWebhookSettings)
-		r.Post("/api/me/feishu_webhook", a.feishuWebhookSettings)
-		r.Post("/api/me/feishu_webhook/test", a.feishuWebhookTest)
 	})
 
 	// Operator+ : image group visibility (assign images to groups). Pull/build/import are
@@ -522,6 +521,8 @@ func (a *App) Routes() http.Handler {
 		r.Get("/api/admin/security/worker-source", a.workerSourceHandler)
 		r.Get("/api/settings/feishu", a.feishuSettings)
 		r.Post("/api/settings/feishu", a.feishuSettings)
+		// Push a test bot message to one user (see feishu_notify.go).
+		r.Post("/api/settings/feishu/test", a.feishuNotifyTest)
 		r.Get("/api/admin/settings/site", a.siteSettings)
 		r.Post("/api/admin/settings/site", a.siteSettings)
 		r.Get("/api/admin/settings/capacity", a.userCapacitySettings)

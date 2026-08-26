@@ -3,13 +3,12 @@ package server
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"mudp/internal/auth"
 	"mudp/internal/store"
 )
 
@@ -55,15 +54,10 @@ func TestWatchProcessesFiresOnExit(t *testing.T) {
 			user = u
 		}
 	}
-
-	// Feishu webhook points at a stub so the send path is exercised too.
-	var feishuHits int32
-	feishu := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&feishuHits, 1)
-		w.Write([]byte(`{"code":0,"msg":"ok"}`))
-	}))
-	defer feishu.Close()
-	if err := db.UpdateUserFeishuWebhook(user.ID, feishu.URL); err != nil {
+	// Link a Feishu identity so the open_id notification branch runs. Feishu
+	// itself is left unconfigured, so the bot send fails and is only logged —
+	// the in-app notification must still go out.
+	if err := db.UpdateFeishuProfile(user.ID, auth.FeishuUser{OpenID: "ou_alice", Name: "Alice"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,14 +80,11 @@ func TestWatchProcessesFiresOnExit(t *testing.T) {
 		t.Fatalf("watch should survive while the process runs: %v %d", err, len(watches))
 	}
 
-	// The process disappears: watch fires, notifications go out.
+	// The process disappears: watch fires, the notification goes out.
 	delete(procs, "123")
 	a.watchProcesses(context.Background())
 	if watches, _ = db.ProcessWatches(); len(watches) != 0 {
 		t.Fatalf("watch should be deleted after firing, got %d", len(watches))
-	}
-	if atomic.LoadInt32(&feishuHits) != 1 {
-		t.Fatalf("feishu webhook hits = %d, want 1", feishuHits)
 	}
 	notes := mustNotifications(t, db, user.ID)
 	if len(notes) != 1 || notes[0].Type != store.NotificationProcessFinished {
@@ -142,31 +133,15 @@ func TestWatchProcessesContainerGone(t *testing.T) {
 	}
 }
 
-func TestSendFeishuTextRejectsErrorBody(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"code":19021,"msg":"sign match fail"}`))
-	}))
-	defer srv.Close()
-	if err := sendFeishuText(srv.URL, "hi"); err == nil || !strings.Contains(err.Error(), "19021") {
-		t.Fatalf("expected Feishu error-body rejection, got %v", err)
+func TestSendFeishuTextRequiresConfig(t *testing.T) {
+	db := newServerTestDB(t)
+	a := &App{db: db}
+	if err := a.sendFeishuText(1, "ou_x", store.FeishuKindAdminTest, "hi"); err == nil {
+		t.Fatal("sendFeishuText without a configured app should fail")
 	}
-}
-
-func TestNormalizeFeishuWebhook(t *testing.T) {
-	valid := "https://open.feishu.cn/open-apis/bot/v2/hook/abc"
-	if got := normalizeFeishuWebhook(" " + valid + " "); got != valid {
-		t.Fatalf("normalize = %q, want %q", got, valid)
-	}
-	if got := normalizeFeishuWebhook(""); got != "" {
-		t.Fatalf("empty should stay empty, got %q", got)
-	}
-	for _, bad := range []string{
-		"http://open.feishu.cn/open-apis/bot/v2/hook/abc",
-		"https://evil.example.com/open-apis/bot/v2/hook/abc",
-		"https://open.feishu.cn/other",
-	} {
-		if got := normalizeFeishuWebhook(bad); got != "" {
-			t.Fatalf("normalize(%q) = %q, want \"\"", bad, got)
-		}
+	// The failed attempt must land in the send history.
+	msgs, err := db.FeishuMessagesForUser(1, 10)
+	if err != nil || len(msgs) != 1 || msgs[0].Status != store.FeishuMessageFailed {
+		t.Fatalf("expected one failed history row, got err=%v msgs=%+v", err, msgs)
 	}
 }

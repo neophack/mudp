@@ -111,11 +111,10 @@
             <div class="feishu-avatar">{{ userInitial }}</div>
             <div class="feishu-title">
               <div class="feishu-name">{{ user.displayName || user.username || "—" }}</div>
-              <div class="feishu-handle">{{ user.username || "—" }}</div>
+              <div class="feishu-handle mono">{{ user.feishuOpenId || "—" }}</div>
             </div>
           </div>
           <dl class="detail feishu-detail">
-            <dt>{{ tt("dash.feishuOpenId") }}</dt><dd>{{ user.feishuOpenId || "—" }}</dd>
             <dt>{{ tt("dash.feishuTenant") }}</dt><dd>{{ user.feishuTenantName || user.feishuTenantKey || "—" }}</dd>
             <dt>{{ tt("dash.feishuLastLogin") }}</dt><dd>{{ user.lastLoginAt || "—" }}</dd>
           </dl>

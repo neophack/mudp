@@ -1,0 +1,17 @@
+import { chromium } from "@playwright/test";
+const browser = await chromium.launch();
+const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
+await page.goto("http://127.0.0.1:19010/");
+await page.locator('input[type="text"]').first().fill("admin");
+await page.locator('input[type="password"]').first().fill("e2e-secret");
+await page.locator("button.auth-submit, form button[type=submit]").first().click();
+await page.waitForURL("**/dashboard", { timeout: 10000 });
+await page.goto("http://127.0.0.1:19010/settings"); await page.waitForTimeout(600);
+await page.locator("button", { hasText: /添加|Add/ }).first().click();
+await page.waitForTimeout(400);
+const vis1 = await page.locator(".el-dialog").isVisible();
+await page.locator(".el-dialog__headerbtn").click();
+await page.waitForTimeout(400);
+const vis2 = await page.locator(".el-dialog").isVisible();
+console.log("open:", vis1, "closed:", !vis2);
+await browser.close();

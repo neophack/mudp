@@ -1,152 +1,141 @@
 <template>
-  <div class="users-layout">
-    <section class="stack settings-col">
-      <div class="card">
-        <div class="card-head"><h2>{{ tt("users.newGroup") }}</h2></div>
-        <el-form size="small" @submit.prevent="createGroup">
-          <el-input v-model="groupForm.name" :placeholder="tt('users.groupNamePlaceholder')" style="margin-bottom: 10px" />
-          <el-button type="primary" size="small" native-type="submit">{{ tt("users.createGroup") }}</el-button>
-        </el-form>
+  <div class="users-page">
+    <!-- Users -->
+    <div class="card">
+      <div class="form-card-head">
+        <div class="form-card-titles">
+          <h2>{{ tt("users.users") }}</h2>
+          <p>{{ tt("users.usersSub") }}</p>
+        </div>
+        <el-button type="primary" size="small" @click="openCreateUser">{{ tt("users.newUser") }}</el-button>
       </div>
+      <el-table
+        :data="s.users"
+        size="small"
+        :empty-text="tt('users.noUsers')"
+        :row-class-name="rowClass"
+        @row-click="onUserRowClick"
+      >
+        <el-table-column :label="tt('common.user')" :min-width="s.isMobile ? 150 : 200">
+          <template #default="{ row }">
+            <div class="primary-line">
+              {{ displayName(row) }}
+              <el-tag v-if="row.disabled" size="small" type="info">{{ tt("users.roleDisabled") }}</el-tag>
+            </div>
+            <div v-if="row.feishuOpenId" class="secondary-line">{{ tt("users.feishuLine", { name: row.feishuOpenId }) }}</div>
+            <div class="secondary-line">{{ tt("users.limitLine", { cap: row.containerCap, quota: formatQuota(row.netdiskQuotaBytes) }) }}</div>
+            <!-- Phone rows fold the hidden groups/ports columns into the primary cell. -->
+            <div v-if="s.isMobile" class="secondary-line">
+              {{ tt("users.colGroups") }}: {{ (row.groups || []).join(", ") || tt("users.groupsNone") }} · {{ tt("users.colPorts") }}: {{ portsText(row) }}
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column :label="tt('users.colRole')" :width="s.isMobile ? 96 : 110">
+          <template #default="{ row }">
+            <el-tag v-if="row.role === 'admin'" size="small">{{ tt("users.roleAdminBadge") }}</el-tag>
+            <el-tag v-else-if="isPending(row)" size="small" type="warning">{{ tt("users.rolePending") }}</el-tag>
+            <el-tag v-else size="small" :type="row.role === 'operator' ? 'success' : 'info'">{{ row.role }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="!s.isMobile" :label="tt('users.colGroups')" min-width="120">
+          <template #default="{ row }"><span class="secondary-line">{{ (row.groups || []).join(", ") || tt("users.groupsNone") }}</span></template>
+        </el-table-column>
+        <el-table-column v-if="!s.isMobile" :label="tt('users.colPorts')" width="110">
+          <template #default="{ row }">
+            <span class="secondary-line">{{ portsText(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="!s.isMobile" :label="tt('common.actions')" width="310" fixed="right">
+          <template #default="{ row }">
+            <el-button link size="small" @click="openGroups(row)">{{ tt("networks.groups") }}</el-button>
+            <el-button v-if="isPending(row)" link size="small" class="ok-text" @click="approve(row)">{{ tt("users.approve") }}</el-button>
+            <el-button link size="small" @click="openEdit(row)">{{ tt("common.edit") }}</el-button>
+            <el-button link size="small" class="warn-text" :disabled="row.id === s.me.id" @click="deactivate(row)">{{ tt("users.deactivate") }}</el-button>
+            <el-button link size="small" class="danger-text" :disabled="row.id === s.me.id" @click="remove(row)">{{ tt("common.delete") }}</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
 
+    <!-- Feishu bot test: push a message to one user's Feishu DM -->
+    <div class="card">
+      <div class="form-card-head">
+        <div class="form-card-titles">
+          <h2>{{ tt("users.feishuTest") }}</h2>
+          <p>{{ tt("users.feishuTestSub") }}</p>
+        </div>
+      </div>
+      <div class="feishu-test-form">
+        <el-select
+          v-model="feishuTest.userId"
+          class="feishu-test-user"
+          filterable
+          size="small"
+          :placeholder="tt('users.feishuTestUser')"
+        >
+          <el-option v-for="u in feishuUsers" :key="u.id" :value="u.id" :label="displayName(u) || u.username" />
+        </el-select>
+        <div class="feishu-test-msg">
+          <el-input v-model="feishuTest.message" :placeholder="tt('users.feishuTestMessage')" size="small" @keyup.enter="sendFeishuTest" />
+        </div>
+        <el-button type="primary" size="small" :disabled="!feishuTest.userId || feishuTestSending" @click="sendFeishuTest">
+          {{ tt("users.feishuTestSend") }}
+        </el-button>
+      </div>
+      <p v-if="!feishuUsers.length" class="hint" style="margin: 8px 0 0">{{ tt("users.feishuTestNoUsers") }}</p>
+    </div>
+
+    <!-- Groups: one row per group, all per-group settings live in the edit dialog -->
+    <div class="card">
+      <div class="form-card-head">
+        <div class="form-card-titles">
+          <h2>{{ tt("users.groupsTitle") }}</h2>
+          <p>{{ tt("users.groupsSub") }}</p>
+        </div>
+        <el-button size="small" @click="createGroup">{{ tt("users.newGroup") }}</el-button>
+      </div>
+      <el-table
+        :data="s.groups"
+        size="small"
+        :empty-text="tt('users.noGroups')"
+        :row-class-name="s.isMobile ? 'row-tappable' : ''"
+        @row-click="onGroupRowClick"
+      >
+        <el-table-column :label="tt('users.colGroup')" :min-width="s.isMobile ? 240 : 120">
+          <template #default="{ row }">
+            <span class="primary-line">{{ row.name }}</span>
+            <!-- Phone rows keep the netdisk root visible; the dialog carries the rest. -->
+            <div v-if="s.isMobile" class="secondary-line mono">{{ row.netdiskPath || tt("users.notConfigured") }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="!s.isMobile" :label="tt('users.netdiskRoot')" min-width="170">
+          <template #default="{ row }"><span class="secondary-line mono">{{ row.netdiskPath || tt("users.notConfigured") }}</span></template>
+        </el-table-column>
+        <el-table-column v-if="!s.isMobile" :label="tt('users.backupRoot')" min-width="170">
+          <template #default="{ row }"><span class="secondary-line mono">{{ row.backupPath || tt("users.notConfigured") }}</span></template>
+        </el-table-column>
+        <el-table-column v-if="!s.isMobile" :label="tt('users.sharedDiskRoot')" min-width="170">
+          <template #default="{ row }"><span class="secondary-line mono">{{ row.sharedDiskPath || tt("users.notConfigured") }}</span></template>
+        </el-table-column>
+        <el-table-column :label="tt('users.colLanguage')" :width="s.isMobile ? 80 : 90">
+          <template #default="{ row }"><span class="secondary-line">{{ langLabel(row.language) }}</span></template>
+        </el-table-column>
+        <el-table-column v-if="!s.isMobile" width="70" fixed="right">
+          <template #default="{ row }">
+            <el-button link size="small" @click="openGroupSettings(row)">{{ tt("common.edit") }}</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <div class="users-duo">
+      <!-- Netdisk usage -->
       <div class="card">
-        <div class="card-head"><h2>{{ tt("users.newUser") }}</h2></div>
-        <el-form size="small" label-position="top" @submit.prevent="createUser">
-          <el-input v-model="userForm.username" :placeholder="tt('users.usernamePlaceholder')" style="margin-bottom: 8px" />
-          <el-input v-model="userForm.password" type="password" show-password :placeholder="tt('users.passwordPlaceholder')" style="margin-bottom: 8px" />
-          <el-select v-model="userForm.role" style="width: 100%; margin-bottom: 8px">
-            <el-option v-for="r in roles" :key="r.value" :value="r.value" :label="`${r.label} — ${r.hint}`" />
-          </el-select>
-          <el-input v-model="userForm.containerCap" type="number" :placeholder="tt('users.containerLimitPlaceholder')" style="margin-bottom: 8px" />
-          <el-input v-model="userForm.netdiskQuotaGB" type="number" step="0.1" :placeholder="tt('users.netdiskQuotaPlaceholder')" style="margin-bottom: 8px" />
-          <div class="check-grid">
-            <label v-for="g in s.groups" :key="g.id" class="check">
-              <input v-model="userForm.groupIds" type="checkbox" :value="g.id" /> {{ g.name }}
-            </label>
+        <div class="form-card-head">
+          <div class="form-card-titles">
+            <h2>{{ tt("users.netdiskUsage") }}</h2>
+            <p>{{ tt("users.totalUsed", { size: fmtBytes(totalUsed) }) }}</p>
           </div>
-          <el-button type="primary" size="small" native-type="submit" style="margin-top: 10px">{{ tt("users.createUser") }}</el-button>
-        </el-form>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h2>{{ tt("users.groupPaths") }}</h2></div>
-        <el-table :data="s.groups" size="small" :empty-text="tt('users.noGroups')">
-          <el-table-column :label="tt('users.colGroup')">
-            <template #default="{ row }"><span class="primary-line">{{ row.name }}</span></template>
-          </el-table-column>
-          <el-table-column :label="tt('users.colPath')">
-            <template #default="{ row }"><span class="secondary-line mono">{{ row.netdiskPath || tt("users.notConfigured") }}</span></template>
-          </el-table-column>
-          <el-table-column width="110">
-            <template #default="{ row }">
-              <el-button link size="small" @click="setPath(row, 'netdisk')">{{ tt("users.setPath") }}</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h2>{{ tt("users.groupBackupPaths") }}</h2></div>
-        <p class="hint">{{ tt("users.backupHint") }}</p>
-        <el-table :data="s.groups" size="small" :empty-text="tt('users.noGroups')">
-          <el-table-column :label="tt('users.colGroup')">
-            <template #default="{ row }"><span class="primary-line">{{ row.name }}</span></template>
-          </el-table-column>
-          <el-table-column :label="tt('users.colBackupPath')">
-            <template #default="{ row }"><span class="secondary-line mono">{{ row.backupPath || tt("users.notConfigured") }}</span></template>
-          </el-table-column>
-          <el-table-column width="130">
-            <template #default="{ row }">
-              <el-button link size="small" @click="setPath(row, 'backup')">{{ tt("users.setBackupPath") }}</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h2>{{ tt("users.groupSharedDiskPaths") }}</h2></div>
-        <p class="hint">{{ tt("users.sharedDiskHint") }}</p>
-        <el-table :data="s.groups" size="small" :empty-text="tt('users.noGroups')">
-          <el-table-column :label="tt('users.colGroup')">
-            <template #default="{ row }"><span class="primary-line">{{ row.name }}</span></template>
-          </el-table-column>
-          <el-table-column :label="tt('users.colSharedDiskPath')">
-            <template #default="{ row }"><span class="secondary-line mono">{{ row.sharedDiskPath || tt("users.notConfigured") }}</span></template>
-          </el-table-column>
-          <el-table-column width="150">
-            <template #default="{ row }">
-              <el-button link size="small" @click="setPath(row, 'shareddisk')">{{ tt("users.setSharedDiskPath") }}</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h2>{{ tt("users.groupLanguages") }}</h2></div>
-        <p class="hint">{{ tt("users.groupLangHint") }}</p>
-        <el-table :data="s.groups" size="small" :empty-text="tt('users.noGroups')">
-          <el-table-column :label="tt('users.colGroup')">
-            <template #default="{ row }"><span class="primary-line">{{ row.name }}</span></template>
-          </el-table-column>
-          <el-table-column :label="tt('users.colLanguage')">
-            <template #default="{ row }">
-              <span class="secondary-line">{{ row.language === "zh_CN" ? "中文" : row.language === "en_US" ? "English" : tt("users.notSet") }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column width="110">
-            <template #default="{ row }">
-              <el-button link size="small" @click="setGroupLanguage(row)">{{ tt("users.setLanguage") }}</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-    </section>
-
-    <section class="stack main-col">
-      <div class="card">
-        <div class="card-head"><h2>{{ tt("users.users") }}</h2></div>
-        <el-table :data="s.users" size="small" :empty-text="tt('users.noUsers')" :row-class-name="rowClass">
-          <el-table-column :label="tt('common.user')" min-width="200">
-            <template #default="{ row }">
-              <div class="primary-line">
-                {{ displayName(row) }}
-                <el-tag v-if="row.disabled" size="small" type="info">{{ tt("users.roleDisabled") }}</el-tag>
-              </div>
-              <div v-if="row.feishuOpenId" class="secondary-line">{{ tt("users.feishuLine", { name: row.username }) }}</div>
-              <div class="secondary-line">{{ tt("users.limitLine", { cap: row.containerCap, quota: formatQuota(row.netdiskQuotaBytes) }) }}</div>
-            </template>
-          </el-table-column>
-          <el-table-column :label="tt('users.colRole')" width="110">
-            <template #default="{ row }">
-              <el-tag v-if="row.role === 'admin'" size="small">{{ tt("users.roleAdminBadge") }}</el-tag>
-              <el-tag v-else-if="isPending(row)" size="small" type="warning">{{ tt("users.rolePending") }}</el-tag>
-              <el-tag v-else size="small" :type="row.role === 'operator' ? 'success' : 'info'">{{ row.role }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column :label="tt('users.colGroups')" min-width="120">
-            <template #default="{ row }"><span class="secondary-line">{{ (row.groups || []).join(", ") || tt("users.groupsNone") }}</span></template>
-          </el-table-column>
-          <el-table-column :label="tt('users.colPorts')" width="110">
-            <template #default="{ row }">
-              <span class="secondary-line">{{ row.portPrefix ? `${row.portPrefix * 100}-${row.portPrefix * 100 + 99}` : tt("users.portsNotAssigned") }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column :label="tt('common.actions')" width="270" fixed="right">
-            <template #default="{ row }">
-              <el-button link size="small" @click="openGroups(row)">{{ tt("networks.groups") }}</el-button>
-              <el-button v-if="isPending(row)" link size="small" class="ok-text" @click="approve(row)">{{ tt("users.approve") }}</el-button>
-              <el-button link size="small" @click="openEdit(row)">{{ tt("common.edit") }}</el-button>
-              <el-button link size="small" class="warn-text" :disabled="row.id === s.me.id" @click="deactivate(row)">{{ tt("users.deactivate") }}</el-button>
-              <el-button link size="small" icon="Delete" class="danger-text" :title="tt('common.delete')" :disabled="row.id === s.me.id" @click="remove(row)" />
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-
-      <div class="card">
-        <div class="card-head">
-          <h2>{{ tt("users.netdiskUsage") }}</h2>
-          <span class="hint">{{ tt("users.totalUsed", { size: fmtBytes(totalUsed) }) }}</span>
         </div>
         <el-table :data="usageRows" size="small" :empty-text="tt('users.noUsers')">
           <el-table-column :label="tt('common.user')">
@@ -159,7 +148,7 @@
           <el-table-column :label="tt('netdisk.usedCol')" width="100">
             <template #default="{ row }">{{ fmtBytes(row.usage?.usedBytes || 0) }}</template>
           </el-table-column>
-          <el-table-column :label="tt('users.colQuota')" width="130">
+          <el-table-column v-if="!s.isMobile" :label="tt('users.colQuota')" width="130">
             <template #default="{ row }">{{ quotaText(row) }}</template>
           </el-table-column>
           <el-table-column width="160">
@@ -176,18 +165,25 @@
         </el-table>
       </div>
 
+      <!-- Long-running tasks -->
       <div class="card">
-        <div class="card-head"><h2>{{ tt("users.longTasks") }}</h2></div>
-        <p class="hint">{{ tt("users.longTasksHint") }}</p>
+        <div class="form-card-head">
+          <div class="form-card-titles">
+            <h2>{{ tt("users.longTasks") }}</h2>
+            <p>{{ tt("users.longTasksHint") }}</p>
+          </div>
+        </div>
         <div v-if="!tasks.length" class="empty-state">{{ tt("users.longTasksNone") }}</div>
         <el-table v-else :data="tasks" size="small">
-          <el-table-column :label="tt('users.longTasksUser')" width="130">
+          <el-table-column v-if="!s.isMobile" :label="tt('users.longTasksUser')" width="130">
             <template #default="{ row }">{{ displayNameForUsername(row.ownerName) || row.ownerName || "—" }}</template>
           </el-table-column>
           <el-table-column :label="tt('users.longTasksTask')" min-width="150">
             <template #default="{ row }">
               <div class="primary-line">{{ taskLabel(row) }}</div>
               <div class="secondary-line">{{ row.name || "" }}</div>
+              <!-- Phone rows fold the hidden owner column into the task cell. -->
+              <div v-if="s.isMobile" class="secondary-line">{{ displayNameForUsername(row.ownerName) || row.ownerName || "—" }}</div>
             </template>
           </el-table-column>
           <el-table-column :label="tt('users.longTasksProgress')" min-width="140">
@@ -203,7 +199,61 @@
           </el-table-column>
         </el-table>
       </div>
-    </section>
+    </div>
+
+    <!-- Phone-width user rows: tap for every action in a bottom sheet. -->
+    <action-sheet
+      v-model:visible="sheet.visible"
+      :title="sheet.row ? (displayName(sheet.row) || sheet.row.username) : ''"
+      :subtitle="sheet.row ? roleLabel(sheet.row) : ''"
+      :items="sheetItems"
+      :columns="4"
+      @select="onSheetSelect"
+    >
+      <template #meta>
+        <div class="sheet-meta">
+          <div v-if="sheet.row" class="sheet-meta-line">{{ tt("users.limitLine", { cap: sheet.row.containerCap, quota: formatQuota(sheet.row.netdiskQuotaBytes) }) }}</div>
+          <div v-if="sheet.row" class="sheet-meta-line">{{ tt("users.colGroups") }}: {{ (sheet.row.groups || []).join(", ") || tt("users.groupsNone") }}</div>
+          <div v-if="sheet.row" class="sheet-meta-line">{{ tt("users.colPorts") }}: {{ portsText(sheet.row) }}</div>
+        </div>
+      </template>
+    </action-sheet>
+
+    <!-- Create user -->
+    <el-dialog v-model="createVisible" :title="tt('users.newUser')" width="460px" append-to-body>
+      <el-form label-position="top" size="small">
+        <el-form-item :label="tt('users.username')">
+          <el-input v-model="userForm.username" :placeholder="tt('users.usernamePlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="tt('users.password')">
+          <el-input v-model="userForm.password" type="password" show-password :placeholder="tt('users.passwordPlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="tt('users.colRole')">
+          <el-select v-model="userForm.role" style="width: 100%">
+            <el-option v-for="r in roles" :key="r.value" :value="r.value" :label="`${r.label} — ${r.hint}`" />
+          </el-select>
+        </el-form-item>
+        <div class="form-grid">
+          <el-form-item :label="tt('users.containerLimit')">
+            <el-input v-model="userForm.containerCap" type="number" min="1" />
+          </el-form-item>
+          <el-form-item :label="tt('users.netdiskQuota')">
+            <el-input v-model="userForm.netdiskQuotaGB" type="number" min="0" step="0.1" />
+          </el-form-item>
+        </div>
+        <el-form-item :label="tt('users.colGroups')">
+          <div class="check-grid">
+            <label v-for="g in s.groups" :key="g.id" class="check">
+              <input v-model="userForm.groupIds" type="checkbox" :value="g.id" /> {{ g.name }}
+            </label>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createVisible = false">{{ tt("common.cancel") }}</el-button>
+        <el-button type="primary" @click="createUser">{{ tt("users.createUser") }}</el-button>
+      </template>
+    </el-dialog>
 
     <!-- User groups -->
     <el-dialog v-model="groupsDialog.visible" :title="tt('users.editGroupsTitle', { name: groupsDialog.name })" width="420px" append-to-body>
@@ -228,12 +278,14 @@
             <el-option v-for="r in roles" :key="r.value" :value="r.value" :label="`${r.label} — ${r.hint}`" />
           </el-select>
         </el-form-item>
-        <el-form-item :label="tt('users.containerLimit')">
-          <el-input v-model="editDialog.containerCap" type="number" min="1" />
-        </el-form-item>
-        <el-form-item :label="tt('users.netdiskQuota')">
-          <el-input v-model="editDialog.netdiskQuotaGB" type="number" min="0" step="0.1" />
-        </el-form-item>
+        <div class="form-grid">
+          <el-form-item :label="tt('users.containerLimit')">
+            <el-input v-model="editDialog.containerCap" type="number" min="1" />
+          </el-form-item>
+          <el-form-item :label="tt('users.netdiskQuota')">
+            <el-input v-model="editDialog.netdiskQuotaGB" type="number" min="0" step="0.1" />
+          </el-form-item>
+        </div>
         <el-form-item :label="tt('users.portPrefix')">
           <el-input v-model="editDialog.portPrefix" type="number" min="100" max="655" :placeholder="tt('users.portPrefixPlaceholder')" />
         </el-form-item>
@@ -248,6 +300,36 @@
         <el-button type="primary" @click="saveUser">{{ tt("common.save") }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- Group settings: the three roots plus the default language in one place -->
+    <el-dialog v-model="groupDialog.visible" :title="tt('users.groupSettingsTitle', { name: groupDialog.name })" width="480px" append-to-body>
+      <el-form label-position="top" size="small">
+        <el-form-item :label="tt('users.netdiskRoot')">
+          <el-input v-model="groupDialog.netdiskPath" :placeholder="`/data/netdisk/${groupDialog.name}`" />
+        </el-form-item>
+        <el-form-item :label="tt('users.backupRoot')">
+          <el-input v-model="groupDialog.backupPath" :placeholder="`/mnt/backup/${groupDialog.name}`" />
+          <p class="hint" style="margin: 4px 0 0">{{ tt("users.backupHint") }}</p>
+        </el-form-item>
+        <el-form-item :label="tt('users.sharedDiskRoot')">
+          <el-input v-model="groupDialog.sharedDiskPath" :placeholder="`/mnt/shared/${groupDialog.name}`" />
+          <p class="hint" style="margin: 4px 0 0">{{ tt("users.sharedDiskHint") }}</p>
+        </el-form-item>
+        <el-form-item :label="tt('users.colLanguage')">
+          <el-select v-model="groupDialog.language" style="width: 100%">
+            <!-- The API rejects an empty language, so "not set" can only stay, never come back. -->
+            <el-option v-if="!groupDialog.orig?.language" value="" :label="tt('users.notSet')" />
+            <el-option value="zh_CN" label="中文" />
+            <el-option value="en_US" label="English" />
+          </el-select>
+          <p class="hint" style="margin: 4px 0 0">{{ tt("users.groupLangHint") }}</p>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="groupDialog.visible = false">{{ tt("common.cancel") }}</el-button>
+        <el-button type="primary" @click="saveGroupSettings">{{ tt("common.save") }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -258,6 +340,7 @@ import { store, refreshSection, isAdmin, displayName, displayNameForUsername } f
 import { tt } from "@/i18n";
 import { registerRouteRefresh, unregisterRouteRefresh } from "@/refresh";
 import { fmtBytes } from "@/lib/common.js";
+import ActionSheet from "@/components/ActionSheet.vue";
 
 const TASK_KIND_LABEL_KEY = {
   "netdisk.copy": "task.netdiskCopy",
@@ -271,15 +354,20 @@ const TASK_KIND_LABEL_KEY = {
 
 export default {
   name: "Users",
+  components: { ActionSheet },
   data() {
     return {
       s: store,
-      groupForm: { name: "" },
+      createVisible: false,
       userForm: { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupIds: [] },
+      feishuTest: { userId: null, message: "" },
+      feishuTestSending: false,
       usage: null,
       tasks: [],
+      sheet: { visible: false, row: null },
       groupsDialog: { visible: false, id: 0, name: "", groupIds: [] },
       editDialog: { visible: false, id: 0, name: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, portPrefix: "", password: "", enabled: true },
+      groupDialog: { visible: false, id: 0, name: "", netdiskPath: "", backupPath: "", sharedDiskPath: "", language: "", orig: {} },
     };
   },
   computed: {
@@ -303,7 +391,22 @@ export default {
         .map((u) => ({ ...u, usage: map[u.id] }));
     },
     totalUsed() {
-      return Object.values(this.usageMap).reduce((s, r) => s + (r.usedBytes || 0), 0);
+      return Object.values(this.usageMap).reduce((s, r) => (s + (r.usedBytes || 0)), 0);
+    },
+    feishuUsers() {
+      return (store.users || []).filter((u) => u.feishuOpenId);
+    },
+    sheetItems() {
+      const row = this.sheet.row;
+      if (!row) return [];
+      const self = row.id === store.me.id;
+      return [
+        { key: "groups", label: tt("networks.groups"), icon: "Avatar" },
+        ...(this.isPending(row) ? [{ key: "approve", label: tt("users.approve"), icon: "CircleCheck" }] : []),
+        { key: "edit", label: tt("common.edit"), icon: "Edit" },
+        { key: "deactivate", label: tt("users.deactivate"), icon: "SwitchButton", disabled: self },
+        { key: "delete", label: tt("common.delete"), icon: "Delete", danger: true, disabled: self },
+      ];
     },
   },
   async mounted() {
@@ -330,13 +433,43 @@ export default {
         .catch(() => { this.tasks = []; });
     },
     rowClass({ row }) {
-      return row.disabled ? "row-muted" : "";
+      return [row.disabled ? "row-muted" : "", store.isMobile ? "row-tappable" : ""].filter(Boolean).join(" ");
+    },
+    onUserRowClick(row) {
+      if (!store.isMobile) return;
+      this.sheet = { visible: true, row };
+    },
+    onGroupRowClick(row) {
+      if (!store.isMobile) return;
+      this.openGroupSettings(row);
+    },
+    onSheetSelect(item) {
+      const row = this.sheet.row;
+      this.sheet.visible = false;
+      if (!row) return;
+      if (item.key === "groups") this.openGroups(row);
+      else if (item.key === "approve") this.approve(row);
+      else if (item.key === "edit") this.openEdit(row);
+      else if (item.key === "deactivate") this.deactivate(row);
+      else if (item.key === "delete") this.remove(row);
+    },
+    portsText(user) {
+      return user.portPrefix ? `${user.portPrefix * 100}-${user.portPrefix * 100 + 99}` : tt("users.portsNotAssigned");
+    },
+    roleLabel(user) {
+      if (user.role === "admin") return tt("users.roleAdminBadge");
+      if (this.isPending(user)) return tt("users.rolePending");
+      const r = this.roles.find((x) => x.value === user.role);
+      return r ? r.label : user.role;
     },
     isPending(user) {
       return (user.groups || []).length > 0 && (user.groups || []).every((g) => g === "pending");
     },
+    langLabel(lang) {
+      return lang === "zh_CN" ? "中文" : lang === "en_US" ? "English" : tt("users.notSet");
+    },
     formatQuota(bytes) {
-      if (!bytes) return "unlimited";
+      if (!bytes) return tt("users.unlimited");
       const gb = bytes / 1024 / 1024 / 1024;
       if (gb >= 1) return `${gb.toFixed(1)} GB`;
       const mb = bytes / 1024 / 1024;
@@ -363,14 +496,41 @@ export default {
       return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
     },
     async createGroup() {
-      if (!this.groupForm.name.trim()) return;
+      let name;
       try {
-        await api("/api/groups", { method: "POST", body: JSON.stringify({ name: this.groupForm.name.trim() }) });
+        ({ value: name } = await ElMessageBox.prompt(tt("users.groupCreatePrompt"), tt("users.newGroup"), {
+          inputPlaceholder: tt("users.groupNamePlaceholder"),
+          confirmButtonText: tt("common.confirm"),
+          cancelButtonText: tt("common.cancel"),
+        }));
+      } catch { return; }
+      name = (name || "").trim();
+      if (!name) return;
+      try {
+        await api("/api/groups", { method: "POST", body: JSON.stringify({ name }) });
         await refreshSection("users", "groups");
         ElMessage.success(tt("users.groupCreated"));
-        this.groupForm.name = "";
       } catch (err) {
         ElMessage.error(err.message);
+      }
+    },
+    openCreateUser() {
+      this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupIds: [] };
+      this.createVisible = true;
+    },
+    async sendFeishuTest() {
+      if (!this.feishuTest.userId) return;
+      this.feishuTestSending = true;
+      try {
+        await api("/api/settings/feishu/test", {
+          method: "POST",
+          body: JSON.stringify({ userId: this.feishuTest.userId, message: this.feishuTest.message || "" }),
+        });
+        ElMessage.success(tt("users.feishuTestSent"));
+      } catch (err) {
+        ElMessage.error(err.message);
+      } finally {
+        this.feishuTestSending = false;
       }
     },
     async createUser() {
@@ -390,6 +550,7 @@ export default {
       try {
         await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
         await refreshSection("users", "groups");
+        this.createVisible = false;
         ElMessage.success(tt("users.userCreated"));
         this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupIds: [] };
       } catch (err) {
@@ -397,57 +558,40 @@ export default {
         else ElMessage.error(err.message);
       }
     },
-    async setPath(group, kind) {
-      const prompts = {
-        netdisk: ["users.netdiskPathPrompt", "/api/groups/netdisk", "users.netdiskPathSaved"],
-        backup: ["users.backupPathPrompt", "/api/groups/backup", "users.backupPathSaved"],
-        shareddisk: ["users.sharedDiskPathPrompt", "/api/groups/shareddisk", "users.sharedDiskPathSaved"],
+    openGroupSettings(group) {
+      this.groupDialog = {
+        visible: true,
+        id: group.id,
+        name: group.name,
+        netdiskPath: group.netdiskPath || "",
+        backupPath: group.backupPath || "",
+        sharedDiskPath: group.sharedDiskPath || "",
+        language: group.language || "",
+        orig: {
+          netdiskPath: group.netdiskPath || "",
+          backupPath: group.backupPath || "",
+          sharedDiskPath: group.sharedDiskPath || "",
+          language: group.language || "",
+        },
       };
-      const [promptKey, url, okKey] = prompts[kind];
-      const current = kind === "netdisk" ? group.netdiskPath : kind === "backup" ? group.backupPath : group.sharedDiskPath;
-      let path;
+    },
+    // Only the fields that changed hit their endpoint; paths may be cleared,
+    // the language may not (the API rejects an empty value).
+    async saveGroupSettings() {
+      const d = this.groupDialog;
+      const o = d.orig;
+      const calls = [];
+      if (d.netdiskPath.trim() !== o.netdiskPath) calls.push(["/api/groups/netdisk", { groupId: d.id, path: d.netdiskPath.trim() }]);
+      if (d.backupPath.trim() !== o.backupPath) calls.push(["/api/groups/backup", { groupId: d.id, path: d.backupPath.trim() }]);
+      if (d.sharedDiskPath.trim() !== o.sharedDiskPath) calls.push(["/api/groups/shareddisk", { groupId: d.id, path: d.sharedDiskPath.trim() }]);
+      if (d.language && d.language !== o.language) calls.push(["/api/admin/group/language", { groupId: d.id, language: d.language }]);
       try {
-        ({ value: path } = await ElMessageBox.prompt(tt(promptKey, { name: group.name }), tt("common.edit"), {
-          inputValue: current || "",
-          confirmButtonText: tt("common.confirm"),
-          cancelButtonText: tt("common.cancel"),
-        }));
-      } catch { return; }
-      try {
-        await api(url, { method: "POST", body: JSON.stringify({ groupId: group.id, path }) });
+        for (const [url, body] of calls) await api(url, { method: "POST", body: JSON.stringify(body) });
         await refreshSection("users", "groups");
-        ElMessage.success(tt(okKey));
+        this.groupDialog.visible = false;
+        if (calls.length) ElMessage.success(tt("users.groupSettingsSaved"));
       } catch (err) {
         ElMessage.error(err.message);
-      }
-    },
-    async setGroupLanguage(group) {
-      try {
-        const { value } = await ElMessageBox({
-          title: tt("users.groupLangTitle", { name: group.name }),
-          message: this.$createElement("div", [
-            this.$createElement("p", tt("users.groupLangPrompt", { name: group.name })),
-            this.$createElement("el-radio-group", {
-              props: { value: group.language || "" },
-              on: { input: (v) => { this._groupLangPick = v; } },
-            }, [
-              this.$createElement("el-radio", { props: { label: "zh_CN" } }, "中文"),
-              this.$createElement("el-radio", { props: { label: "en_US" } }, "English"),
-            ]),
-          ]),
-          showCancelButton: true,
-          confirmButtonText: tt("common.save"),
-          cancelButtonText: tt("common.cancel"),
-        });
-        if (value !== "confirm" || !this._groupLangPick) return;
-        await api("/api/admin/group/language", {
-          method: "POST",
-          body: JSON.stringify({ groupId: group.id, language: this._groupLangPick }),
-        });
-        await refreshSection("users", "groups");
-        ElMessage.success(tt("users.groupLangSaved"));
-      } catch (err) {
-        if (err !== "cancel" && err.message) ElMessage.error(err.message);
       }
     },
     openGroups(user) {
@@ -566,20 +710,24 @@ export default {
 </script>
 
 <style scoped>
-.users-layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 16px; align-items: start; }
-.stack > * + * { margin-top: 0; }
-.settings-col, .main-col { display: flex; flex-direction: column; }
-.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.card-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.users-duo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 16px; align-items: start; }
+.form-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.form-card-titles h2 { margin: 0; font-size: 14px; }
+.form-card-titles p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 8px; }
+.feishu-test-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.feishu-test-user { width: 200px; flex: none; }
+.feishu-test-msg { flex: 1; min-width: 180px; }
 .check-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; }
 .check-grid.col { flex-direction: column; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .primary-line { font-weight: 600; }
 .secondary-line { color: var(--muted); font-size: 12px; }
-.ok-text { color: #10b981 !important; }
-.warn-text { color: #e6a23c !important; }
+.ok-text { color: var(--ok) !important; }
+.sheet-meta { display: flex; flex-direction: column; gap: 3px; margin: 8px 0 12px; }
+.sheet-meta-line { color: var(--muted); font-size: 12px; word-break: break-word; }
 >>> .row-muted { opacity: 0.55; }
 @media (max-width: 1100px) {
-  .users-layout { grid-template-columns: minmax(0, 1fr); }
+  .users-duo { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

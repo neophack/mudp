@@ -1,0 +1,16 @@
+import { chromium } from "@playwright/test";
+const browser = await chromium.launch();
+const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark" });
+const page = await ctx.newPage();
+await page.goto("http://127.0.0.1:19010/");
+await page.evaluate(() => localStorage.setItem("mudp:theme", "dark"));
+await page.locator('input[type="text"]').first().fill("admin");
+await page.locator('input[type="password"]').first().fill("e2e-secret");
+await page.locator("button.auth-submit, form button[type=submit]").first().click();
+await page.waitForURL("**/dashboard", { timeout: 10000 });
+await page.waitForTimeout(400);
+console.log("theme:", await page.evaluate(() => document.documentElement.dataset.theme));
+await page.locator(".mobile-nav-toggle").click();
+await page.waitForTimeout(500);
+await page.screenshot({ path: ".dbg/shots/drawer-realdark-390.png" });
+await browser.close();

@@ -114,6 +114,9 @@ table.data tbody tr:last-child td { border-bottom: none; }
 .chk-cell, .chk-col { width: 36px; }
 .share-name { max-width: 420px; }
 .share-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Size and fill are baked into the fileicon.js svg markup; the span only
+   reserves the row slot. */
+.share-ico { width: 22px; height: 22px; flex-shrink: 0; display: inline-flex; }
 .share-size, .share-time { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
 td.actions { text-align: right; white-space: nowrap; }
 .share-loading, .share-error { color: var(--muted); padding: 26px 0; text-align: center; }

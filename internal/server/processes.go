@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"mudp/internal/dockerx"
@@ -121,58 +120,6 @@ func (a *App) processWatchDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// feishuWebhookSettings gets/sets the caller's personal Feishu custom-bot
-// webhook, used for process-exit notifications.
-func (a *App) feishuWebhookSettings(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	if r.Method == http.MethodGet {
-		url, err := a.db.UserFeishuWebhook(u.ID)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "failed to load webhook")
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"webhook": url})
-		return
-	}
-	var req struct {
-		Webhook string `json:"webhook"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid request")
-		return
-	}
-	trimmed := strings.TrimSpace(req.Webhook)
-	// An empty value clears the setting; a non-empty one must be a genuine
-	// Feishu bot webhook (normalizeFeishuWebhook returns "" for anything else).
-	if trimmed != "" {
-		trimmed = normalizeFeishuWebhook(trimmed)
-		if trimmed == "" {
-			writeErr(w, http.StatusBadRequest, "webhook must be an "+feishuWebhookHostPrefix+"… URL")
-			return
-		}
-	}
-	if err := a.db.UpdateUserFeishuWebhook(u.ID, trimmed); err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to save webhook")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"webhook": trimmed})
-}
-
-// feishuWebhookTest sends a test message so the user can verify their webhook.
-func (a *App) feishuWebhookTest(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	url, err := a.db.UserFeishuWebhook(u.ID)
-	if err != nil || url == "" {
-		writeErr(w, http.StatusBadRequest, "no webhook configured")
-		return
-	}
-	if err := sendFeishuText(url, fmt.Sprintf("MUDP test: notifications for %s are working.", u.Username)); err != nil {
-		writeErr(w, http.StatusBadGateway, "Feishu rejected the message: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
 // watchProcesses is the watcher tick: for every registered watch, decide
 // whether the watched process has ended, and fire the notification when it
 // has. It runs on the background-jobs goroutine, so it needs no locking.
@@ -210,7 +157,7 @@ func (a *App) watchProcesses(ctx context.Context) {
 }
 
 // fireProcessWatch removes the watch and notifies its owner through both the
-// in-app feed and (when configured) their Feishu webhook.
+// in-app feed and (for Feishu SSO users) the app bot.
 func (a *App) fireProcessWatch(watch store.ProcessWatch, reason string) {
 	if err := a.db.DeleteProcessWatch(watch.ID, watch.UserID, true); err != nil {
 		log.Printf("process watch: delete %d: %v", watch.ID, err)
@@ -226,8 +173,8 @@ func (a *App) fireProcessWatch(watch store.ProcessWatch, reason string) {
 		Message: msg,
 		Data:    map[string]any{"container": watch.ContainerName, "pid": watch.PID},
 	})
-	if url, err := a.db.UserFeishuWebhook(watch.UserID); err == nil && url != "" {
-		if err := sendFeishuText(url, "MUDP 进程结束提醒: "+msg); err != nil {
+	if u, err := a.db.UserByID(watch.UserID); err == nil && u.FeishuOpenID != "" {
+		if err := a.sendFeishuText(u.ID, u.FeishuOpenID, store.FeishuKindProcessWatch, "MUDP 进程结束提醒: "+msg); err != nil {
 			log.Printf("process watch: feishu notify user %d: %v", watch.UserID, err)
 		}
 	}

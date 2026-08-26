@@ -49,22 +49,6 @@
       </div>
     </div>
 
-    <!-- Personal Feishu custom-bot webhook for process-exit notifications. -->
-    <div class="card group">
-      <div class="row wrap">
-        <span class="row-icon tint-teal"><v-icon name="bell" :size="16" /></span>
-        <div class="row-main">
-          <div class="row-title">{{ tt("settings.feishuNotify") }}</div>
-          <div class="row-desc">{{ tt("settings.feishuNotifyHint") }}</div>
-        </div>
-        <div class="row-input">
-          <el-input v-model="webhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" size="small" />
-          <el-button size="small" @click="testWebhook">{{ tt("settings.testWebhook") }}</el-button>
-          <el-button type="primary" size="small" @click="saveWebhook">{{ tt("common.save") }}</el-button>
-        </div>
-      </div>
-    </div>
-
     <!-- Admin section -->
     <template v-if="isAdmin()">
       <p class="group-caption">{{ tt("settings.sectionAdmin") }}</p>
@@ -214,6 +198,7 @@
           <el-input v-model="feishu.appSecret" type="password" show-password :placeholder="feishu.appSecret ? tt('settings.appSecretKeep') : tt('settings.appSecretPlaceholder')" size="small" />
         </div>
         <p class="hint">{{ tt("settings.callbackUrl") }}<span class="mono">{{ location.origin }}/api/feishu/callback</span></p>
+        <p class="hint">{{ tt("settings.feishuBotHint") }}</p>
         <div class="form-actions">
           <el-button type="primary" size="small" @click="saveFeishu">{{ tt("settings.saveFeishu") }}</el-button>
         </div>
@@ -253,7 +238,6 @@ export default {
       userLanguage: getCurrentLanguage(),
       defaultLanguage: "en_US",
       sharedDiskReadWrite: store.me?.sharedDiskReadWrite ? "rw" : "ro",
-      webhook: "",
       siteName: "",
       capacity: "",
       tenantKey: "",
@@ -268,10 +252,6 @@ export default {
     location() { return window.location; },
   },
   async mounted() {
-    try {
-      const res = await api("/api/me/feishu_webhook");
-      this.webhook = res.webhook || "";
-    } catch { /* empty */ }
     this.defaultLanguage = store.me?.defaultLanguage || "en_US";
     if (!isAdmin()) return;
     const [site, capacity, company, registries, feishu, mcp] = await Promise.all([
@@ -332,23 +312,6 @@ export default {
         await api("/api/user/shareddisk-access", { method: "POST", body: JSON.stringify({ readWrite }) });
         if (store.me) store.me.sharedDiskReadWrite = readWrite;
         ElMessage.success(tt("settings.sharedDiskAccessSaved"));
-      } catch (err) {
-        ElMessage.error(err.message);
-      }
-    },
-    async saveWebhook() {
-      try {
-        const res = await api("/api/me/feishu_webhook", { method: "POST", body: JSON.stringify({ webhook: this.webhook || "" }) });
-        this.webhook = res.webhook || "";
-        ElMessage.success(tt("settings.webhookSaved"));
-      } catch (err) {
-        ElMessage.error(err.message);
-      }
-    },
-    async testWebhook() {
-      try {
-        await api("/api/me/feishu_webhook/test", { method: "POST" });
-        ElMessage.success(tt("settings.webhookTestOk"));
       } catch (err) {
         ElMessage.error(err.message);
       }

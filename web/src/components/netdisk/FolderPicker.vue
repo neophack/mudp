@@ -218,7 +218,7 @@ export default {
 .picker-tree { display: flex; flex-direction: column; gap: 4px; width: 150px; flex-shrink: 0; }
 .picker-tree-item {
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--card);
   border-radius: 8px;
   padding: 8px 10px;
   cursor: pointer;

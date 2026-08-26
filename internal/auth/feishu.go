@@ -13,25 +13,29 @@ import (
 	"time"
 )
 
+// feishuHost is a var so tests can point the client at a stub server.
+var feishuHost = "https://open.feishu.cn"
+
 const (
-	feishuHost        = "https://open.feishu.cn"
 	pathAppToken      = "/open-apis/auth/v3/app_access_token/internal"
+	pathTenantToken   = "/open-apis/auth/v3/tenant_access_token/internal"
 	pathUserTokenOIDC = "/open-apis/authen/v1/oidc/access_token"
 	pathUserInfo      = "/open-apis/authen/v1/user_info"
+	pathSendMessage   = "/open-apis/im/v1/messages"
 )
 
 // FeishuUser is the profile returned after a successful OIDC login.
 type FeishuUser struct {
-	OpenID           string
-	Name             string
-	Comment          string
-	AvatarURL        string
-	Email            string
-	EnterpriseEmail  string
-	Mobile           string
-	TenantKey        string
-	TenantName       string
-	DepartmentName   string
+	OpenID          string
+	Name            string
+	Comment         string
+	AvatarURL       string
+	Email           string
+	EnterpriseEmail string
+	Mobile          string
+	TenantKey       string
+	TenantName      string
+	DepartmentName  string
 }
 
 // Username returns a login-safe username derived from the OpenID by keeping
@@ -169,6 +173,66 @@ func (f *FeishuClient) UserInfo(ctx context.Context, accessToken string) (Feishu
 		TenantKey:  strings.TrimSpace(resp.Data.TenantKey),
 		TenantName: strings.TrimSpace(resp.Data.TenantName),
 	}, nil
+}
+
+// TenantAccessToken fetches a tenant-scoped token for server APIs such as
+// sending bot messages. Feishu returns the same token while it has more than
+// 30 minutes left, so fetching one per send is safe without a local cache.
+func (f *FeishuClient) TenantAccessToken(ctx context.Context) (string, error) {
+	body, _ := json.Marshal(map[string]string{
+		"app_id":     f.appID,
+		"app_secret": f.appSecret,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, feishuHost+pathTenantToken, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	var resp struct {
+		Code              int    `json:"code"`
+		Msg               string `json:"msg"`
+		TenantAccessToken string `json:"tenant_access_token"`
+	}
+	if err := f.do(req, &resp); err != nil {
+		return "", err
+	}
+	if resp.Code != 0 || resp.TenantAccessToken == "" {
+		return "", fmt.Errorf("feishu tenant_access_token failed: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return resp.TenantAccessToken, nil
+}
+
+// SendText delivers a plain-text bot message to one user by their open_id.
+// The app needs the bot capability and one of the im:message scopes, and the
+// recipient must be inside the app's availability range.
+func (f *FeishuClient) SendText(ctx context.Context, openID, text string) error {
+	token, err := f.TenantAccessToken(ctx)
+	if err != nil {
+		return err
+	}
+	content, _ := json.Marshal(map[string]string{"text": text})
+	body, _ := json.Marshal(map[string]string{
+		"receive_id": openID,
+		"msg_type":   "text",
+		"content":    string(content),
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, feishuHost+pathSendMessage+"?receive_id_type=open_id", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Authorization", "Bearer "+token)
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := f.do(req, &resp); err != nil {
+		return err
+	}
+	if resp.Code != 0 {
+		return fmt.Errorf("feishu send failed: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return nil
 }
 
 func (f *FeishuClient) do(req *http.Request, out any) error {

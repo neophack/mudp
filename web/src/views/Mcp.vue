@@ -114,15 +114,23 @@
             <span v-else class="secondary-line">{{ row.expiresAt ? formatDate(row.expiresAt) : tt("mcp.never") }}</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="!s.isMobile" :label="tt('common.actions')" width="210" fixed="right">
+        <!-- Icon-only actions so every action of a row fits on one line; the
+             column is sized from the widest action set actually on screen. -->
+        <el-table-column v-if="!s.isMobile" :label="tt('common.actions')" :width="actionsColWidth" fixed="right">
           <template #default="{ row }">
-            <el-button link size="small" :title="tt('mcp.viewConfig')" @click="showConfig(row)">CFG</el-button>
-            <el-button link size="small" :title="tt('mcp.usageLog')" @click="showUsage(row)">LOG</el-button>
-            <el-button v-if="externalUrlFor(row)" link size="small" :title="tt('mcp.copyExternal')" @click="copy(externalUrlFor(row))">WWW</el-button>
-            <!-- The external key only matters once an admin published a remote
-                 domain; on a LAN deployment there is nothing to authenticate. -->
-            <el-button v-if="canMutate() && remotePublished" link size="small" :title="tt('mcp.generateExternalKey')" @click="generateKey(row)">GEN</el-button>
-            <el-button v-if="canMutate()" link size="small" class="danger-text" :title="tt('mcp.deleteToken')" @click="deleteToken(row)">DEL</el-button>
+            <div class="row-actions">
+              <el-button
+                v-for="a in rowActions(row)"
+                :key="a.key"
+                link
+                class="row-action-btn"
+                :class="{ 'danger-text': a.danger }"
+                :icon="a.icon"
+                :title="a.label"
+                :aria-label="a.label"
+                @click="runRowAction(a, row)"
+              />
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -135,7 +143,15 @@
         :items="sheetItems"
         :columns="4"
         @select="onSheetSelect"
-      />
+      >
+        <template #meta>
+          <div class="sheet-meta">
+            <div v-if="isAdmin() && sheet.row?.owner" class="sheet-meta-line">{{ tt("mcp.ownerCol") }}: {{ displayNameForUsername(sheet.row.owner) || "-" }}</div>
+            <div v-if="sheet.row" class="sheet-meta-line">{{ tt("mcp.colCreated") }}: {{ formatDate(sheet.row.createdAt) }}</div>
+            <div v-if="sheet.row" class="sheet-meta-line">{{ tt("mcp.colLastUsed") }}: {{ sheet.row.lastUsedAt ? formatDate(sheet.row.lastUsedAt) : tt("mcp.never") }}</div>
+          </div>
+        </template>
+      </action-sheet>
     </section>
 
     <!-- Copyable config dialog -->
@@ -327,16 +343,14 @@ export default {
       return (r.label ? r.label + " · " : "") + (r.expiresAt ? this.formatDate(r.expiresAt) : tt("mcp.never"));
     },
     sheetItems() {
-      const r = this.sheet.row;
-      if (!r) return [];
-      const items = [
-        { key: "cfg", label: tt("mcp.viewConfig"), icon: "Document" },
-        { key: "log", label: tt("mcp.usageLog"), icon: "DataLine" },
-      ];
-      if (this.externalUrlFor(r)) items.push({ key: "www", label: tt("mcp.copyExternal"), icon: "Link" });
-      if (canMutate() && this.remotePublished) items.push({ key: "gen", label: tt("mcp.generateExternalKey"), icon: "Key" });
-      if (canMutate()) items.push({ key: "del", label: tt("mcp.deleteToken"), icon: "Delete", danger: true });
-      return items;
+      return this.rowActions(this.sheet.row);
+    },
+    // Size the fixed column to the widest action set on screen so the icons
+    // never wrap onto a second line.
+    actionsColWidth() {
+      let n = 1;
+      for (const row of store.mcpTokens || []) n = Math.max(n, this.rowActions(row).length);
+      return n * 26 + (n - 1) * 2 + 24;
     },
     remote() {
       return store.mcpRemote;
@@ -420,12 +434,30 @@ export default {
     onSheetSelect(item) {
       const row = this.sheet.row;
       this.sheet.visible = false;
+      this.runRowAction(item, row);
+    },
+    // One action list per row, shared by the desktop icon column and the phone
+    // action sheet so the two surfaces can never drift apart.
+    rowActions(r) {
+      if (!r) return [];
+      const items = [
+        { key: "cfg", label: tt("mcp.viewConfig"), icon: "Document" },
+        { key: "log", label: tt("mcp.usageLog"), icon: "DataLine" },
+      ];
+      if (this.externalUrlFor(r)) items.push({ key: "www", label: tt("mcp.copyExternal"), icon: "Link" });
+      // The external key only matters once an admin published a remote
+      // domain; on a LAN deployment there is nothing to authenticate.
+      if (canMutate() && this.remotePublished) items.push({ key: "gen", label: tt("mcp.generateExternalKey"), icon: "Key" });
+      if (canMutate()) items.push({ key: "del", label: tt("mcp.deleteToken"), icon: "Delete", danger: true });
+      return items;
+    },
+    runRowAction(a, row) {
       if (!row) return;
-      if (item.key === "cfg") this.showConfig(row);
-      else if (item.key === "log") this.showUsage(row);
-      else if (item.key === "www") this.copy(this.externalUrlFor(row));
-      else if (item.key === "gen") this.generateKey(row);
-      else if (item.key === "del") this.deleteToken(row);
+      if (a.key === "cfg") this.showConfig(row);
+      else if (a.key === "log") this.showUsage(row);
+      else if (a.key === "www") this.copy(this.externalUrlFor(row));
+      else if (a.key === "gen") this.generateKey(row);
+      else if (a.key === "del") this.deleteToken(row);
     },
     formatDate,
     expired(tk) {
@@ -601,5 +633,7 @@ export default {
 .primary-line { font-weight: 600; display: flex; align-items: center; }
 .secondary-line { color: var(--muted); font-size: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.sheet-meta { display: flex; flex-direction: column; gap: 3px; margin: 8px 0 12px; }
+.sheet-meta-line { color: var(--muted); font-size: 12px; word-break: break-word; }
 @media (max-width: 1000px) { .mcp-main-grid { grid-template-columns: minmax(0, 1fr); } }
 </style>

@@ -6,10 +6,7 @@
       <div class="hero-bg" aria-hidden="true"><span class="g1"></span><span class="g2"></span><span class="g3"></span><span class="g4"></span></div>
       <div class="login-brand">
         <div class="app-icon" aria-hidden="true">
-          <svg viewBox="0 0 32 32">
-            <path d="M8 12.8c0-1 .8-1.8 1.8-1.8h4.7l1.8 2h6.7c1 0 1.8.8 1.8 1.8v1H8v-3Z" fill="#fff"/>
-            <path d="M8 15h16l-1.1 7.4c-.1.9-.9 1.6-1.8 1.6H10.9c-.9 0-1.7-.7-1.8-1.6L8 15Z" fill="#fff"/>
-          </svg>
+          <img src="/mudp.png" alt="" draggable="false" />
         </div>
         <div class="app-name">{{ s.siteName || "MUDP" }}</div>
         <div class="app-tagline">{{ tt("login.brandSubtitle") }}</div>

@@ -1,0 +1,12 @@
+import { chromium } from "playwright";
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+await page.goto("http://127.0.0.1:19010/");
+await page.waitForSelector(".captcha-img img");
+await page.waitForTimeout(400);
+const box = await page.locator(".captcha-row").boundingBox();
+const img = await page.locator(".captcha-img").boundingBox();
+const input = await page.locator(".captcha-row .el-input").boundingBox();
+const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+console.log("row:", box, "img:", img, "input:", input, "overflow:", overflow);
+await browser.close();

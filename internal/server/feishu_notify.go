@@ -1,69 +1,103 @@
 package server
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
-)
 
-// feishuWebhookHostPrefix is the only webhook origin accepted for a user's
-// personal notifications. Locking it down prevents turning the notification
-// feature into an SSRF probe for arbitrary URLs.
-const feishuWebhookHostPrefix = "https://open.feishu.cn/open-apis/bot/v2/hook/"
+	"mudp/internal/store"
+)
 
 const feishuSendTimeout = 5 * time.Second
 
-// normalizeFeishuWebhook validates and trims a Feishu custom-bot webhook URL.
-// Empty input yields "" (clearing the setting is always allowed).
-func normalizeFeishuWebhook(url string) string {
-	url = strings.TrimSpace(url)
-	if url == "" {
-		return ""
+var errFeishuNotConfigured = errors.New("feishu is not configured")
+
+// sendFeishuText delivers a bot message to one user's Feishu open_id through
+// the admin-configured SSO app and records the attempt (sent or failed) in the
+// user's send history. Errors are returned so callers (the admin test
+// endpoint, the process watcher) can surface them too.
+func (a *App) sendFeishuText(userID int64, openID, kind, text string) error {
+	err := a.deliverFeishuText(openID, text)
+	record := store.FeishuMessage{
+		UserID: userID, Kind: kind, OpenID: openID, Message: text,
+		Status: store.FeishuMessageSent, CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if !strings.HasPrefix(url, feishuWebhookHostPrefix) {
-		return ""
+	if err != nil {
+		record.Status = store.FeishuMessageFailed
+		record.Error = err.Error()
 	}
-	return url
+	if dbErr := a.db.AddFeishuMessage(record); dbErr != nil {
+		// The delivery result matters more than the history row; never mask a
+		// delivery failure with a logging one.
+		if err == nil {
+			err = dbErr
+		}
+	}
+	return err
 }
 
-// sendFeishuText posts a plain-text message to a Feishu custom bot. Errors are
-// returned so callers (the test button, the process watcher) can surface them.
-func sendFeishuText(webhook, text string) error {
-	payload, err := json.Marshal(map[string]any{
-		"msg_type": "text",
-		"content":  map[string]string{"text": text},
-	})
+// deliverFeishuText performs the actual bot send without touching history.
+func (a *App) deliverFeishuText(openID, text string) error {
+	fc, err := a.feishu()
 	if err != nil {
 		return err
+	}
+	if fc == nil {
+		return errFeishuNotConfigured
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), feishuSendTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook, bytes.NewReader(payload))
+	return fc.SendText(ctx, openID, text)
+}
+
+// feishuNotifyTest lets an admin push a test message to any user through the
+// app bot, verifying the bot capability and messaging scope end to end.
+func (a *App) feishuNotifyTest(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	if u == nil || roleRank(u.Role) < rankAdmin {
+		writeErr(w, http.StatusForbidden, "insufficient privileges")
+		return
+	}
+	var req struct {
+		UserID  int64  `json:"userId"`
+		Message string `json:"message"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.UserID == 0 {
+		writeErr(w, http.StatusBadRequest, "userId is required")
+		return
+	}
+	target, err := a.db.UserByID(req.UserID)
 	if err != nil {
-		return err
+		writeErr(w, http.StatusNotFound, "user not found")
+		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
+	if target.FeishuOpenID == "" {
+		writeErr(w, http.StatusBadRequest, "user has no Feishu account linked")
+		return
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %s", resp.Status)
+	message := strings.TrimSpace(req.Message)
+	if message == "" {
+		message = "MUDP test message"
 	}
-	// Feishu answers 200 with an error body (e.g. invalid webhook secret).
-	var result struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
+	if err := a.sendFeishuText(target.ID, target.FeishuOpenID, store.FeishuKindAdminTest, message); err != nil {
+		writeErr(w, http.StatusBadGateway, "Feishu rejected the message: "+err.Error())
+		return
 	}
-	if err := json.Unmarshal(body, &result); err == nil && result.Code != 0 {
-		return fmt.Errorf("code %d: %s", result.Code, result.Msg)
-	}
-	return nil
+	a.record(r, "feishu.test", target.Username)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// feishuMessages returns the caller's own Feishu send history (newest first).
+func (a *App) feishuMessages(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	msgs, err := a.db.FeishuMessagesForUser(u.ID, 50)
+	respond(w, msgs, err)
+}
+
+// feishuMessagesClear deletes the caller's entire send history.
+func (a *App) feishuMessagesClear(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	respond(w, map[string]bool{"ok": true}, a.db.ClearFeishuMessages(u.ID))
 }

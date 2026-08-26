@@ -4,15 +4,22 @@
        loaded mammoth/SheetJS bundles, media via native elements, YUV/RAW
        through the server-side raster decode (lib/yuv.js, lib/raw.js). The
        type dispatch lives in lib/preview.js, shared with the share page. -->
-  <el-dialog :model-value="visible" :title="name" width="860px" top="3vh" append-to-body custom-class="viewer-dialog" @update:model-value="onVisible" @opened="render">
-    <div class="viewer-toolbar">
-      <el-button v-if="supportsFullscreen" size="small" @click="toggleFullscreen">
-        ⛶ {{ fullscreen ? tt("netdisk.viewerExitFullscreen") : tt("netdisk.viewerFullscreen") }}
-      </el-button>
-      <el-button size="small">
-        <a :href="dlUrl" :download="name" style="color: inherit; text-decoration: none">⬇ {{ tt("netdisk.download") }}</a>
-      </el-button>
-    </div>
+  <el-dialog :model-value="visible" width="860px" top="3vh" append-to-body custom-class="viewer-dialog" @update:model-value="onVisible" @opened="render">
+    <!-- Title on the left, fullscreen + download on the right of the same
+         row, matching the share page's viewer head. -->
+    <template #header>
+      <div class="viewer-head">
+        <span class="viewer-head-title" :title="name">{{ name }}</span>
+        <div class="viewer-head-actions">
+          <el-button v-if="supportsFullscreen" size="small" @click="toggleFullscreen">
+            ⛶ {{ fullscreen ? tt("netdisk.viewerExitFullscreen") : tt("netdisk.viewerFullscreen") }}
+          </el-button>
+          <el-button size="small">
+            <a :href="dlUrl" :download="name" style="color: inherit; text-decoration: none">⬇ {{ tt("netdisk.download") }}</a>
+          </el-button>
+        </div>
+      </div>
+    </template>
 
     <div v-if="!kind" class="viewer-unsupported">
       <div class="viewer-unsupported-icon">📄</div>
@@ -28,7 +35,9 @@
       <div v-else-if="error" class="viewer-error">{{ error }}</div>
       <img v-else-if="kind === 'image'" ref="media" class="viewer-media" :src="rawUrl" :alt="name" />
       <audio v-else-if="kind === 'audio'" ref="media" class="viewer-media" controls preload="metadata" :src="rawUrl" />
-      <video v-else-if="kind === 'video'" ref="media" class="viewer-media" controls preload="metadata" :src="rawUrl" />
+      <!-- Video is deliberately fullscreen-free (no player button via
+           controlslist, no header button), so it always plays inline. -->
+      <video v-else-if="kind === 'video'" ref="media" class="viewer-media" controls controlslist="nofullscreen" preload="metadata" :src="rawUrl" />
       <pre v-else-if="kind === 'text' || kind === 'json'" class="viewer-text">{{ text }}</pre>
       <!-- csvToTableHtml escapes every cell itself, so v-html is safe here. -->
       <div v-else-if="kind === 'csv'" class="viewer-csv" v-html="csvHtml"></div>
@@ -78,8 +87,9 @@ export default {
       const base = this.fromBackup ? "/api/netdisk/backup/raster" : "/api/netdisk/raster";
       return `${base}?path=${encodeURIComponent(this.path)}&ts=${Date.now()}`;
     },
+    // Video is deliberately fullscreen-free: the player plays inline only.
     supportsFullscreen() {
-      return ["pdf", "video", "image", "yuv", "raw", "csv", "docx", "xlsx"].includes(this.kind);
+      return ["pdf", "image", "yuv", "raw", "csv", "docx", "xlsx"].includes(this.kind);
     },
   },
   watch: {
@@ -119,12 +129,12 @@ export default {
       }
       this.pdfDoc = null;
     },
-    // Video/image go through the native Fullscreen API so the player controls
-    // stay available; other kinds use the CSS .fullscreen overlay, which also
-    // serves as the fallback when the API is unavailable (e.g. sandboxed
-    // iframe without allowfullscreen).
+    // Images go through the native Fullscreen API so zoom/pan stays smooth;
+    // other kinds use the CSS .fullscreen overlay, which also serves as the
+    // fallback when the API is unavailable (e.g. sandboxed iframe without
+    // allowfullscreen).
     toggleFullscreen() {
-      const native = ["video", "image"].includes(this.kind) ? this.$refs.media : null;
+      const native = this.kind === "image" ? this.$refs.media : null;
       this.fullscreen = !this.fullscreen;
       if (this.fullscreen && native && native.requestFullscreen) {
         native.requestFullscreen().catch(() => {});
@@ -236,7 +246,12 @@ export default {
 </script>
 
 <style scoped>
-.viewer-toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+/* The dialog header keeps its own show-close padding, so the actions row
+   already clears the ✕ button; typography matches the app-wide dialog
+   title style (14.5px/650). */
+.viewer-head { display: flex; align-items: center; gap: 12px; }
+.viewer-head-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14.5px; font-weight: 650; }
+.viewer-head-actions { display: flex; gap: 8px; }
 .viewer-body { min-height: 320px; max-height: 70vh; overflow: auto; text-align: center; }
 .viewer-body.fullscreen { position: fixed; inset: 0; z-index: 3001; max-height: none; background: #fff; padding: 16px; }
 .viewer-media { max-width: 100%; max-height: 66vh; }

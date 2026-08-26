@@ -229,7 +229,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 43
+const schemaVersion = 45
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -287,8 +287,10 @@ var migrations = []migration{
 	{39, "add groups.shared_disk_path", migrateAddGroupSharedDiskPath},
 	{40, "add users.shared_disk_read_write", migrateAddUserSharedDiskReadWrite},
 	{41, "add mcp_tokens external key columns", migrateAddMCPTokenExternalKey},
-	{42, "create process_watches and users.feishu_webhook", migrateCreateProcessWatches},
+	{42, "create process_watches", migrateCreateProcessWatches},
 	{43, "create error_events", migrateCreateErrorEvents},
+	{44, "drop users.feishu_webhook", migrateDropUserFeishuWebhook},
+	{45, "create feishu_messages", migrateCreateFeishuMessages},
 }
 
 // AllowedTenantKey returns the configured Feishu tenant key that users must
