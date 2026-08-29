@@ -48,9 +48,11 @@ test("a group name containing a <script> payload renders as inert text, never ex
   const payload = `<script>window.__xssMarker=true</script><img src=x onerror="window.__xssMarker=true">`;
   const groupName = `sec-xss-${fixture.runId}-${payload}`;
 
-  // The Users page's create-group card is the first card in the settings
-  // column; type into its input and submit.
-  const groupInput = page.locator(".users-layout .settings-col .card").first().locator("input").first();
+  // The Users page's groups card has a "New Group" button that opens an
+  // Element Plus prompt dialog; type the payload into it and submit.
+  const groupsCard = page.locator(".card", { has: page.getByRole("heading", { name: "Groups" }) }).first();
+  await groupsCard.getByRole("button", { name: "New Group" }).click();
+  const groupInput = page.locator(".el-message-box input").first();
   await groupInput.fill(groupName);
   await groupInput.press("Enter");
 
