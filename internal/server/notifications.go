@@ -92,16 +92,15 @@ func (a *App) notifyAdminsPendingUser(u *store.User) {
 }
 
 // notifyUserApproved creates a notification for a user who was just approved.
-func (a *App) notifyUserApproved(userID int64, groupNames []string) {
-	groups := strings.Join(groupNames, ", ")
-	if groups == "" {
-		groups = store.DefaultUserGroup
+func (a *App) notifyUserApproved(userID int64, group string) {
+	if group == "" {
+		group = store.DefaultUserGroup
 	}
 	_ = a.db.NotifyUser(userID, store.Notification{
 		Type:    store.NotificationUserApproved,
 		Title:   "Account approved",
-		Message: fmt.Sprintf("Your account has been approved and added to the %s group.", groups),
-		Data:    map[string]any{"groups": groupNames},
+		Message: fmt.Sprintf("Your account has been approved and added to the %s group.", group),
+		Data:    map[string]any{"group": group},
 	})
 }
 

@@ -118,7 +118,7 @@ func TestImagePresetResolveRespectsGroupVisibility(t *testing.T) {
 			teamA = g.ID
 		}
 	}
-	if err := db.CreateUser("outsider", "x-valid-1234", store.RoleUser, nil, 0, 0); err != nil {
+	if err := db.CreateUser("outsider", "x-valid-1234", store.RoleUser, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	outsider, _ := db.UserByUsername("outsider")

@@ -9,7 +9,7 @@ import (
 // pruning by age — the lifecycle behind a token's LOG dialog.
 func TestMCPUsageLog(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("alice", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("alice", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	alice, err := db.Authenticate("alice", "pw-valid-123")

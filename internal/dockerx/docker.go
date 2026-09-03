@@ -103,21 +103,24 @@ type Container struct {
 	GPUMemoryMB      float64           `json:"gpuMemMb"`
 	GPUMemoryTotalMB float64           `json:"gpuMemTotalMb"`
 	GPUMemoryPct     float64           `json:"gpuMemPct"`
-	HTTP8080URL      string            `json:"http8080Url,omitempty"`
-	HTTP8090URL      string            `json:"http8090Url,omitempty"`
-	// HTTPS8080URL/HTTPS8090URL are the https:// open links for a container
-	// port whose image preset enabled an HTTPS-terminated forward (see
-	// store.ImagePreset.HTTPS8080/HTTPS8090). Distinct host ports from
-	// HTTP8080URL/HTTP8090URL — mudp terminates TLS on this one and relays
-	// plaintext to the same container port.
-	HTTPS8080URL string `json:"https8080Url,omitempty"`
-	HTTPS8090URL string `json:"https8090Url,omitempty"`
-	CreatedAt    int64  `json:"createdAt"`
+	// PortLinks are the clickable access URLs for the container's reachable TCP
+	// ports — one link per container port. A port with an HTTPS-terminated
+	// forward contributes only its https:// link; its http:// one is omitted.
+	PortLinks []PortLink `json:"portLinks,omitempty"`
+	CreatedAt int64      `json:"createdAt"`
 	// Forwarded reports whether mudp relays this container's host ports itself
 	// rather than Docker publishing them — from its forward label, or adopted
 	// because it currently sits on a network the administrator marked for
 	// forwarding. Drives the "forward" badge in the UI.
 	Forwarded bool `json:"forwarded,omitempty"`
+}
+
+// PortLink is one clickable host-side access URL for a container TCP port.
+type PortLink struct {
+	Port int    `json:"port"`
+	URL  string `json:"url"`
+	// TLS marks an https:// link served by mudp's TLS-terminated forward.
+	TLS bool `json:"tls,omitempty"`
 }
 
 // SharedDiskMount is one per-user subfolder of a shared disk (共享盘) pool to
@@ -500,22 +503,6 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		return "", err
 	}
 	allocated := map[int]bool{}
-	addHostPort := func(hostPort int) error {
-		if opts.PortPrefix > 0 && (hostPort < opts.PortPrefix*100 || hostPort > opts.PortPrefix*100+99) {
-			return fmt.Errorf("host port %d is outside your assigned range %d00-%d99", hostPort, opts.PortPrefix, opts.PortPrefix)
-		}
-		if hostPort < 10000 {
-			return fmt.Errorf("host port %d is reserved; use your assigned range", hostPort)
-		}
-		if usedPorts[hostPort] || allocated[hostPort] {
-			return fmt.Errorf("host port %d is already allocated", hostPort)
-		}
-		if !portFree(hostPort) {
-			return fmt.Errorf("host port %d is occupied by another process", hostPort)
-		}
-		allocated[hostPort] = true
-		return nil
-	}
 	nextPort := func() (int, error) {
 		if opts.PortPrefix <= 0 {
 			return 0, fmt.Errorf("port prefix is not assigned")
@@ -546,7 +533,8 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		portMap[p] = append(portMap[p], nat.PortBinding{HostPort: strconv.Itoa(hostPort)})
 	}
 	// addPort resolves one mapping from the create form (see parsePortSpec for
-	// the accepted shapes) and publishes it.
+	// the accepted shapes) and publishes it. The host side is always allocated
+	// from the owner's assigned range.
 	addPort := func(spec string) error {
 		req, err := parsePortSpec(spec)
 		if err != nil {
@@ -555,32 +543,11 @@ func (d *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 		if req.skip {
 			return nil
 		}
-		containerPort, proto := req.containerPort, req.proto
-		if req.hostPort == 0 {
-			hostPort, allocErr := nextPort()
-			if allocErr != nil {
-				return allocErr
-			}
-			publish(hostPort, containerPort, proto)
-			return nil
+		hostPort, allocErr := nextPort()
+		if allocErr != nil {
+			return allocErr
 		}
-		hostPort := req.hostPort
-		if err := addHostPort(hostPort); err != nil {
-			// If the requested host port is occupied by a system program (not a
-			// port already managed by this application), automatically allocate
-			// another free port in the user's assigned range instead of failing.
-			if !usedPorts[hostPort] && !portFree(hostPort) {
-				emit("ports", fmt.Sprintf("Host port %d is occupied by another process; allocating a different port", hostPort))
-				alt, reallocErr := nextPort()
-				if reallocErr != nil {
-					return reallocErr
-				}
-				publish(alt, containerPort, proto)
-				return nil
-			}
-			return err
-		}
-		publish(hostPort, containerPort, proto)
+		publish(hostPort, req.containerPort, req.proto)
 		return nil
 	}
 	for _, p := range opts.Ports {
@@ -1151,14 +1118,21 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 		if param8090 == "" {
 			param8090 = DefaultNoVNCParam8090
 		}
+		links := buildPortLinks(c.Ports, forwards)
+		for i := range links {
+			// The 8080/8090 presets auto-login via their own resolved secret;
+			// every other port opens plain.
+			switch links[i].Port {
+			case 8080:
+				links[i].URL = withAutoLoginQuery(links[i].URL, param8080, password8080)
+			case 8090:
+				links[i].URL = withAutoLoginQuery(links[i].URL, param8090, tkn8090)
+			}
+		}
 		out = append(out, Container{
 			ID: c.ID, Name: display, FullName: full, Owner: c.Labels[UserLabel], Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
-			HTTP8080URL:  withAutoLoginQuery(httpURL(c.Ports, forwards, 8080), param8080, password8080),
-			HTTP8090URL:  withAutoLoginQuery(httpURL(c.Ports, forwards, 8090), param8090, tkn8090),
-			HTTPS8080URL: withAutoLoginQuery(httpsURL(forwards, 8080), param8080, password8080),
-			HTTPS8090URL: withAutoLoginQuery(httpsURL(forwards, 8090), param8090, tkn8090),
-			Forwarded:    forwarded,
+			PortLinks: links, Forwarded: forwarded,
 		})
 	}
 	for i := range out {
@@ -1198,36 +1172,67 @@ func withAutoLoginQuery(rawURL, param, value string) string {
 	return rawURL + "/?" + param + "=" + url.QueryEscape(value)
 }
 
-// httpURL returns the host-side http:// URL for the given container private
-// port (e.g. 8080 or 80) when it is reachable from the host — published by
-// Docker, or forwarded by mudp. A forwarded port answers on the host exactly
-// like a published one, so the console's "open" link works the same either way.
-func httpURL(ports []types.Port, forwards []ForwardSpec, privatePort uint16) string {
-	for _, p := range ports {
-		if p.PrivatePort == privatePort && p.PublicPort > 0 {
-			host := p.IP
-			if host == "" || host == "0.0.0.0" || host == "::" {
-				host = "127.0.0.1"
+// buildPortLinks resolves one clickable access URL per reachable TCP container
+// port: the https:// one when the port has a TLS-terminated forward (in which
+// case its plain http:// link is deliberately omitted — the whole point of the
+// HTTPS preset is that this port is served securely), otherwise the http://
+// one for a port published by Docker or relayed by mudp. A forwarded port
+// answers on the host exactly like a published one, so both resolve the same
+// way. Ports with neither a public binding nor a forward are not reachable
+// from the host and get no link.
+func buildPortLinks(ports []types.Port, forwards []ForwardSpec) []PortLink {
+	type candidate struct{ http, https string }
+	m := map[int]*candidate{}
+	get := func(p int) *candidate {
+		if e := m[p]; e != nil {
+			return e
+		}
+		e := &candidate{}
+		m[p] = e
+		return e
+	}
+	for _, s := range forwards {
+		if s.Proto != "tcp" {
+			continue
+		}
+		e := get(s.ContainerPort)
+		if s.TLS {
+			if e.https == "" {
+				e.https = fmt.Sprintf("https://127.0.0.1:%d", s.HostPort)
 			}
-			return fmt.Sprintf("http://%s:%d", host, p.PublicPort)
+		} else if e.http == "" {
+			e.http = fmt.Sprintf("http://127.0.0.1:%d", s.HostPort)
 		}
 	}
-	if hp := forwardHostPort(forwards, int(privatePort), "tcp"); hp > 0 {
-		return fmt.Sprintf("http://127.0.0.1:%d", hp)
+	for _, p := range ports {
+		if p.PublicPort == 0 || p.Type != "tcp" {
+			continue
+		}
+		e := get(int(p.PrivatePort))
+		if e.http != "" {
+			continue
+		}
+		host := p.IP
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		e.http = fmt.Sprintf("http://%s:%d", host, p.PublicPort)
 	}
-	return ""
-}
-
-// httpsURL returns the host-side https:// URL for a container private port
-// whose image preset enabled an HTTPS-terminated forward (see
-// store.ImagePreset.HTTPS8080/HTTPS8090). Unlike httpURL there is no Docker-
-// published case: Docker cannot terminate TLS, only mudp's own relay can, so
-// this only ever resolves through the forwards list.
-func httpsURL(forwards []ForwardSpec, privatePort uint16) string {
-	if hp := forwardHostPortTLS(forwards, int(privatePort), "tcp"); hp > 0 {
-		return fmt.Sprintf("https://127.0.0.1:%d", hp)
+	order := make([]int, 0, len(m))
+	for p := range m {
+		order = append(order, p)
 	}
-	return ""
+	sort.Ints(order)
+	out := make([]PortLink, 0, len(order))
+	for _, p := range order {
+		e := m[p]
+		if e.https != "" {
+			out = append(out, PortLink{Port: p, URL: e.https, TLS: true})
+		} else if e.http != "" {
+			out = append(out, PortLink{Port: p, URL: e.http})
+		}
+	}
+	return out
 }
 
 func (d *Client) memoryMB(ctx context.Context, id string) (float64, error) {

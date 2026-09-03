@@ -10,17 +10,15 @@ import (
 func TestParsePortSpec(t *testing.T) {
 	cases := []struct {
 		in    string
-		host  int
 		guest int
 		proto string
 	}{
-		{"10001:8080", 10001, 8080, "tcp"},
-		{":8080", 0, 8080, "tcp"},
-		{"8080", 0, 8080, "tcp"},
-		{"10002:53/udp", 10002, 53, "udp"},
-		{":51820/udp", 0, 51820, "udp"},
-		{"  10003 : 22 ", 10003, 22, "tcp"},
-		{"10004:5000/TCP", 10004, 5000, "tcp"},
+		{"8080", 8080, "tcp"},
+		{":8080", 8080, "tcp"},
+		{"53/udp", 53, "udp"},
+		{"51820/udp", 51820, "udp"},
+		{"  22 ", 22, "tcp"},
+		{"5000/TCP", 5000, "tcp"},
 	}
 	for _, c := range cases {
 		got, err := parsePortSpec(c.in)
@@ -28,14 +26,14 @@ func TestParsePortSpec(t *testing.T) {
 			t.Errorf("parsePortSpec(%q) errored: %v", c.in, err)
 			continue
 		}
-		if got.hostPort != c.host || got.containerPort != c.guest || got.proto != c.proto {
-			t.Errorf("parsePortSpec(%q) = %d:%d/%s, want %d:%d/%s", c.in, got.hostPort, got.containerPort, got.proto, c.host, c.guest, c.proto)
+		if got.containerPort != c.guest || got.proto != c.proto {
+			t.Errorf("parsePortSpec(%q) = %d/%s, want %d/%s", c.in, got.containerPort, got.proto, c.guest, c.proto)
 		}
 	}
 }
 
 func TestParsePortSpecRejectsGarbage(t *testing.T) {
-	for _, in := range []string{"8080/sctp", "abc", "10001:", ":", "10001:70000", "70000:80", "1.2.3.4:10001:80"} {
+	for _, in := range []string{"8080/sctp", "abc", "10001:", "10001:8080", ":", "10001:70000", "70000:80", "1.2.3.4:10001:80"} {
 		if _, err := parsePortSpec(in); err == nil {
 			t.Errorf("parsePortSpec(%q) = nil error, want a rejection", in)
 		}

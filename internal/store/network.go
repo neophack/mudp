@@ -40,13 +40,13 @@ func migrateCreateGroupNetworks(db executor) error {
 	return nil
 }
 
-// NetworksForUser returns the full Docker names of the networks granted to any
-// group the user belongs to. Used to widen both the Networks list and the
-// attachment validation applied on create/update.
+// NetworksForUser returns the full Docker names of the networks granted to the
+// user's group. Used to widen both the Networks list and the attachment
+// validation applied on create/update.
 func (db *DB) NetworksForUser(userID int64) ([]string, error) {
 	rows, err := db.Query(`select distinct gn.network from group_networks gn
-		join user_groups ug on ug.group_id = gn.group_id
-		where ug.user_id=? order by gn.network`, userID)
+		join users u on u.group_id = gn.group_id
+		where u.id=? order by gn.network`, userID)
 	if err != nil {
 		return nil, err
 	}

@@ -167,8 +167,6 @@ var tableDescriptions = map[string]string{
 	// User data & access control
 	"users":       "用户账号、密码哈希、角色、端口前缀、容器与网盘配额、飞书绑定及登录状态",
 	"groups":      "用户组（含内置 pending 待审组、users 默认组）、组网盘与备份根路径、组语言",
-	"user_groups": "用户与组的关联（多对多），决定用户可见的镜像/网络/网盘路径",
-
 	// Images & container defaults
 	"images":       "可用镜像注册表，含管理员预设的默认配置（GPU/端口/环境变量/设备等）",
 	"group_images": "镜像与组的授权关联；未授权的镜像对所有用户公开，授权的仅组成员可见",

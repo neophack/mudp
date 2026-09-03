@@ -63,7 +63,7 @@ export default {
     detail(n) {
       const data = n.data || {};
       if (n.type === "pending_user" && data.username) return `User: ${displayNameForUsername(data.username)}`;
-      if (n.type === "user_approved" && data.groups) return `Groups: ${(data.groups || []).join(", ")}`;
+      if (n.type === "user_approved" && data.group) return `Group: ${data.group}`;
       return "";
     },
     removeOne(id) {

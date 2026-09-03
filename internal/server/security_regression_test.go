@@ -95,7 +95,7 @@ func newSecurityTestServer(t *testing.T) (baseURL string, admin, user *secClient
 	if err != nil {
 		t.Fatalf("DefaultUserGroupID: %v", err)
 	}
-	if err := db.CreateUser("secuser", userPass, store.RoleUser, []int64{groupID}, 5, 0); err != nil {
+	if err := db.CreateUser("secuser", userPass, store.RoleUser, groupID, 5, 0); err != nil {
 		t.Fatalf("create secuser: %v", err)
 	}
 	user = newSecClient(t, ts.URL)

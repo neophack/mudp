@@ -79,7 +79,7 @@ func (a *App) setupInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := a.db.CreateUser(req.AdminUsername, req.AdminPassword, store.RoleAdmin, nil, 50, 0); err != nil {
+	if err := a.db.CreateUser(req.AdminUsername, req.AdminPassword, store.RoleAdmin, 0, 50, 0); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

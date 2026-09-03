@@ -274,9 +274,9 @@ export default {
       }
       const p = img.preset;
       if (p.gpus) this.form.gpus = p.gpus;
-      // Preset ports are container-side only; render as ":container" so the
-      // backend auto-allocates a host port from the user's range.
-      if (p.ports && p.ports.length) this.form.ports = p.ports.map((c) => ":" + c).join("\n");
+      // Preset ports are container-side only; mudp auto-allocates the host
+      // port from the user's range.
+      if (p.ports && p.ports.length) this.form.ports = p.ports.join("\n");
       if (p.restartPolicy) this.form.restartPolicy = p.restartPolicy;
       this.form.forward8080 = !!p.forward8080;
       this.form.forward8090 = !!p.forward8090;

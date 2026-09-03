@@ -232,13 +232,13 @@ func TestImagesForUserVisibility(t *testing.T) {
 		t.Fatal("failed to resolve group ids")
 	}
 
-	if err := db.CreateUser("visadmin", "x-valid-1234", RoleAdmin, nil, 0, 0); err != nil {
+	if err := db.CreateUser("visadmin", "x-valid-1234", RoleAdmin, 0, 0, 0); err != nil {
 		t.Fatalf("CreateUser visadmin: %v", err)
 	}
-	if err := db.CreateUser("alice", "x-valid-1234", RoleUser, []int64{teamA}, 0, 0); err != nil {
+	if err := db.CreateUser("alice", "x-valid-1234", RoleUser, teamA, 0, 0); err != nil {
 		t.Fatalf("CreateUser alice: %v", err)
 	}
-	if err := db.CreateUser("bob", "x-valid-1234", RoleUser, []int64{teamB}, 0, 0); err != nil {
+	if err := db.CreateUser("bob", "x-valid-1234", RoleUser, teamB, 0, 0); err != nil {
 		t.Fatalf("CreateUser bob: %v", err)
 	}
 
@@ -401,7 +401,7 @@ func TestAuditAndList(t *testing.T) {
 
 func TestUpdateUser(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("carol", "pw1-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("carol", "pw1-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	u, err := db.Authenticate("carol", "pw1-valid-123")
@@ -464,13 +464,13 @@ func TestUserCapacityLimit(t *testing.T) {
 
 	// newTestDB already creates an admin user during Migrate, so two more users
 	// should fit exactly and a third must be rejected.
-	if err := db.CreateUser("one", "pw1-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("one", "pw1-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatalf("create first user: %v", err)
 	}
-	if err := db.CreateUser("two", "pw2-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("two", "pw2-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatalf("create second user: %v", err)
 	}
-	if err := db.CreateUser("three", "pw3-valid-123", RoleUser, nil, 5, 0); !errors.Is(err, ErrUserCapacityFull) {
+	if err := db.CreateUser("three", "pw3-valid-123", RoleUser, 0, 5, 0); !errors.Is(err, ErrUserCapacityFull) {
 		t.Fatalf("create third user error = %v, want ErrUserCapacityFull", err)
 	}
 
@@ -488,7 +488,7 @@ func TestCreateStackColumnCount(t *testing.T) {
 	// Regression guard: the stacks insert must bind one value per column.
 	// (A previous version had 6 placeholders for 7 columns.)
 	db := newTestDB(t)
-	if err := db.CreateUser("stackowner", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("stackowner", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	u, _ := db.Authenticate("stackowner", "pw-valid-123")
@@ -519,7 +519,7 @@ func TestCreateStackColumnCount(t *testing.T) {
 	}
 
 	// Admin sees all stacks; create as another user and verify isolation.
-	if err := db.CreateUser("other", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("other", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	o, _ := db.Authenticate("other", "pw-valid-123")
@@ -584,7 +584,7 @@ func TestRegistriesCRUD(t *testing.T) {
 func TestMCPTokenCRUD(t *testing.T) {
 	db := newTestDB(t)
 	// admin (id=1) exists from Migrate; create a second user to test isolation.
-	if err := db.CreateUser("alice", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("alice", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	alice, err := db.Authenticate("alice", "pw-valid-123")
@@ -664,7 +664,7 @@ func TestMCPTokenCRUD(t *testing.T) {
 // ownership rule as RotateMCPToken.
 func TestMCPTokenExternalKey(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("bob", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("bob", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	bob, err := db.Authenticate("bob", "pw-valid-123")
@@ -734,7 +734,7 @@ func TestMCPTokenListOrphanedOwner(t *testing.T) {
 	// Pin the pool to one connection so the pragma below applies to every
 	// following statement (SQLite pragmas are per-connection).
 	db.SetMaxOpenConns(1)
-	if err := db.CreateUser("bob", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("bob", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	bob, err := db.Authenticate("bob", "pw-valid-123")
@@ -778,7 +778,7 @@ func TestMCPTokenListOrphanedOwner(t *testing.T) {
 	}
 
 	// With foreign_keys enabled (via the DSN), deleting a user cascades.
-	if err := db.CreateUser("charlie", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("charlie", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	charlie, err := db.Authenticate("charlie", "pw-valid-123")
@@ -906,7 +906,7 @@ func TestSchemaVersionTracksMigrations(t *testing.T) {
 // TestCreateUserQuota ensures the netdisk quota is persisted and returned.
 func TestCreateUserQuota(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("quotauser", "pw-valid-123", RoleUser, nil, 5, 2*1024*1024*1024); err != nil {
+	if err := db.CreateUser("quotauser", "pw-valid-123", RoleUser, 0, 5, 2*1024*1024*1024); err != nil {
 		t.Fatal(err)
 	}
 	u, err := db.Authenticate("quotauser", "pw-valid-123")
@@ -923,10 +923,10 @@ func TestCreateUserQuota(t *testing.T) {
 // port-prefix retry loop.
 func TestCreateUserDuplicateUsername(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("dupuser", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("dupuser", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
-	err := db.CreateUser("dupuser", "pw2-valid-123", RoleUser, nil, 5, 0)
+	err := db.CreateUser("dupuser", "pw2-valid-123", RoleUser, 0, 5, 0)
 	if err == nil {
 		t.Fatal("expected error for duplicate username")
 	}
@@ -943,7 +943,7 @@ func TestCreateUserDuplicateUsername(t *testing.T) {
 func TestCreateFeishuUserRetriesUsername(t *testing.T) {
 	db := newTestDB(t)
 	// Pre-create a local user whose username matches the Feishu-generated one.
-	if err := db.CreateUser("feishuabc", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("feishuabc", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	u, err := db.CreateFeishuUserWithProfile(auth.FeishuUser{OpenID: "feishu_abc", Name: "Feishu User"})
@@ -959,7 +959,7 @@ func TestCreateFeishuUserRetriesUsername(t *testing.T) {
 // use the same incremental port-prefix allocator as local users.
 func TestCreateFeishuUserAssignsNextPortPrefix(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("alice", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("alice", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	alice, err := db.UserByUsername("alice")
@@ -979,7 +979,7 @@ func TestCreateFeishuUserAssignsNextPortPrefix(t *testing.T) {
 // the has-password flag without leaking the hash.
 func TestNetdiskSharePassword(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("shareowner", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("shareowner", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	u, _ := db.Authenticate("shareowner", "pw-valid-123")
@@ -1039,15 +1039,15 @@ func TestDefaultGroupsExist(t *testing.T) {
 // explicit groups is automatically placed in the default users group.
 func TestCreateUserAssignsDefaultGroup(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("nogroups", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("nogroups", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	u, err := db.Authenticate("nogroups", "pw-valid-123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(u.Groups) != 1 || u.Groups[0] != DefaultUserGroup {
-		t.Fatalf("expected groups [%s], got %v", DefaultUserGroup, u.Groups)
+	if u.Group != DefaultUserGroup {
+		t.Fatalf("expected group %s, got %q", DefaultUserGroup, u.Group)
 	}
 }
 
@@ -1057,7 +1057,7 @@ func TestCreateUserAssignsDefaultGroup(t *testing.T) {
 // pending group check, not by the disabled flag.
 func TestDeactivateUser(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("active", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("active", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	u, _ := db.Authenticate("active", "pw-valid-123")
@@ -1071,8 +1071,8 @@ func TestDeactivateUser(t *testing.T) {
 	if u2.Disabled {
 		t.Error("deactivate must not set the disabled flag; use UpdateUser for a hard lockout")
 	}
-	if len(u2.Groups) != 1 || u2.Groups[0] != PendingGroup {
-		t.Fatalf("expected groups [%s], got %v", PendingGroup, u2.Groups)
+	if u2.Group != PendingGroup {
+		t.Fatalf("expected group %s, got %q", PendingGroup, u2.Group)
 	}
 	// The user can still log in — the pending waiting page requires a session.
 	if _, err := db.Authenticate("active", "pw-valid-123"); err != nil {
@@ -1085,7 +1085,7 @@ func TestDeactivateUser(t *testing.T) {
 // fully restored once an admin approves them.
 func TestApproveClearsDisabled(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("legacy", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("legacy", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	u, _ := db.Authenticate("legacy", "pw-valid-123")
@@ -1103,8 +1103,8 @@ func TestApproveClearsDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultUserGroupID: %v", err)
 	}
-	if err := db.SetUserGroups(u.ID, []int64{gid}); err != nil {
-		t.Fatalf("SetUserGroups: %v", err)
+	if err := db.SetUserGroup(u.ID, gid); err != nil {
+		t.Fatalf("SetUserGroup: %v", err)
 	}
 	disabledOff := false
 	if err := db.UpdateUser(u.ID, "", "", 0, nil, &disabledOff); err != nil {
@@ -1117,8 +1117,8 @@ func TestApproveClearsDisabled(t *testing.T) {
 	if got.Disabled {
 		t.Error("approve must clear the disabled flag")
 	}
-	if len(got.Groups) != 1 || got.Groups[0] != DefaultUserGroup {
-		t.Fatalf("expected groups [%s], got %v", DefaultUserGroup, got.Groups)
+	if got.Group != DefaultUserGroup {
+		t.Fatalf("expected group %s, got %q", DefaultUserGroup, got.Group)
 	}
 	// And the user must now be able to authenticate.
 	if _, err := db.Authenticate("legacy", "pw-valid-123"); err != nil {
@@ -1130,10 +1130,10 @@ func TestApproveClearsDisabled(t *testing.T) {
 // per-user isolation.
 func TestNotificationLifecycle(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("alice", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("alice", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CreateUser("bob", "pw-valid-123", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("bob", "pw-valid-123", RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	alice, _ := db.Authenticate("alice", "pw-valid-123")

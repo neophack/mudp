@@ -49,10 +49,10 @@ func TestMigrationRevokesLegacyFeishuPasswords(t *testing.T) {
 // or a later password change.
 func TestPasswordPolicyEnforced(t *testing.T) {
 	db := newTestDB(t)
-	if err := db.CreateUser("weakuser", "short", RoleUser, nil, 5, 0); err == nil {
+	if err := db.CreateUser("weakuser", "short", RoleUser, 0, 5, 0); err == nil {
 		t.Error("CreateUser accepted a password below the minimum")
 	}
-	if err := db.CreateUser("gooduser", "long-enough-password", RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("gooduser", "long-enough-password", RoleUser, 0, 5, 0); err != nil {
 		t.Fatalf("CreateUser rejected a compliant password: %v", err)
 	}
 	u, err := db.Authenticate("gooduser", "long-enough-password")

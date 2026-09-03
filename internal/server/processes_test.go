@@ -45,7 +45,7 @@ func mustNotifications(t *testing.T, db *store.DB, userID int64) []store.Notific
 
 func TestWatchProcessesFiresOnExit(t *testing.T) {
 	db := newServerTestDB(t)
-	if err := db.CreateUser("alice", "alice-password-1", store.RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("alice", "alice-password-1", store.RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	var user store.User
@@ -97,7 +97,7 @@ func TestWatchProcessesFiresOnExit(t *testing.T) {
 
 func TestWatchProcessesContainerGone(t *testing.T) {
 	db := newServerTestDB(t)
-	if err := db.CreateUser("bob", "bob-password-12", store.RoleUser, nil, 5, 0); err != nil {
+	if err := db.CreateUser("bob", "bob-password-12", store.RoleUser, 0, 5, 0); err != nil {
 		t.Fatal(err)
 	}
 	var user store.User

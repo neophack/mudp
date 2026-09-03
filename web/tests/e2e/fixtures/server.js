@@ -158,7 +158,7 @@ export async function seed(server, opts = {}) {
     username: userName,
     password: userPassword,
     role: "user",
-    groupIds: [usersGroup.id],
+    groupId: usersGroup.id,
     containerCap: 5,
     netdiskQuotaBytes: 2 * 1024 * 1024 * 1024,
   });

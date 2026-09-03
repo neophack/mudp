@@ -42,7 +42,7 @@ func newNetdiskTestApp(t *testing.T) (*App, *store.User) {
 	if err := a.db.UpdateGroupNetdiskPath(gid, t.TempDir()); err != nil {
 		t.Fatalf("set netdisk path: %v", err)
 	}
-	if err := a.db.CreateUser("alice", "password123", store.RoleUser, []int64{gid}, 10, 0); err != nil {
+	if err := a.db.CreateUser("alice", "password123", store.RoleUser, gid, 10, 0); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	u, err := a.db.UserByUsername("alice")

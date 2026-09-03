@@ -20,7 +20,7 @@ func TestSQLiteStressMixedLoad(t *testing.T) {
 
 	const userCount = 8
 	for i := 0; i < userCount; i++ {
-		if err := db.CreateUser(fmt.Sprintf("stress%d", i), fmt.Sprintf("stress-pass-%d-Aa9", i), RoleUser, nil, 5, 0); err != nil {
+		if err := db.CreateUser(fmt.Sprintf("stress%d", i), fmt.Sprintf("stress-pass-%d-Aa9", i), RoleUser, 0, 5, 0); err != nil {
 			t.Fatalf("CreateUser: %v", err)
 		}
 	}

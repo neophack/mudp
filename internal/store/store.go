@@ -24,7 +24,7 @@ type User struct {
 	Username              string   `json:"username"`
 	DisplayName           string   `json:"displayName,omitempty"`
 	Role                  string   `json:"role"`
-	Groups                []string `json:"groups,omitempty"`
+	Group                 string   `json:"group,omitempty"`
 	PortPrefix            int      `json:"portPrefix"`
 	CreatedAt             string   `json:"createdAt"`
 	LastLoginAt           *string  `json:"lastLoginAt,omitempty"`
@@ -229,7 +229,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 45
+const schemaVersion = 46
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -291,6 +291,36 @@ var migrations = []migration{
 	{43, "create error_events", migrateCreateErrorEvents},
 	{44, "drop users.feishu_webhook", migrateDropUserFeishuWebhook},
 	{45, "create feishu_messages", migrateCreateFeishuMessages},
+	{46, "user single group", migrateUserSingleGroup},
+}
+
+// migrateUserSingleGroup replaces the user_groups many-to-many join table with
+// a single group_id column on users: every per-user group setting (netdisk
+// path, backup path, shared disk, language) resolves through exactly one
+// group, so multi-group membership was ambiguous. Existing memberships are
+// collapsed to the group with the smallest id — the same group the old
+// limit-1 queries already resolved to.
+func migrateUserSingleGroup(db executor) error {
+	if err := execIgnoring(db, `alter table users add column group_id integer`, sqliteDuplicateColumn); err != nil {
+		return err
+	}
+	// Fresh databases never had the join table; only carry over and drop it
+	// when it exists.
+	var name string
+	err := db.QueryRow(`select name from sqlite_master where type='table' and name='user_groups'`).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(`update users set group_id = (
+		select min(ug.group_id) from user_groups ug where ug.user_id = users.id
+	)`); err != nil {
+		return err
+	}
+	_, err = db.Exec(`drop table user_groups`)
+	return err
 }
 
 // AllowedTenantKey returns the configured Feishu tenant key that users must
@@ -381,11 +411,6 @@ func migrateCreateInitialTables(db executor) error {
 		netdisk_path text not null default '',
 		backup_path text not null default ''
 	)`,
-		`create table if not exists user_groups (
-			user_id integer not null references users(id) on delete cascade,
-			group_id integer not null references groups(id) on delete cascade,
-			primary key (user_id, group_id)
-		)`,
 		`create table if not exists images (
 			id integer primary key autoincrement,
 			display_name text not null unique,
@@ -846,7 +871,7 @@ func (db *DB) Migrate(adminUser, adminPassword string) error {
 			return err
 		}
 		if n == 0 {
-			if err := db.CreateUser(adminUser, adminPassword, "admin", nil, 50, 0); err != nil {
+			if err := db.CreateUser(adminUser, adminPassword, "admin", 0, 50, 0); err != nil {
 				// Only reachable on a fresh install (an existing database already
 				// has an admin and skips this branch), so naming the variable is
 				// the fastest route to a fix.
@@ -907,7 +932,7 @@ func (db *DB) nextPortPrefix(tx *sql.Tx) (int, error) {
 	return next, nil
 }
 
-func (db *DB) CreateUser(username, password, role string, groupIDs []int64, containerCap int, quotaBytes int64) error {
+func (db *DB) CreateUser(username, password, role string, groupID int64, containerCap int, quotaBytes int64) error {
 	if containerCap <= 0 {
 		containerCap = 10
 	}
@@ -926,7 +951,7 @@ func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cont
 	// to detect and retry. Other constraint failures (e.g. duplicate username)
 	// are returned immediately so callers see the real cause.
 	for i := 0; i < 10; i++ {
-		err := db.createUserTx(username, string(hash), role, groupIDs, containerCap, quotaBytes)
+		err := db.createUserTx(username, string(hash), role, groupID, containerCap, quotaBytes)
 		if err == nil {
 			return nil
 		}
@@ -937,7 +962,7 @@ func (db *DB) CreateUser(username, password, role string, groupIDs []int64, cont
 	return errors.New("could not allocate a unique port prefix")
 }
 
-func (db *DB) createUserTx(username, passwordHash, role string, groupIDs []int64, containerCap int, quotaBytes int64) error {
+func (db *DB) createUserTx(username, passwordHash, role string, groupID int64, containerCap int, quotaBytes int64) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -956,18 +981,15 @@ func (db *DB) createUserTx(username, passwordHash, role string, groupIDs []int64
 		return err
 	}
 	uid, _ := res.LastInsertId()
-	gids := groupIDs
-	if len(gids) == 0 {
+	if groupID == 0 {
 		defaultGID, err := defaultUserGroupIDTx(tx)
 		if err != nil {
 			return err
 		}
-		gids = []int64{defaultGID}
+		groupID = defaultGID
 	}
-	for _, gid := range gids {
-		if _, err := tx.Exec(`insert or ignore into user_groups(user_id,group_id) values(?,?)`, uid, gid); err != nil {
-			return err
-		}
+	if _, err := tx.Exec(`update users set group_id=? where id=?`, groupID, uid); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -1029,7 +1051,7 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 	now := time.Now().Format(time.RFC3339)
 	_, _ = db.Exec(`update users set last_login_at=? where id=?`, now, u.ID)
 	u.Disabled = false
-	u.Groups = db.UserGroupNames(u.ID)
+	u.Group = db.UserGroupName(u.ID)
 	return &u, nil
 }
 
@@ -1043,7 +1065,7 @@ func (db *DB) UserByID(id int64) (*User, error) {
 		return nil, err
 	}
 	u.Disabled = disabled != 0
-	u.Groups = db.UserGroupNames(u.ID)
+	u.Group = db.UserGroupName(u.ID)
 	return &u, nil
 }
 
@@ -1140,7 +1162,7 @@ func (db *DB) Users() ([]User, error) {
 		}
 		u.Disabled = disabled != 0
 		u.SharedDiskReadWrite = sharedRW != 0
-		u.Groups = db.UserGroupNames(u.ID)
+		u.Group = db.UserGroupName(u.ID)
 		users = append(users, u)
 	}
 	return users, rows.Err()
@@ -1191,8 +1213,8 @@ func (db *DB) UpdateGroupLanguage(groupID int64, language string) error {
 }
 
 func (db *DB) NetdiskPathForUser(userID int64) (string, error) {
-	rows, err := db.Query(`select g.netdisk_path from groups g join user_groups ug on ug.group_id=g.id
-		where ug.user_id=? and g.netdisk_path != '' order by g.id limit 1`, userID)
+	rows, err := db.Query(`select g.netdisk_path from groups g join users u on u.group_id=g.id
+		where u.id=? and g.netdisk_path != ''`, userID)
 	if err != nil {
 		return "", err
 	}
@@ -1207,11 +1229,11 @@ func (db *DB) NetdiskPathForUser(userID int64) (string, error) {
 	return "", nil
 }
 
-// BackupPathForUser resolves the configured backup disk root for a user's
-// primary group, mirroring NetdiskPathForUser.
+// BackupPathForUser resolves the configured backup disk root for the user's
+// group, mirroring NetdiskPathForUser.
 func (db *DB) BackupPathForUser(userID int64) (string, error) {
-	rows, err := db.Query(`select g.backup_path from groups g join user_groups ug on ug.group_id=g.id
-		where ug.user_id=? and g.backup_path != '' order by g.id limit 1`, userID)
+	rows, err := db.Query(`select g.backup_path from groups g join users u on u.group_id=g.id
+		where u.id=? and g.backup_path != ''`, userID)
 	if err != nil {
 		return "", err
 	}
@@ -1226,14 +1248,14 @@ func (db *DB) BackupPathForUser(userID int64) (string, error) {
 	return "", nil
 }
 
-// SharedDiskGroupForUser resolves the configured shared-disk root for a
-// user's primary group, mirroring NetdiskPathForUser/BackupPathForUser, and
-// returns the owning group's id alongside it so callers can enumerate that
-// group's members (SharedDiskGroupMembers) without resolving twice. A zero id
-// and empty path mean no group the user belongs to has a shared disk.
+// SharedDiskGroupForUser resolves the configured shared-disk root for the
+// user's group, mirroring NetdiskPathForUser/BackupPathForUser, and returns
+// the owning group's id alongside it so callers can enumerate that group's
+// members (SharedDiskGroupMembers) without resolving twice. A zero id and an
+// empty path mean the user's group has no shared disk configured.
 func (db *DB) SharedDiskGroupForUser(userID int64) (int64, string, error) {
-	rows, err := db.Query(`select g.id, g.shared_disk_path from groups g join user_groups ug on ug.group_id=g.id
-		where ug.user_id=? and g.shared_disk_path != '' order by g.id limit 1`, userID)
+	rows, err := db.Query(`select g.id, g.shared_disk_path from groups g join users u on u.group_id=g.id
+		where u.id=? and g.shared_disk_path != ''`, userID)
 	if err != nil {
 		return 0, "", err
 	}
@@ -1352,8 +1374,8 @@ func (db *DB) ImagesForUser(userID int64, admin bool) ([]Image, error) {
 			where not exists (select 1 from group_images gi where gi.image_id=i.id)
 			   or exists (
 				   select 1 from group_images gi
-				   join user_groups ug on ug.group_id=gi.group_id
-				   where gi.image_id=i.id and ug.user_id=?
+				   join users gu on gu.group_id=gi.group_id
+				   where gi.image_id=i.id and gu.id=?
 			   )
 			order by i.display_name`
 		args = append(args, userID)
@@ -1461,20 +1483,14 @@ func (db *DB) NextImageEnvSeq(imageID int64) (int64, error) {
 	return seq, nil
 }
 
-func (db *DB) UserGroupNames(userID int64) []string {
-	rows, err := db.Query(`select g.name from groups g join user_groups ug on ug.group_id=g.id where ug.user_id=? order by g.name`, userID)
-	if err != nil {
-		return nil
+// UserGroupName returns the name of the user's single group, or "" when the
+// user has none.
+func (db *DB) UserGroupName(userID int64) string {
+	var name string
+	if err := db.QueryRow(`select g.name from groups g join users u on u.group_id=g.id where u.id=?`, userID).Scan(&name); err != nil {
+		return ""
 	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var s string
-		if rows.Scan(&s) == nil {
-			out = append(out, s)
-		}
-	}
-	return out
+	return name
 }
 
 func (db *DB) ImageGroupNames(imageID int64) []string {
@@ -1572,7 +1588,7 @@ func (db *DB) UserByFeishu(openID string) (*User, error) {
 	}
 	u.Disabled = disabled != 0
 	u.SharedDiskReadWrite = sharedRW != 0
-	u.Groups = db.UserGroupNames(u.ID)
+	u.Group = db.UserGroupName(u.ID)
 	return &u, nil
 }
 
@@ -1642,7 +1658,7 @@ func (db *DB) createFeishuUserWithUsernameTx(fu auth.FeishuUser, username string
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(`insert or ignore into user_groups(user_id,group_id) values(?,?)`, uid, pendingID); err != nil {
+	if _, err := tx.Exec(`update users set group_id=? where id=?`, pendingID, uid); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1701,23 +1717,11 @@ func defaultUserGroupIDTx(tx *sql.Tx) (int64, error) {
 	return id, err
 }
 
-// SetUserGroups replaces a user's group membership. Used by admins to approve
-// Feishu users (remove from pending, add to real groups).
-func (db *DB) SetUserGroups(userID int64, groupIDs []int64) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`delete from user_groups where user_id=?`, userID); err != nil {
-		return err
-	}
-	for _, gid := range groupIDs {
-		if _, err := tx.Exec(`insert or ignore into user_groups(user_id,group_id) values(?,?)`, userID, gid); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+// SetUserGroup assigns a user's single group membership. Used by admins to
+// approve Feishu users (out of pending) and to move users between groups.
+func (db *DB) SetUserGroup(userID int64, groupID int64) error {
+	_, err := db.Exec(`update users set group_id=? where id=?`, groupID, userID)
+	return err
 }
 
 // FeishuConfig holds the OAuth credentials stored in settings (admin-managed).
@@ -2083,8 +2087,7 @@ func (db *DB) UpdateUserSharedDiskReadWrite(id int64, readWrite bool) error {
 func (db *DB) SharedDiskGroupMembers(groupID int64) ([]User, error) {
 	rows, err := db.Query(`select u2.id, u2.username, u2.display_name, u2.role, u2.shared_disk_read_write
 		from users u2
-		join user_groups ug2 on ug2.user_id = u2.id
-		where ug2.group_id = ?`, groupID)
+		where u2.group_id = ?`, groupID)
 	if err != nil {
 		return nil, err
 	}
@@ -2294,14 +2297,11 @@ func (db *DB) DeactivateUser(id int64) error {
 		return beginErr
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`delete from user_groups where user_id=?`, id); err != nil {
-		return err
-	}
 	pendingID, err := pendingGroupIDTx(tx)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`insert or ignore into user_groups(user_id,group_id) values(?,?)`, id, pendingID); err != nil {
+	if _, err := tx.Exec(`update users set group_id=? where id=?`, pendingID, id); err != nil {
 		return err
 	}
 	return tx.Commit()

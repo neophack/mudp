@@ -49,7 +49,7 @@ mudp/
 全部来自环境变量（`MUDP_ADDR`、`MUDP_DB`、`MUDP_ADMIN_USER`、`MUDP_ADMIN_PASSWORD`、`MUDP_DOCKER_HOST`）。未设置 `MUDP_ADMIN_PASSWORD` 时，首次启动会进入 Web 初始化向导创建管理员；设置后则自动创建该账号。会话密钥默认每次启动随机生成——若未设 `MUDP_SESSION_SECRET`，每次重启所有会话失效；日志会输出 WARNING 提示。
 
 ### internal/store
-SQLite + modernc.org/sqlite（纯 Go 驱动，无 CGO）。连接池 8 开 4 闲。10 张表：`users / groups / user_groups / images / group_images / audit_logs / stacks / settings(kv) / resource_samples / netdisk_shares`。外键级联开启。
+SQLite + modernc.org/sqlite（纯 Go 驱动，无 CGO）。连接池 8 开 4 闲。10 张表：`users（含单 group_id 列）/ groups / images / group_images / audit_logs / stacks / settings(kv) / resource_samples / netdisk_shares`。外键级联开启。
 
 ### internal/dockerx
 Docker SDK 封装。见 §3。

@@ -127,17 +127,15 @@ func ParseForwardSpecs(label string) []ForwardSpec {
 
 // portSpec is one parsed line of the create form's port field.
 type portSpec struct {
-	// hostPort is 0 when the user left the host side out, meaning "allocate one
-	// from my range".
-	hostPort      int
 	containerPort int
 	proto         string
 	// skip marks a blank line, which is not an error — the field is a textarea.
 	skip bool
 }
 
-// parsePortSpec accepts "host:container", ":container" and "container", each
-// with an optional "/tcp" or "/udp" suffix (default tcp).
+// parsePortSpec accepts "container" with an optional "/tcp" or "/udp" suffix
+// (default tcp). The host side is never user-chosen: mudp allocates it from
+// the owner's assigned port range.
 //
 // The protocol suffix matters more than it used to: a mudp forward relays UDP
 // as readily as TCP, so a container's DNS, QUIC, or VPN port is now something
@@ -155,24 +153,14 @@ func parsePortSpec(spec string) (portSpec, error) {
 			return portSpec{}, fmt.Errorf("port protocol must be tcp or udp, got %q", proto)
 		}
 	}
-	hostRaw, containerRaw := "", spec
-	if h, c, ok := strings.Cut(spec, ":"); ok {
-		hostRaw, containerRaw = strings.TrimSpace(h), strings.TrimSpace(c)
-	}
-	containerPort, err := strconv.Atoi(containerRaw)
+	// A leading ":" (":8080") is accepted and ignored — the host side is
+	// allocated automatically either way.
+	spec = strings.TrimPrefix(spec, ":")
+	containerPort, err := strconv.Atoi(spec)
 	if err != nil || containerPort < 1 || containerPort > 65535 {
-		return portSpec{}, fmt.Errorf("port %q must be host:container, :container, or container", spec)
+		return portSpec{}, fmt.Errorf("port %q must be a container port; the host side is allocated automatically", spec)
 	}
-	out := portSpec{containerPort: containerPort, proto: proto}
-	if hostRaw == "" {
-		return out, nil
-	}
-	hostPort, err := strconv.Atoi(hostRaw)
-	if err != nil || hostPort < 1 || hostPort > 65535 {
-		return portSpec{}, fmt.Errorf("invalid host port %q", hostRaw)
-	}
-	out.hostPort = hostPort
-	return out, nil
+	return portSpec{containerPort: containerPort, proto: proto}, nil
 }
 
 // ForwardNetworkFor picks the network a container should be forwarded on: one
@@ -436,25 +424,6 @@ func forwardHostPort(specs []ForwardSpec, containerPort int, proto string) int {
 	}
 	for _, s := range specs {
 		if s.TLS {
-			continue
-		}
-		if s.ContainerPort == containerPort && s.Proto == proto {
-			return s.HostPort
-		}
-	}
-	return 0
-}
-
-// forwardHostPortTLS is forwardHostPort's counterpart for the HTTPS-terminated
-// listener a container port may additionally have — its own host port, since
-// mudp needs a distinct socket to speak TLS on before relaying the decrypted
-// bytes to the same container address.
-func forwardHostPortTLS(specs []ForwardSpec, containerPort int, proto string) int {
-	if proto == "" {
-		proto = "tcp"
-	}
-	for _, s := range specs {
-		if !s.TLS {
 			continue
 		}
 		if s.ContainerPort == containerPort && s.Proto == proto {

@@ -26,7 +26,7 @@
             <div class="secondary-line">{{ tt("users.limitLine", { cap: row.containerCap, quota: formatQuota(row.netdiskQuotaBytes) }) }}</div>
             <!-- Phone rows fold the hidden groups/ports columns into the primary cell. -->
             <div v-if="s.isMobile" class="secondary-line">
-              {{ tt("users.colGroups") }}: {{ (row.groups || []).join(", ") || tt("users.groupsNone") }} · {{ tt("users.colPorts") }}: {{ portsText(row) }}
+              {{ tt("users.colGroups") }}: {{ row.group || tt("users.groupsNone") }} · {{ tt("users.colPorts") }}: {{ portsText(row) }}
             </div>
           </template>
         </el-table-column>
@@ -38,7 +38,7 @@
           </template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('users.colGroups')" min-width="120">
-          <template #default="{ row }"><span class="secondary-line">{{ (row.groups || []).join(", ") || tt("users.groupsNone") }}</span></template>
+          <template #default="{ row }"><span class="secondary-line">{{ row.group || tt("users.groupsNone") }}</span></template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('users.colPorts')" width="110">
           <template #default="{ row }">
@@ -213,7 +213,7 @@
       <template #meta>
         <div class="sheet-meta">
           <div v-if="sheet.row" class="sheet-meta-line">{{ tt("users.limitLine", { cap: sheet.row.containerCap, quota: formatQuota(sheet.row.netdiskQuotaBytes) }) }}</div>
-          <div v-if="sheet.row" class="sheet-meta-line">{{ tt("users.colGroups") }}: {{ (sheet.row.groups || []).join(", ") || tt("users.groupsNone") }}</div>
+          <div v-if="sheet.row" class="sheet-meta-line">{{ tt("users.colGroups") }}: {{ sheet.row.group || tt("users.groupsNone") }}</div>
           <div v-if="sheet.row" class="sheet-meta-line">{{ tt("users.colPorts") }}: {{ portsText(sheet.row) }}</div>
         </div>
       </template>
@@ -244,7 +244,7 @@
         <el-form-item :label="tt('users.colGroups')">
           <div class="check-grid">
             <label v-for="g in s.groups" :key="g.id" class="check">
-              <input v-model="userForm.groupIds" type="checkbox" :value="g.id" /> {{ g.name }}
+              <input v-model="userForm.groupId" type="radio" :value="g.id" name="user-group" /> {{ g.name }}
             </label>
           </div>
         </el-form-item>
@@ -259,7 +259,7 @@
     <el-dialog v-model="groupsDialog.visible" :title="tt('users.editGroupsTitle', { name: groupsDialog.name })" width="420px" append-to-body>
       <div class="check-grid col">
         <label v-for="g in s.groups" :key="g.id" class="check">
-          <input v-model="groupsDialog.groupIds" type="checkbox" :value="g.id" />
+          <input v-model="groupsDialog.groupId" type="radio" :value="g.id" name="edit-user-group" />
           {{ g.name }}
           <span v-if="g.name === 'pending'" class="hint">{{ tt("users.pendingApproval") }}</span>
         </label>
@@ -359,13 +359,13 @@ export default {
     return {
       s: store,
       createVisible: false,
-      userForm: { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupIds: [] },
+      userForm: { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: 0 },
       feishuTest: { userId: null, message: "" },
       feishuTestSending: false,
       usage: null,
       tasks: [],
       sheet: { visible: false, row: null },
-      groupsDialog: { visible: false, id: 0, name: "", groupIds: [] },
+      groupsDialog: { visible: false, id: 0, name: "", groupId: 0 },
       editDialog: { visible: false, id: 0, name: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, portPrefix: "", password: "", enabled: true },
       groupDialog: { visible: false, id: 0, name: "", netdiskPath: "", backupPath: "", sharedDiskPath: "", language: "", orig: {} },
     };
@@ -463,7 +463,7 @@ export default {
       return r ? r.label : user.role;
     },
     isPending(user) {
-      return (user.groups || []).length > 0 && (user.groups || []).every((g) => g === "pending");
+      return user.group === "pending";
     },
     langLabel(lang) {
       return lang === "zh_CN" ? "中文" : lang === "en_US" ? "English" : tt("users.notSet");
@@ -515,7 +515,7 @@ export default {
       }
     },
     openCreateUser() {
-      this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupIds: [] };
+      this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: 0 };
       this.createVisible = true;
     },
     async sendFeishuTest() {
@@ -541,18 +541,14 @@ export default {
         role: f.role,
         containerCap: Number(f.containerCap || 10),
         netdiskQuotaBytes: Math.round(Number(f.netdiskQuotaGB || 0) * 1024 * 1024 * 1024),
-        groupIds: f.groupIds.map(Number),
+        groupId: Number(f.groupId) || ((store.groups || []).find((g) => g.name === "users") || {}).id || 0,
       };
-      if (payload.groupIds.length === 0) {
-        const defaultGroup = (store.groups || []).find((g) => g.name === "users");
-        if (defaultGroup) payload.groupIds = [defaultGroup.id];
-      }
       try {
         await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
         await refreshSection("users", "groups");
         this.createVisible = false;
         ElMessage.success(tt("users.userCreated"));
-        this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupIds: [] };
+        this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: 0 };
       } catch (err) {
         if (err.message === "user capacity full") ElMessage.error(tt("users.capacityFull"));
         else ElMessage.error(err.message);
@@ -595,19 +591,18 @@ export default {
       }
     },
     openGroups(user) {
-      const current = new Set(user.groups || []);
       this.groupsDialog = {
         visible: true,
         id: user.id,
         name: displayName(user) || user.username,
-        groupIds: (store.groups || []).filter((g) => current.has(g.name)).map((g) => g.id),
+        groupId: ((store.groups || []).find((g) => g.name === user.group) || {}).id || 0,
       };
     },
     async saveGroups() {
       try {
-        await api("/api/users/groups", {
+        await api("/api/users/group", {
           method: "POST",
-          body: JSON.stringify({ userId: Number(this.groupsDialog.id), groupIds: this.groupsDialog.groupIds.map(Number) }),
+          body: JSON.stringify({ userId: Number(this.groupsDialog.id), groupId: Number(this.groupsDialog.groupId) }),
         });
         await refreshSection("users", "groups");
         this.groupsDialog.visible = false;

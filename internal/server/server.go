@@ -489,7 +489,7 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/users", a.users)
 		r.Post("/api/users/update", a.userUpdate)
 		r.Post("/api/users/delete", a.userDelete)
-		r.Post("/api/users/groups", a.setUserGroups)
+		r.Post("/api/users/group", a.setUserGroup)
 		r.Post("/api/users/approve", a.approveUser)
 		r.Post("/api/users/deactivate", a.deactivateUser)
 		r.Get("/api/admin/settings/language", a.adminLanguageSettings)
@@ -750,8 +750,8 @@ type meUser struct {
 // meUser.Version).
 func (a *App) meResponse(u *store.User, csrfToken string) meUser {
 	var groupLanguage string
-	if len(u.Groups) > 0 {
-		groupLanguage = a.getGroupLanguage(u.Groups[0])
+	if u.Group != "" {
+		groupLanguage = a.getGroupLanguage(u.Group)
 	}
 	backupPath, _ := a.db.BackupPathForUser(u.ID)
 	_, sharedDiskPath, _ := a.sharedDiskGroup(u)
@@ -797,19 +797,12 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 }
 
 // isPending reports whether a user is still awaiting admin approval: a non-admin
-// whose only group membership is the holding "pending" group.
+// whose group is (still) the holding "pending" group.
 func isPending(u *store.User) bool {
 	if u == nil || u.Role == "admin" {
 		return false
 	}
-	activated := false
-	for _, g := range u.Groups {
-		if g != store.PendingGroup {
-			activated = true
-			break
-		}
-	}
-	return !activated
+	return u.Group == store.PendingGroup
 }
 
 // getGroupLanguage retrieves the language preference for a specific group by name
@@ -833,12 +826,12 @@ func (a *App) users(w http.ResponseWriter, r *http.Request) {
 		respond(w, users, err)
 	case http.MethodPost:
 		var req struct {
-			Username          string  `json:"username"`
-			Password          string  `json:"password"`
-			Role              string  `json:"role"`
-			GroupIDs          []int64 `json:"groupIds"`
-			ContainerCap      int     `json:"containerCap"`
-			NetdiskQuotaBytes int64   `json:"netdiskQuotaBytes"`
+			Username          string `json:"username"`
+			Password          string `json:"password"`
+			Role              string `json:"role"`
+			GroupID           int64  `json:"groupId"`
+			ContainerCap      int    `json:"containerCap"`
+			NetdiskQuotaBytes int64  `json:"netdiskQuotaBytes"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
@@ -855,7 +848,7 @@ func (a *App) users(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "username and password are required")
 			return
 		}
-		if err := a.db.CreateUser(req.Username, req.Password, req.Role, req.GroupIDs, req.ContainerCap, req.NetdiskQuotaBytes); err != nil {
+		if err := a.db.CreateUser(req.Username, req.Password, req.Role, req.GroupID, req.ContainerCap, req.NetdiskQuotaBytes); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -2065,24 +2058,24 @@ func feishuStateSig(secret, state string) string {
 	return hex.EncodeToString(m.Sum(nil))
 }
 
-// setUserGroups lets an admin assign a user's group membership (used to approve
-// Feishu users out of the pending group).
-func (a *App) setUserGroups(w http.ResponseWriter, r *http.Request) {
+// setUserGroup lets an admin assign a user's single group (used to approve
+// Feishu users out of the pending group and to move users between groups).
+func (a *App) setUserGroup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var req struct {
-		UserID   int64   `json:"userId"`
-		GroupIDs []int64 `json:"groupIds"`
+		UserID  int64 `json:"userId"`
+		GroupID int64 `json:"groupId"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.UserID == 0 {
-		writeErr(w, http.StatusBadRequest, "userId is required")
+	if err := decodeJSON(r, &req); err != nil || req.UserID == 0 || req.GroupID == 0 {
+		writeErr(w, http.StatusBadRequest, "userId and groupId are required")
 		return
 	}
 	before, _ := a.db.UserByID(req.UserID)
 	wasPending := before != nil && isPending(before)
-	if err := a.db.SetUserGroups(req.UserID, req.GroupIDs); err != nil {
+	if err := a.db.SetUserGroup(req.UserID, req.GroupID); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -2090,7 +2083,7 @@ func (a *App) setUserGroups(w http.ResponseWriter, r *http.Request) {
 	if after != nil {
 		a.record(r, "user.groups", targetName(after))
 		if wasPending && !isPending(after) {
-			a.notifyUserApproved(after.ID, after.Groups)
+			a.notifyUserApproved(after.ID, after.Group)
 			// Clear the hard-disable flag so an approved user is fully restored.
 			// See approveUser for the rationale (legacy data may carry disabled=1).
 			disabledOff := false

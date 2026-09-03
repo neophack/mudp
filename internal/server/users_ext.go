@@ -109,7 +109,7 @@ func (a *App) approveUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := a.db.SetUserGroups(req.UserID, []int64{gid}); err != nil {
+	if err := a.db.SetUserGroup(req.UserID, gid); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -126,7 +126,7 @@ func (a *App) approveUser(w http.ResponseWriter, r *http.Request) {
 		_ = EnsureUserNetdiskDir(netdiskPath, u.Username, fmt.Sprintf("%d", u.ID), u.DisplayName)
 	}
 	a.record(r, "user.approve", targetName(u))
-	a.notifyUserApproved(req.UserID, []string{store.DefaultUserGroup})
+	a.notifyUserApproved(req.UserID, store.DefaultUserGroup)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

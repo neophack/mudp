@@ -164,7 +164,7 @@ export default {
     },
     roleLine() {
       const me = this.s.me;
-      return me?.role + (me?.groups?.length ? " - " + me.groups.join(", ") : "");
+      return me?.role + (me?.group ? " - " + me.group : "");
     },
     pageTitle() {
       return tt("nav." + (this.$route.name || ""));

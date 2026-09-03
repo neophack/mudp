@@ -232,17 +232,13 @@ export default {
       if (c.state === "paused") return tt("containers.paused");
       return tt("containers.stopped");
     },
-    // Quick links for the mudp-relayed 8080/8090 HTTP(S) endpoints. Docker on
-    // Linux binds to 0.0.0.0 so the backend URL contains 127.0.0.1; replace it
-    // with the hostname the browser is already connected to.
+    // Clickable access links for every reachable container port, built by the
+    // backend (a port with an HTTPS forward already carries only its https
+    // link). Docker on Linux binds to 0.0.0.0 so the backend URL contains
+    // 127.0.0.1; replace it with the hostname the browser is connected to.
     portLinks(c) {
       const fixUrl = (url) => url ? url.replace(/^(https?:\/\/)(127\.0\.0\.1|0\.0\.0\.0|::1|localhost)(:\d+)/, `$1${location.hostname}$3`) : url;
-      const out = [];
-      if (c.http8080Url) out.push({ url: fixUrl(c.http8080Url), text: "8080 ↗" });
-      if (c.http8090Url) out.push({ url: fixUrl(c.http8090Url), text: "8090 ↗" });
-      if (c.https8080Url) out.push({ url: fixUrl(c.https8080Url), text: "8080 🔒↗" });
-      if (c.https8090Url) out.push({ url: fixUrl(c.https8090Url), text: "8090 🔒↗" });
-      return out;
+      return (c.portLinks || []).map((l) => ({ url: fixUrl(l.url), text: `${l.port}${l.tls ? " 🔒" : ""} ↗` }));
     },
     // The published port mappings, as Docker reports them.
     portText(c) {
