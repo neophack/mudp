@@ -565,7 +565,7 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 	sizes := make([]int64, len(req.Items))
 	var required int64
 	for i, it := range req.Items {
-		src, srcRel, err := cleanUserPath(fromRoot, it.From)
+		src, srcRel, err := cleanUserEntryPath(fromRoot, it.From)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -612,7 +612,7 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 	count := 0
 	for i, item := range req.Items {
 		res := map[string]string{"from": item.From, "to": item.To}
-		from, fromRel, err := cleanUserPath(fromRoot, item.From)
+		from, fromRel, err := cleanUserEntryPath(fromRoot, item.From)
 		if err == nil && fromDisk == "shareddisk" && req.Move {
 			err = requireOwnSharedDiskPath(u, fromRel)
 		}
@@ -734,7 +734,7 @@ func (a *App) netdiskBackupBrowse(w http.ResponseWriter, r *http.Request) {
 		}
 		// Use Lstat so symlinks are not followed; skip them entirely.
 		li, err := os.Lstat(filepath.Join(dir, entry.Name()))
-		if err != nil || li.Mode()&os.ModeSymlink != 0 {
+		if err != nil || isLinkMode(li.Mode()) {
 			continue
 		}
 		p := filepath.ToSlash(filepath.Join(rel, entry.Name()))
@@ -795,7 +795,7 @@ func (a *App) netdiskBackupDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, p := range req.Paths {
-		full, _, err := cleanUserPath(root, p)
+		full, _, err := cleanUserEntryPath(root, p)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -828,12 +828,12 @@ func (a *App) netdiskBackupRename(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "from and to are required")
 		return
 	}
-	from, _, err := cleanUserPath(root, req.From)
+	from, _, err := cleanUserEntryPath(root, req.From)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	to, _, err := cleanUserPath(root, req.To)
+	to, _, err := cleanUserEntryPath(root, req.To)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -897,7 +897,7 @@ func (a *App) netdiskBackupCopy(w http.ResponseWriter, r *http.Request) {
 	if useBytes {
 		scanDeadline := time.Now().Add(300 * time.Millisecond)
 		for i, item := range req.Items {
-			from, _, err := cleanUserPath(root, item.From)
+			from, _, err := cleanUserEntryPath(root, item.From)
 			if err != nil {
 				continue
 			}
@@ -921,7 +921,7 @@ func (a *App) netdiskBackupCopy(w http.ResponseWriter, r *http.Request) {
 	count := 0
 	for i, item := range req.Items {
 		res := map[string]string{"from": item.From, "to": item.To}
-		from, _, err := cleanUserPath(root, item.From)
+		from, _, err := cleanUserEntryPath(root, item.From)
 		if err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()

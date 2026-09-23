@@ -283,7 +283,7 @@ func tarHostPath(w io.Writer, full string, info os.FileInfo) error {
 		} else {
 			hdr.Name = path.Join(base, rel)
 		}
-		if fi.Mode()&os.ModeSymlink != 0 {
+		if isLinkMode(fi.Mode()) {
 			return nil // skip
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
@@ -359,6 +359,10 @@ func extractContainerTar(rc io.Reader, dest string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	resolvedDest, err := resolveExistingPath(cleanDest)
+	if err != nil {
+		return 0, err
+	}
 	for {
 		hdr, err := tr.Next()
 		if err != nil {
@@ -383,6 +387,12 @@ func extractContainerTar(rc io.Reader, dest string) (int, error) {
 		}
 		// Path-traversal guard: the resolved target must stay under dest.
 		if targetAbs != cleanDest && !strings.HasPrefix(targetAbs, cleanDest+string(filepath.Separator)) {
+			continue
+		}
+		// Link guard: dest is the user's netdisk, where their containers can
+		// plant symlinks/junctions; an entry routed through one must not be
+		// written wherever it points on the host.
+		if targetAbs, err = resolveExistingPath(targetAbs); err != nil || !pathWithin(resolvedDest, targetAbs) {
 			continue
 		}
 		fi := hdr.FileInfo()

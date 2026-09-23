@@ -810,3 +810,25 @@ func newSecurityTestServerWithNetdiskRoot(t *testing.T) (baseURL string, admin *
 	// for the first user created by Migrate.
 	return ts.URL, admin, filepath.Join(root, "secadmin-1")
 }
+
+// TestSecurityNetdiskRootCannotBeDeletedOrMoved regresses delete/rename taking
+// a path that normalises to the netdisk root: it wiped the user's whole
+// netdisk, which is also bind-mounted into their running containers.
+func TestSecurityNetdiskRootCannotBeDeletedOrMoved(t *testing.T) {
+	_, admin, _ := newSecurityTestServerWithNetdiskRoot(t)
+	if resp, body := admin.uploadFile("/api/netdisk/upload", "", "keep.txt", []byte("keep")); resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload: %d %s", resp.StatusCode, body)
+	}
+	for _, p := range []string{"", "/", ".", "..", "x/.."} {
+		if resp, _ := admin.postJSON("/api/netdisk/delete", map[string]any{"paths": []string{p}}); resp.StatusCode == http.StatusOK {
+			t.Errorf("delete %q: root deletion accepted", p)
+		}
+		if resp, _ := admin.postJSON("/api/netdisk/rename", map[string]string{"from": p, "to": "moved"}); resp.StatusCode == http.StatusOK {
+			t.Errorf("rename %q: root rename accepted", p)
+		}
+	}
+	resp, body := admin.get("/api/netdisk/raw?path=keep.txt")
+	if resp.StatusCode != http.StatusOK || string(body) != "keep" {
+		t.Fatalf("netdisk content lost: %d %q", resp.StatusCode, body)
+	}
+}

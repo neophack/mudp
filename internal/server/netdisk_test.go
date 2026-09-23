@@ -533,3 +533,131 @@ func linkDir(t *testing.T, target, linkPath string) {
 		t.Skipf("cannot create a directory link on this host: %v (%s)", err, out)
 	}
 }
+
+// Pasting a file into the folder it already lives in resolves "to" back to
+// "from". With the overwrite policy the old code removed the destination —
+// i.e. the source — before copying, destroying the only copy of the file.
+func TestNetdiskCopyOneOntoItselfKeepsFile(t *testing.T) {
+	for _, move := range []bool{false, true} {
+		for _, policy := range []string{"overwrite", "skip"} {
+			dir := t.TempDir()
+			file := filepath.Join(dir, "a.txt")
+			if err := os.WriteFile(file, []byte("keep"), 0640); err != nil {
+				t.Fatal(err)
+			}
+			if err := netdiskCopyOne(file, dir, move, policy, 0, nil); err != nil {
+				t.Fatalf("move=%v policy=%s: %v", move, policy, err)
+			}
+			if got, err := os.ReadFile(file); err != nil || string(got) != "keep" {
+				t.Fatalf("move=%v policy=%s: file = %q, %v", move, policy, got, err)
+			}
+		}
+	}
+}
+
+// Copying a folder into itself (or one of its subfolders) made the directory
+// walk discover the freshly created copy and descend into it again, nesting
+// until the path grew too long. It must be refused up front.
+func TestNetdiskCopyOneRejectsFolderIntoItself(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	for _, to := range []string{src, filepath.Join(src, "sub")} {
+		for _, move := range []bool{false, true} {
+			if err := netdiskCopyOne(src, to, move, "overwrite", 0, nil); err == nil {
+				t.Fatalf("copy %s into %s (move=%v): expected error", src, to, move)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(src, "sub", "a")); err == nil {
+		t.Fatal("folder was copied into its own subfolder")
+	}
+	if _, err := os.Stat(filepath.Join(src, "f.txt")); err != nil {
+		t.Fatalf("source content lost: %v", err)
+	}
+	// Duplicating a folder next to itself is still allowed.
+	if err := netdiskCopyOne(src, dir, false, "rename", 0, nil); err != nil {
+		t.Fatalf("duplicate beside itself: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a (1)", "f.txt")); err != nil {
+		t.Fatalf("duplicate missing: %v", err)
+	}
+}
+
+// Delete, rename and move act on an entry, and the root is never one: a path
+// that normalises to it ("", "/", ".", "a/..", "../..") would otherwise let a
+// delete wipe the whole netdisk, backup disk, shared pool or volume.
+func TestCleanUserEntryPathRejectsRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0750); err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []string{"", "/", ".", "docs/..", "../.."} {
+		if _, _, err := cleanUserEntryPath(root, in); err == nil {
+			t.Errorf("cleanUserEntryPath(%q): expected error for the root itself", in)
+		}
+	}
+	if _, rel, err := cleanUserEntryPath(root, "docs"); err != nil || rel != "docs" {
+		t.Errorf("cleanUserEntryPath(docs) = %q, %v", rel, err)
+	}
+}
+
+// A move between two filesystems (netdisk and backup disk on separate
+// mounts/drives) cannot be a rename and must fall back to copy + delete. On
+// Windows the rename fails with ERROR_NOT_SAME_DEVICE, not EXDEV, so the
+// fallback was never taken there. Runs only when the temp dir and the working
+// directory sit on different volumes (e.g. C: and D:).
+func TestNetdiskCopyOneMovesAcrossVolumes(t *testing.T) {
+	srcRoot := t.TempDir()
+	dstRoot, err := os.MkdirTemp(".", "xdev-move-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dstRoot) })
+	if err := os.Rename(srcRoot, filepath.Join(dstRoot, "probe")); err == nil {
+		t.Skip("temp dir and working directory are on the same volume")
+	}
+	src := filepath.Join(srcRoot, "a.txt")
+	if err := os.WriteFile(src, []byte("moved"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := netdiskCopyOne(src, dstRoot, true, "rename", 0, nil); err != nil {
+		t.Fatalf("cross-volume move: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dstRoot, "a.txt")); err != nil || string(got) != "moved" {
+		t.Fatalf("moved file = %q, %v", got, err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("source still present after move: %v", err)
+	}
+}
+
+// Links inside a copied folder are skipped, never followed or copied — on
+// Windows that includes directory junctions, which Go 1.23+ reports as
+// ModeIrregular rather than ModeSymlink.
+func TestCopyPathWithPolicySkipsLinks(t *testing.T) {
+	src := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("s"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	linkDir(t, outside, filepath.Join(src, "link"))
+	dst := filepath.Join(t.TempDir(), "copy")
+	if err := copyPathWithPolicy(src, dst, "overwrite", nil); err != nil {
+		t.Fatalf("copy folder containing a link: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "a.txt")); err != nil || string(b) != "a" {
+		t.Fatalf("a.txt = %q, %v", b, err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "link")); err == nil {
+		t.Fatal("link was copied")
+	}
+}

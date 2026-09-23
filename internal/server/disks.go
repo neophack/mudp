@@ -73,7 +73,7 @@ func (a *App) diskMountConfigPost(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) disks(w http.ResponseWriter, r *http.Request) {
 	if runtime.GOOS == "windows" {
-		out, err := exec.Command("powershell", "-NoProfile", "-Command", `Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,Size,FreeSpace,VolumeName | ConvertTo-Json`).Output()
+		out, err := powershellCommand(`Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,Size,FreeSpace,VolumeName | ConvertTo-Json`).Output()
 		if err == nil {
 			var raw []struct {
 				DeviceID   string
@@ -187,7 +187,7 @@ func (a *App) diskMount(w http.ResponseWriter, r *http.Request) {
 	}
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("powershell", "-NoProfile", "-Command", "New-Item -ItemType Directory -Force -Path "+escapePathForPowerShell(req.Target)+" | Out-Null") // #nosec G204 -- req.Target is single-quote-escaped by escapePathForPowerShell (no PS interpolation); admin-only endpoint
+		cmd = powershellCommand("New-Item -ItemType Directory -Force -Path "+escapePathForPowerShell(req.Target)+" | Out-Null") // #nosec G204 -- req.Target is single-quote-escaped by escapePathForPowerShell (no PS interpolation); admin-only endpoint
 	} else {
 		args := []string{req.Source, req.Target}
 		if req.FSType != "" {
@@ -220,7 +220,7 @@ func (a *App) diskUnmount(w http.ResponseWriter, r *http.Request) {
 		// which still interpolates $(...) and backticks, so a target like
 		// "$(calc)" would execute. escapePathForPowerShell emits a single-quoted
 		// literal instead, where no interpolation happens.
-		cmd = exec.Command("powershell", "-NoProfile", "-Command", "Remove-Item -Force "+escapePathForPowerShell(req.Target)) // #nosec G204 -- single-quote-escaped target; admin-only endpoint
+		cmd = powershellCommand("Remove-Item -Force "+escapePathForPowerShell(req.Target)) // #nosec G204 -- single-quote-escaped target; admin-only endpoint
 	} else {
 		cmd = exec.Command("umount", req.Target) // #nosec G204 -- separate argv, no shell
 	}

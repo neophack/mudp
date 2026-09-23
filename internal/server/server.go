@@ -1314,6 +1314,22 @@ func (a *App) currentNetworkNames(ctx context.Context, id string) []string {
 	return out
 }
 
+// checkContainerCap refuses one more container for a non-admin already at
+// their cap. Every path that creates a container must call it.
+func (a *App) checkContainerCap(ctx context.Context, u *store.User) error {
+	if u.Role == "admin" {
+		return nil
+	}
+	existing, err := a.docker.ListContainers(ctx, u.Username, false, a.forwardNetworks())
+	if err != nil {
+		return err
+	}
+	if len(existing) >= u.ContainerCap {
+		return errors.New("container limit reached")
+	}
+	return nil
+}
+
 // validateCreate normalises a create request and resolves the image + scripts.
 // It does not perform the docker create; callers do that themselves so the SSE
 // handler can stream progress.
@@ -1323,12 +1339,8 @@ func (a *App) validateCreate(ctx context.Context, u *store.User, req *createRequ
 	if req.Name == "" || req.Image == "" {
 		return dockerx.CreateOptions{}, errors.New("name and image are required")
 	}
-	existing, err := a.docker.ListContainers(ctx, u.Username, false, a.forwardNetworks())
-	if err != nil {
+	if err := a.checkContainerCap(ctx, u); err != nil {
 		return dockerx.CreateOptions{}, err
-	}
-	if u.Role != "admin" && len(existing) >= u.ContainerCap {
-		return dockerx.CreateOptions{}, errors.New("container limit reached")
 	}
 	img, err := a.db.ImageByDisplayNameForUser(req.Image, u.ID, u.Role == "admin")
 	if err != nil {
@@ -1781,6 +1793,10 @@ func (a *App) containerDuplicate(w http.ResponseWriter, r *http.Request) {
 	}
 	if !a.containerOwnedBy(r.Context(), u, req.ID) {
 		writeErr(w, http.StatusForbidden, "container is not yours")
+		return
+	}
+	if err := a.checkContainerCap(r.Context(), u); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	id, err := a.docker.DuplicateContainer(r.Context(), req.ID, strings.TrimSpace(req.Name), u.Username, u.PortPrefix, a.attachableNetworks(r.Context(), u), a.forwardNetworks())

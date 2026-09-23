@@ -3,7 +3,6 @@ package server
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -111,7 +110,7 @@ $Shortcut.Save()
 	// (single-quote wrapping + ' escaping); single quotes suppress PowerShell's
 	// $()/backtick interpolation, and displayName is rejected if it contains
 	// / \ . .. upstream (symlink.go:23-25).
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", psScript) // #nosec G204,G702 -- see rationale above
+	cmd := powershellCommand(psScript) // #nosec G204,G702 -- see rationale above
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create shortcut: %w (output: %s)", err, string(output))
 	}

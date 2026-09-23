@@ -188,7 +188,7 @@ func (a *App) volumeFilesList(w http.ResponseWriter, r *http.Request) {
 		}
 		// Lstat so symlinks aren't followed; skip them entirely (matches netdisk).
 		li, err := os.Lstat(filepath.Join(dir, entry.Name()))
-		if err != nil || li.Mode()&os.ModeSymlink != 0 {
+		if err != nil || isLinkMode(li.Mode()) {
 			continue
 		}
 		p := filepath.ToSlash(filepath.Join(rel, entry.Name()))
@@ -292,7 +292,7 @@ func (a *App) volumeFilesDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, p := range req.Paths {
-		full, _, err := cleanUserPath(mount, p)
+		full, _, err := cleanUserEntryPath(mount, p)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -331,14 +331,14 @@ func (a *App) volumeFilesRename(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	full, _, err := cleanUserPath(mount, req.Path)
+	full, _, err := cleanUserEntryPath(mount, req.Path)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// New name must be a bare filename (no path separators) to stay in the same dir.
 	newBase := filepath.Base(strings.TrimSpace(req.NewName))
-	dst, _, err := cleanUserPath(mount, filepath.Join(filepath.Dir(req.Path), newBase))
+	dst, _, err := cleanUserEntryPath(mount, filepath.Join(filepath.Dir(req.Path), newBase))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

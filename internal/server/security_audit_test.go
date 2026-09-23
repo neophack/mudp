@@ -621,3 +621,30 @@ func TestAuditXForwardedProtoIgnoredFromUntrustedPeer(t *testing.T) {
 		t.Fatalf("Strict-Transport-Security = %q on a spoofed X-Forwarded-Proto over plain HTTP; want absent", got)
 	}
 }
+
+// TestAuditExtractContainerTarDoesNotFollowExistingLinks: the destination is
+// the user's netdisk, which their containers bind-mount and can plant links in
+// (`ln -s / /workspace/pwn`, or a junction on Windows). Tar entries routed
+// through such a link ("pwn/x") were written wherever it pointed on the host.
+func TestAuditExtractContainerTarDoesNotFollowExistingLinks(t *testing.T) {
+	dest := t.TempDir()
+	outside := t.TempDir()
+	linkDir(t, outside, filepath.Join(dest, "pwn"))
+
+	arc := buildTar(t, []tarEntry{
+		{name: "pwn/planted.txt", typeflag: tar.TypeReg, content: "pwn"},
+		{name: "pwn/sub/", typeflag: tar.TypeDir},
+		{name: "ok.txt", typeflag: tar.TypeReg, content: "fine"},
+	})
+	if _, err := extractContainerTar(arc, dest); err != nil {
+		t.Fatalf("extractContainerTar: %v", err)
+	}
+	for _, name := range []string{"planted.txt", "sub"} {
+		if _, err := os.Stat(filepath.Join(outside, name)); err == nil {
+			t.Errorf("entry %q was written through the link, outside dest", name)
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "ok.txt")); err != nil || string(b) != "fine" {
+		t.Errorf("ok.txt not extracted intact: %q, %v", b, err)
+	}
+}

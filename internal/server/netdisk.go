@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -14,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -110,7 +108,7 @@ func migrateLegacyOwnerDir(parentDir, legacyName, newName string) error {
 		}
 		return err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	if !info.IsDir() || isLinkMode(info.Mode()) {
 		return nil // already migrated, or not a plain directory
 	}
 	newPath := filepath.Join(parentDir, newName)
@@ -153,7 +151,9 @@ func sanitizePathPart(s string) string {
 // It returns the symlink-resolved absolute path, so callers act on the location
 // that was actually validated.
 func cleanUserPath(root, rel string) (string, string, error) {
-	rel = strings.TrimPrefix(filepath.Clean("/"+rel), string(filepath.Separator))
+	// TrimLeft, not TrimPrefix: on Windows Clean keeps a leading "\\" (UNC
+	// form), so "/" would otherwise yield rel "\" instead of the root's "".
+	rel = strings.TrimLeft(filepath.Clean("/"+rel), string(filepath.Separator))
 	full := filepath.Join(root, rel)
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
@@ -180,6 +180,21 @@ func cleanUserPath(root, rel string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid path")
 	}
 	return resolvedFull, rel, nil
+}
+
+// cleanUserEntryPath is cleanUserPath for operations on an entry itself
+// (delete, rename): the root holds the entries but is never one of them, and
+// removing or moving it would wipe the whole tree — and break the bind mounts
+// of containers using it.
+func cleanUserEntryPath(root, rel string) (string, string, error) {
+	full, rel, err := cleanUserPath(root, rel)
+	if err != nil {
+		return "", "", err
+	}
+	if rel == "" {
+		return "", "", fmt.Errorf("invalid path")
+	}
+	return full, rel, nil
 }
 
 // pathWithin reports whether p is root itself or lives underneath it.
@@ -269,7 +284,7 @@ func (a *App) netdiskList(w http.ResponseWriter, r *http.Request) {
 		}
 		// Use Lstat so symlinks are not followed; skip them entirely.
 		li, err := os.Lstat(filepath.Join(dir, entry.Name()))
-		if err != nil || li.Mode()&os.ModeSymlink != 0 {
+		if err != nil || isLinkMode(li.Mode()) {
 			continue
 		}
 		p := filepath.ToSlash(filepath.Join(rel, entry.Name()))
@@ -326,7 +341,7 @@ func (a *App) netdiskDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, p := range req.Paths {
-		full, _, err := cleanUserPath(root, p)
+		full, _, err := cleanUserEntryPath(root, p)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -358,12 +373,12 @@ func (a *App) netdiskRename(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "from and to are required")
 		return
 	}
-	from, _, err := cleanUserPath(root, req.From)
+	from, _, err := cleanUserEntryPath(root, req.From)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	to, _, err := cleanUserPath(root, req.To)
+	to, _, err := cleanUserEntryPath(root, req.To)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -430,7 +445,7 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 	if useBytes {
 		scanDeadline := time.Now().Add(300 * time.Millisecond)
 		for i, item := range req.Items {
-			from, _, err := cleanUserPath(root, item.From)
+			from, _, err := cleanUserEntryPath(root, item.From)
 			if err != nil {
 				continue
 			}
@@ -454,7 +469,7 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 	count := 0
 	for i, item := range req.Items {
 		res := map[string]string{"from": item.From, "to": item.To}
-		from, _, err := cleanUserPath(root, item.From)
+		from, _, err := cleanUserEntryPath(root, item.From)
 		if err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
@@ -517,6 +532,21 @@ func netdiskCopyOne(from, to string, move bool, policy string, size int64, onByt
 	if toInfo, err := os.Stat(to); err == nil && toInfo.IsDir() {
 		to = filepath.Join(to, filepath.Base(from))
 	}
+	from, to = filepath.Clean(from), filepath.Clean(to)
+	// Pasting an item where it already is: moving, skipping or overwriting it
+	// onto itself is a no-op (overwrite would otherwise delete the source before
+	// copying it); only a renaming copy still makes a duplicate beside it.
+	if to == from && (move || policy != "rename") {
+		if onBytes != nil {
+			onBytes(size)
+		}
+		return nil
+	}
+	// A folder copied into its own subtree would make the walk rediscover each
+	// fresh copy and nest without end.
+	if fromInfo.IsDir() && to != from && pathWithin(from, to) {
+		return fmt.Errorf("cannot copy or move a folder into itself")
+	}
 	if _, err := os.Stat(to); err == nil {
 		switch policy {
 		case "skip":
@@ -537,7 +567,7 @@ func netdiskCopyOne(from, to string, move bool, policy string, size int64, onByt
 	}
 	if move {
 		if err := os.Rename(from, to); err != nil {
-			if !errors.Is(err, syscall.EXDEV) {
+			if !isCrossDevice(err) {
 				return err
 			}
 			// Source and destination are on different filesystems/mounts (e.g.
@@ -1189,7 +1219,7 @@ func (a *App) netdiskSharePublic(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		li, err := os.Lstat(filepath.Join(full, entry.Name()))
-		if err != nil || li.Mode()&os.ModeSymlink != 0 {
+		if err != nil || isLinkMode(li.Mode()) {
 			continue
 		}
 		p := filepath.ToSlash(filepath.Join(rel, entry.Name()))
@@ -1779,7 +1809,14 @@ func isSymlink(path string) bool {
 	if err != nil {
 		return false
 	}
-	return info.Mode()&os.ModeSymlink != 0
+	return isLinkMode(info.Mode())
+}
+
+// isLinkMode reports whether an Lstat mode is a link that must not be followed
+// or copied. Besides symlinks this covers Windows directory junctions, which
+// Go 1.23+ reports as ModeIrregular rather than ModeSymlink.
+func isLinkMode(m os.FileMode) bool {
+	return m&(os.ModeSymlink|os.ModeIrregular) != 0
 }
 
 // openNoFollow opens a regular file after verifying it is not a symlink.

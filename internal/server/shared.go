@@ -146,7 +146,7 @@ func (a *App) sharedDiskBrowse(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		li, err := os.Lstat(filepath.Join(dir, entry.Name()))
-		if err != nil || li.Mode()&os.ModeSymlink != 0 {
+		if err != nil || isLinkMode(li.Mode()) {
 			continue
 		}
 		p := filepath.ToSlash(filepath.Join(rel, entry.Name()))
@@ -207,7 +207,7 @@ func (a *App) sharedDiskDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, p := range req.Paths {
-		full, rel, err := cleanUserPath(root, p)
+		full, rel, err := cleanUserEntryPath(root, p)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -247,7 +247,7 @@ func (a *App) sharedDiskRename(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "from and to are required")
 		return
 	}
-	from, fromRel, err := cleanUserPath(root, req.From)
+	from, fromRel, err := cleanUserEntryPath(root, req.From)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -256,7 +256,7 @@ func (a *App) sharedDiskRename(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, err.Error())
 		return
 	}
-	to, toRel, err := cleanUserPath(root, req.To)
+	to, toRel, err := cleanUserEntryPath(root, req.To)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
