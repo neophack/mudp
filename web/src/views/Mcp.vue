@@ -90,17 +90,17 @@
           <template #default="{ row }">
             <div class="primary-line">
               <span v-if="row.inUse" class="mcp-live-dot" :title="tt('mcp.inUse')"></span>
-              {{ row.containerName || "-" }}
+              <span class="mcp-name" :title="row.containerName">{{ row.containerName || "-" }}</span>
             </div>
-            <div class="secondary-line mono">{{ (row.containerId || "").slice(0, 12) }}</div>
-            <div v-if="s.isMobile && row.label" class="secondary-line">{{ row.label }}</div>
+            <div class="secondary-line mono" :title="row.containerId">{{ (row.containerId || "").slice(0, 12) }}</div>
+            <div v-if="s.isMobile && row.label" class="secondary-line" :title="row.label">{{ row.label }}</div>
           </template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('mcp.labelLabel')" prop="label" min-width="110">
-          <template #default="{ row }">{{ row.label || "-" }}</template>
+          <template #default="{ row }"><span class="ellipsis" :title="row.label">{{ row.label || "-" }}</span></template>
         </el-table-column>
         <el-table-column v-if="isAdmin() && !s.isMobile" :label="tt('mcp.ownerCol')" width="120">
-          <template #default="{ row }">{{ displayNameForUsername(row.owner) || "-" }}</template>
+          <template #default="{ row }"><span class="ellipsis" :title="displayNameForUsername(row.owner)">{{ displayNameForUsername(row.owner) || "-" }}</span></template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('mcp.colCreated')" width="150">
           <template #default="{ row }"><span class="secondary-line">{{ formatDate(row.createdAt) }}</span></template>
@@ -235,7 +235,7 @@
             <code class="mcp-log-tool">{{ r.tool }}</code>
             <span class="secondary-line">{{ formatDate(r.createdAt) }}</span>
           </div>
-          <code class="mcp-log-args">{{ r.argsPreview || "—" }}</code>
+          <code class="mcp-log-args" :title="r.argsPreview">{{ r.argsPreview || "—" }}</code>
         </li>
       </ul>
       <template #footer>
@@ -629,9 +629,11 @@ export default {
 .mcp-log-list li { border-top: 1px solid var(--line); padding: 8px 0; }
 .mcp-log-head { display: flex; justify-content: space-between; gap: 10px; }
 .mcp-log-tool { background: var(--brand-tint); color: var(--brand); border-radius: 4px; padding: 1px 6px; font-size: 11.5px; }
-.mcp-log-args { display: block; color: var(--muted); font-size: 11.5px; margin-top: 4px; word-break: break-all; }
-.primary-line { font-weight: 600; display: flex; align-items: center; }
-.secondary-line { color: var(--muted); font-size: 12px; }
+.mcp-log-args { display: block; color: var(--muted); font-size: 11.5px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Live dot + name share the primary line; the name itself carries the
+   ellipsis so long container names clip with "…" (full text on hover). */
+.primary-line { display: flex; align-items: center; }
+.mcp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .sheet-meta { display: flex; flex-direction: column; gap: 3px; margin: 8px 0 12px; }
 .sheet-meta-line { color: var(--muted); font-size: 12px; word-break: break-word; }

@@ -119,15 +119,15 @@
         >
           <el-table-column :label="tt('common.name')" min-width="110">
             <template #default="{ row }">
-              <div><span class="primary-line">{{ row.name }}</span></div>
-              <div v-if="s.isMobile" class="secondary-line mono">{{ row.url }}</div>
+              <div><span class="primary-line" :title="row.name">{{ row.name }}</span></div>
+              <div v-if="s.isMobile" class="secondary-line mono" :title="row.url">{{ row.url }}</div>
             </template>
           </el-table-column>
           <el-table-column v-if="!s.isMobile" :label="tt('settings.colUrl')" min-width="200">
-            <template #default="{ row }"><span class="secondary-line mono">{{ row.url }}</span></template>
+            <template #default="{ row }"><span class="secondary-line mono" :title="row.url">{{ row.url }}</span></template>
           </el-table-column>
           <el-table-column v-if="!s.isMobile" :label="tt('settings.colUsername')" width="140">
-            <template #default="{ row }"><span class="secondary-line">{{ row.username || "-" }}</span></template>
+            <template #default="{ row }"><span class="secondary-line" :title="row.username">{{ row.username || "-" }}</span></template>
           </el-table-column>
           <el-table-column v-if="!s.isMobile" :label="tt('common.actions')" width="170" fixed="right">
             <template #default="{ row }">
@@ -519,8 +519,6 @@ export default {
   .theme-segment { flex-basis: 100%; }
   .theme-seg-btn { flex: 1; }
 }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: minmax(0, 1fr); }

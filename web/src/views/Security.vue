@@ -102,27 +102,27 @@
         </el-table-column>
         <el-table-column :label="tt('security.colLocation')" min-width="150">
           <template #default="{ row }">
-            <span class="flag">{{ flag(row.countryCode) }}</span> {{ locOf(row) }}
-            <div v-if="row.isp" class="secondary-line mono">{{ row.isp }}</div>
+            <div class="ellipsis" :title="locOf(row)"><span class="flag">{{ flag(row.countryCode) }}</span> {{ locOf(row) }}</div>
+            <div v-if="row.isp" class="secondary-line mono" :title="row.isp">{{ row.isp }}</div>
           </template>
         </el-table-column>
         <el-table-column :label="tt('security.colIP')" min-width="130">
           <template #default="{ row }">
-            <span class="mono">{{ row.ip || "—" }}</span>
-            <div v-if="row.publicIP" class="secondary-line mono">{{ tt("security.publicIpShort") }} {{ row.publicIP }}</div>
-            <div v-if="row.clientTimezone" class="secondary-line">{{ row.clientTimezone }}</div>
+            <span class="mono ellipsis" :title="row.ip">{{ row.ip || "—" }}</span>
+            <div v-if="row.publicIP" class="secondary-line mono" :title="row.publicIP">{{ tt("security.publicIpShort") }} {{ row.publicIP }}</div>
+            <div v-if="row.clientTimezone" class="secondary-line" :title="row.clientTimezone">{{ row.clientTimezone }}</div>
           </template>
         </el-table-column>
         <el-table-column :label="tt('security.colDevice')" min-width="150">
           <template #default="{ row }">
-            <div>{{ [row.browser, row.os, row.deviceType].filter(Boolean).join(" · ") || "—" }}</div>
-            <div v-if="[row.clientScreen, row.clientPlatform].filter(Boolean).length" class="secondary-line">{{ [row.clientScreen, row.clientPlatform].filter(Boolean).join(" · ") }}</div>
+            <div class="ellipsis" :title="[row.browser, row.os, row.deviceType].filter(Boolean).join(' · ')">{{ [row.browser, row.os, row.deviceType].filter(Boolean).join(" · ") || "—" }}</div>
+            <div v-if="[row.clientScreen, row.clientPlatform].filter(Boolean).length" class="secondary-line" :title="[row.clientScreen, row.clientPlatform].filter(Boolean).join(' · ')">{{ [row.clientScreen, row.clientPlatform].filter(Boolean).join(" · ") }}</div>
           </template>
         </el-table-column>
         <el-table-column :label="tt('security.colUser')" width="120">
           <template #default="{ row }">
-            <div class="primary-line">{{ displayNameForUsername(row.username) || "—" }}</div>
-            <div v-if="row.failureReason" class="secondary-line">{{ row.failureReason }}</div>
+            <div class="primary-line" :title="displayNameForUsername(row.username)">{{ displayNameForUsername(row.username) || "—" }}</div>
+            <div v-if="row.failureReason" class="secondary-line" :title="row.failureReason">{{ row.failureReason }}</div>
           </template>
         </el-table-column>
         <el-table-column :label="tt('security.colFlags')" width="120">
@@ -302,13 +302,13 @@
               </template>
             </el-table-column>
             <el-table-column :label="tt('mcp.colReason')" min-width="120">
-              <template #default="{ row }"><span class="secondary-line">{{ row.reason || "—" }}</span></template>
+              <template #default="{ row }"><span class="secondary-line" :title="row.reason">{{ row.reason || "—" }}</span></template>
             </el-table-column>
             <el-table-column :label="tt('mcp.colPath')" min-width="110">
-              <template #default="{ row }"><span class="secondary-line mono">{{ row.path || "—" }}</span></template>
+              <template #default="{ row }"><span class="secondary-line mono" :title="row.path">{{ row.path || "—" }}</span></template>
             </el-table-column>
             <el-table-column :label="tt('mcp.colUA')" min-width="150">
-              <template #default="{ row }"><span class="secondary-line">{{ uaSummary(row) }}</span></template>
+              <template #default="{ row }"><span class="secondary-line" :title="row.userAgent">{{ uaSummary(row) }}</span></template>
             </el-table-column>
           </el-table>
         </section>
@@ -681,8 +681,6 @@ export default {
 .mcp-dot-green { background: #22c55e; }
 .mcp-dot-yellow { background: #f59e0b; }
 .mcp-dot-red { background: #ef4444; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 .flag { margin-right: 4px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 </style>

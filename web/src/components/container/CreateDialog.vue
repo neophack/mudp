@@ -418,7 +418,10 @@ export default {
 
 <style scoped>
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; }
-.check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+/* Labels wrap to a second line instead of shrinking: a no-wrap flex row
+   squeezes the CJK hint spans to their min-content (one glyph per line) once
+   the name plus hints outgrow the grid cell. */
+.check { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px; font-size: 13px; }
 .check.locked { opacity: 0.5; }
 .shared-disk-section { margin-top: 8px; }
 .advanced-block { margin-top: 10px; border-top: 1px dashed var(--line); }

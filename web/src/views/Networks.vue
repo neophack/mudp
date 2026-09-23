@@ -15,7 +15,7 @@
       <el-table-column :label="tt('common.name')" :min-width="s.isMobile ? 150 : 200">
         <template #default="{ row }">
           <div class="primary-line">
-            {{ row.name }}
+            <span class="net-name" :title="row.name">{{ row.name }}</span>
             <el-tag v-if="row.system" size="small" type="info">{{ tt("networks.badgeSystem") }}</el-tag>
             <el-tag v-else-if="row.external" size="small" type="info">{{ tt("networks.badgeHost") }}</el-tag>
             <el-tag v-else-if="row.shared" size="small" type="info">{{ tt("networks.badgeShared") }}</el-tag>
@@ -24,23 +24,23 @@
                  relayed by mudp instead of published by Docker. -->
             <el-tag v-if="row.forward" size="small" type="success">{{ tt("networks.badgeForward") }}</el-tag>
           </div>
-          <div v-if="s.isMobile" class="secondary-line mono">{{ row.subnet || "—" }}</div>
+          <div v-if="s.isMobile" class="secondary-line mono" :title="row.subnet">{{ row.subnet || "—" }}</div>
         </template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('common.driver')" width="100">
-        <template #default="{ row }"><span class="secondary-line">{{ row.driver }}</span></template>
+        <template #default="{ row }"><span class="secondary-line" :title="row.driver">{{ row.driver }}</span></template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('networks.colSubnet')" min-width="140">
-        <template #default="{ row }"><span class="secondary-line mono">{{ row.subnet || "—" }}</span></template>
+        <template #default="{ row }"><span class="secondary-line mono" :title="row.subnet">{{ row.subnet || "—" }}</span></template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('common.containers')" width="90">
         <template #default="{ row }">{{ row.containers || 0 }}</template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('common.owner')" width="110">
-        <template #default="{ row }"><span class="secondary-line">{{ row.owner || tt("networks.badgeSystem") }}</span></template>
+        <template #default="{ row }"><span class="secondary-line" :title="row.owner">{{ row.owner || tt("networks.badgeSystem") }}</span></template>
       </el-table-column>
       <el-table-column v-if="isAdmin() && !s.isMobile" :label="tt('networks.colGroups')" width="140">
-        <template #default="{ row }"><span class="secondary-line">{{ groupsCell(row) }}</span></template>
+        <template #default="{ row }"><span class="secondary-line" :title="groupsCell(row)">{{ groupsCell(row) }}</span></template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('common.actions')" width="200" fixed="right">
         <template #default="{ row }">
@@ -265,8 +265,10 @@ export default {
 <style scoped>
 .card-head { display: flex; align-items: center; margin-bottom: 10px; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
-.primary-line { font-weight: 600; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.secondary-line { color: var(--muted); font-size: 12px; }
+/* Badges sit next to the name and may wrap below it; the name itself stays on
+   one line with an ellipsis (full text on hover via :title). */
+.primary-line { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.net-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .check-grid { display: flex; flex-direction: column; gap: 8px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .adv-input { margin-bottom: 8px; }

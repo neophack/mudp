@@ -42,10 +42,10 @@
       <div class="card-head"><h2>{{ tt("disks.disks") }}</h2></div>
       <el-table :data="s.disks" size="small" :empty-text="tt('disks.noDiskData')">
         <el-table-column :label="tt('common.name')" width="130">
-          <template #default="{ row }"><span class="primary-line">{{ row.name || "-" }}</span></template>
+          <template #default="{ row }"><span class="primary-line" :title="row.name">{{ row.name || "-" }}</span></template>
         </el-table-column>
         <el-table-column :label="tt('users.colPath')" min-width="180">
-          <template #default="{ row }"><span class="mono">{{ row.path }}</span></template>
+          <template #default="{ row }"><span class="mono ellipsis" :title="row.path">{{ row.path }}</span></template>
         </el-table-column>
         <el-table-column :label="tt('disks.colTotal')" width="100">
           <template #default="{ row }">{{ fmtBytes(row.totalBytes) }}</template>
@@ -223,7 +223,6 @@ export default {
 .mb { margin-bottom: 8px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 10px; }
 .bk-sched-time { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
-.primary-line { font-weight: 600; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 @media (max-width: 1000px) { .disks-layout { grid-template-columns: minmax(0, 1fr); } }
 </style>

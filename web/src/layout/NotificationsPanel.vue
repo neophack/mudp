@@ -11,9 +11,9 @@
       >
         <div class="notification-icon"><v-icon :name="n.type || 'system_alert'" /></div>
         <div class="notification-body">
-          <div class="notification-title">{{ n.title }}</div>
-          <div class="notification-message">{{ n.message }}</div>
-          <div v-if="detail(n)" class="notification-detail hint">{{ detail(n) }}</div>
+          <div class="notification-title" :title="n.title">{{ n.title }}</div>
+          <div class="notification-message" :title="n.message">{{ n.message }}</div>
+          <div v-if="detail(n)" class="notification-detail hint ellipsis" :title="detail(n)">{{ detail(n) }}</div>
           <div class="notification-time hint">{{ new Date(n.createdAt).toLocaleString() }}</div>
         </div>
         <el-button link class="danger-text" icon="Close" :title="tt('notif.delete')" @click.stop="removeOne(n.id)" />

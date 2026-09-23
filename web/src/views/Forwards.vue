@@ -21,16 +21,16 @@
           <template #default="{ row }"><span class="primary-line mono">{{ row.hostPort }}/{{ row.proto }}</span></template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('common.user')" width="110">
-          <template #default="{ row }"><span class="secondary-line">{{ row.owner || "—" }}</span></template>
+          <template #default="{ row }"><span class="secondary-line" :title="row.owner">{{ row.owner || "—" }}</span></template>
         </el-table-column>
         <el-table-column :label="tt('containers.colContainer')" :min-width="s.isMobile ? 130 : 150">
           <template #default="{ row }">
-            <div class="secondary-line">{{ row.name || "—" }}</div>
-            <div v-if="row.note && row.note !== row.name" class="secondary-line hint">{{ row.note }}</div>
+            <div class="secondary-line" :title="row.name">{{ row.name || "—" }}</div>
+            <div v-if="row.note && row.note !== row.name" class="secondary-line hint" :title="row.note">{{ row.note }}</div>
           </template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('forwards.colTarget')" width="150">
-          <template #default="{ row }"><span class="secondary-line mono">{{ row.targetIp || "?" }}:{{ row.targetPort }}</span></template>
+          <template #default="{ row }"><span class="secondary-line mono" :title="`${row.targetIp || '?'}:${row.targetPort}`">{{ row.targetIp || "?" }}:{{ row.targetPort }}</span></template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('forwards.colSource')" width="150">
           <template #default="{ row }">
@@ -317,7 +317,5 @@ export default {
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .check.locked { opacity: 0.5; }
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; margin-bottom: 10px; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 .error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 </style>

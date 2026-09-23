@@ -8,13 +8,13 @@
       <el-table :data="watches" size="small" :empty-text="tt('processes.noWatches')">
         <el-table-column :label="tt('processes.colName')" min-width="140">
           <template #default="{ row }">
-            <div class="primary-line">{{ procName(row.command) || tt("processes.unknownName") }}</div>
-            <div class="secondary-line mono cmd-line">{{ row.command || "" }}</div>
+            <div class="primary-line" :title="row.command">{{ procName(row.command) || tt("processes.unknownName") }}</div>
+            <div class="secondary-line mono cmd-line" :title="row.command">{{ row.command || "" }}</div>
           </template>
         </el-table-column>
         <el-table-column :label="tt('processes.colContainer')" min-width="110">
           <template #default="{ row }">
-            <div>{{ row.containerName || row.containerId.slice(0, 12) }}</div>
+            <div class="ellipsis" :title="row.containerName">{{ row.containerName || row.containerId.slice(0, 12) }}</div>
             <div class="secondary-line mono">{{ tt("processes.colPid") }} {{ row.pid }}</div>
           </template>
         </el-table-column>
@@ -55,9 +55,9 @@
         </el-table-column>
         <el-table-column :label="tt('processes.colContent')" min-width="200">
           <template #default="{ row }">
-            <div class="cmd-line">{{ row.message }}</div>
+            <div class="cmd-line" :title="row.message">{{ row.message }}</div>
             <div v-if="s.isMobile" class="secondary-line">{{ kindLabel(row.kind) }}</div>
-            <div v-if="row.status === 'failed' && row.error" class="error-line">{{ row.error }}</div>
+            <div v-if="row.status === 'failed' && row.error" class="error-line" :title="row.error">{{ row.error }}</div>
           </template>
         </el-table-column>
         <el-table-column :label="tt('processes.colStatus')" width="100">
@@ -89,12 +89,12 @@
         :default-sort="{ prop: 'cpu', order: 'descending' }"
       >
         <el-table-column v-if="admin && !s.isMobile" :label="tt('common.user')" width="120">
-          <template #default="{ row }">{{ displayNameForUsername(row.user || "") }}</template>
+          <template #default="{ row }"><span class="ellipsis" :title="displayNameForUsername(row.user || '')">{{ displayNameForUsername(row.user || "") }}</span></template>
         </el-table-column>
         <el-table-column prop="name" :label="tt('processes.colName')" min-width="140" sortable :sort-method="byName">
           <template #default="{ row }">
-            <div class="primary-line">{{ procName(row.command) || tt("processes.unknownName") }}</div>
-            <div v-if="row.container" class="secondary-line">{{ row.container }}</div>
+            <div class="primary-line" :title="row.command">{{ procName(row.command) || tt("processes.unknownName") }}</div>
+            <div v-if="row.container" class="secondary-line" :title="row.container">{{ row.container }}</div>
           </template>
         </el-table-column>
         <el-table-column :label="tt('processes.colPid')" width="80" sortable :sort-method="(a, b) => Number(a.pid) - Number(b.pid)">
@@ -107,7 +107,7 @@
           <template #default="{ row }">{{ fmtMem(row.memMb) }}</template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('processes.colCommand')" min-width="240">
-          <template #default="{ row }"><span class="secondary-line mono cmd-line">{{ row.command || "" }}</span></template>
+          <template #default="{ row }"><span class="secondary-line mono cmd-line" :title="row.command">{{ row.command || "" }}</span></template>
         </el-table-column>
         <el-table-column :label="tt('common.actions')" width="100" :fixed="s.isMobile ? false : 'right'">
           <template #default="{ row }">
@@ -252,9 +252,8 @@ export default {
 .card-head h2 { margin: 0; font-size: 14px; }
 /* Keep secondary text readable: noticeably dimmer than primary ink, but well
    clear of the muted placeholder tone used elsewhere. */
-.secondary-line { color: color-mix(in srgb, var(--ink) 65%, var(--muted)); font-size: 12px; }
-.primary-line { font-weight: 600; }
-.error-line { color: var(--danger-text); font-size: 12px; margin-top: 2px; word-break: break-all; }
+.secondary-line { color: color-mix(in srgb, var(--ink) 65%, var(--muted)); }
+.error-line { color: var(--danger-text); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmd-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .tag-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 4px; }

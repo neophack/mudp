@@ -32,12 +32,12 @@
           </template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('errors.colWhere')" min-width="170">
-          <template #default="{ row }"><span class="mono">{{ `${row.method || ""} ${row.path || ""}`.trim() || "—" }}</span></template>
+          <template #default="{ row }"><span class="mono ellipsis" :title="`${row.method || ''} ${row.path || ''}`.trim()">{{ `${row.method || ""} ${row.path || ""}`.trim() || "—" }}</span></template>
         </el-table-column>
         <el-table-column :label="tt('errors.colMessage')" min-width="150">
           <template #default="{ row }">
-            <div class="primary-line mono">{{ truncate(row.message, 160) }}</div>
-            <div v-if="s.isMobile" class="secondary-line mono">{{ `${row.method || ""} ${row.path || ""}`.trim() }}</div>
+            <div class="primary-line mono" :title="row.message">{{ row.message }}</div>
+            <div v-if="s.isMobile" class="secondary-line mono" :title="`${row.method || ''} ${row.path || ''}`.trim()">{{ `${row.method || ""} ${row.path || ""}`.trim() }}</div>
             <el-button v-if="row.stack" link size="small" @click="viewStack(row)">{{ tt("errors.viewStack") }}</el-button>
           </template>
         </el-table-column>
@@ -46,7 +46,9 @@
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('errors.colSeen')" min-width="220">
           <template #default="{ row }">
-            <div class="secondary-line">{{ tt("errors.first") }}: {{ row.firstSeen || "—" }} · {{ tt("errors.last") }}: {{ row.lastSeen || "—" }}</div>
+            <div class="secondary-line" :title="`${tt('errors.first')}: ${row.firstSeen || '—'} · ${tt('errors.last')}: ${row.lastSeen || '—'}`">
+              {{ tt("errors.first") }}: {{ row.firstSeen || "—" }} · {{ tt("errors.last") }}: {{ row.lastSeen || "—" }}
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="" :width="s.isMobile ? 84 : 100" :fixed="s.isMobile ? false : 'right'">
@@ -89,10 +91,6 @@ export default {
       this.stats = data.stats || {};
       this.events = data.events || [];
     },
-    truncate(s, n) {
-      s = s || "";
-      return s.length > n ? s.slice(0, n) + "…" : s;
-    },
     viewStack(e) {
       if (!e.stack) {
         ElMessage.info(tt("errors.noStack"));
@@ -131,8 +129,6 @@ export default {
 .stat-label { color: var(--muted); font-size: 12.5px; }
 .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .stack-pre { background: #0f172a; color: #cbd5e1; border-radius: 8px; padding: 12px; font-size: 11.5px; max-height: 50vh; overflow: auto; white-space: pre-wrap; }
 </style>

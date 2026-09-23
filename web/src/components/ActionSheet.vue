@@ -11,8 +11,8 @@
     <div class="sheet-card">
       <div class="sheet-grab"></div>
       <div class="sheet-head">
-        <strong class="sheet-title">{{ title }}</strong>
-        <span v-if="subtitle" class="sheet-subtitle">{{ subtitle }}</span>
+        <strong class="sheet-title" :title="title">{{ title }}</strong>
+        <span v-if="subtitle" class="sheet-subtitle" :title="subtitle">{{ subtitle }}</span>
       </div>
       <slot name="meta"></slot>
       <div class="sheet-grid" :style="gridStyle">

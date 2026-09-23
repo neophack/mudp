@@ -20,8 +20,8 @@
           <el-table-column type="selection" width="36" />
           <el-table-column :label="tt('common.name')">
             <template #default="{ row }">
-              <el-button v-if="row.dir" link class="file-name" @click="openDir('container', row.path)">{{ row.dir ? "📁" : "📄" }} {{ row.name }}</el-button>
-              <span v-else>{{ row.dir ? "📁" : "📄" }} {{ row.name }}</span>
+              <el-button v-if="row.dir" link class="file-name" :title="row.name" @click="openDir('container', row.path)">{{ row.dir ? "📁" : "📄" }} {{ row.name }}</el-button>
+              <span v-else class="ellipsis" :title="row.name">{{ row.dir ? "📁" : "📄" }} {{ row.name }}</span>
             </template>
           </el-table-column>
           <el-table-column :label="tt('common.size')" width="90">
@@ -50,8 +50,8 @@
           <el-table-column type="selection" width="36" />
           <el-table-column :label="tt('common.name')">
             <template #default="{ row }">
-              <el-button v-if="row.dir" link class="file-name" @click="openDir('netdisk', row.path)">{{ row.dir ? "📁" : "📄" }} {{ row.name }}</el-button>
-              <span v-else>{{ row.dir ? "📁" : "📄" }} {{ row.name }}</span>
+              <el-button v-if="row.dir" link class="file-name" :title="row.name" @click="openDir('netdisk', row.path)">{{ row.dir ? "📁" : "📄" }} {{ row.name }}</el-button>
+              <span v-else class="ellipsis" :title="row.name">{{ row.dir ? "📁" : "📄" }} {{ row.name }}</span>
             </template>
           </el-table-column>
           <el-table-column :label="tt('common.size')" width="90">
@@ -210,7 +210,8 @@ export default {
 .pane-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .pane-head h3 { margin: 0; font-size: 13.5px; }
 .pane-path { font-size: 12px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-name { padding: 0; }
+.file-name { padding: 0; max-width: 100%; }
+.file-name >>> span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 900px) {
   .files-panes { grid-template-columns: minmax(0, 1fr); }
 }

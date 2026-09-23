@@ -19,8 +19,8 @@
         <el-table :data="n.containers || []" size="small" :empty-text="tt('netdetail.noContainers')">
           <el-table-column :label="tt('containers.colContainer')">
             <template #default="{ row }">
-              <div class="primary-line">{{ row.name }}</div>
-              <div class="secondary-line mono">{{ row.id.slice(0, 12) }}</div>
+              <div class="primary-line" :title="row.name">{{ row.name }}</div>
+              <div class="secondary-line mono" :title="row.id">{{ row.id.slice(0, 12) }}</div>
             </template>
           </el-table-column>
           <el-table-column :label="tt('netdetail.colIpv4')" width="130">
@@ -151,8 +151,6 @@ dl.detail dd { margin: 0; word-break: break-word; }
 .detail-settings { margin-bottom: 12px; }
 .detail-settings h3 { margin: 0 0 8px; font-size: 13.5px; }
 .attach-row { display: flex; gap: 10px; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 .warn-text { color: #e6a23c !important; }
 .error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 </style>

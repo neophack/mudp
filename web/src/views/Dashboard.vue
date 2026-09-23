@@ -110,8 +110,8 @@
           <div class="feishu-header">
             <div class="feishu-avatar">{{ userInitial }}</div>
             <div class="feishu-title">
-              <div class="feishu-name">{{ user.displayName || user.username || "—" }}</div>
-              <div class="feishu-handle mono">{{ user.feishuOpenId || "—" }}</div>
+              <div class="feishu-name ellipsis" :title="user.displayName || user.username">{{ user.displayName || user.username || "—" }}</div>
+              <div class="feishu-handle mono ellipsis" :title="user.feishuOpenId">{{ user.feishuOpenId || "—" }}</div>
             </div>
           </div>
           <dl class="detail feishu-detail">
@@ -155,7 +155,7 @@
         <div class="card-head"><h2>{{ tt("dash.topUsers") }}</h2></div>
         <el-table :data="topUsers" size="small" empty-text="—">
           <el-table-column :label="tt('common.user')">
-            <template #default="{ row }">{{ row.displayName || row.username }}</template>
+            <template #default="{ row }"><span class="primary-line" :title="row.displayName || row.username">{{ row.displayName || row.username }}</span></template>
           </el-table-column>
           <el-table-column prop="containers" :label="tt('common.containers')" width="90" />
           <el-table-column :label="tt('hardware.memory')" width="90">
@@ -176,8 +176,8 @@
           <ul class="mini-list">
             <li v-for="c in myContainers" :key="c.id">
               <el-tag size="small" :type="stateTag(c.state)">{{ stateLabel(c.state) }}</el-tag>
-              <span class="primary-line">{{ c.name || c.fullName }}</span>
-              <span class="secondary-line">{{ c.image || "" }}</span>
+              <span class="primary-line" :title="c.name || c.fullName">{{ c.name || c.fullName }}</span>
+              <span class="secondary-line" :title="c.image">{{ c.image || "" }}</span>
             </li>
             <li v-if="!myContainers.length" class="hint">{{ tt("dash.noContainers") }}</li>
           </ul>
@@ -192,9 +192,9 @@
         <div class="card-body">
           <ul class="mini-list activity">
             <li v-for="(e, i) in recentActivity" :key="i">
-              <span class="audit-actor">{{ e.actor }}</span>
+              <span class="audit-actor ellipsis" :title="e.actor">{{ e.actor }}</span>
               <span class="audit-act">{{ e.action }}</span>
-              <span class="audit-target mono">{{ e.target }}</span>
+              <span class="audit-target mono" :title="e.target">{{ e.target }}</span>
               <span class="audit-time">{{ relTime(e.createdAt) }}</span>
             </li>
             <li v-if="!recentActivity.length" class="hint">{{ tt("dash.noActivity") }}</li>
@@ -455,8 +455,6 @@ dl.detail dd { margin: 0; word-break: break-word; }
 .mini-list { list-style: none; margin: 0; padding: 0; font-size: 12.5px; }
 .mini-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0; }
 .mini-list li + li { border-top: 1px solid var(--line); }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); }
 .audit-act { color: var(--brand); }
 .audit-target { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 .audit-time { margin-left: auto; color: var(--muted); white-space: nowrap; }

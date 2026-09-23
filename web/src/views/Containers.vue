@@ -46,11 +46,11 @@
         <el-table-column v-if="canMutate() && !s.isMobile" type="selection" width="36" :selectable="() => true" reserve-selection />
         <el-table-column :label="tt('containers.colContainer')" :min-width="s.isMobile ? 150 : 200">
           <template #default="{ row }">
-            <div class="primary-line">
+            <div class="primary-line" :title="row.name || row.fullName">
               {{ row.name || row.fullName }}
               <el-tag v-if="row.forwarded" size="small" type="info" :title="tt('containers.forwardBadgeTitle')">{{ tt("containers.forwardBadge") }}</el-tag>
             </div>
-            <div class="secondary-line port-line">
+            <div class="secondary-line port-line" :title="portsTitle(row)">
               <template v-for="(l, i) in portLinks(row)" :key="i">
                 <span v-if="i" class="sep">·</span>
                 <a class="port-link" :href="l.url" target="_blank" rel="noopener" @click.stop>{{ l.text }}</a>
@@ -63,7 +63,9 @@
           </template>
         </el-table-column>
         <el-table-column v-if="isAdmin() && !s.isMobile" :label="tt('containers.colOwner')" width="110">
-          <template #default="{ row }">{{ displayNameForUsername(row.owner) || "—" }}</template>
+          <template #default="{ row }">
+            <span class="primary-line" :title="displayNameForUsername(row.owner)">{{ displayNameForUsername(row.owner) || "—" }}</span>
+          </template>
         </el-table-column>
         <el-table-column :label="tt('containers.colStatus')" :width="s.isMobile ? 92 : 185">
           <template #default="{ row }">
@@ -73,7 +75,7 @@
           </template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('containers.colImage')" min-width="140">
-          <template #default="{ row }"><span class="secondary-line">{{ row.image || row.Image || "—" }}</span></template>
+          <template #default="{ row }"><span class="secondary-line" :title="row.image || row.Image">{{ row.image || row.Image || "—" }}</span></template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('containers.colResources')" width="160">
           <template #default="{ row }">
@@ -244,6 +246,10 @@ export default {
     portText(c) {
       return (c.ports || []).join(", ");
     },
+    // Plain-text version of the port line for its hover tooltip.
+    portsTitle(c) {
+      return [this.portLinks(c).map((l) => l.text).join(", "), this.portText(c)].filter(Boolean).join(" · ");
+    },
     onSelectionChange(rows) {
       this.selected = new Set(rows.map((r) => r.id));
     },
@@ -260,10 +266,10 @@ export default {
       const items = [
         { key: "logs", label: tt("containers.actLogs"), icon: "Document" },
         { key: "start", label: tt("containers.actStart"), icon: "VideoPlay", tone: "ok", disabled: running || this.pending(r, "start") },
-        { key: "stop", label: tt("containers.actStop"), icon: "VideoPause", tone: "warn", disabled: (!running && !paused) || this.pending(r, "stop") },
+        { key: "stop", label: tt("containers.actStop"), icon: "SwitchButton", tone: "warn", disabled: (!running && !paused) || this.pending(r, "stop") },
         { key: "restart", label: tt("containers.actRestart"), icon: "Refresh", disabled: (!running && !paused) || this.pending(r, "restart") },
       ];
-      if (running) items.push({ key: "pause", label: tt("containers.actPause"), icon: "Remove", disabled: this.pending(r, "pause") });
+      if (running) items.push({ key: "pause", label: tt("containers.actPause"), icon: "VideoPause", tone: "warn", disabled: this.pending(r, "pause") });
       if (paused) items.push({ key: "unpause", label: tt("containers.actUnpause"), icon: "VideoPlay", tone: "ok", disabled: this.pending(r, "unpause") });
       items.push({ key: "files", label: tt("containers.actFiles"), icon: "FolderOpened" });
       if (running) {
@@ -383,8 +389,6 @@ export default {
 .batch-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .batch-actions .el-button { margin-left: 0; }
 .batch-count { font-weight: 600; color: var(--brand); font-size: 13px; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 .port-link { color: var(--brand); }
 .sep { margin: 0 4px; color: var(--muted); }
 .ok-text { color: #10b981 !important; }

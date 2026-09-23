@@ -13,8 +13,8 @@
     >
       <el-table-column :label="tt('common.name')" :min-width="s.isMobile ? 150 : 200">
         <template #default="{ row }">
-          <div class="primary-line">{{ row.name }}</div>
-          <div class="secondary-line mono">{{ row.projectName }}</div>
+          <div class="primary-line" :title="row.name">{{ row.name }}</div>
+          <div class="secondary-line mono" :title="row.projectName">{{ row.projectName }}</div>
         </template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('stacks.colServices')" width="90">
@@ -28,7 +28,7 @@
         </template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('common.owner')" width="110">
-        <template #default="{ row }"><span class="secondary-line">{{ displayNameForUsername(row.owner) || "—" }}</span></template>
+        <template #default="{ row }"><span class="secondary-line" :title="displayNameForUsername(row.owner)">{{ displayNameForUsername(row.owner) || "—" }}</span></template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('stacks.colUpdated')" width="160">
         <template #default="{ row }"><span class="secondary-line">{{ fmtTime(row.updatedAt) }}</span></template>
@@ -340,8 +340,6 @@ export default {
 <style scoped>
 .card-head { display: flex; align-items: center; margin-bottom: 12px; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 .tag-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 4px; }
 .ok-text { color: #10b981 !important; }
 .warn-text { color: #e6a23c !important; }

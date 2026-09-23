@@ -3,9 +3,16 @@ package dockerx
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types/image"
 )
+
+// infoCtx bounds daemon calls so a wedged daemon (pipe ping answers but the
+// engine API never does) fails fast instead of hanging the test binary.
+func infoCtx(t *testing.T) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 10*time.Second)
+}
 
 // skipIfNoDocker skips the test when the Docker daemon is not reachable. Tests
 // that touch a real engine are tagged this way so CI without Docker still
@@ -16,7 +23,7 @@ func skipIfNoDocker(t *testing.T) *Client {
 	if err != nil {
 		t.Skipf("docker client unavailable: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := infoCtx(t)
 	defer cancel()
 	if err := c.DockerPing(ctx); err != nil {
 		t.Skipf("docker daemon not reachable: %v", err)
@@ -26,7 +33,9 @@ func skipIfNoDocker(t *testing.T) *Client {
 
 func TestSystemInfoShape(t *testing.T) {
 	c := skipIfNoDocker(t)
-	info := c.SystemInfo(context.Background())
+	ctx, cancel := infoCtx(t)
+	defer cancel()
+	info := c.SystemInfo(ctx)
 	if !info.Healthy {
 		t.Skipf("daemon reported unhealthy: %s", info.HealthyMsg)
 	}
@@ -46,7 +55,9 @@ func TestSystemInfoShape(t *testing.T) {
 // populated) since the exact counts depend on who owns what on the live host.
 func TestSystemInfoForUserShape(t *testing.T) {
 	c := skipIfNoDocker(t)
-	info := c.SystemInfoForUser(context.Background(), "nobody-owns-this-name")
+	ctx, cancel := infoCtx(t)
+	defer cancel()
+	info := c.SystemInfoForUser(ctx, "nobody-owns-this-name")
 	if !info.Healthy {
 		t.Skipf("daemon reported unhealthy: %s", info.HealthyMsg)
 	}
@@ -72,12 +83,14 @@ func TestSystemInfoForUserShape(t *testing.T) {
 // SystemInfo.
 func TestSystemInfoForUserEmptyUsernameFallback(t *testing.T) {
 	c := skipIfNoDocker(t)
-	info := c.SystemInfoForUser(context.Background(), "")
+	ctx, cancel := infoCtx(t)
+	defer cancel()
+	info := c.SystemInfoForUser(ctx, "")
 	if !info.Healthy {
 		t.Skipf("daemon reported unhealthy: %s", info.HealthyMsg)
 	}
 	// Empty username == platform-wide, so SystemInfo and the fallback must agree.
-	want := c.SystemInfo(context.Background())
+	want := c.SystemInfo(ctx)
 	if info.Containers.Total != want.Containers.Total ||
 		info.Images.Count != want.Images.Count ||
 		info.Volumes.Count != want.Volumes.Count ||

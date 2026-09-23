@@ -77,8 +77,8 @@
                 <div v-if="s.isMobile" class="primary-line name-link name-mobile" :title="row.name">{{ row.name }}</div>
                 <el-button v-else-if="row.dir" link class="name-link" :title="row.name" @click.stop="navigate(row.path)">{{ row.name }}</el-button>
                 <el-button v-else-if="previewKind(row.name) && mode !== 'shareddisk'" link class="name-link" :title="row.name" @click.stop="openViewer(row)">{{ row.name }}</el-button>
-                <a v-else-if="!row.dir && mode !== 'shareddisk'" class="name-link" :href="downloadHref(row)" :title="row.name" @click.stop>{{ row.name }}</a>
-                <span v-else class="name-link" :title="row.name">{{ row.name }}</span>
+                <a v-else-if="!row.dir && mode !== 'shareddisk'" class="name-link ellipsis" :href="downloadHref(row)" :title="row.name" @click.stop>{{ row.name }}</a>
+                <span v-else class="name-link ellipsis" :title="row.name">{{ row.name }}</span>
                 <div class="netdisk-file-meta">{{ row.dir ? "-" : fmtBytes(row.size) }} · {{ fmtDate(row.modTime) }}</div>
               </div>
             </div>
@@ -120,12 +120,12 @@
           <el-table-column :label="tt('common.name')" :min-width="s.isMobile ? 150 : 180">
             <template #default="{ row }">
               <div class="primary-line" :title="row.name + ((row.paths || []).length ? ' · ' + row.paths.join(', ') : '')">{{ row.name }}</div>
-              <div class="secondary-line">{{ (row.paths || []).join(", ") }}</div>
+              <div class="secondary-line" :title="(row.paths || []).join(', ')">{{ (row.paths || []).join(", ") }}</div>
             </template>
           </el-table-column>
           <el-table-column v-if="!s.isMobile" :label="tt('netdisk.colLink')" min-width="240">
             <template #default="{ row }">
-              <a :href="shareLink(row)" target="_blank" class="share-link" @click.stop>{{ shareLink(row) }}</a>
+              <a :href="shareLink(row)" target="_blank" class="share-link ellipsis" :title="shareLink(row)" @click.stop>{{ shareLink(row) }}</a>
             </template>
           </el-table-column>
           <el-table-column :label="tt('netdisk.colExpires')" :width="s.isMobile ? 100 : 160">
@@ -159,17 +159,17 @@
         <el-table ref="adminSharesTable" :data="adminShares" size="small" :empty-text="tt('netdisk.noExternalLinks')" :row-class-name="({ row }) => (row.expired ? 'row-muted' : '')" @selection-change="onAdminShareSelection">
           <el-table-column type="selection" width="40" />
           <el-table-column v-if="!s.isMobile" :label="tt('netdisk.colOwner')" width="130">
-            <template #default="{ row }">{{ displayNameForUsername(row.owner) || row.ownerId }}</template>
+            <template #default="{ row }"><span class="primary-line" :title="displayNameForUsername(row.owner) || String(row.ownerId)">{{ displayNameForUsername(row.owner) || row.ownerId }}</span></template>
           </el-table-column>
           <el-table-column :label="tt('common.name')" min-width="170">
             <template #default="{ row }">
-              <div class="primary-line">{{ row.name }}</div>
-              <div class="secondary-line">{{ (row.paths || []).join(", ") }}</div>
+              <div class="primary-line" :title="row.name">{{ row.name }}</div>
+              <div class="secondary-line" :title="(row.paths || []).join(', ')">{{ (row.paths || []).join(", ") }}</div>
             </template>
           </el-table-column>
           <el-table-column v-if="!s.isMobile" :label="tt('netdisk.colLink')" min-width="240">
             <template #default="{ row }">
-              <a :href="shareLink(row)" target="_blank" class="share-link">{{ shareLink(row) }}</a>
+              <a :href="shareLink(row)" target="_blank" class="share-link ellipsis" :title="shareLink(row)">{{ shareLink(row) }}</a>
             </template>
           </el-table-column>
           <el-table-column :label="tt('netdisk.colExpires')" :width="s.isMobile ? 100 : 160">
@@ -812,13 +812,14 @@ export default {
    under the name is the narrow-screen replacement for them (see the media
    query below), not a second copy. */
 .netdisk-file-meta { display: none; color: var(--muted); font-size: 12px; }
-.name-link { padding: 0; font-weight: 600; }
+.name-link { padding: 0; font-weight: 600; max-width: 100%; }
+/* el-button wraps its label in a span; clip THAT so long file names show an
+   ellipsis instead of stretching the row. */
+.name-link >>> span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .name-mobile { color: var(--brand); }
 .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
-.share-link { color: var(--brand); font-size: 12px; word-break: break-all; }
+.share-link { color: var(--brand); font-size: 12px; }
 >>> .row-muted { opacity: 0.55; }
 
 /* Phones: drop the Size and Modified columns and fold both values into the

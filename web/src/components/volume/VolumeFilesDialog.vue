@@ -15,8 +15,8 @@
       <el-table-column type="selection" width="36" />
       <el-table-column :label="tt('common.name')">
         <template #default="{ row }">
-          <el-button v-if="row.dir" link class="file-name" @click="open(row.path)">{{ row.dir ? "📁" : "📄" }} {{ row.name }}</el-button>
-          <span v-else>{{ row.dir ? "📁" : "📄" }} {{ row.name }}</span>
+          <el-button v-if="row.dir" link class="file-name" :title="row.name" @click="open(row.path)">{{ row.dir ? "📁" : "📄" }} {{ row.name }}</el-button>
+          <span v-else class="ellipsis" :title="row.name">{{ row.dir ? "📁" : "📄" }} {{ row.name }}</span>
         </template>
       </el-table-column>
       <el-table-column :label="tt('common.size')" width="90">
@@ -326,6 +326,7 @@ export default {
 
 <style scoped>
 .files-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-.pane-path { font-size: 12px; color: var(--muted); }
-.file-name { padding: 0; }
+.pane-path { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-name { padding: 0; max-width: 100%; }
+.file-name >>> span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 </style>

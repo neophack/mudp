@@ -3,7 +3,7 @@
     <div v-if="state.error" class="error-box">✗ {{ state.error }}</div>
     <div v-else class="step active">
       <el-icon class="is-loading"><Loading /></el-icon>
-      <span class="step-label">{{ state.label }}</span>
+      <span class="step-label ellipsis" :title="state.label">{{ state.label }}</span>
     </div>
     <pre ref="log" class="log-output">{{ state.logs }}</pre>
     <div class="foot-actions">
@@ -39,6 +39,7 @@ export default {
 
 <style scoped>
 .step { display: flex; gap: 10px; align-items: center; font-size: 13px; margin-bottom: 10px; }
+.step-label { min-width: 0; }
 .error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .log-output {
   background: #0f172a;

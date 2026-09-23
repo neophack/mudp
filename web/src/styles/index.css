@@ -203,7 +203,7 @@ body {
   font-size: 12px;
   overflow: hidden;
 }
-.shell-aside .profile strong { color: var(--ink); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.shell-aside .profile strong { color: var(--ink); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shell-aside .profile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shell-aside .profile button {
   display: flex;
@@ -305,6 +305,23 @@ body {
 .hint { color: var(--muted); font-size: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
 
+/* ---------- One-line text with ellipsis ----------
+   Shared by every list row: long values clip with "…" and the full text
+   rides the native title tooltip (:title binding). display:block makes the
+   clipping work on spans too; min-width: 0 lets the same classes work as
+   flex/grid children. */
+.ellipsis,
+.primary-line,
+.secondary-line {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.primary-line { font-weight: 600; }
+.secondary-line { color: var(--muted); font-size: 12px; }
+
 .el-button.is-link { color: var(--brand) !important; }
 .el-table th.el-table__cell { background: var(--table-head) !important; color: var(--muted); font-weight: 600; }
 .el-table .el-link { font-size: 12.5px; }
@@ -356,7 +373,7 @@ body {
 .sheet-grab { width: 36px; height: 4px; border-radius: 2px; background: var(--line); margin: 4px auto 10px; }
 .sheet-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 2px; min-width: 0; }
 .sheet-title { font-size: 14px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sheet-subtitle { color: var(--muted); font-size: 12px; }
+.sheet-subtitle { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sheet-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
 .sheet-btn {
   display: flex;
@@ -393,6 +410,9 @@ body {
    roundness. */
 .el-dialog { border-radius: 14px; background: var(--card); }
 .el-dialog__header { padding: 13px 16px 9px; margin-right: 0; }
+/* Long object names in dialog titles ("Logs — <container>") clip with an
+   ellipsis instead of pushing the width or wrapping. */
+.el-dialog__title { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .el-dialog__title { font-size: 14.5px; font-weight: 650; }
 .el-dialog__body { padding: 10px 16px 14px; }
 .el-dialog__footer { padding: 8px 16px 13px; }
@@ -475,7 +495,7 @@ body {
 .job-headline { display: flex; align-items: center; gap: 8px; }
 .job-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-meta { display: flex; gap: 10px; color: var(--muted); font-size: 12px; margin-top: 2px; }
-.job-message { margin-top: 4px; word-break: break-word; }
+.job-message { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-actions { flex-shrink: 0; }
 
 /* ---------- Notifications panel ---------- */
@@ -486,8 +506,8 @@ body {
 .notification-item.unread { background: var(--brand-tint); border-color: var(--brand-tint-line); }
 .notification-icon { color: var(--brand); display: flex; padding-top: 2px; }
 .notification-body { flex: 1; min-width: 0; }
-.notification-title { font-weight: 600; }
-.notification-message { font-size: 12.5px; margin-top: 2px; }
+.notification-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notification-message { font-size: 12.5px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notification-time { margin-top: 4px; }
 
 /* ---------- Copy overlay ---------- */
@@ -529,7 +549,10 @@ body {
    viewport so nothing overflows on phones. Element sets inline width, but the
    CSS max-width still constrains it. */
 .el-dialog { max-width: calc(100vw - 20px); }
-.el-message-box { max-width: calc(100vw - 24px); }
+/* The message box carries no inline width — it is width:100% held at 420px by
+   Element's own max-width. A plain viewport clamp here replaces that cap, so
+   every confirm stretches nearly screen-wide on desktop; min() keeps both. */
+.el-message-box { max-width: min(420px, calc(100vw - 24px)); }
 /* Sub-tab switchers (el-radio-button groups) and card headers wrap instead of
    squeezing their labels onto one crammed line. */
 .el-radio-group { flex-wrap: wrap; row-gap: 4px; }

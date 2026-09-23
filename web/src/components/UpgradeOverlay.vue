@@ -5,7 +5,7 @@
         <div class="upgrade-ring-hole"><span>{{ ringText }}</span></div>
       </div>
       <div class="upgrade-phase">{{ o.phaseKey }}</div>
-      <div class="upgrade-detail hint">{{ o.detail }}</div>
+      <div class="upgrade-detail hint" :title="o.detail">{{ o.detail }}</div>
       <div class="upgrade-actions">
         <el-button v-if="o.done === 'err'" @click="close">{{ tt("common.close") }}</el-button>
       </div>
@@ -89,6 +89,6 @@ export default {
 .upgrade-ring.is-err { background: var(--danger); }
 @keyframes upgrade-spin { to { transform: rotate(360deg); } }
 .upgrade-phase { font-size: 15px; font-weight: 600; }
-.upgrade-detail { margin-top: 6px; color: #94a3b8; }
+.upgrade-detail { margin-top: 6px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upgrade-actions { margin-top: 18px; }
 </style>

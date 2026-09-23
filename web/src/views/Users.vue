@@ -18,14 +18,14 @@
       >
         <el-table-column :label="tt('common.user')" :min-width="s.isMobile ? 150 : 200">
           <template #default="{ row }">
-            <div class="primary-line">
+            <div class="primary-line" :title="displayName(row) || row.username">
               {{ displayName(row) }}
               <el-tag v-if="row.disabled" size="small" type="info">{{ tt("users.roleDisabled") }}</el-tag>
             </div>
-            <div v-if="row.feishuOpenId" class="secondary-line">{{ tt("users.feishuLine", { name: row.feishuOpenId }) }}</div>
-            <div class="secondary-line">{{ tt("users.limitLine", { cap: row.containerCap, quota: formatQuota(row.netdiskQuotaBytes) }) }}</div>
+            <div v-if="row.feishuOpenId" class="secondary-line" :title="row.feishuOpenId">{{ tt("users.feishuLine", { name: row.feishuOpenId }) }}</div>
+            <div class="secondary-line" :title="tt('users.limitLine', { cap: row.containerCap, quota: formatQuota(row.netdiskQuotaBytes) })">{{ tt("users.limitLine", { cap: row.containerCap, quota: formatQuota(row.netdiskQuotaBytes) }) }}</div>
             <!-- Phone rows fold the hidden groups/ports columns into the primary cell. -->
-            <div v-if="s.isMobile" class="secondary-line">
+            <div v-if="s.isMobile" class="secondary-line" :title="`${tt('users.colGroups')}: ${row.group || tt('users.groupsNone')} · ${tt('users.colPorts')}: ${portsText(row)}`">
               {{ tt("users.colGroups") }}: {{ row.group || tt("users.groupsNone") }} · {{ tt("users.colPorts") }}: {{ portsText(row) }}
             </div>
           </template>
@@ -38,11 +38,11 @@
           </template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('users.colGroups')" min-width="120">
-          <template #default="{ row }"><span class="secondary-line">{{ row.group || tt("users.groupsNone") }}</span></template>
+          <template #default="{ row }"><span class="secondary-line" :title="row.group">{{ row.group || tt("users.groupsNone") }}</span></template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('users.colPorts')" width="110">
           <template #default="{ row }">
-            <span class="secondary-line">{{ portsText(row) }}</span>
+            <span class="secondary-line" :title="portsText(row)">{{ portsText(row) }}</span>
           </template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('common.actions')" width="310" fixed="right">
@@ -103,19 +103,19 @@
       >
         <el-table-column :label="tt('users.colGroup')" :min-width="s.isMobile ? 240 : 120">
           <template #default="{ row }">
-            <span class="primary-line">{{ row.name }}</span>
+            <span class="primary-line" :title="row.name">{{ row.name }}</span>
             <!-- Phone rows keep the netdisk root visible; the dialog carries the rest. -->
-            <div v-if="s.isMobile" class="secondary-line mono">{{ row.netdiskPath || tt("users.notConfigured") }}</div>
+            <div v-if="s.isMobile" class="secondary-line mono" :title="row.netdiskPath">{{ row.netdiskPath || tt("users.notConfigured") }}</div>
           </template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('users.netdiskRoot')" min-width="170">
-          <template #default="{ row }"><span class="secondary-line mono">{{ row.netdiskPath || tt("users.notConfigured") }}</span></template>
+          <template #default="{ row }"><span class="secondary-line mono" :title="row.netdiskPath">{{ row.netdiskPath || tt("users.notConfigured") }}</span></template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('users.backupRoot')" min-width="170">
-          <template #default="{ row }"><span class="secondary-line mono">{{ row.backupPath || tt("users.notConfigured") }}</span></template>
+          <template #default="{ row }"><span class="secondary-line mono" :title="row.backupPath">{{ row.backupPath || tt("users.notConfigured") }}</span></template>
         </el-table-column>
         <el-table-column v-if="!s.isMobile" :label="tt('users.sharedDiskRoot')" min-width="170">
-          <template #default="{ row }"><span class="secondary-line mono">{{ row.sharedDiskPath || tt("users.notConfigured") }}</span></template>
+          <template #default="{ row }"><span class="secondary-line mono" :title="row.sharedDiskPath">{{ row.sharedDiskPath || tt("users.notConfigured") }}</span></template>
         </el-table-column>
         <el-table-column :label="tt('users.colLanguage')" :width="s.isMobile ? 80 : 90">
           <template #default="{ row }"><span class="secondary-line">{{ langLabel(row.language) }}</span></template>
@@ -140,9 +140,11 @@
         <el-table :data="usageRows" size="small" :empty-text="tt('users.noUsers')">
           <el-table-column :label="tt('common.user')">
             <template #default="{ row }">
-              {{ displayName(row) }}
-              <el-tag v-if="row.usage && !row.usage.configured" size="small" type="info">{{ tt("users.noPath") }}</el-tag>
-              <el-tag v-else-if="row.usage && row.usage.pathMissing" size="small" type="info">{{ tt("users.notCreated") }}</el-tag>
+              <div class="primary-line" :title="displayName(row) || row.username">
+                {{ displayName(row) }}
+                <el-tag v-if="row.usage && !row.usage.configured" size="small" type="info">{{ tt("users.noPath") }}</el-tag>
+                <el-tag v-else-if="row.usage && row.usage.pathMissing" size="small" type="info">{{ tt("users.notCreated") }}</el-tag>
+              </div>
             </template>
           </el-table-column>
           <el-table-column :label="tt('netdisk.usedCol')" width="100">
@@ -176,14 +178,14 @@
         <div v-if="!tasks.length" class="empty-state">{{ tt("users.longTasksNone") }}</div>
         <el-table v-else :data="tasks" size="small">
           <el-table-column v-if="!s.isMobile" :label="tt('users.longTasksUser')" width="130">
-            <template #default="{ row }">{{ displayNameForUsername(row.ownerName) || row.ownerName || "—" }}</template>
+            <template #default="{ row }"><span class="primary-line" :title="displayNameForUsername(row.ownerName) || row.ownerName">{{ displayNameForUsername(row.ownerName) || row.ownerName || "—" }}</span></template>
           </el-table-column>
           <el-table-column :label="tt('users.longTasksTask')" min-width="150">
             <template #default="{ row }">
-              <div class="primary-line">{{ taskLabel(row) }}</div>
-              <div class="secondary-line">{{ row.name || "" }}</div>
+              <div class="primary-line" :title="taskLabel(row)">{{ taskLabel(row) }}</div>
+              <div class="secondary-line" :title="row.name">{{ row.name || "" }}</div>
               <!-- Phone rows fold the hidden owner column into the task cell. -->
-              <div v-if="s.isMobile" class="secondary-line">{{ displayNameForUsername(row.ownerName) || row.ownerName || "—" }}</div>
+              <div v-if="s.isMobile" class="secondary-line" :title="displayNameForUsername(row.ownerName) || row.ownerName">{{ displayNameForUsername(row.ownerName) || row.ownerName || "—" }}</div>
             </template>
           </el-table-column>
           <el-table-column :label="tt('users.longTasksProgress')" min-width="140">
@@ -716,8 +718,6 @@ export default {
 .check-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; }
 .check-grid.col { flex-direction: column; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 .ok-text { color: var(--ok) !important; }
 .sheet-meta { display: flex; flex-direction: column; gap: 3px; margin: 8px 0 12px; }
 .sheet-meta-line { color: var(--muted); font-size: 12px; word-break: break-word; }

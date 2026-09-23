@@ -4,7 +4,7 @@
       <div class="card-head"><h2>{{ tt("usage.resourceUsage") }}</h2></div>
       <el-table :data="rows" size="small" :empty-text="tt('usage.noUsage')">
         <el-table-column :label="tt('common.user')">
-          <template #default="{ row }"><span class="primary-line">{{ displayName(row) }}</span></template>
+          <template #default="{ row }"><span class="primary-line" :title="displayName(row) || row.username">{{ displayName(row) }}</span></template>
         </el-table-column>
         <el-table-column :label="tt('usage.colContainers')" width="100">
           <template #default="{ row }">{{ row.containers }}</template>
@@ -16,7 +16,7 @@
           <template #default="{ row }">{{ (row.diskMb || 0).toFixed(0) }} MB</template>
         </el-table-column>
         <el-table-column :label="tt('usage.colGpu')" min-width="110">
-          <template #default="{ row }"><span class="secondary-line">{{ row.gpu || "none" }}</span></template>
+          <template #default="{ row }"><span class="secondary-line" :title="row.gpu">{{ row.gpu || "none" }}</span></template>
         </el-table-column>
         <el-table-column :label="tt('usage.colGpuUsage')" width="100">
           <template #default="{ row }">
@@ -53,10 +53,10 @@
       <div class="card-head"><h2>{{ tt("usage.topProcesses") }}</h2></div>
       <el-table :data="processes" size="small" :empty-text="tt('usage.noProcess')">
         <el-table-column :label="tt('common.user')" width="130">
-          <template #default="{ row }">{{ displayNameForUsername(row.user || "") }}</template>
+          <template #default="{ row }"><span class="ellipsis" :title="displayNameForUsername(row.user || '')">{{ displayNameForUsername(row.user || "") }}</span></template>
         </el-table-column>
         <el-table-column :label="tt('usage.colContainer')" min-width="130">
-          <template #default="{ row }">{{ row.container || "" }}</template>
+          <template #default="{ row }"><span class="ellipsis" :title="row.container">{{ row.container || "" }}</span></template>
         </el-table-column>
         <el-table-column :label="tt('usage.colPid')" width="90">
           <template #default="{ row }"><span class="mono">{{ row.pid || "" }}</span></template>
@@ -65,7 +65,7 @@
           <template #default="{ row }">{{ (row.cpuPct || 0).toFixed(1) }}%</template>
         </el-table-column>
         <el-table-column :label="tt('usage.colCommand')" min-width="220">
-          <template #default="{ row }"><span class="secondary-line mono">{{ row.command || "" }}</span></template>
+          <template #default="{ row }"><span class="secondary-line mono" :title="row.command">{{ row.command || "" }}</span></template>
         </el-table-column>
       </el-table>
     </div>
@@ -176,6 +176,4 @@ export default {
 .stat-card-value { font-size: 18px; font-weight: 700; margin-top: 4px; }
 .stat-card-sub { margin-top: 4px; font-size: 12px; color: var(--muted); }
 .spark-box { margin-top: 6px; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 </style>

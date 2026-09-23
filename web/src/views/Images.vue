@@ -20,22 +20,22 @@
     >
       <el-table-column :label="tt('common.name')" :min-width="s.isMobile ? 150 : 230">
         <template #default="{ row }">
-          <div class="primary-line">
+          <div class="primary-line" :title="row.name">
             {{ row.name }}
             <el-tag v-if="row.isStale" size="small" type="warning" :title="tt('images.staleTitle')">{{ tt("images.staleBadge") }}</el-tag>
           </div>
-          <div class="secondary-line mono">{{ row.dockerRef }}</div>
-          <div v-if="row.preset && row.preset.description" class="secondary-line">📝 {{ row.preset.description }}</div>
+          <div class="secondary-line mono" :title="row.dockerRef">{{ row.dockerRef }}</div>
+          <div v-if="row.preset && row.preset.description" class="secondary-line" :title="row.preset.description">📝 {{ row.preset.description }}</div>
         </template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('images.colSource')" min-width="160">
-        <template #default="{ row }"><span class="secondary-line">{{ row.sourceRef }}</span></template>
+        <template #default="{ row }"><span class="secondary-line" :title="row.sourceRef">{{ row.sourceRef }}</span></template>
       </el-table-column>
       <el-table-column v-if="isAdmin() && !s.isMobile" :label="tt('images.colVisible')" width="130">
-        <template #default="{ row }"><span class="secondary-line">{{ (row.groups || []).join(", ") || tt("images.allUsers") }}</span></template>
+        <template #default="{ row }"><span class="secondary-line" :title="(row.groups || []).join(', ')">{{ (row.groups || []).join(", ") || tt("images.allUsers") }}</span></template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('images.colDefaults')" min-width="220">
-        <template #default="{ row }"><span class="secondary-line">{{ presetSummary(row.preset) }}</span></template>
+        <template #default="{ row }"><span class="secondary-line" :title="presetSummary(row.preset)">{{ presetSummary(row.preset) }}</span></template>
       </el-table-column>
       <el-table-column v-if="isAdmin() && !s.isMobile" :label="tt('common.actions')" width="120" fixed="right">
         <template #default="{ row }">
@@ -744,8 +744,6 @@ export default {
 .card-head { display: flex; align-items: center; margin-bottom: 12px; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
 .head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 .check-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .env-gen { display: flex; gap: 8px; align-items: center; margin: 6px 0; }

@@ -52,7 +52,7 @@
     <div v-if="gpus.length" class="gpu-grid">
       <section v-for="g in gpus" :key="g.index" class="card gpu-card">
         <div class="card-head">
-          <h3>{{ g.name || "GPU " + g.index }}</h3>
+          <h3 class="ellipsis" :title="g.name || `GPU ${g.index}`">{{ g.name || "GPU " + g.index }}</h3>
           <el-tag size="small" :type="tempTag(g.tempC)">{{ (g.tempC ?? 0).toFixed(0) }}°C</el-tag>
         </div>
         <div class="metric-row">
@@ -92,7 +92,7 @@
       <div class="card">
         <div class="card-head"><h2>{{ tt("hardware.host") }}</h2></div>
         <div v-for="(row, i) in hostRows" :key="i" class="kv">
-          <span>{{ row[0] }}</span><strong>{{ row[1] }}</strong>
+          <span>{{ row[0] }}</span><strong class="ellipsis" :title="String(row[1])">{{ row[1] }}</strong>
         </div>
       </div>
       <div class="card">
@@ -308,7 +308,8 @@ export default {
 .trend-label { font-size: 11.5px; color: var(--muted); width: 70px; }
 .trend-row .spark-box { flex: 1; min-width: 90px; }
 .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; padding: 3px 0; }
-.kv span { color: var(--muted); }
+.kv span { color: var(--muted); flex-shrink: 0; }
+.kv strong { text-align: right; }
 .sensor-row { padding: 6px 0; border-bottom: 1px dashed var(--line); }
 .dash-row-2 { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
 .error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }

@@ -25,10 +25,10 @@
         <p class="hint">{{ report.byteSizes ? tt("database.tableHint") : tt("database.rowOnlyHint") }}</p>
         <el-table :data="tables" size="small" :empty-text="tt('database.noTables')">
           <el-table-column :label="tt('database.colTable')" min-width="170">
-            <template #default="{ row }"><span class="primary-line mono">{{ row.name }}</span></template>
+            <template #default="{ row }"><span class="primary-line mono" :title="row.name">{{ row.name }}</span></template>
           </el-table-column>
           <el-table-column :label="tt('database.colPurpose')" min-width="200">
-            <template #default="{ row }"><span class="secondary-line">{{ row.description || "—" }}</span></template>
+            <template #default="{ row }"><span class="secondary-line" :title="row.description">{{ row.description || "—" }}</span></template>
           </el-table-column>
           <el-table-column :label="tt('database.colSize')" min-width="150">
             <template #default="{ row }">
@@ -134,7 +134,5 @@ export default {
 .stat-value { font-size: 20px; font-weight: 750; }
 .card-head { display: flex; align-items: center; margin-bottom: 10px; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 </style>

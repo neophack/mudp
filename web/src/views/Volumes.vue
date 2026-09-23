@@ -16,8 +16,8 @@
     >
       <el-table-column :label="tt('common.name')" :min-width="s.isMobile ? 150 : 220">
         <template #default="{ row }">
-          <div class="primary-line">{{ row.name }}</div>
-          <div class="secondary-line mono">{{ row.fullName || row.name }}</div>
+          <div class="primary-line" :title="row.name">{{ row.name }}</div>
+          <div class="secondary-line mono" :title="row.fullName || row.name">{{ row.fullName || row.name }}</div>
         </template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('volumes.colDriver')" width="100">
@@ -32,7 +32,7 @@
         </template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('common.owner')" width="110">
-        <template #default="{ row }"><span class="secondary-line">{{ displayNameForUsername(row.owner) || "—" }}</span></template>
+        <template #default="{ row }"><span class="secondary-line" :title="displayNameForUsername(row.owner)">{{ displayNameForUsername(row.owner) || "—" }}</span></template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('common.actions')" width="110" fixed="right">
         <template #default="{ row }">
@@ -176,6 +176,4 @@ export default {
 .card-head { display: flex; align-items: center; margin-bottom: 12px; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
 .head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 </style>

@@ -13,7 +13,7 @@
             <span class="job-kind">{{ kindLabel(job.kind) }}</span>
             <span class="job-time">{{ elapsed(job.startedAt) }}</span>
           </div>
-          <div class="job-message hint">{{ truncate(job.message, 140) }}</div>
+          <div class="job-message hint" :title="job.message">{{ job.message || "—" }}</div>
           <el-progress v-if="job.active && typeof job.progress === 'number' && job.total > 0" :percentage="Math.min(100, job.progress)" :stroke-width="4" :show-text="false" />
         </div>
         <div class="job-actions">
@@ -80,10 +80,6 @@ export default {
       if (minutes < 60) return `${minutes}m ${seconds}s`;
       const hours = Math.floor(minutes / 60);
       return `${hours}h ${minutes % 60}m`;
-    },
-    truncate(text, max) {
-      if (!text) return "—";
-      return text.length <= max ? text : text.slice(0, max - 1) + "…";
     },
   },
 };

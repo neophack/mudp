@@ -13,15 +13,15 @@
         <template #default="{ row }"><span class="secondary-line">{{ fmtTime(row.createdAt) }}</span></template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('audit.colActor')" width="150">
-        <template #default="{ row }"><span class="primary-line">{{ displayNameForUsername(row.actor) }}</span></template>
+        <template #default="{ row }"><span class="primary-line" :title="displayNameForUsername(row.actor)">{{ displayNameForUsername(row.actor) }}</span></template>
       </el-table-column>
       <el-table-column :label="tt('audit.colAction')" :width="s.isMobile ? 130 : 180">
         <template #default="{ row }">
-          <el-tag size="small">{{ row.action }}</el-tag>
+          <el-tag size="small" :title="row.action">{{ row.action }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column :label="tt('audit.colTarget')">
-        <template #default="{ row }"><span class="secondary-line mono">{{ row.target }}</span></template>
+        <template #default="{ row }"><span class="secondary-line mono" :title="row.target">{{ row.target }}</span></template>
       </el-table-column>
     </el-table>
   </div>
@@ -83,6 +83,4 @@ export default {
 .card-head { display: flex; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px; }
 .card-head h2 { margin: 0; font-size: 14px; flex: 1; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
-.primary-line { font-weight: 600; }
-.secondary-line { color: var(--muted); font-size: 12px; }
 </style>
