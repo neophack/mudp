@@ -61,6 +61,26 @@ func TestAssetURL(t *testing.T) {
 	}
 }
 
+// requireExecBit asserts ExtractBinary's final os.Chmod(dest, 0o755) took
+// effect: on Linux an upgrade swapped in without the exec bit is
+// permission-denied at exec time and rolls back forever. Skipped on Windows:
+// Go's Windows Chmod only toggles the read-only attribute and Stat().Mode()
+// stays 0666 (verified on go1.25.5/windows-amd64), so the exec-bit check
+// cannot work there.
+func requireExecBit(t *testing.T, dest string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	fi, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&0o111 == 0 {
+		t.Fatalf("extracted binary %s must be executable, got mode %v", dest, fi.Mode())
+	}
+}
+
 func TestExtractBinary(t *testing.T) {
 	payload := []byte("fake mudp binary")
 	dir := t.TempDir()
@@ -87,6 +107,7 @@ func TestExtractBinary(t *testing.T) {
 	if err != nil || string(got) != string(payload) {
 		t.Fatalf("zip extract got %q, %v", got, err)
 	}
+	requireExecBit(t, dest)
 
 	// Regression: runUpgrade stores the download at SidecarPath(exe,
 	// ".download"), which keeps the .exe extension on Windows. The extractor
@@ -107,6 +128,7 @@ func TestExtractBinary(t *testing.T) {
 	if err != nil || string(got) != string(payload) {
 		t.Fatalf("sidecar zip extract got %q, %v", got, err)
 	}
+	requireExecBit(t, dest)
 
 	// tar.gz (linux-style release archive)
 	dest = filepath.Join(dir, "out2.new")
@@ -132,6 +154,7 @@ func TestExtractBinary(t *testing.T) {
 	if err != nil || string(got) != string(payload) {
 		t.Fatalf("tar.gz extract got %q, %v", got, err)
 	}
+	requireExecBit(t, dest)
 
 	// An archive with no usable member must be rejected, not silently
 	// swapped in.
@@ -145,6 +168,87 @@ func TestExtractBinary(t *testing.T) {
 	if err := ExtractBinary(emptyZip, filepath.Join(dir, "out3.new"), "windows", "amd64"); err == nil {
 		t.Fatal("empty archive should fail")
 	}
+}
+
+// TestExtractBinaryPrefersNamedMember: a release archive may carry extras
+// (README.md, licenses) next to the binary. The member whose base name matches
+// AssetName must win over the "first regular member" fallback — extracting the
+// README instead would swap in a non-executable payload and fail forever. The
+// binary also rides in a subdirectory to pin the filepath.Base name comparison.
+func TestExtractBinaryPrefersNamedMember(t *testing.T) {
+	payload := []byte("real mudp binary payload")
+	readme := []byte("# mudp release notes\nnot a binary\n")
+	dir := t.TempDir()
+
+	// zip (windows-style): README.md first, named binary second.
+	zipPath := filepath.Join(dir, "mudp-windows-amd64-v1.2.0.zip")
+	zf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(zf)
+	w, err := zw.Create("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write(readme)
+	w, err = zw.Create("bin/mudp-windows-amd64.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write(payload)
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zf.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "zip-named.new")
+	if err := ExtractBinary(zipPath, dest, "windows", "amd64"); err != nil {
+		t.Fatalf("extract zip: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || string(got) != string(payload) {
+		t.Fatalf("zip picked the wrong member: got %q, %v", got, err)
+	}
+	requireExecBit(t, dest)
+
+	// tar.gz (linux-style): same shape, README.md first.
+	tgzPath := filepath.Join(dir, "mudp-linux-amd64-v1.2.0.tar.gz")
+	tf, err := os.Create(tgzPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := gzip.NewWriter(tf)
+	tw := tar.NewWriter(gw)
+	hdr := &tar.Header{Name: "README.md", Typeflag: tar.TypeReg, Size: int64(len(readme))}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	tw.Write(readme)
+	hdr = &tar.Header{Name: "mudp-linux-amd64", Mode: 0o755, Size: int64(len(payload))}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	tw.Write(payload)
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tf.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dest = filepath.Join(dir, "tar-named.new")
+	if err := ExtractBinary(tgzPath, dest, "linux", "amd64"); err != nil {
+		t.Fatalf("extract tar.gz: %v", err)
+	}
+	got, err = os.ReadFile(dest)
+	if err != nil || string(got) != string(payload) {
+		t.Fatalf("tar.gz picked the wrong member: got %q, %v", got, err)
+	}
+	requireExecBit(t, dest)
 }
 
 func TestDownloadWritesFileAndRejectsBadStatus(t *testing.T) {

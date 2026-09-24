@@ -50,6 +50,17 @@ func TestAdminTasksMergesAllSources(t *testing.T) {
 	a.backupJobs.add(&BackupJob{ID: "running-job", Kind: "backup.run", Status: "running", StartedAt: time.Now(), OwnerID: 2, OwnerName: "bob"})
 	a.backupJobs.add(&BackupJob{ID: "done-job", Kind: "backup.run", Status: "done", StartedAt: time.Now(), OwnerID: 2, OwnerName: "bob"})
 
+	// The third source: a chunked-upload session, seeded the way a real upload
+	// leaves the filesystem — a registry entry plus the on-disk resume state
+	// with 2 of 4 chunks received.
+	dst := filepath.Join(t.TempDir(), "big.bin")
+	st := &chunkUploadState{Size: 100, ChunkSize: 25, TotalChunks: 4, Received: map[int]bool{0: true, 1: true}}
+	if err := writeChunkState(dst, st); err != nil {
+		t.Fatalf("writeChunkState: %v", err)
+	}
+	a.chunkUploads = NewChunkUploadRegistry()
+	a.chunkUploads.start(dst, "carol upload", 100, &store.User{ID: 5, Username: "carol"})
+
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/tasks", nil)
 	a.adminTasks(rec, req)
@@ -58,8 +69,8 @@ func TestAdminTasksMergesAllSources(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
 	}
-	if len(out) != 2 {
-		t.Fatalf("got %d tasks, want 2 (one active-task, one running backup job): %s", len(out), rec.Body.String())
+	if len(out) != 3 {
+		t.Fatalf("got %d tasks, want 3 (one active-task, one running backup job, one chunked upload): %s", len(out), rec.Body.String())
 	}
 	body := rec.Body.String()
 	if strings.Contains(body, "done-job") {
@@ -67,6 +78,25 @@ func TestAdminTasksMergesAllSources(t *testing.T) {
 	}
 	if !strings.Contains(body, "running-job") || !strings.Contains(body, "alice copy") {
 		t.Fatalf("missing expected tasks in: %s", body)
+	}
+	// ActiveTask contains a sync.Mutex, so compare fields in place instead of
+	// copying the struct out of the slice.
+	found := false
+	for i := range out {
+		task := &out[i]
+		if task.Kind != "netdisk.upload.chunked" {
+			continue
+		}
+		found = true
+		// Progress derives from the resume state: 2 chunks × 25 bytes of 100.
+		if task.Name != "carol upload" || task.OwnerName != "carol" ||
+			task.Done != 50 || task.Total != 100 || task.Progress != 50 || task.Unit != "bytes" {
+			t.Errorf("chunked task name=%q owner=%q done=%d total=%d progress=%d unit=%q, want carol's upload at 50/100 bytes",
+				task.Name, task.OwnerName, task.Done, task.Total, task.Progress, task.Unit)
+		}
+	}
+	if !found {
+		t.Fatalf("chunked upload session missing from: %s", body)
 	}
 }
 

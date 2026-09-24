@@ -98,7 +98,8 @@ func TestBackupJobCancelForbidsOtherOwner(t *testing.T) {
 // TestImagePresetResolveRespectsGroupVisibility is the P0-3 regression for
 // images_ext.go:593: an activated user must not be able to read another
 // group's image preset (which can carry a static, admin-set password/value)
-// by guessing or enumerating image ids.
+// by guessing or enumerating image ids. A member of the owning group must
+// still resolve it — the rule is per-group visibility, not a blanket denial.
 func TestImagePresetResolveRespectsGroupVisibility(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -122,6 +123,10 @@ func TestImagePresetResolveRespectsGroupVisibility(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	outsider, _ := db.UserByUsername("outsider")
+	if err := db.CreateUser("member", "x-valid-1234", store.RoleUser, teamA, 0, 0); err != nil {
+		t.Fatalf("CreateUser(member): %v", err)
+	}
+	member, _ := db.UserByUsername("member")
 
 	if err := db.SaveImage("secret-img", "mudp-secret", "secret:latest"); err != nil {
 		t.Fatalf("SaveImage: %v", err)
@@ -140,6 +145,7 @@ func TestImagePresetResolveRespectsGroupVisibility(t *testing.T) {
 	if err := db.SetImageGroups(secretID, []int64{teamA}); err != nil {
 		t.Fatalf("SetImageGroups: %v", err)
 	}
+	// A static value a non-member must never see echoed back.
 	if err := db.SetImagePreset(secretID, &store.ImagePreset{Env: []string{"TOKEN=super-secret"}}); err != nil {
 		t.Fatalf("SetImagePreset: %v", err)
 	}
@@ -155,7 +161,25 @@ func TestImagePresetResolveRespectsGroupVisibility(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/images/preset/resolve", strings.NewReader(`{"imageId":`+strconv.FormatInt(secretID, 10)+`}`))
 	req = req.WithContext(context.WithValue(req.Context(), userKey, outsider))
 	a.imagePresetResolve(rec, req)
-	if rec.Code == http.StatusOK {
-		t.Fatalf("outsider resolved a preset for an image outside their group: %s", rec.Body.String())
+	// The handler's visibility refusal is a 404 (ImageByIDForUser error path) —
+	// pinning it stops a dead handler from passing via any non-200.
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("outsider resolving a preset for an image outside their group = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "super-secret") {
+		t.Fatalf("the refusal leaked the preset env value: %s", rec.Body.String())
+	}
+
+	// A team-a member resolves the same preset successfully; the plain
+	// KEY=VALUE entry passes through unchanged.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/api/images/preset/resolve", strings.NewReader(`{"imageId":`+strconv.FormatInt(secretID, 10)+`}`))
+	req2 = req2.WithContext(context.WithValue(req2.Context(), userKey, member))
+	a.imagePresetResolve(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("member resolving their group's preset = %d, want 200; body=%s", rec2.Code, rec2.Body.String())
+	}
+	if !strings.Contains(rec2.Body.String(), "TOKEN=super-secret") {
+		t.Fatalf("member's resolved env is missing the preset value: %s", rec2.Body.String())
 	}
 }

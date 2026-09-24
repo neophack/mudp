@@ -3,10 +3,19 @@ package mcp
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path"
 	"strings"
 	"testing"
+
+	"github.com/docker/docker/api/types"
+
+	"mudp/internal/dockerx"
 )
 
 func TestSearchLines_SingleMatch(t *testing.T) {
@@ -117,8 +126,10 @@ func TestRewriteArchive_RenamesRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rewriteArchive: %v", err)
 	}
-	// Walk the result and collect names.
+	// Walk the result and collect names plus file bodies: the rename must move
+	// the content along with the entries, not just relabel empty headers.
 	tr := tar.NewReader(bytes.NewReader(out))
+	bodies := map[string]string{}
 	var names []string
 	for {
 		hdr, err := tr.Next()
@@ -126,6 +137,13 @@ func TestRewriteArchive_RenamesRoot(t *testing.T) {
 			break
 		}
 		names = append(names, hdr.Name)
+		if hdr.Typeflag == tar.TypeReg {
+			body, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatalf("read body of %q: %v", hdr.Name, err)
+			}
+			bodies[hdr.Name] = string(body)
+		}
 	}
 	want := map[string]bool{"dst/": true, "dst/a.txt": true, "dst/sub/": true, "dst/sub/b.txt": true}
 	for _, n := range names {
@@ -145,6 +163,12 @@ func TestRewriteArchive_RenamesRoot(t *testing.T) {
 			t.Errorf("missing expected entry %q in %v", n, names)
 		}
 	}
+	if got := bodies["dst/a.txt"]; got != "hello" {
+		t.Errorf("dst/a.txt body = %q, want hello", got)
+	}
+	if got := bodies["dst/sub/b.txt"]; got != "world" {
+		t.Errorf("dst/sub/b.txt body = %q, want world", got)
+	}
 }
 
 func TestRewriteArchive_DropsSymlinks(t *testing.T) {
@@ -160,17 +184,25 @@ func TestRewriteArchive_DropsSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rewriteArchive: %v", err)
 	}
+	// Parse the rewritten archive instead of counting entries: an inverted
+	// filter (links kept, files dropped) would also produce exactly one entry.
 	tr := tar.NewReader(bytes.NewReader(out))
-	count := 0
+	var names []string
 	for {
-		_, err := tr.Next()
+		hdr, err := tr.Next()
 		if err != nil {
 			break
 		}
-		count++
+		if hdr.Typeflag == tar.TypeSymlink || hdr.Typeflag == tar.TypeLink {
+			t.Errorf("entry %q is a link; links must be dropped", hdr.Name)
+		}
+		names = append(names, hdr.Name)
 	}
-	if count != 1 {
-		t.Errorf("expected 1 entry (symlink dropped), got %d", count)
+	if len(names) != 1 {
+		t.Fatalf("expected 1 entry, got %d: %v", len(names), names)
+	}
+	if names[0] != "g" {
+		t.Errorf("surviving entry = %q, want g (the regular file under its new name)", names[0])
 	}
 }
 
@@ -223,22 +255,140 @@ func TestRewriteArchive_StampedServiceOwnership(t *testing.T) {
 	}
 }
 
-func TestBase64RoundTrip(t *testing.T) {
-	payloads := [][]byte{
-		[]byte("plain text"),
-		{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, // PNG header bytes
-		{0x00, 0x01, 0x02, 0xFE, 0xFF},
-		make([]byte, 4096),
+// fakeDockerArchive is a minimal stand-in for the Docker archive API that
+// handleUploadFile/handleDownloadFile are built on, so the full transfer path
+// can be exercised without a daemon: PUT extracts the posted tar into an
+// in-memory path→content map, GET serves one file back as a single-entry tar,
+// HEAD answers the stat probe the SDK issues alongside both calls.
+type fakeDockerArchive struct {
+	files map[string][]byte
+}
+
+func (f *fakeDockerArchive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/_ping") {
+		w.Header().Set("Api-Version", "1.44")
+		w.WriteHeader(http.StatusOK)
+		return
 	}
-	for i, raw := range payloads {
-		enc := base64.StdEncoding.EncodeToString(raw)
-		dec, err := base64.StdEncoding.DecodeString(enc)
-		if err != nil {
-			t.Fatalf("payload %d: decode error: %v", i, err)
+	if !strings.HasSuffix(r.URL.Path, "/archive") {
+		http.NotFound(w, r)
+		return
+	}
+	p := r.URL.Query().Get("path")
+	body, ok := f.files[p]
+	stat, _ := json.Marshal(types.ContainerPathStat{Name: path.Base(p), Mode: 0o644, Size: int64(len(body))})
+	switch r.Method {
+	case http.MethodHead:
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
 		}
-		if !bytes.Equal(dec, raw) {
-			t.Errorf("payload %d: round-trip mismatch", i)
+		w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString(stat))
+		w.WriteHeader(http.StatusOK)
+	case http.MethodGet:
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString(stat))
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		if err := tw.WriteHeader(&tar.Header{Name: path.Base(p), Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = tw.Write(body)
+		_ = tw.Close()
+		_, _ = w.Write(buf.Bytes())
+	case http.MethodPut:
+		tr := tar.NewReader(r.Body)
+		for {
+			hdr, err := tr.Next()
+			if err != nil {
+				break
+			}
+			if hdr.Typeflag != tar.TypeReg {
+				continue
+			}
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			f.files[path.Join("/", p, strings.TrimPrefix(hdr.Name, "./"))] = data
+		}
+		w.WriteHeader(http.StatusOK)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// TestUploadDownloadFileRoundTrip drives upload_file then download_file through
+// a fake container: the payload must land byte-identical at the exact path and
+// come back unchanged, and a payload over the size cap must be refused before
+// anything is written.
+func TestUploadDownloadFileRoundTrip(t *testing.T) {
+	fake := &fakeDockerArchive{files: map[string][]byte{}}
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+	dc, err := dockerx.NewWithHost("tcp://" + strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	t.Cleanup(func() { _ = dc.Close() })
+	ctx := context.Background()
+
+	payload := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF}
+	args, _ := json.Marshal(uploadArgs{
+		Path:          "/tmp/shot.png",
+		ContentBase64: base64.StdEncoding.EncodeToString(payload),
+	})
+	res, err := handleUploadFile(ctx, dc, "c1", args)
+	if err != nil || res.IsError {
+		t.Fatalf("upload: err=%v isError=%v", err, res.IsError)
+	}
+	if got := fake.files["/tmp/shot.png"]; !bytes.Equal(got, payload) {
+		t.Fatalf("container content = %v, want the original %d bytes", got, len(payload))
+	}
+
+	args, _ = json.Marshal(downloadArgs{Path: "/tmp/shot.png"})
+	res, err = handleDownloadFile(ctx, dc, "c1", args)
+	if err != nil || res.IsError {
+		t.Fatalf("download: err=%v isError=%v", err, res.IsError)
+	}
+	var reply struct {
+		Path   string `json:"path"`
+		Size   int    `json:"size"`
+		Base64 string `json:"base64"`
+	}
+	if err := json.Unmarshal([]byte(res.Content[0].Text), &reply); err != nil {
+		t.Fatalf("download reply %q: %v", res.Content[0].Text, err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(reply.Base64)
+	if err != nil {
+		t.Fatalf("reply base64: %v", err)
+	}
+	if !bytes.Equal(decoded, payload) {
+		t.Errorf("round trip content mismatch: got %v, want %v", decoded, payload)
+	}
+	if reply.Path != "/tmp/shot.png" || reply.Size != len(payload) {
+		t.Errorf("reply metadata = path %q size %d, want path /tmp/shot.png size %d", reply.Path, reply.Size, len(payload))
+	}
+
+	// One byte over the cap is rejected before reaching the container.
+	args, _ = json.Marshal(uploadArgs{
+		Path:          "/tmp/big.bin",
+		ContentBase64: base64.StdEncoding.EncodeToString(make([]byte, maxBinaryFileBytes+1)),
+	})
+	res, err = handleUploadFile(ctx, dc, "c1", args)
+	if err != nil || !res.IsError {
+		t.Fatalf("oversize upload: err=%v isError=%v, want an error result", err, res.IsError)
+	}
+	if !strings.Contains(res.Content[0].Text, "exceeds") {
+		t.Errorf("oversize error = %q, want the size-limit message", res.Content[0].Text)
+	}
+	if _, ok := fake.files["/tmp/big.bin"]; ok {
+		t.Errorf("oversize payload was written to the container anyway")
 	}
 }
 
@@ -296,6 +446,8 @@ func TestBuildPathTar_TopLevelFile(t *testing.T) {
 	tr := tar.NewReader(bytes.NewReader(out))
 	dirCount := 0
 	fileCount := 0
+	fileName := ""
+	fileBody := ""
 	uid, gid := serviceUid, serviceGid
 	for {
 		hdr, err := tr.Next()
@@ -308,8 +460,14 @@ func TestBuildPathTar_TopLevelFile(t *testing.T) {
 		}
 		if hdr.Typeflag == tar.TypeDir {
 			dirCount++
-		} else {
+		} else if hdr.Typeflag == tar.TypeReg {
 			fileCount++
+			fileName = hdr.Name
+			body, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			fileBody = string(body)
 		}
 	}
 	if dirCount != 0 {
@@ -318,6 +476,12 @@ func TestBuildPathTar_TopLevelFile(t *testing.T) {
 	if fileCount != 1 {
 		t.Errorf("expected 1 file entry, got %d", fileCount)
 	}
+	if fileName != "app.py" {
+		t.Errorf("file name = %q, want app.py", fileName)
+	}
+	if fileBody != "print(1)" {
+		t.Errorf("file body = %q, want print(1)", fileBody)
+	}
 }
 
 func TestBuildPathTar_EntryNamesRelativeToRoot(t *testing.T) {
@@ -325,6 +489,8 @@ func TestBuildPathTar_EntryNamesRelativeToRoot(t *testing.T) {
 	// places them correctly.
 	out := buildPathTar("/x/y/z", []byte("k"))
 	tr := tar.NewReader(bytes.NewReader(out))
+	var dirs []string
+	var fileName string
 	for {
 		hdr, err := tr.Next()
 		if err != nil {
@@ -333,8 +499,23 @@ func TestBuildPathTar_EntryNamesRelativeToRoot(t *testing.T) {
 		if strings.HasPrefix(hdr.Name, "/") {
 			t.Errorf("entry name %q has leading slash — must be relative", hdr.Name)
 		}
-		if strings.Contains(hdr.Name, path.Clean("/x/y/z")+"/") {
-			// fine, this is an ancestor dir
+		if hdr.Typeflag == tar.TypeDir {
+			dirs = append(dirs, hdr.Name)
+		} else if hdr.Typeflag == tar.TypeReg {
+			fileName = hdr.Name
 		}
+	}
+	// /x/y/z → ancestors "x" and "x/y" plus the file itself at "x/y/z".
+	wantDirs := map[string]bool{"x/": true, "x/y/": true}
+	if len(dirs) != len(wantDirs) {
+		t.Fatalf("expected ancestor dirs %v, got %v", wantDirs, dirs)
+	}
+	for _, d := range dirs {
+		if !wantDirs[d] {
+			t.Errorf("unexpected dir entry %q", d)
+		}
+	}
+	if fileName != "x/y/z" {
+		t.Errorf("file name = %q, want x/y/z", fileName)
 	}
 }

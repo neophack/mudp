@@ -40,4 +40,17 @@ func TestSSEHubActiveForContainer(t *testing.T) {
 	if got := hub.ActiveForContainer("c1"); got != 0 {
 		t.Errorf("after closing both: got %d, want 0", got)
 	}
+
+	// A stalled client is dropped by the send path without going through
+	// hub.Close: the session stays in the hub map with closed set, and the
+	// in-use count must already treat it as gone, or the "in use" light stays
+	// on forever.
+	s3 := hub.OpenSession(srv, ctx, "c1")
+	s3.close()
+	if _, ok := hub.hub.get(s3.id); !ok {
+		t.Fatalf("precondition: the closed session should still sit in the hub map")
+	}
+	if got := hub.ActiveForContainer("c1"); got != 0 {
+		t.Errorf("closed-but-unremoved session still counted: got %d, want 0", got)
+	}
 }

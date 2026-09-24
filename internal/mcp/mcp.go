@@ -110,10 +110,11 @@ type rpcError struct {
 func (s *Server) Handle(ctx context.Context, body []byte) ([]byte, int, bool) {
 	var req rpcRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		// Parse error: the request could not be decoded.
-		resp := rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: codeParseError, Message: "Parse error"}}
+		// Parse error: the request could not be decoded. Per the JSON-RPC spec
+		// this is still a delivered response (id null), not a notification.
+		resp := rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{Code: codeParseError, Message: "Parse error"}}
 		out, _ := json.Marshal(resp)
-		return out, http.StatusOK, false
+		return out, http.StatusOK, true
 	}
 
 	// A notification has no "id" (or a literal null). We still process it but

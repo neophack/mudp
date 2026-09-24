@@ -326,7 +326,7 @@ func TestValidateManualForward(t *testing.T) {
 func TestForwardAddAndDelete(t *testing.T) {
 	a := newForwardApp(t)
 	rec := httptest.NewRecorder()
-	body := `{"hostPort":10500,"proto":"tcp","targetIp":"127.0.0.1","targetPort":9,"note":"discard"}`
+	body := `{"hostPort":10500,"proto":"tcp","targetIp":"127.0.0.1","targetPort":9,"note":"discard","requireLogin":true}`
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/forwards", strings.NewReader(body))
 	req = req.WithContext(context.WithValue(req.Context(), userKey, &store.User{Username: "admin", Role: store.RoleAdmin}))
 	a.forwardAdd(rec, req)
@@ -342,9 +342,23 @@ func TestForwardAddAndDelete(t *testing.T) {
 	if added.Forward.ID == 0 {
 		t.Fatalf("response = %s, want the stored forward", rec.Body.String())
 	}
-	// The rule is live immediately, not only after the next sweep.
-	if st := a.forward.Status(); len(st) != 1 || st[0].HostPort != 10500 {
-		t.Fatalf("status = %+v, want the new forward listening", st)
+	if !added.Forward.RequireLogin {
+		t.Errorf("response forward = %+v, want RequireLogin carried through from the request", added.Forward)
+	}
+	// The stored row must match what the admin asked for, including the gate.
+	rows, err := a.db.ManualForwards()
+	if err != nil {
+		t.Fatalf("ManualForwards: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != added.Forward.ID || !rows[0].RequireLogin ||
+		rows[0].TargetIP != "127.0.0.1" || rows[0].TargetPort != 9 {
+		t.Fatalf("stored manual forwards = %+v, want one row matching the request", rows)
+	}
+	// The rule is live immediately, not only after the next sweep — and the
+	// listener inherits the gate and target (Status embeds Rule).
+	if st := a.forward.Status(); len(st) != 1 || st[0].HostPort != 10500 || !st[0].RequireLogin ||
+		st[0].TargetIP != "127.0.0.1" || st[0].TargetPort != 9 {
+		t.Fatalf("status = %+v, want the gated forward listening on 10500 → 127.0.0.1:9", st)
 	}
 
 	del := httptest.NewRecorder()
@@ -355,6 +369,11 @@ func TestForwardAddAndDelete(t *testing.T) {
 	}
 	if st := a.forward.Status(); len(st) != 0 {
 		t.Fatalf("status = %+v after delete, want the listener stopped", st)
+	}
+	if rows, err := a.db.ManualForwards(); err != nil {
+		t.Fatalf("ManualForwards after delete: %v", err)
+	} else if len(rows) != 0 {
+		t.Fatalf("stored manual forwards = %+v after delete, want the row gone", rows)
 	}
 }
 

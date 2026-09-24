@@ -10,9 +10,14 @@ import (
 	"mudp/internal/version"
 )
 
-func withStubGitHub(t *testing.T, status int, body string) *httptest.Server {
+// withStubGitHub redirects the update check at a stub serving a fixed status
+// and body, and returns the stub's hit counter so tests can prove a call was
+// (or was not) served from cache.
+func withStubGitHub(t *testing.T, status int, body string) *int32 {
 	t.Helper()
+	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
 		if r.Header.Get("User-Agent") == "" {
 			t.Error("update check must send a User-Agent")
 		}
@@ -25,11 +30,11 @@ func withStubGitHub(t *testing.T, status int, body string) *httptest.Server {
 		githubReleasesURL = old
 		srv.Close()
 	})
-	return srv
+	return &hits
 }
 
 func TestUpdateCheckNewerRelease(t *testing.T) {
-	withStubGitHub(t, http.StatusOK, `{"tag_name":"v9.9.9","name":"v9.9.9","body":"## Changes\n- fix a\n- add b\n","published_at":"2026-08-01T00:00:00Z"}`)
+	hits := withStubGitHub(t, http.StatusOK, `{"tag_name":"v9.9.9","name":"v9.9.9","body":"## Changes\n- fix a\n- add b\n","published_at":"2026-08-01T00:00:00Z"}`)
 	oldVersion := version.Version
 	version.Version = "v1.0.0"
 	t.Cleanup(func() { version.Version = oldVersion })
@@ -65,7 +70,8 @@ func TestUpdateCheckNewerRelease(t *testing.T) {
 		t.Errorf("releasedAt = %q", res.ReleasedAt)
 	}
 
-	// Second call must be served from the cache: kill the stub, ask again.
+	// Second call must be served from the cache: the stub's hit counter must
+	// still read 1, proving no second request left the process.
 	rec2 := httptest.NewRecorder()
 	app.updateCheck(rec2, httptest.NewRequest(http.MethodGet, "/api/update/check", nil))
 	var res2 updateCheckResponse
@@ -74,6 +80,9 @@ func TestUpdateCheckNewerRelease(t *testing.T) {
 	}
 	if res2.Latest != "v9.9.9" {
 		t.Fatalf("cached lookup lost the tag: %+v", res2)
+	}
+	if got := atomic.LoadInt32(hits); got != 1 {
+		t.Fatalf("second update check hit GitHub %d time(s), want 1 (must be served from cache)", got)
 	}
 }
 

@@ -98,4 +98,13 @@ func TestEncodeDecodePresetSelectableNetworks(t *testing.T) {
 	if len(decoded.Networks) != 1 || decoded.Networks[0] != "mudp_alice_net" {
 		t.Fatalf("unexpected default networks: %v", decoded.Networks)
 	}
+	// Every ImagePreset field is omitempty, so a mistyped JSON tag makes the
+	// field vanish silently on decode; these round-trip the remaining two
+	// fields the original carries.
+	if len(decoded.Ports) != 1 || decoded.Ports[0] != "8080" {
+		t.Fatalf("Ports = %v, want [\"8080\"]", decoded.Ports)
+	}
+	if decoded.RequireLogin8080 == nil || !*decoded.RequireLogin8080 {
+		t.Fatalf("RequireLogin8080 = %v, want non-nil true", decoded.RequireLogin8080)
+	}
 }

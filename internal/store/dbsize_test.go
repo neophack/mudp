@@ -25,10 +25,17 @@ func TestPruneableLogTablesIsAllowList(t *testing.T) {
 			t.Errorf("expected %q to be pruneable", name)
 		}
 	}
-	// User/system tables must never be pruneable.
-	for _, name := range []string{"users", "groups", "images", "settings", "port_forwards", "schema_version"} {
+	// Full-universe traversal: knownTableSet is every table name the Database
+	// page knows about (the union of tableDescriptions and the allow-list).
+	// Outside the five log tables above, nothing may be pruneable — so a future
+	// user table that gains a description and is then mistakenly allow-listed
+	// turns this red without needing a manual entry here.
+	for name := range knownTableSet() {
+		if must[name] {
+			continue
+		}
 		if IsPruneableLogTable(name) {
-			t.Errorf("user/system table %q must not be pruneable", name)
+			t.Errorf("table %q is not a log table but IsPruneableLogTable allows pruning it", name)
 		}
 	}
 }
@@ -42,10 +49,29 @@ func TestPruneLogsRejectsUserTables(t *testing.T) {
 	if err == nil {
 		t.Fatal("PruneLogs(users) succeeded; user tables must be refused")
 	}
-	// A mix with one safe and one unsafe name is still refused wholesale.
-	_, err = db.PruneLogs([]string{"audit_logs", "users"}, time.Now())
+	// A mix with one safe and one unsafe name is still refused wholesale: the
+	// validation runs over the whole request before any delete, so the safe
+	// table's rows must still be there afterwards. The seeded rows are older
+	// than the cutoff on purpose — if the guard ever regressed to sitting
+	// inside the delete loop, they would already be gone when "users" aborts
+	// the call, and this test would catch it.
+	now := time.Now().UTC()
+	for i := 0; i < 2; i++ {
+		if _, err := db.Exec(`insert into audit_logs(actor, action, target, created_at) values(?,?,?,?)`,
+			"u", "act", "t", now.AddDate(0, 0, -60).Format(time.RFC3339)); err != nil {
+			t.Fatalf("seed audit_logs: %v", err)
+		}
+	}
+	_, err = db.PruneLogs([]string{"audit_logs", "users"}, now)
 	if err == nil {
 		t.Fatal("PruneLogs([audit_logs, users]) succeeded; the unsafe name must abort the call")
+	}
+	var remaining int
+	if err := db.QueryRow(`select count(*) from audit_logs`).Scan(&remaining); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if remaining != 2 {
+		t.Fatalf("audit rows after the refused prune = %d, want 2 (zero side effects)", remaining)
 	}
 }
 

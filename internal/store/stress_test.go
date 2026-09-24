@@ -99,4 +99,17 @@ func TestSQLiteStressMixedLoad(t *testing.T) {
 	assertCount(`select count(*) from audit_logs where action='stress'`, total/5, "audit")
 	assertCount(`select count(*) from notifications where title='stress'`, total/5, "notifications")
 	assertCount(`select count(*) from error_events`, int64(len(fingerprints)), "error events (aggregated)")
+	// RecordErrorEvent stores count=1 on first insert and bumps it by one per
+	// recurrence, so the counts must sum to exactly the number of calls the
+	// schedule above makes: every (w+i)%5==4 iteration, i.e. total/5. A lost
+	// update on a hot row would show up here as a shortfall even though the
+	// row count above still passes.
+	assertCount(`select sum(count) from error_events`, total/5, "error events (sum of counts)")
+	// The per-fingerprint split is fixed by the loop schedule: (w+i)%15 is
+	// 9/4/14 for fp-a/fp-b/fp-c (those are the residues that are ≡4 mod 5),
+	// each worker contributes 3 full 15-cycles plus 5 leftovers —
+	// fp-b for w=0..4, fp-a for w=5.
+	assertCount(`select count from error_events where fingerprint='fp-a'`, 19, "fp-a count")
+	assertCount(`select count from error_events where fingerprint='fp-b'`, 23, "fp-b count")
+	assertCount(`select count from error_events where fingerprint='fp-c'`, 18, "fp-c count")
 }

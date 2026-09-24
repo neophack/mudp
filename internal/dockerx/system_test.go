@@ -76,6 +76,18 @@ func TestSystemInfoForUserShape(t *testing.T) {
 	if info.Networks < 3 {
 		t.Errorf("expected at least 3 system networks, got %d", info.Networks)
 	}
+	// All three counts are scoped by label equality with the owner name, and no
+	// live resource can carry "nobody-owns-this-name", so exact zeros are
+	// guaranteed regardless of what else exists on the host.
+	if info.Containers.Total != 0 {
+		t.Errorf("Containers.Total = %d, want 0 for an owner that cannot exist", info.Containers.Total)
+	}
+	if info.Images.Count != 0 {
+		t.Errorf("Images.Count = %d, want 0 for an owner that cannot exist", info.Images.Count)
+	}
+	if info.Volumes.Count != 0 {
+		t.Errorf("Volumes.Count = %d, want 0 for an owner that cannot exist", info.Volumes.Count)
+	}
 }
 
 // TestSystemInfoForUserEmptyUsernameFallback ensures an empty username keeps

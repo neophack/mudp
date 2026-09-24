@@ -1,9 +1,11 @@
 package dockerx
 
 import (
+	"encoding/base64"
 	"encoding/json"
-	"strings"
 	"testing"
+
+	"github.com/docker/docker/api/types/registry"
 )
 
 func TestRegistryHost(t *testing.T) {
@@ -32,14 +34,48 @@ func TestAuthForRef(t *testing.T) {
 		{Host: "ghcr.io", Username: "u", Token: "tok"},
 		{Host: "docker.io", Username: "hub", Token: "hubtok"},
 	}
-	if got := AuthForRef("ghcr.io/me/app", creds); got == "" {
-		t.Error("expected auth for ghcr.io ref")
+	decode := func(t *testing.T, blob string) registry.AuthConfig {
+		t.Helper()
+		raw, err := base64.URLEncoding.DecodeString(blob)
+		if err != nil {
+			t.Fatalf("decode auth blob %q: %v", blob, err)
+		}
+		var ac registry.AuthConfig
+		if err := json.Unmarshal(raw, &ac); err != nil {
+			t.Fatalf("unmarshal auth blob %q: %v", blob, err)
+		}
+		return ac
 	}
-	if got := AuthForRef("nginx", creds); got == "" {
-		t.Error("expected auth for docker.io ref")
+	cases := []struct {
+		ref       string
+		user, tok string
+	}{
+		{"ghcr.io/me/app", "u", "tok"},
+		{"nginx", "hub", "hubtok"},                      // bare name resolves to docker.io
+		{"registry-1.docker.io/nginx", "hub", "hubtok"}, // endpoint host aliases docker.io
 	}
+	for _, c := range cases {
+		ac := decode(t, AuthForRef(c.ref, creds))
+		if ac.Username != c.user || ac.Password != c.tok {
+			t.Errorf("AuthForRef(%q) decoded to %q/%q, want %q/%q", c.ref, ac.Username, ac.Password, c.user, c.tok)
+		}
+	}
+	// No host match and no default cred: no auth at all.
 	if got := AuthForRef("quay.io/something", creds); got != "" {
-		t.Error("unmatched registry should yield empty auth")
+		t.Errorf("unmatched registry should yield empty auth, got %q", got)
+	}
+	if AuthForRef("nginx", nil) != "" {
+		t.Error("no creds should yield empty auth")
+	}
+	// No host match falls back to the cred with Host=="".
+	withDefault := []RegistryCred{
+		{Host: "ghcr.io", Username: "u", Token: "tok"},
+		{Host: "docker.io", Username: "hub", Token: "hubtok"},
+		{Host: "", Username: "fallback", Token: "fallbacktok"},
+	}
+	ac := decode(t, AuthForRef("quay.io/something", withDefault))
+	if ac.Username != "fallback" || ac.Password != "fallbacktok" {
+		t.Errorf("default fallback decoded to %q/%q, want fallback/fallbacktok", ac.Username, ac.Password)
 	}
 }
 
@@ -143,25 +179,37 @@ func TestParseStatsMemorySubtrahendLargerThanUsage(t *testing.T) {
 }
 
 func TestEncodeAuthRoundTrip(t *testing.T) {
-	auth := encodeAuth("alice", "secret")
-	if auth == "" {
-		t.Fatal("encodeAuth returned empty")
+	raw, err := base64.URLEncoding.DecodeString(encodeAuth("alice", "secret"))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	// Should be valid base64-encoded JSON containing the username.
-	// (We can't import registry.AuthConfig here; just sanity-check it's non-trivial.)
-	if len(auth) < 20 {
-		t.Errorf("auth blob suspiciously short: %q", auth)
+	var ac registry.AuthConfig
+	if err := json.Unmarshal(raw, &ac); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ac.Username != "alice" || ac.Password != "secret" {
+		t.Errorf("auth blob decoded to %q/%q, want alice/secret", ac.Username, ac.Password)
 	}
 }
 
 func TestJSONMarshalSmoke(t *testing.T) {
-	// Ensure StatsSample marshals cleanly (used in SSE responses).
-	s := StatsSample{CPUPercent: 50.5, MemoryMB: 200}
+	// StatsSample backs the SSE stream: every non-omitempty key must always be
+	// present, so the frontend never has to null-check a sample field.
+	s := StatsSample{CPUPercent: 50.5, MemoryMB: 200, PIDs: 7}
 	b, err := json.Marshal(s)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !strings.Contains(string(b), "cpuPct") {
-		t.Errorf("unexpected JSON: %s", b)
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range []string{
+		"ts", "cpuPct", "memMb", "memLimitMb", "memPct",
+		"netRxKb", "netTxKb", "blockReadKb", "blockWriteKb", "pids",
+	} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("marshalled StatsSample missing key %q: %s", key, b)
+		}
 	}
 }

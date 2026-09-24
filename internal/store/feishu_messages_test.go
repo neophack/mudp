@@ -36,6 +36,11 @@ func TestFeishuMessagesLifecycle(t *testing.T) {
 	if err != nil || len(msgs) != 1 || msgs[0].Message != "new failed" || msgs[0].Error != "boom" {
 		t.Fatalf("user 1 after prune: err=%v msgs=%+v", err, msgs)
 	}
+	// The written Kind/OpenID/Status must survive the round-trip; the scan's
+	// column list is long enough that a shuffled select silently misplaces them.
+	if msgs[0].Kind != FeishuKindAdminTest || msgs[0].OpenID != "ou_a" || msgs[0].Status != FeishuMessageFailed {
+		t.Fatalf("stored Kind/OpenID/Status lost: %+v", msgs[0])
+	}
 	if msgs2, _ := db.FeishuMessagesForUser(2, 50); len(msgs2) != 1 {
 		t.Fatalf("user 2 rows should survive user 1's prune, got %+v", msgs2)
 	}

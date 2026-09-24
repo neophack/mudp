@@ -41,8 +41,17 @@ func TestDefaultIspParamsBoardValues(t *testing.T) {
 	if p.GainR != 1.07 || p.GainB != 1.12 {
 		t.Errorf("gains = %v/%v, want 1.07/1.12", p.GainR, p.GainB)
 	}
-	if p.Ccm != CcmBoard4032K {
-		t.Errorf("Ccm = %v, want board 4032K", p.Ccm)
+	// CcmBoard4032K transcribed as a literal from its definition in
+	// miniisp.go (board-calibrated values from MiniIsp.cpp Params::reset).
+	// Comparing against the CcmBoard4032K variable itself would pass even
+	// after the matrix silently drifted.
+	wantCcm := [9]float64{
+		0.996, -0.078, 0.082,
+		0.000, 1.066, -0.066,
+		0.195, -0.598, 1.402,
+	}
+	if p.Ccm != wantCcm {
+		t.Errorf("Ccm = %v, want board 4032K %v", p.Ccm, wantCcm)
 	}
 	if p.Gamma != 2.27 || p.Saturation != 1.15 || p.Contrast != 1.22 || p.Brightness != 0 {
 		t.Errorf("tone = gamma %v sat %v contrast %v bright %v", p.Gamma, p.Saturation, p.Contrast, p.Brightness)
@@ -64,7 +73,16 @@ func TestCcmPresetMatrixes(t *testing.T) {
 	if _, ok := CcmPreset(0); ok {
 		t.Error("preset 0 (manual) should return ok=false")
 	}
-	for idx, want := range map[int][9]float64{1: CcmIdentity, 2: CcmBoard4032K, 3: CcmSrgbTypical, 4: CcmSaturated} {
+	// Preset matrices as literals (source anchors: CcmIdentity /
+	// CcmBoard4032K / CcmSrgbTypical / CcmSaturated in miniisp.go, the board
+	// matrix from MiniIsp.cpp Params::reset). Literals catch numeric drift in
+	// the preset table that variable-to-variable comparison cannot see.
+	for idx, want := range map[int][9]float64{
+		1: {1, 0, 0, 0, 1, 0, 0, 0, 1},
+		2: {0.996, -0.078, 0.082, 0.000, 1.066, -0.066, 0.195, -0.598, 1.402},
+		3: {1.66, -0.55, -0.11, -0.25, 1.45, -0.20, -0.07, -0.28, 1.35},
+		4: {1.85, -0.70, -0.15, -0.32, 1.62, -0.30, -0.10, -0.38, 1.48},
+	} {
 		got, ok := CcmPreset(idx)
 		if !ok {
 			t.Fatalf("preset %d unexpectedly unavailable", idx)
@@ -161,6 +179,46 @@ func TestProcessBayerGrayModeIsGrayscale(t *testing.T) {
 		o := i * 4
 		if out[o] != out[o+1] || out[o+1] != out[o+2] {
 			t.Fatalf("gray mode pixel %d colored: %d %d %d", i, out[o], out[o+1], out[o+2])
+		}
+	}
+}
+
+// TestProcessBayerGrayModeValues pins the gray path's numeric pipeline
+// (miniisp.go's GrayMode branch: raw − per-channel BLC → clamp to maxVal →
+// gamma LUT index v·4095/maxVal → contrast stretch around 127.5). Uniform raw
+// 1600 on a 12-bit RGGB frame through DefaultIspParams(12) (Blc
+// {39,225,225,48}, gamma 2.27, contrast 1.22, maxVal 4095 → lut[v]) gives:
+//
+//	R sites: 1600−39  = 1561 → lut[1561] = 167 → (167−127.5)·1.22+127.5 = 175
+//	G sites: 1600−225 = 1375 → lut[1375] = 158 → (158−127.5)·1.22+127.5 = 164
+//	B sites: 1600−48  = 1552 → lut[1552] = 166 → (166−127.5)·1.22+127.5 = 174
+//
+// with lut[i] = int(pow(i/4095, 1/2.27)·255 + 0.5), hand-derived. A nonzero
+// mid-scale input forces the BLC subtraction and the gamma index to actually
+// matter, and the three distinct site values also pin the Blc channel
+// mapping (a swapped R/B black level would output 164/175/175-style values).
+// Gray mode returns before sharpening, so the board's other defaults are
+// inert here.
+func TestProcessBayerGrayModeValues(t *testing.T) {
+	const w, h = 4, 4
+	p := DefaultIspParams(12)
+	p.GrayMode = true
+	out := ProcessBayer(uniformRaw(w, h, 1600), w, h, 12, "RGGB", p)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var want byte
+			switch (y&1)*2 + (x & 1) {
+			case 0: // R site
+				want = 175
+			case 1, 2: // Gr/Gb sites
+				want = 164
+			default: // B site
+				want = 174
+			}
+			o := (y*w + x) * 4
+			if out[o] != want || out[o+1] != want || out[o+2] != want {
+				t.Errorf("gray pixel (%d,%d) = %d %d %d, want %d", x, y, out[o], out[o+1], out[o+2], want)
+			}
 		}
 	}
 }
@@ -286,16 +344,24 @@ func TestApplyIspParamsGammaBrightensMids(t *testing.T) {
 	}
 }
 
-// TestApplyIspParamsSharpenBoostsEdgeContrast: a hard vertical edge through a
-// flat field must gain local contrast (dark side darker, light side lighter)
-// when the multi-band unsharp mask runs.
+// TestApplyIspParamsSharpenBoostsEdgeContrast: the multi-band luma unsharp
+// mask must work positionally at a hard vertical edge — the dark side gets
+// strictly darker and the light side strictly lighter — and must leave the
+// flat field untouched more than the low-mid band's radius (25) away from the
+// edge. An inverted unsharp term still produces both lighter and darker
+// pixels (just with the sides swapped), so an existence-only check cannot
+// catch it.
 func TestApplyIspParamsSharpenBoostsEdgeContrast(t *testing.T) {
-	const w, h = 16, 16
+	// Wide enough that a ≥25px flat run exists on each side of the edge, so
+	// every band's blur window stays inside one side there and the detail
+	// term is exactly zero.
+	const w, h = 96, 96
+	const edge = w / 2 // x < 48: 80, x >= 48: 160
 	rgba := make([]byte, w*h*4)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			v := byte(80)
-			if x >= w/2 {
+			if x >= edge {
 				v = 160
 			}
 			o := (y*w + x) * 4
@@ -308,18 +374,28 @@ func TestApplyIspParamsSharpenBoostsEdgeContrast(t *testing.T) {
 	p.Sharpen = 1.0
 	p.SharpenRadius = 5
 	ApplyIspParams(rgba, w, h, p)
-	darker, lighter := false, false
-	for i := 0; i < w*h; i++ {
-		o := i * 4
-		if rgba[o] < orig[o] {
-			darker = true
+
+	grayAt := func(y, x int) int { return int(rgba[(y*w+x)*4]) }
+	origAt := func(y, x int) int { return int(orig[(y*w+x)*4]) }
+	for y := 0; y < h; y++ {
+		if got := grayAt(y, edge-1); got >= origAt(y, edge-1) {
+			t.Fatalf("row %d: dark edge side (x=%d) = %d, want < %d", y, edge-1, got, origAt(y, edge-1))
 		}
-		if rgba[o] > orig[o] {
-			lighter = true
+		if got := grayAt(y, edge); got <= origAt(y, edge) {
+			t.Fatalf("row %d: light edge side (x=%d) = %d, want > %d", y, edge, got, origAt(y, edge))
 		}
-	}
-	if !darker || !lighter {
-		t.Errorf("sharpen changed nothing (darker=%v lighter=%v)", darker, lighter)
+		// Flat runs: ±1 tolerates the box blur's float running-sum noise; any
+		// real sharpen bleed is tens of gray levels here.
+		for x := 0; x <= edge-26; x++ {
+			if d := grayAt(y, x) - origAt(y, x); d < -1 || d > 1 {
+				t.Fatalf("row %d: flat dark pixel x=%d moved by %+d", y, x, d)
+			}
+		}
+		for x := edge + 25; x < w; x++ {
+			if d := grayAt(y, x) - origAt(y, x); d < -1 || d > 1 {
+				t.Fatalf("row %d: flat light pixel x=%d moved by %+d", y, x, d)
+			}
+		}
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,10 +71,10 @@ func newSecurityTestServer(t *testing.T) (baseURL string, admin, user *secClient
 	}
 
 	cfg := config.Config{
-		DockerHost:        "tcp://127.0.0.1:1", // deliberately unreachable; nothing here needs Docker
-		SessionSecret:     "security-regression-test-session-secret",
-		AdminUser:         "secadmin",
-		AdminPassword:     adminPass,
+		DockerHost:         "tcp://127.0.0.1:1", // deliberately unreachable; nothing here needs Docker
+		SessionSecret:      "security-regression-test-session-secret",
+		AdminUser:          "secadmin",
+		AdminPassword:      adminPass,
 		CaptchaTestAnswers: true, // login requires a captcha; tests read the answer header
 	}
 	app, err := New(cfg, db)
@@ -443,26 +444,113 @@ func TestSecuritySessionSurvivesLogout(t *testing.T) {
 // 4. File upload / XSS-via-preview / path traversal / arbitrary file read
 // ===========================================================================
 
+// TestSecurityNetdiskPathTraversalRejected regresses the netdisk read
+// endpoints' containment guard. Nothing here depends on host files: the
+// fixture writes ok.txt ("INSIDE") inside the user's netdisk and plants
+// secret.txt ("OUTSIDE") in two directories the user does not own --
+// root-evil beside the netdisk root, and <root>-evil sharing the root's own
+// path prefix (the exact shape a prefix check done without a trailing
+// separator would leak). Every traversal payload must come back as either a
+// non-200 or a body containing neither marker; a plain read of ok.txt must
+// still work, proving the rejections come from the guard and not a dead
+// endpoint.
 func TestSecurityNetdiskPathTraversalRejected(t *testing.T) {
-	_, admin := newSecurityTestServerWithNetdisk(t)
+	_, admin, userRoot := newSecurityTestServerWithNetdiskRoot(t)
 
-	traversalPaths := []string{
-		"../../../../etc/passwd",
-		`..\..\..\..\Windows\win.ini`,
-		"....//....//....//etc/passwd",
-		"%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
-		"/etc/passwd",
-		"..",
+	const inside, outside = "INSIDE", "OUTSIDE"
+	if err := os.WriteFile(filepath.Join(userRoot, "ok.txt"), []byte(inside), 0o640); err != nil {
+		t.Fatalf("write ok.txt: %v", err)
 	}
-	for _, p := range traversalPaths {
-		t.Run(p, func(t *testing.T) {
+	plantSecret := func(dir string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte(outside), 0o640); err != nil {
+			t.Fatalf("write secret: %v", err)
+		}
+	}
+	// Sibling of the netdisk root (different name).
+	plantSecret(filepath.Join(filepath.Dir(userRoot), "root-evil"))
+	// Sibling sharing the root's path prefix; only the separator distinguishes
+	// the two paths, so a HasPrefix-without-separator guard lets it through.
+	plantSecret(userRoot + "-evil")
+
+	// rawQuery payloads already carry their own percent-encoding and are sent
+	// verbatim (one server-side decode); plain payloads go through
+	// url.QueryEscape like the real frontend does.
+	type payload struct {
+		name string
+		q    string
+		raw  bool
+	}
+	base := filepath.Base(userRoot)
+	payloads := []payload{
+		{name: "climb-out-of-root", q: "../root-evil/secret.txt"},
+		{name: "climb-two-levels", q: "../../root-evil/secret.txt"},
+		{name: "same-prefix-sibling", q: "../" + base + "-evil/secret.txt"},
+		{name: "encoded-dotdot-slash", q: "%2e%2e%2f" + url.QueryEscape(base+"-evil") + "%2fsecret.txt", raw: true},
+		{name: "windows-separator", q: `..\root-evil\secret.txt`},
+		{name: "windows-same-prefix", q: `..\` + base + `-evil\secret.txt`},
+		{name: "dotdot-dotdot-slash", q: "....//....//root-evil/secret.txt"},
+		{name: "bare-dotdot", q: ".."},
+		{name: "absolute-host-path", q: "/etc/passwd"},
+	}
+	for _, p := range payloads {
+		t.Run(p.name, func(t *testing.T) {
+			q := url.QueryEscape(p.q)
+			if p.raw {
+				q = p.q
+			}
 			for _, ep := range []string{"/api/netdisk/raw", "/api/netdisk/download"} {
-				resp, body := admin.get(ep + "?path=" + url.QueryEscape(p))
-				if resp.StatusCode == http.StatusOK && (bytes.Contains(body, []byte("root:")) || bytes.Contains(body, []byte("[fonts]"))) {
-					t.Fatalf("%s leaked host file content for path %q: %s", ep, p, body)
+				resp, body := admin.get(ep + "?path=" + q)
+				if resp.StatusCode == http.StatusOK &&
+					(bytes.Contains(body, []byte(outside)) || bytes.Contains(body, []byte(inside))) {
+					t.Fatalf("%s leaked file content for path %q: %s", ep, p.q, body)
 				}
 			}
 		})
+	}
+
+	// Positive control: the guard must reject escapes without breaking the
+	// service for ordinary in-root files.
+	resp, body := admin.get("/api/netdisk/raw?path=" + url.QueryEscape("ok.txt"))
+	if resp.StatusCode != http.StatusOK || string(body) != inside {
+		t.Fatalf("plain read of ok.txt: status=%d body=%q, want 200 %q", resp.StatusCode, body, inside)
+	}
+}
+
+// TestPathWithinDistinguishesPrefixSibling pins the containment primitive's
+// own contract: a sibling directory sharing the root's string prefix (root vs.
+// root+"-evil") is outside, and only the trailing separator in the prefix
+// check keeps it that way. This is the regression the HTTP-level traversal
+// payloads above cannot catch on their own -- cleanUserPath clamps ".." before
+// the prefix check ever runs, so through the API every candidate already
+// starts with root+separator and a separator-less HasPrefix would look
+// indistinguishable.
+func TestPathWithinDistinguishesPrefixSibling(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	sep := string(filepath.Separator)
+	inside := []string{
+		root,
+		root + sep + "ok.txt",
+		root + sep + "sub" + sep + "ok.txt",
+	}
+	outside := []string{
+		root + "-evil",
+		root + "-evil" + sep + "secret.txt",
+		root + ".bak",
+		root + "x",
+	}
+	for _, p := range inside {
+		if !pathWithin(root, p) {
+			t.Errorf("pathWithin(%q, %q) = false, want true", root, p)
+		}
+	}
+	for _, p := range outside {
+		if pathWithin(root, p) {
+			t.Errorf("pathWithin(%q, %q) = true, want false (prefix sibling is not a child)", root, p)
+		}
 	}
 }
 
@@ -548,22 +636,63 @@ func TestSecurityUploadedSVGSandboxed(t *testing.T) {
 // 5. SSRF
 // ===========================================================================
 
+// geoStubTransport is the counting Transport the geo-lookup regression test
+// installs as geoHTTPClient. geoLookupRemote addresses ip-api.com itself, so
+// rewriting the scheme/host onto the local stub is what keeps the test
+// offline; every geoLookupRemote outbound request must pass through it, which
+// makes the counter the observable for "no request was ever sent".
+type geoStubTransport struct {
+	base   http.RoundTripper
+	target *url.URL // local stub answering in place of ip-api.com
+	hits   int32    // atomic; read by the test after responses settle
+}
+
+func (c *geoStubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	atomic.AddInt32(&c.hits, 1)
+	rewritten := req.Clone(req.Context())
+	rewritten.URL.Scheme = c.target.Scheme
+	rewritten.URL.Host = c.target.Host
+	return c.base.RoundTrip(rewritten)
+}
+
 // TestSecurityGeoLookupRejectsNonPublicIPs regresses the only outbound-
 // request-triggering endpoint reachable by a non-admin (GET /api/geo?ip=):
 // it must reject anything that is not a real public unicast IP -- including
 // the cloud metadata address -- before it ever builds an outbound request.
+// The rejection is observed at the network layer (a counting transport around
+// a stub ip-api endpoint), not via the response body, so "we refused" is
+// distinguished from "we asked and the third party had no answer".
 func TestSecurityGeoLookupRejectsNonPublicIPs(t *testing.T) {
 	_, _, user := newSecurityTestServer(t)
 
-	inputs := []string{
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Fixed success answer: if a non-public IP ever reaches this handler,
+		// the response would carry a non-empty country, so both observables
+		// (request count and body) convict the same regression.
+		_, _ = io.WriteString(w, `{"status":"success","country":"Testland","countryCode":"TS"}`)
+	}))
+	t.Cleanup(stub.Close)
+	stubURL, err := url.Parse(stub.URL)
+	if err != nil {
+		t.Fatalf("parse stub url: %v", err)
+	}
+	counter := &geoStubTransport{base: http.DefaultTransport, target: stubURL}
+
+	saved := geoHTTPClient
+	geoHTTPClient = &http.Client{Transport: counter}
+	t.Cleanup(func() { geoHTTPClient = saved })
+
+	nonPublic := []string{
 		"169.254.169.254", // cloud metadata
 		"127.0.0.1",
 		"10.0.0.1",
+		"192.168.1.1",
 		"evil.com",
 		"8.8.8.8@evil.com",
 	}
-	for _, ip := range inputs {
+	for _, ip := range nonPublic {
 		t.Run(ip, func(t *testing.T) {
+			before := atomic.LoadInt32(&counter.hits)
 			resp, body := user.get("/api/geo?ip=" + url.QueryEscape(ip))
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("status=%d body=%s", resp.StatusCode, body)
@@ -575,7 +704,31 @@ func TestSecurityGeoLookupRejectsNonPublicIPs(t *testing.T) {
 			if country, _ := out["country"].(string); country != "" {
 				t.Fatalf("input %q produced a non-empty geo answer, meaning an outbound lookup ran for a non-public IP: %v", ip, out)
 			}
+			if n := atomic.LoadInt32(&counter.hits); n != before {
+				t.Fatalf("input %q triggered %d outbound geo request(s); a non-public IP must never be sent to the lookup service", ip, n-before)
+			}
 		})
+	}
+
+	// The counter must actually gate a real lookup: a public IP resolves
+	// through exactly one outbound request against the stub.
+	before := atomic.LoadInt32(&counter.hits)
+	resp, body := user.get("/api/geo?ip=" + url.QueryEscape("8.8.8.8"))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("public ip: status=%d body=%s", resp.StatusCode, body)
+	}
+	var out struct {
+		Country     string `json:"country"`
+		CountryCode string `json:"countryCode"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+	if out.Country != "Testland" || out.CountryCode != "TS" {
+		t.Fatalf("public ip geo = %+v, want the stub's Testland/TS answer", out)
+	}
+	if n := atomic.LoadInt32(&counter.hits); n != before+1 {
+		t.Fatalf("public ip lookup hit the endpoint %d times, want exactly 1", n-before)
 	}
 }
 
@@ -745,6 +898,29 @@ func TestSecurityFuzzMalformedBodiesDoNotLeakInternals(t *testing.T) {
 						t.Fatalf("response leaked internal detail (marker %q): status=%d body=%s", marker, resp.StatusCode, body)
 					}
 				}
+				// Every handler funnels responses through writeErr/writeJSON, so
+				// even a raw err.Error() regression must still arrive wrapped in
+				// the app's JSON envelope. Demanding exactly that envelope keeps
+				// a bare error string (which fails JSON decoding) or a re-marshaled
+				// error object with extra internals from slipping through the
+				// marker list above. 2xx success payloads (e.g. {"ok":true}) are
+				// object-shaped too but carry no "error" key.
+				var out map[string]json.RawMessage
+				if resp.StatusCode < 500 {
+					if err := json.Unmarshal(body, &out); err != nil {
+						t.Fatalf("status=%d body is not a JSON object: %v body=%s", resp.StatusCode, err, body)
+					}
+				}
+				if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+					raw, ok := out["error"]
+					if !ok {
+						t.Fatalf("status=%d body has no \"error\" field: %s", resp.StatusCode, body)
+					}
+					var msg string
+					if err := json.Unmarshal(raw, &msg); err != nil || strings.TrimSpace(msg) == "" {
+						t.Fatalf("status=%d \"error\" is not a non-empty string: %s", resp.StatusCode, body)
+					}
+				}
 				if resp.StatusCode == http.StatusInternalServerError {
 					// A 500 itself isn't automatically a security bug (some are
 					// benign upstream errors), but it must never carry a leak
@@ -787,10 +963,10 @@ func newSecurityTestServerWithNetdiskRoot(t *testing.T) (baseURL string, admin *
 	root := configureNetdiskRoot(t, db)
 
 	cfg := config.Config{
-		DockerHost:        "tcp://127.0.0.1:1",
-		SessionSecret:     "security-regression-test-session-secret",
-		AdminUser:         "secadmin",
-		AdminPassword:     adminPass,
+		DockerHost:         "tcp://127.0.0.1:1",
+		SessionSecret:      "security-regression-test-session-secret",
+		AdminUser:          "secadmin",
+		AdminPassword:      adminPass,
 		CaptchaTestAnswers: true,
 	}
 	app, err := New(cfg, db)

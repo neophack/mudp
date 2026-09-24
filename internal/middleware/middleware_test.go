@@ -1,8 +1,12 @@
 package middleware
 
 import (
+	"crypto/tls"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,13 +23,26 @@ func TestRecoverPanic(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("code = %d, want 500", rec.Code)
 	}
+	// The panic value must never reach the client; the body is the fixed
+	// WriteErr envelope from recover.go, not the panic string.
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not JSON: %v (body %q)", err, rec.Body.String())
+	}
+	if body["error"] != "internal server error" {
+		t.Errorf("error = %q, want %q", body["error"], "internal server error")
+	}
+	if strings.Contains(rec.Body.String(), "boom") {
+		t.Errorf("response leaks the panic value: %q", rec.Body.String())
+	}
 }
 
 func TestRequestLoggerSetsRequestID(t *testing.T) {
+	var ctxID string
 	handler := RequestLogger(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := httpx.RequestID(r)
-		if id == "" {
-			t.Error("request ID missing")
+		ctxID = httpx.RequestID(r)
+		if ctxID == "" {
+			t.Error("request ID missing from context")
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -33,6 +50,48 @@ func TestRequestLoggerSetsRequestID(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Header().Get("X-Request-ID") == "" {
 		t.Error("response missing X-Request-ID")
+	}
+	if got := rec.Header().Get("X-Request-ID"); got != ctxID {
+		t.Errorf("response X-Request-ID = %q, context request ID = %q", got, ctxID)
+	}
+}
+
+// A client-supplied X-Request-ID must be passed through unchanged so upstream
+// gateways can correlate their logs with ours (logger.go reuses it instead of
+// minting a fresh one).
+func TestRequestLoggerPassesThroughClientRequestID(t *testing.T) {
+	const clientID = "client-id-123"
+	var ctxID string
+	handler := RequestLogger(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctxID = httpx.RequestID(r)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Request-ID", clientID)
+	handler.ServeHTTP(rec, req)
+	if ctxID != clientID {
+		t.Errorf("context request ID = %q, want the client-supplied %q", ctxID, clientID)
+	}
+	if got := rec.Header().Get("X-Request-ID"); got != clientID {
+		t.Errorf("response X-Request-ID = %q, want the client-supplied %q", got, clientID)
+	}
+}
+
+// redactPath masks capability tokens before they hit the log: /mcp/{token}
+// authenticates a session and /pan/{token} grants share access, so either one
+// verbatim in a log file is a password in a log file. /mcp/ with no token
+// segment is pinned as returned unchanged.
+func TestRedactPath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/mcp/abc123", "/mcp/[redacted]"},
+		{"/pan/tok/x/y", "/pan/[redacted]/x/y"},
+		{"/other/tok", "/other/tok"},
+		{"/mcp/", "/mcp/"},
+	}
+	for _, c := range cases {
+		if got := redactPath(c.in); got != c.want {
+			t.Errorf("redactPath(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -49,33 +108,86 @@ func TestRateLimiter(t *testing.T) {
 		t.Fatalf("first request code = %d", rec1.Code)
 	}
 
-	// Immediate second request blocked.
+	// Immediate second request blocked, with a Retry-After telling the client
+	// how long to back off (whole seconds, rounded up).
 	rec2 := httptest.NewRecorder()
 	handler.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec2.Code != http.StatusTooManyRequests {
 		t.Fatalf("second request code = %d, want 429", rec2.Code)
 	}
+	ra := rec2.Header().Get("Retry-After")
+	if ra == "" {
+		t.Fatal("429 response missing Retry-After")
+	}
+	if n, err := strconv.Atoi(ra); err != nil || n <= 0 {
+		t.Errorf("Retry-After = %q, want a positive integer", ra)
+	}
 }
 
+// isSafeMethod exempts exactly GET/HEAD/OPTIONS/TRACE, each without a token.
 func TestCSRFProtectSafeMethods(t *testing.T) {
 	handler := CSRFProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET code = %d", rec.Code)
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(method, "/", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s without a CSRF token: code = %d, want 200 (exempt)", method, rec.Code)
+		}
 	}
 }
 
+// Every method outside the safe list requires the cookie/header pair.
 func TestCSRFProtectBlocksMissingToken(t *testing.T) {
 	handler := CSRFProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("should not reach handler")
+		t.Error("reached handler without a CSRF token")
+		w.WriteHeader(http.StatusOK)
 	}))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("code = %d, want 403", rec.Code)
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(method, "/", nil))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s without a CSRF token: code = %d, want 403", method, rec.Code)
+		}
+	}
+}
+
+// CSRFProtect compares against X-CSRF-Token only (docs/SECURITY-AUDIT.md L-4):
+// a valid cookie plus a token arriving via query or form body must still be
+// rejected, because those channels leak the token into logs and history.
+func TestCSRFProtectRejectsQueryAndFormTokens(t *testing.T) {
+	const tok = "tok123"
+	cases := []struct {
+		name string
+		url  string
+		body string
+	}{
+		{"token in query", "/?token=" + tok, ""},
+		{"token in form body", "/", "token=" + tok},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodPost, c.url, strings.NewReader(c.body))
+		if c.body != "" {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: tok})
+		rec := httptest.NewRecorder()
+		CSRFProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Errorf("%s: reached handler", c.name)
+		})).ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: code = %d, want 403", c.name, rec.Code)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Errorf("%s: body is not JSON: %v", c.name, err)
+			continue
+		}
+		// The cookie is present, so this is a mismatch, not a missing token.
+		if body["error"] != "CSRF token mismatch" {
+			t.Errorf("%s: error = %q, want %q", c.name, body["error"], "CSRF token mismatch")
+		}
 	}
 }
 
@@ -141,6 +253,35 @@ func TestCSRFCookieOutlivesTheBrowserSession(t *testing.T) {
 	}
 	if want := int(auth.SessionTTL / time.Second); c.MaxAge != want {
 		t.Errorf("MaxAge = %d, want %d (the session cookie's lifetime)", c.MaxAge, want)
+	}
+}
+
+// The CSRF cookie must be SameSite=Strict (no cross-site round-trip on
+// state-changing requests) and Secure whenever the request is over TLS; over
+// plain HTTP it must stay non-Secure or an http deployment drops its own cookie.
+func TestCSRFCookieAttributes(t *testing.T) {
+	issue := func(req *http.Request) *http.Cookie {
+		rec := httptest.NewRecorder()
+		if _, err := CSRFToken(rec, req); err != nil {
+			t.Fatalf("CSRFToken: %v", err)
+		}
+		cookies := rec.Result().Cookies()
+		if len(cookies) == 0 {
+			t.Fatal("no cookie set")
+		}
+		return cookies[0]
+	}
+	c := issue(httptest.NewRequest(http.MethodGet, "/", nil))
+	if c.SameSite != http.SameSiteStrictMode {
+		t.Errorf("SameSite = %v, want Strict", c.SameSite)
+	}
+	if c.Secure {
+		t.Error("Secure = true over plain HTTP, want false")
+	}
+	tlsReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	tlsReq.TLS = &tls.ConnectionState{}
+	if c := issue(tlsReq); !c.Secure {
+		t.Error("Secure = false over TLS, want true")
 	}
 }
 

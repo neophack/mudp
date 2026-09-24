@@ -97,12 +97,17 @@ func TestForwardLoginTargetDerivesFromHost(t *testing.T) {
 	req := &http.Request{Host: "192.168.1.1:10001"}
 	req.URL = mustParseURL("/app")
 	target := forwardLoginTarget("", "0.0.0.0:9000", portfwd.Rule{HostPort: 10001}, req)
-	if !strings.HasPrefix(target, "http://192.168.1.1:9000/?next=") {
-		t.Fatalf("target = %q, want console on :9000 with ?next=", target)
+	u, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("target %q does not parse: %v", target, err)
 	}
-	// The original URL (port 10001) must be echoed back so login can return there.
-	if !strings.Contains(target, "10001") {
-		t.Fatalf("target %q does not echo the original port back in next=", target)
+	if u.Scheme != "http" || u.Host != "192.168.1.1:9000" || u.Path != "/" {
+		t.Fatalf("target = %q, want http://192.168.1.1:9000/ (console port swapped in)", target)
+	}
+	// The original URL (port 10001) must be echoed back verbatim in next= so
+	// login can return the browser there.
+	if got, want := u.Query().Get("next"), "http://192.168.1.1:10001/app"; got != want {
+		t.Fatalf("next = %q, want %q", got, want)
 	}
 }
 
@@ -112,8 +117,17 @@ func TestForwardLoginTargetUsesPinnedURL(t *testing.T) {
 	req := &http.Request{Host: "tunnel.example.com:10001"}
 	req.URL = mustParseURL("/")
 	target := forwardLoginTarget("https://console.example.com/", ":9000", portfwd.Rule{HostPort: 10001}, req)
-	if !strings.HasPrefix(target, "https://console.example.com/?next=") {
-		t.Fatalf("target = %q, want the pinned console URL", target)
+	u, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("target %q does not parse: %v", target, err)
+	}
+	if u.Scheme != "https" || u.Host != "console.example.com" || u.Path != "/" {
+		t.Fatalf("target = %q, want the pinned console URL https://console.example.com/", target)
+	}
+	// originalRequestURL rebuilds the forwarded-port URL: default http scheme
+	// (req.TLS nil), the request Host, and the request URI — here "/".
+	if got, want := u.Query().Get("next"), "http://tunnel.example.com:10001/"; got != want {
+		t.Fatalf("next = %q, want %q", got, want)
 	}
 }
 

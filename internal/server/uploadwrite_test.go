@@ -123,6 +123,14 @@ func TestWriteFileWithCRC32_EmptyExpectedStillWrites(t *testing.T) {
 	if got != wantHex {
 		t.Fatalf("returned crc32 = %s, want %s", got, wantHex)
 	}
+	// No expected hash still means a faithful write, not just a digest.
+	written, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !bytes.Equal(written, content) {
+		t.Fatalf("written content mismatch")
+	}
 }
 
 // TestWriteFileWithCRC32_OverwritesSmallerExistingFile is a regression test for a

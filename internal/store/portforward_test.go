@@ -57,7 +57,7 @@ func TestManualForwardRoundTrip(t *testing.T) {
 
 	saved, err := db.AddManualForward(ManualForward{
 		HostPort: 10500, Proto: "TCP", ContainerID: "abc123", TargetPort: 8080,
-		Owner: "alice", Note: "vnc", CreatedBy: "admin",
+		Owner: "alice", Note: "vnc", CreatedBy: "admin", RequireLogin: true,
 	})
 	if err != nil {
 		t.Fatalf("AddManualForward: %v", err)
@@ -65,17 +65,50 @@ func TestManualForwardRoundTrip(t *testing.T) {
 	if saved.ID == 0 || saved.Proto != "tcp" || saved.CreatedAt == "" {
 		t.Fatalf("saved = %+v, want an id, a normalised protocol and a timestamp", saved)
 	}
+	// A second forward with the flag explicitly off pins that a stored 0 reads
+	// back as false. The server reconciles its forward rules from this table on
+	// every sweep, so an inverted or always-true require_login would silently
+	// gate — or open — every forwarded port.
+	plain, err := db.AddManualForward(ManualForward{
+		HostPort: 10501, Proto: "tcp", ContainerID: "def456", TargetPort: 9090,
+		Owner: "bob", Note: "jupyter", CreatedBy: "admin",
+	})
+	if err != nil {
+		t.Fatalf("AddManualForward (no login): %v", err)
+	}
 
 	list, err := db.ManualForwards()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("ManualForwards = %+v, %v; want one entry", list, err)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ManualForwards = %+v, %v; want two entries", list, err)
 	}
-	if list[0].ContainerID != "abc123" || list[0].TargetPort != 8080 || list[0].Owner != "alice" {
+	// Rows come back ordered by host port, so the 10500 rule is first.
+	if list[0].ID != saved.ID || list[1].ID != plain.ID {
+		t.Fatalf("ManualForwards ids = %d, %d; want %d then %d", list[0].ID, list[1].ID, saved.ID, plain.ID)
+	}
+	if list[0].HostPort != 10500 || list[0].Proto != "tcp" || list[0].ContainerID != "abc123" ||
+		list[0].TargetPort != 8080 || list[0].Owner != "alice" || list[0].Note != "vnc" ||
+		list[0].CreatedBy != "admin" || list[0].CreatedAt == "" {
 		t.Fatalf("stored forward = %+v", list[0])
+	}
+	if !list[0].RequireLogin {
+		t.Fatal("RequireLogin=true did not survive the round-trip")
+	}
+	if list[1].RequireLogin {
+		t.Fatalf("RequireLogin=false read back as true: %+v", list[1])
+	}
+	if list[1].HostPort != 10501 || list[1].Proto != "tcp" || list[1].ContainerID != "def456" ||
+		list[1].TargetPort != 9090 || list[1].Owner != "bob" || list[1].Note != "jupyter" {
+		t.Fatalf("stored forward = %+v", list[1])
 	}
 
 	if err := db.DeleteManualForward(saved.ID); err != nil {
 		t.Fatalf("DeleteManualForward: %v", err)
+	}
+	if list, _ := db.ManualForwards(); len(list) != 1 {
+		t.Fatalf("ManualForwards after first delete = %+v, want one entry", list)
+	}
+	if err := db.DeleteManualForward(plain.ID); err != nil {
+		t.Fatalf("DeleteManualForward (second): %v", err)
 	}
 	if list, _ := db.ManualForwards(); len(list) != 0 {
 		t.Fatalf("ManualForwards after delete = %+v, want empty", list)

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -52,8 +53,8 @@ func TestBackupDataProducesConsistentSnapshot(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	// The zip must contain exactly the DB file, at 0600, and no leftover
-	// snapshot temp file in the target directory.
+	// The zip must contain exactly the DB file, named after it, at 0600, and
+	// no leftover snapshot temp file in the target directory.
 	zr, err := zip.OpenReader(resp.Path)
 	if err != nil {
 		t.Fatalf("open backup zip: %v", err)
@@ -61,6 +62,23 @@ func TestBackupDataProducesConsistentSnapshot(t *testing.T) {
 	defer zr.Close()
 	if len(zr.File) != 1 {
 		t.Fatalf("zip contains %d entries, want 1", len(zr.File))
+	}
+	// disks.go archives the snapshot under the live DB's base name, so a
+	// restored copy is directly openable as the database.
+	if name := zr.File[0].Name; name != filepath.Base(dbPath) {
+		t.Fatalf("zip entry name = %q, want %q", name, filepath.Base(dbPath))
+	}
+	info, err := os.Stat(resp.Path)
+	if err != nil {
+		t.Fatalf("stat backup zip: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		// Windows has no POSIX permission model: os.Stat synthesizes the mode
+		// from read-only/archive bits (typically 0666 here), so the 0600
+		// creation mode of backupData is unobservable on this platform.
+		t.Logf("skipping permission assertion on windows: perm=%s", info.Mode().Perm())
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("backup zip perms = %o, want 600", perm)
 	}
 	rc, err := zr.File[0].Open()
 	if err != nil {

@@ -48,6 +48,7 @@ func TestMergeUserLabelsCannotOverrideOwnership(t *testing.T) {
 		ManagedLabel:                 "false",
 		NameLabel:                    "forged",
 		"mudp.novnc.password":        "forged",
+		"mudp.forward.ports":         "22:22",
 		"com.docker.compose.project": "forged",
 		"team":                       "backend",
 	}
@@ -60,6 +61,15 @@ func TestMergeUserLabelsCannotOverrideOwnership(t *testing.T) {
 	}
 	if got[NameLabel] != "mine" {
 		t.Errorf("NameLabel overridden: got %q, want %q", got[NameLabel], "mine")
+	}
+	// The whole mudp.* namespace is reserved, not just the three ownership
+	// labels: a forged novnc password or forward mapping would be served to
+	// users as if mudp itself had set it.
+	if v, ok := got["mudp.novnc.password"]; ok {
+		t.Errorf("mudp.novnc.password was not dropped: %q", v)
+	}
+	if v, ok := got["mudp.forward.ports"]; ok {
+		t.Errorf("mudp.forward.ports was not dropped: %q", v)
 	}
 	if _, ok := got["com.docker.compose.project"]; ok {
 		t.Errorf("com.docker.* label was not dropped: %+v", got)

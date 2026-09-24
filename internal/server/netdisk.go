@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -197,9 +198,27 @@ func cleanUserEntryPath(root, rel string) (string, string, error) {
 	return full, rel, nil
 }
 
+// pathEqual reports whether a and b name the same filesystem entry. NTFS is
+// case-insensitive (but case-preserving), so two paths differing only in case
+// still refer to the same file on Windows; POSIX filesystems are
+// case-sensitive.
+func pathEqual(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 // pathWithin reports whether p is root itself or lives underneath it.
 func pathWithin(root, p string) bool {
-	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
+	if pathEqual(root, p) {
+		return true
+	}
+	prefix := root + string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		return len(p) >= len(prefix) && strings.EqualFold(p[:len(prefix)], prefix)
+	}
+	return strings.HasPrefix(p, prefix)
 }
 
 // resolveExistingPath returns p with every existing component resolved through
@@ -536,7 +555,7 @@ func netdiskCopyOne(from, to string, move bool, policy string, size int64, onByt
 	// Pasting an item where it already is: moving, skipping or overwriting it
 	// onto itself is a no-op (overwrite would otherwise delete the source before
 	// copying it); only a renaming copy still makes a duplicate beside it.
-	if to == from && (move || policy != "rename") {
+	if pathEqual(to, from) && (move || policy != "rename") {
 		if onBytes != nil {
 			onBytes(size)
 		}
@@ -544,7 +563,7 @@ func netdiskCopyOne(from, to string, move bool, policy string, size int64, onByt
 	}
 	// A folder copied into its own subtree would make the walk rediscover each
 	// fresh copy and nest without end.
-	if fromInfo.IsDir() && to != from && pathWithin(from, to) {
+	if fromInfo.IsDir() && !pathEqual(to, from) && pathWithin(from, to) {
 		return fmt.Errorf("cannot copy or move a folder into itself")
 	}
 	if _, err := os.Stat(to); err == nil {

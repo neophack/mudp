@@ -1409,16 +1409,20 @@ func TestSecuritySettingsRoundTrip(t *testing.T) {
 		t.Errorf("defaults = %+v, want logging fully enabled at 90 days", got)
 	}
 
-	// Disable GeoIP and shorten retention.
+	// Flip every boolean switch off (all default to true, so only non-default
+	// values prove persistence) and shorten retention. Enabled stays on: it is
+	// covered by the master-switch assertion below.
 	cfg := got
 	cfg.GeoIPLookup = false
+	cfg.VPNDetect = false
+	cfg.CollectClient = false
 	cfg.RetentionDays = 30
 	if err := db.SaveSecuritySettings(cfg); err != nil {
 		t.Fatalf("SaveSecuritySettings: %v", err)
 	}
 	again, _ := db.SecuritySettings()
-	if again.GeoIPLookup || again.RetentionDays != 30 || !again.Enabled {
-		t.Errorf("after save = %+v, want GeoIPLookup=false retention=30 enabled=true", again)
+	if again.GeoIPLookup || again.VPNDetect || again.CollectClient || again.RetentionDays != 30 || !again.Enabled {
+		t.Errorf("after save = %+v, want GeoIPLookup/VPNDetect/CollectClient=false retention=30 enabled=true", again)
 	}
 
 	// A fresh DB (separate file) still returns defaults — the setting is per-DB.

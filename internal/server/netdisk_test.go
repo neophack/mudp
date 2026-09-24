@@ -40,6 +40,9 @@ func TestNetdiskCopyOne(t *testing.T) {
 	if _, err := os.Stat(srcFile); err == nil {
 		t.Error("source still exists after move")
 	}
+	if got, err := os.ReadFile(dstFile2); err != nil || string(got) != "hello" {
+		t.Fatalf("move result = %q, %v", got, err)
+	}
 }
 
 func TestNetdiskCopyOneIntoDirectory(t *testing.T) {
@@ -551,6 +554,30 @@ func TestNetdiskCopyOneOntoItselfKeepsFile(t *testing.T) {
 			if got, err := os.ReadFile(file); err != nil || string(got) != "keep" {
 				t.Fatalf("move=%v policy=%s: file = %q, %v", move, policy, got, err)
 			}
+		}
+	}
+}
+
+// On Windows, NTFS is case-insensitive, so a paste request whose "to" differs
+// from "from" only in case names the same physical file. The self-paste guard
+// above must still catch it -- otherwise "overwrite" removes the file before
+// discovering "from" no longer exists, destroying the only copy.
+func TestNetdiskCopyOneOntoItselfIgnoresCaseOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("case-insensitive filesystem behavior is Windows-specific")
+	}
+	dir := t.TempDir()
+	file := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(file, []byte("keep"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	upper := filepath.Join(dir, "NOTES.txt")
+	for _, move := range []bool{false, true} {
+		if err := netdiskCopyOne(file, upper, move, "overwrite", 0, nil); err != nil {
+			t.Fatalf("move=%v: %v", move, err)
+		}
+		if got, err := os.ReadFile(file); err != nil || string(got) != "keep" {
+			t.Fatalf("move=%v: file = %q, %v", move, got, err)
 		}
 	}
 }

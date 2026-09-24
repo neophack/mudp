@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -46,6 +48,9 @@ func call(t *testing.T, s *Server, method string, params any) map[string]any {
 	var m map[string]any
 	if err := json.Unmarshal(resp, &m); err != nil {
 		t.Fatalf("unmarshal response: %v\n%s", err, resp)
+	}
+	if m["id"] != "1" {
+		t.Errorf("response id = %v, want \"1\" (responses must echo the request id)", m["id"])
 	}
 	return m
 }
@@ -98,8 +103,19 @@ func TestToolsList(t *testing.T) {
 	if tool["name"] != "echo" {
 		t.Errorf("tool name = %v", tool["name"])
 	}
-	if _, ok := tool["inputSchema"].(map[string]any); !ok {
-		t.Errorf("inputSchema not an object: %T", tool["inputSchema"])
+	// Pin the schema content, not just its shape: if schema passthrough broke
+	// and every tool got the empty default, clients would lose the msg contract.
+	schema, ok := tool["inputSchema"].(map[string]any)
+	if !ok {
+		t.Fatalf("inputSchema not an object: %T", tool["inputSchema"])
+	}
+	props, _ := schema["properties"].(map[string]any)
+	if _, ok := props["msg"]; !ok {
+		t.Errorf("inputSchema.properties missing msg: %v", schema)
+	}
+	req, _ := schema["required"].([]any)
+	if len(req) != 1 || req[0] != "msg" {
+		t.Errorf("inputSchema.required = %v, want [msg]", schema["required"])
 	}
 }
 
@@ -134,6 +150,16 @@ func TestToolsCallHandlerError(t *testing.T) {
 	result, _ := m["result"].(map[string]any)
 	if isErr, _ := result["isError"].(bool); !isErr {
 		t.Error("expected isError=true for a handler error")
+	}
+	// The failure reason must reach the client — an IsError without text leaves
+	// the agent with no way to know what went wrong.
+	content, _ := result["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(content))
+	}
+	block := content[0].(map[string]any)
+	if block["text"] != "forced failure" {
+		t.Errorf("error text = %v, want %q", block["text"], "forced failure")
 	}
 }
 
@@ -173,16 +199,47 @@ func TestNotificationNoBody(t *testing.T) {
 
 func TestParseError(t *testing.T) {
 	s := newTestServer()
-	// Invalid JSON should produce a parse-error response, not a panic.
-	resp, status, _ := s.Handle(context.Background(), []byte("{not json"))
+	// Invalid JSON should produce a parse-error response, not a panic. Per the
+	// JSON-RPC spec it must be delivered as a response body (id null) — the
+	// client has no other way to learn its request was malformed.
+	resp, status, hasBody := s.Handle(context.Background(), []byte("{not json"))
 	if status != 200 {
 		t.Fatalf("status = %d", status)
+	}
+	if !hasBody {
+		t.Fatalf("parse error must produce a response body, got none (client would see an empty %d)", status)
 	}
 	var m map[string]any
 	if err := json.Unmarshal(resp, &m); err != nil {
 		t.Fatalf("parse-error response is not valid JSON: %v", err)
 	}
+	if m["id"] != nil {
+		t.Errorf("parse-error id = %v, want null", m["id"])
+	}
 	errObj, _ := m["error"].(map[string]any)
+	if code, _ := errObj["code"].(float64); int(code) != codeParseError {
+		t.Errorf("error code = %v, want %d", errObj["code"], codeParseError)
+	}
+}
+
+// TestParseErrorDeliveredOverHTTP pins the transport-level contract: a malformed
+// body gets a 200 with a JSON-RPC error object, never a bodyless 202.
+func TestParseErrorDeliveredOverHTTP(t *testing.T) {
+	s := newTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{not json"))
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with a parse-error body", rec.Code)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+		t.Fatalf("body is not JSON (got %q): %v", rec.Body.String(), err)
+	}
+	errObj, ok := m["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing error object: %v", m)
+	}
 	if code, _ := errObj["code"].(float64); int(code) != codeParseError {
 		t.Errorf("error code = %v, want %d", errObj["code"], codeParseError)
 	}

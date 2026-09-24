@@ -301,8 +301,15 @@ func TestApplyRejectsDuplicateHostPort(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "claimed by both") {
 		t.Fatalf("apply error = %v, want a duplicate host port report", err)
 	}
-	if st := m.Status(); len(st) != 1 {
+	st := m.Status()
+	if len(st) != 1 {
 		t.Fatalf("status has %d listeners, want 1", len(st))
+	}
+	// The first rule keeps the port. If the conflict resolution instead kept
+	// the last rule, the listener would flap between containers on every
+	// reconcile, so the survivor must be dev01 → the first container.
+	if st[0].Name != "dev01" || st[0].TargetIP != firstIP || st[0].TargetPort != firstPort {
+		t.Fatalf("survivor = %+v, want dev01 → %s:%d", st[0], firstIP, firstPort)
 	}
 }
 

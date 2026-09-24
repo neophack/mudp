@@ -51,21 +51,25 @@ func TestForwardSpecRoundTrip(t *testing.T) {
 	specs := []ForwardSpec{
 		{HostPort: 10001, ContainerPort: 8080, Proto: "tcp"},
 		{HostPort: 10002, ContainerPort: 53, Proto: "udp"},
+		{HostPort: 10003, ContainerPort: 8080, Proto: "tcp", TLS: true},
 	}
 	label := FormatForwardSpecs(specs)
-	if want := "10001:8080/tcp,10002:53/udp"; label != want {
+	if want := "10001:8080/tcp,10002:53/udp,10003:8080/tcp;tls"; label != want {
 		t.Fatalf("FormatForwardSpecs = %q, want %q", label, want)
 	}
 	got := ParseForwardSpecs(label)
-	if len(got) != 2 || got[0] != specs[0] || got[1] != specs[1] {
+	if len(got) != 3 || got[0] != specs[0] || got[1] != specs[1] || got[2] != specs[2] {
 		t.Fatalf("ParseForwardSpecs(%q) = %+v, want %+v", label, got, specs)
+	}
+	if !got[2].TLS {
+		t.Fatalf("TLS forward lost its flag: %+v", got[2])
 	}
 }
 
 // A label that was hand-edited must not be able to hide the container's other
 // forwards: the broken entry is dropped, the rest survive.
 func TestParseForwardSpecsSkipsBadEntries(t *testing.T) {
-	got := ParseForwardSpecs("10001:8080/tcp,nonsense,0:80/tcp,10002:99999/tcp,10003:22/sctp,10004:22/udp")
+	got := ParseForwardSpecs("10001:8080/tcp,nonsense,0:80/tcp,10002:99999/tcp,10003:22/sctp,10004:22/udp,10005:22/udp;tls")
 	want := []ForwardSpec{
 		{HostPort: 10001, ContainerPort: 8080, Proto: "tcp"},
 		{HostPort: 10004, ContainerPort: 22, Proto: "udp"},
@@ -76,6 +80,33 @@ func TestParseForwardSpecsSkipsBadEntries(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("ParseForwardSpecs[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// parsePortList feeds ForwardRules' login gate, so a hand-edited label may only
+// add or drop ports, never break the parse of the rest.
+func TestParsePortList(t *testing.T) {
+	cases := []struct {
+		name  string
+		label string
+		want  map[int]bool
+	}{
+		{"two ports", "8080,8090", map[int]bool{8080: true, 8090: true}},
+		{"whitespace tolerated", " 8080 , 8090 ", map[int]bool{8080: true, 8090: true}},
+		{"bad entries skipped", "8080, ,abc,70000,0", map[int]bool{8080: true}},
+		{"empty label", "", map[int]bool{}},
+	}
+	for _, c := range cases {
+		got := parsePortList(c.label)
+		if len(got) != len(c.want) {
+			t.Errorf("%s: parsePortList(%q) = %v, want %v", c.name, c.label, got, c.want)
+			continue
+		}
+		for p := range c.want {
+			if !got[p] {
+				t.Errorf("%s: parsePortList(%q) missing port %d", c.name, c.label, p)
+			}
 		}
 	}
 }

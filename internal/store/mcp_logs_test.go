@@ -41,6 +41,10 @@ func TestMCPUsageLog(t *testing.T) {
 	if rows[0].ContainerName != "dev" || rows[0].TokenLabel != "claude" {
 		t.Errorf("denormalized fields lost: %+v", rows[0])
 	}
+	// ArgsPreview is the LOG dialog's payload; the newest row is the exec call.
+	if rows[0].ArgsPreview != `{"command":"ls"}` {
+		t.Errorf("args preview lost: %q", rows[0].ArgsPreview)
+	}
 
 	// Owner scoping: alice's id sees rows; a stranger's id sees none.
 	mine, err := db.MCPUsageLogs(MCPUsageFilter{TokenID: 1, OwnerID: alice.ID})

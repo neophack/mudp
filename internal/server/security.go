@@ -97,6 +97,22 @@ type geoCacheEntry struct {
 	expiresAt time.Time
 }
 
+// isPublicIP reports whether the address is globally routable. IsGlobalUnicast
+// alone is not enough — RFC1918/CGNAT private ranges are global unicast — so
+// private ranges are excluded explicitly: they have no public GeoIP answer and
+// must never be sent to the lookup service.
+func isPublicIP(parsed net.IP) bool {
+	if parsed == nil || !parsed.IsGlobalUnicast() || parsed.IsPrivate() {
+		return false
+	}
+	// RFC 6598 carrier-grade NAT (100.64/10) is shared address space with no
+	// public GeoIP answer; IsPrivate does not cover it.
+	if ip4 := parsed.To4(); ip4 != nil && ip4[0] == 100 && ip4[1]&0xc0 == 64 {
+		return false
+	}
+	return true
+}
+
 // geoLookup resolves a public IP to its geographic location using the free
 // ip-api.com endpoint. Results are cached for geoCacheTTL. Private/loopback
 // addresses and disabled lookups return a zero geoInfo (location unknown) and
@@ -108,7 +124,7 @@ func (a *App) geoLookup(ip string) geoInfo {
 		return geoInfo{}
 	}
 	parsed := net.ParseIP(ip)
-	if parsed == nil || !parsed.IsGlobalUnicast() {
+	if !isPublicIP(parsed) {
 		// Private/loopback/link-local/multicast: no public GeoIP answer exists.
 		return geoInfo{}
 	}
@@ -169,6 +185,11 @@ type ipAPIResponse struct {
 	Message     string  `json:"message"`
 }
 
+// geoHTTPClient is the client geoLookupRemote dials out with. A package
+// variable (instead of http.DefaultClient inline) so tests can point it at a
+// stub and prove which IPs never trigger an outbound request at all.
+var geoHTTPClient = http.DefaultClient
+
 func (a *App) geoLookupRemote(ip string) geoInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), geoHTTPTimeout)
 	defer cancel()
@@ -178,7 +199,7 @@ func (a *App) geoLookupRemote(ip string) geoInfo {
 	// tracker and guarantees no attacker-controlled bytes can reach the request
 	// line: anything that isn't a valid public IP literal returns early.
 	parsed := net.ParseIP(ip)
-	if parsed == nil || !parsed.IsGlobalUnicast() {
+	if !isPublicIP(parsed) {
 		return geoInfo{}
 	}
 	// fields=... limits the payload to just what we store; the lang is left to
@@ -192,7 +213,7 @@ func (a *App) geoLookupRemote(ip string) geoInfo {
 	if version.Version != "" {
 		req.Header.Set("User-Agent", "mudp/"+version.Version)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := geoHTTPClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		if resp != nil {
 			resp.Body.Close()
@@ -290,7 +311,7 @@ func ipSourceKind(ip string) string {
 	if parsed == nil {
 		return ""
 	}
-	if !parsed.IsGlobalUnicast() {
+	if !isPublicIP(parsed) {
 		return "intranet"
 	}
 	return "extranet"

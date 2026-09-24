@@ -7,18 +7,29 @@ import (
 	"testing"
 )
 
-// entriesToTar builds a tar archive from a list of (name, typeflag) pairs.
-func entriesToTar(t *testing.T, entries []struct {
+// tarEntry is one tar header written by entriesToTar. Non-zero sizes get
+// zero-filled bodies so the archive stays readable.
+type tarEntry struct {
 	name string
 	flag byte
-}) *tar.Reader {
+	mode int64
+	size int64
+}
+
+// entriesToTar builds a tar archive from the given entries.
+func entriesToTar(t *testing.T, entries []tarEntry) *tar.Reader {
 	t.Helper()
 	buf := &bytes.Buffer{}
 	tw := tar.NewWriter(buf)
 	for _, e := range entries {
-		hdr := &tar.Header{Name: e.name, Mode: 0755, Size: 0, Typeflag: e.flag}
+		hdr := &tar.Header{Name: e.name, Mode: e.mode, Size: e.size, Typeflag: e.flag}
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatalf("write header: %v", err)
+		}
+		if e.size > 0 {
+			if _, err := tw.Write(make([]byte, e.size)); err != nil {
+				t.Fatalf("write body: %v", err)
+			}
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -28,84 +39,160 @@ func entriesToTar(t *testing.T, entries []struct {
 }
 
 func TestParseContainerFileListDirectChildrenOnly(t *testing.T) {
-	entries := []struct {
-		name string
-		flag byte
-	}{
-		{"root/", tar.TypeDir},
-		{"root/a.txt", tar.TypeReg},
-		{"root/sub/", tar.TypeDir},
-		{"root/sub/b.txt", tar.TypeReg},
-		{"root/sub/deep/", tar.TypeDir},
-		{"root/sub/deep/c.txt", tar.TypeReg},
-	}
-	tr := entriesToTar(t, entries)
+	tr := entriesToTar(t, []tarEntry{
+		{"root/", tar.TypeDir, 0755, 0},
+		{"root/a.txt", tar.TypeReg, 0644, 12},
+		{"root/sub/", tar.TypeDir, 0750, 0},
+		{"root/sub/b.txt", tar.TypeReg, 0600, 3},
+		{"root/sub/deep/", tar.TypeDir, 0755, 0},
+		{"root/sub/deep/c.txt", tar.TypeReg, 0644, 0},
+	})
 	got, err := parseContainerFileList("/root", tr)
 	if err != nil {
 		t.Fatalf("parseContainerFileList: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 direct children, got %d: %+v", len(got), got)
+	want := map[string]struct {
+		dir  bool
+		size int64
+		mode string
+	}{
+		"a.txt": {false, 12, "-rw-r--r--"},
+		"sub":   {true, 0, "drwxr-x---"},
 	}
-	names := map[string]bool{}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d direct children, got %d: %+v", len(want), len(got), got)
+	}
 	for _, e := range got {
-		names[e.Name] = true
+		w, ok := want[e.Name]
+		if !ok {
+			t.Errorf("unexpected entry %q", e.Name)
+			continue
+		}
 		if e.Path != "/root/"+e.Name {
 			t.Errorf("unexpected path %q for name %q", e.Path, e.Name)
 		}
-	}
-	if !names["a.txt"] || !names["sub"] {
-		t.Errorf("expected a.txt and sub, got %+v", names)
+		if e.Dir != w.dir {
+			t.Errorf("%s: dir = %v, want %v", e.Name, e.Dir, w.dir)
+		}
+		if e.Size != w.size {
+			t.Errorf("%s: size = %d, want %d", e.Name, e.Size, w.size)
+		}
+		if e.Mode != w.mode {
+			t.Errorf("%s: mode = %q, want %q", e.Name, e.Mode, w.mode)
+		}
 	}
 }
 
 func TestParseContainerFileListRoot(t *testing.T) {
-	entries := []struct {
-		name string
-		flag byte
-	}{
-		{"./", tar.TypeDir},
-		{"a.txt", tar.TypeReg},
-		{"sub/", tar.TypeDir},
-		{"sub/b.txt", tar.TypeReg},
-	}
-	tr := entriesToTar(t, entries)
+	tr := entriesToTar(t, []tarEntry{
+		{"./", tar.TypeDir, 0755, 0},
+		{"a.txt", tar.TypeReg, 0644, 7},
+		{"sub/", tar.TypeDir, 0700, 0},
+		{"sub/b.txt", tar.TypeReg, 0644, 0},
+	})
 	got, err := parseContainerFileList("/", tr)
 	if err != nil {
 		t.Fatalf("parseContainerFileList: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 direct children, got %d: %+v", len(got), got)
+	want := map[string]struct {
+		dir  bool
+		size int64
+		mode string
+	}{
+		"a.txt": {false, 7, "-rw-r--r--"},
+		"sub":   {true, 0, "drwx------"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d direct children, got %d: %+v", len(want), len(got), got)
+	}
+	for _, e := range got {
+		w, ok := want[e.Name]
+		if !ok {
+			t.Errorf("unexpected entry %q", e.Name)
+			continue
+		}
+		if e.Path != "/"+e.Name {
+			t.Errorf("unexpected path %q for name %q", e.Path, e.Name)
+		}
+		if e.Dir != w.dir {
+			t.Errorf("%s: dir = %v, want %v", e.Name, e.Dir, w.dir)
+		}
+		if e.Size != w.size {
+			t.Errorf("%s: size = %d, want %d", e.Name, e.Size, w.size)
+		}
+		if e.Mode != w.mode {
+			t.Errorf("%s: mode = %q, want %q", e.Name, e.Mode, w.mode)
+		}
 	}
 }
 
 func TestParseContainerFileListRootWithLeadingSlash(t *testing.T) {
-	entries := []struct {
-		name string
-		flag byte
-	}{
-		{"/", tar.TypeDir},
-		{"/a.txt", tar.TypeReg},
-		{"/sub/", tar.TypeDir},
-		{"/sub/b.txt", tar.TypeReg},
-	}
-	tr := entriesToTar(t, entries)
+	tr := entriesToTar(t, []tarEntry{
+		{"/", tar.TypeDir, 0755, 0},
+		{"/a.txt", tar.TypeReg, 0644, 7},
+		{"/sub/", tar.TypeDir, 0700, 0},
+		{"/sub/b.txt", tar.TypeReg, 0644, 0},
+	})
 	got, err := parseContainerFileList("/", tr)
 	if err != nil {
 		t.Fatalf("parseContainerFileList: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 direct children, got %d: %+v", len(got), got)
+	want := map[string]struct {
+		dir  bool
+		size int64
+		mode string
+	}{
+		"a.txt": {false, 7, "-rw-r--r--"},
+		"sub":   {true, 0, "drwx------"},
 	}
-	names := map[string]bool{}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d direct children, got %d: %+v", len(want), len(got), got)
+	}
 	for _, e := range got {
-		names[e.Name] = true
+		w, ok := want[e.Name]
+		if !ok {
+			t.Errorf("unexpected entry %q", e.Name)
+			continue
+		}
 		if e.Path != "/"+e.Name {
 			t.Errorf("unexpected path %q for name %q", e.Path, e.Name)
 		}
+		if e.Dir != w.dir {
+			t.Errorf("%s: dir = %v, want %v", e.Name, e.Dir, w.dir)
+		}
+		if e.Size != w.size {
+			t.Errorf("%s: size = %d, want %d", e.Name, e.Size, w.size)
+		}
+		if e.Mode != w.mode {
+			t.Errorf("%s: mode = %q, want %q", e.Name, e.Mode, w.mode)
+		}
 	}
-	if !names["a.txt"] || !names["sub"] {
-		t.Errorf("expected a.txt and sub, got %+v", names)
+}
+
+// formatFileMode renders the 9 permission bits plus a type character; setuid,
+// setgid and sticky bits are not part of the rendering.
+func TestFormatFileMode(t *testing.T) {
+	cases := []struct {
+		name     string
+		typeflag byte
+		mode     int64
+		want     string
+	}{
+		{"directory", tar.TypeDir, 0755, "drwxr-xr-x"},
+		{"regular file", tar.TypeReg, 0644, "-rw-r--r--"},
+		{"owner-only file", tar.TypeReg, 0600, "-rw-------"},
+		{"all perms", tar.TypeReg, 0777, "-rwxrwxrwx"},
+		{"no perms", tar.TypeReg, 0000, "----------"},
+		{"symlink", tar.TypeSymlink, 0777, "lrwxrwxrwx"},
+		{"char device", tar.TypeChar, 0600, "crw-------"},
+		{"block device", tar.TypeBlock, 0660, "brw-rw----"},
+		{"fifo", tar.TypeFifo, 0644, "prw-r--r--"},
+		{"unknown type falls back to file", tar.TypeXGlobalHeader, 0644, "-rw-r--r--"},
+	}
+	for _, c := range cases {
+		if got := formatFileMode(c.typeflag, c.mode); got != c.want {
+			t.Errorf("%s: formatFileMode(%#o, %d) = %q, want %q", c.name, c.mode, c.typeflag, got, c.want)
+		}
 	}
 }
 

@@ -250,6 +250,8 @@ func (db *DB) PruneLogs(tables []string, before time.Time) (map[string]int64, er
 		if !pruneableLogTables[name] {
 			return nil, fmt.Errorf("table %q is not a pruneable log table", name)
 		}
+	}
+	for _, name := range tables {
 		countBefore, err := db.tableRowCount(name)
 		if err != nil {
 			continue

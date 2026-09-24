@@ -2,65 +2,58 @@ package raster
 
 import "testing"
 
-// TestI420AndYV12ChromaPlaneOrder is a regression test ported from
-// web/tests/unit/yuv.test.js: the i420 and yv12 formats once had their U/V
-// byte offsets swapped, so "I420" (the viewer's default format) rendered
-// with wrong colors. A 2x2 frame has one 1-byte U sample and one 1-byte V
-// sample, so the two layouts differ only in which of those two bytes is
-// which:
+// TestChromaByteOrderAllFormats extends the original i420/yv12 regression
+// (ported from web/tests/unit/yuv.test.js — "I420" once rendered with wrong
+// colors because its U/V byte offsets were swapped) to every subsampled
+// format: the semi-planar nv12/nv21 pairs and the packed yuyv/uyvy
+// macro-pixels must also keep their U/V byte order straight. A 2x2 frame has
+// exactly one U and one V sample, so each format's convention is directly
+// visible in its file bytes:
 //
-//	I420 file layout: [Y Y Y Y][U][V]
-//	YV12 file layout: [Y Y Y Y][V][U]
+//	i420 [Y Y Y Y][U][V]      yv12 [Y Y Y Y][V][U]
+//	nv12 [Y Y Y Y][U V]       nv21 [Y Y Y Y][V U]
+//	yuyv macro [Y0 U Y1 V]    uyvy macro [U Y0 V Y1]
 //
-// Both must decode to the SAME color when fed the logically same U/V values,
-// laid out in each format's own byte order.
-func TestI420AndYV12ChromaPlaneOrder(t *testing.T) {
+// All six must decode the logically same Y/U/V values to the same RGB.
+func TestChromaByteOrderAllFormats(t *testing.T) {
 	const (
 		yVal = 128
 		u    = 255 // uu = +127
 		v    = 0   // vv = -128
 	)
-	// Expected from yuvToRgb(128, 255, 0):
-	//   r = 128 + 1.402*(-128)          ~= 0   (clamped)
-	//   g = 128 - 0.344*127 - 0.714*-128 ~= 176
-	//   b = 128 + 1.772*127              ~= 255 (clamped)
-	wantR, wantG, wantB := 0, 176, 255
-	const tolerance = 3
+	// Exact expected values from yuvToRgb(128, 255, 0) with clampByte's
+	// truncation (no tolerance needed — the unclamped channel sits at 175.704,
+	// far from any integer boundary):
+	//   r = 128 + 1.402·(-128)          =  -51.5 → clamp 0
+	//   g = 128 - 0.344·127 + 0.714·128 = 175.7  → truncate 175
+	//   b = 128 + 1.772·127             =  353.0 → clamp 255
+	const wantR, wantG, wantB = 0, 175, 255
 
-	checkPixel := func(t *testing.T, rgba []byte) {
-		t.Helper()
-		if d := abs(int(rgba[0]) - wantR); d > tolerance {
-			t.Errorf("r = %d, want ~%d", rgba[0], wantR)
-		}
-		if d := abs(int(rgba[1]) - wantG); d > tolerance {
-			t.Errorf("g = %d, want ~%d", rgba[1], wantG)
-		}
-		if d := abs(int(rgba[2]) - wantB); d > tolerance {
-			t.Errorf("b = %d, want ~%d", rgba[2], wantB)
-		}
-		if rgba[3] != 255 {
-			t.Errorf("a = %d, want 255", rgba[3])
-		}
+	for _, tc := range []struct {
+		format string
+		buf    []byte
+	}{
+		{"i420", []byte{yVal, yVal, yVal, yVal, u, v}},
+		{"yv12", []byte{yVal, yVal, yVal, yVal, v, u}},
+		{"nv12", []byte{yVal, yVal, yVal, yVal, u, v}},
+		{"nv21", []byte{yVal, yVal, yVal, yVal, v, u}},
+		{"yuyv", []byte{yVal, u, yVal, v, yVal, u, yVal, v}},
+		{"uyvy", []byte{u, yVal, v, yVal, u, yVal, v, yVal}},
+	} {
+		t.Run(tc.format, func(t *testing.T) {
+			rgba := YuvDecode(tc.format, tc.buf, 2, 2)
+			for p := 0; p < 4; p++ {
+				o := p * 4
+				if rgba[o] != wantR || rgba[o+1] != wantG || rgba[o+2] != wantB {
+					t.Fatalf("pixel %d = (%d,%d,%d), want (%d,%d,%d)",
+						p, rgba[o], rgba[o+1], rgba[o+2], wantR, wantG, wantB)
+				}
+				if rgba[o+3] != 255 {
+					t.Fatalf("pixel %d alpha = %d, want 255", p, rgba[o+3])
+				}
+			}
+		})
 	}
-
-	t.Run("i420 (Y, U, V order)", func(t *testing.T) {
-		buf := []byte{yVal, yVal, yVal, yVal, u, v}
-		rgba := YuvDecode("i420", buf, 2, 2)
-		checkPixel(t, rgba[0:4])
-	})
-
-	t.Run("yv12 (Y, V, U order)", func(t *testing.T) {
-		buf := []byte{yVal, yVal, yVal, yVal, v, u}
-		rgba := YuvDecode("yv12", buf, 2, 2)
-		checkPixel(t, rgba[0:4])
-	})
-}
-
-func abs(v int) int {
-	if v < 0 {
-		return -v
-	}
-	return v
 }
 
 // TestYuvDecodeOddDimensions guards the odd-width/height case. A 4:2:0 chroma

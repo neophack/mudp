@@ -336,22 +336,22 @@ func TestSanitizeFilename(t *testing.T) {
 }
 
 // TestIPSourceKind covers the intranet/extranet classification shown on the
-// Security page. Unparseable input returns "". Note: the classification is a
-// bare net.IP.IsGlobalUnicast check, which only excludes loopback/link-local/
-// multicast/unspecified — it does NOT exclude RFC1918 private ranges, so
-// 10/8, 172.16/12 and 192.168/16 are classified "extranet" even though the
-// function's doc comment calls them intranet. Pinned as current behavior.
+// Security page. Unparseable input returns "". RFC1918/CGNAT/ULA ranges are
+// "intranet": isPublicIP excludes them explicitly, so an internal address is
+// never mislabelled as publicly routable (nor sent to the GeoIP service).
 func TestIPSourceKind(t *testing.T) {
 	cases := []struct {
 		name, ip, want string
 	}{
-		{name: "rfc1918 class a classed extranet", ip: "10.0.0.5", want: "extranet"},
-		{name: "rfc1918 172.16/12 classed extranet", ip: "172.16.3.4", want: "extranet"},
-		{name: "rfc1918 172.31 classed extranet", ip: "172.31.255.255", want: "extranet"},
+		{name: "rfc1918 class a", ip: "10.0.0.5", want: "intranet"},
+		{name: "rfc1918 172.16/12", ip: "172.16.3.4", want: "intranet"},
+		{name: "rfc1918 172.31", ip: "172.31.255.255", want: "intranet"},
 		{name: "172.32 is public", ip: "172.32.0.1", want: "extranet"},
-		{name: "rfc1918 class c classed extranet", ip: "192.168.1.1", want: "extranet"},
+		{name: "rfc1918 class c", ip: "192.168.1.1", want: "intranet"},
+		{name: "cgnat 100.64/10", ip: "100.64.0.1", want: "intranet"},
 		{name: "loopback", ip: "127.0.0.1", want: "intranet"},
 		{name: "ipv6 loopback", ip: "::1", want: "intranet"},
+		{name: "ipv6 ula", ip: "fd00::1", want: "intranet"},
 		{name: "link local", ip: "169.254.1.1", want: "intranet"},
 		{name: "public ipv4", ip: "8.8.8.8", want: "extranet"},
 		{name: "public ipv6", ip: "2001:4860:4860::8888", want: "extranet"},

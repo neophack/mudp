@@ -1,6 +1,7 @@
 package dockerx
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -91,33 +92,55 @@ func TestStackProjectName(t *testing.T) {
 func TestValidateComposeRejectsHostEscapes(t *testing.T) {
 	limits := ComposeLimits{PortPrefix: 101}
 	cases := []struct {
-		name string
-		yaml string
+		name       string
+		yaml       string
+		wantSubstr string // empty means any non-nil error is fine
 	}{
-		{"privileged", "services:\n  x:\n    image: alpine\n    privileged: true\n"},
-		{"root bind mount", "services:\n  x:\n    image: alpine\n    volumes:\n      - \"/:/host\"\n"},
-		{"docker socket", "services:\n  x:\n    image: alpine\n    volumes:\n      - \"/var/run/docker.sock:/var/run/docker.sock\"\n"},
-		{"long form bind", "services:\n  x:\n    image: alpine\n    volumes:\n      - type: bind\n        source: /etc\n        target: /etc\n"},
-		{"host network", "services:\n  x:\n    image: alpine\n    network_mode: host\n"},
-		{"join container netns", "services:\n  x:\n    image: alpine\n    network_mode: \"container:other\"\n"},
-		{"host pid", "services:\n  x:\n    image: alpine\n    pid: host\n"},
-		{"cap add", "services:\n  x:\n    image: alpine\n    cap_add:\n      - SYS_ADMIN\n"},
-		{"devices", "services:\n  x:\n    image: alpine\n    devices:\n      - \"/dev/sda:/dev/sda\"\n"},
-		{"security opt", "services:\n  x:\n    image: alpine\n    security_opt:\n      - \"apparmor:unconfined\"\n"},
-		{"sysctls", "services:\n  x:\n    image: alpine\n    sysctls:\n      net.ipv4.ip_forward: 1\n"},
-		{"userns host", "services:\n  x:\n    image: alpine\n    userns_mode: host\n"},
-		{"build context", "services:\n  x:\n    build:\n      context: /etc\n"},
-		{"volumes_from", "services:\n  x:\n    image: alpine\n    volumes_from:\n      - other\n"},
-		{"driver_opts bind", "services:\n  x:\n    image: alpine\n    volumes:\n      - \"escape:/mnt\"\nvolumes:\n  escape:\n    driver_opts:\n      type: none\n      o: bind\n      device: /\n"},
-		{"external volume", "services:\n  x:\n    image: alpine\nvolumes:\n  other:\n    external: true\n"},
-		{"external network", "services:\n  x:\n    image: alpine\nnetworks:\n  other:\n    external: true\n"},
-		{"port outside range", "services:\n  x:\n    image: alpine\n    ports:\n      - \"22:22\"\n"},
-		{"port long form outside range", "services:\n  x:\n    image: alpine\n    ports:\n      - target: 80\n        published: 443\n"},
-		{"random host port", "services:\n  x:\n    image: alpine\n    ports:\n      - \"80\"\n"},
+		// Every forbiddenServiceKeys entry, each asserted to fail naming that
+		// key, so a rejection can never come from the wrong rule.
+		{"privileged", "services:\n  x:\n    image: alpine\n    privileged: true\n", "(privileged)"},
+		{"cap add", "services:\n  x:\n    image: alpine\n    cap_add:\n      - SYS_ADMIN\n", "(cap_add)"},
+		{"devices", "services:\n  x:\n    image: alpine\n    devices:\n      - \"/dev/sda:/dev/sda\"\n", "(devices)"},
+		{"device cgroup rules", "services:\n  x:\n    image: alpine\n    device_cgroup_rules:\n      - \"b 7:* rmw\"\n", "(device_cgroup_rules)"},
+		{"security opt", "services:\n  x:\n    image: alpine\n    security_opt:\n      - \"apparmor:unconfined\"\n", "(security_opt)"},
+		{"sysctls", "services:\n  x:\n    image: alpine\n    sysctls:\n      net.ipv4.ip_forward: 1\n", "(sysctls)"},
+		{"userns host", "services:\n  x:\n    image: alpine\n    userns_mode: host\n", "(userns_mode)"},
+		{"cgroup namespace", "services:\n  x:\n    image: alpine\n    cgroup: host\n", "(cgroup)"},
+		{"cgroup parent", "services:\n  x:\n    image: alpine\n    cgroup_parent: system.slice\n", "(cgroup_parent)"},
+		{"host pid", "services:\n  x:\n    image: alpine\n    pid: host\n", "(pid)"},
+		{"host ipc", "services:\n  x:\n    image: alpine\n    ipc: host\n", "(ipc)"},
+		{"host uts", "services:\n  x:\n    image: alpine\n    uts: host\n", "(uts)"},
+		{"volumes_from", "services:\n  x:\n    image: alpine\n    volumes_from:\n      - other\n", "(volumes_from)"},
+		{"extends", "services:\n  x:\n    image: alpine\n    extends:\n      service: other\n", "(extends)"},
+		{"build context", "services:\n  x:\n    image: alpine\n    build:\n      context: /etc\n", "(build)"},
+		{"runtime", "services:\n  x:\n    image: alpine\n    runtime: nvidia\n", "(runtime)"},
+		{"group_add", "services:\n  x:\n    image: alpine\n    group_add:\n      - audio\n", "(group_add)"},
+		// isHostPath bind sources: dot-relative, env-expanded, and a Windows
+		// drive path (whose colon split leaves just "C" — hence the single
+		// quotes, so yaml keeps the backslash literal).
+		{"root bind mount", "services:\n  x:\n    image: alpine\n    volumes:\n      - \"/:/host\"\n", "bind mounting host path \"/\""},
+		{"docker socket", "services:\n  x:\n    image: alpine\n    volumes:\n      - \"/var/run/docker.sock:/var/run/docker.sock\"\n", "bind mounting host path"},
+		{"relative bind mount", "services:\n  x:\n    image: alpine\n    volumes:\n      - \"./env:/x\"\n", "bind mounting host path \"./env\""},
+		{"env bind mount", "services:\n  x:\n    image: alpine\n    volumes:\n      - \"$HOME:/x\"\n", "bind mounting host path \"$HOME\""},
+		{"windows drive bind mount", "services:\n  x:\n    image: alpine\n    volumes:\n      - 'C:\\data:/x'\n", "bind mounting host path \"C\""},
+		{"long form bind", "services:\n  x:\n    image: alpine\n    volumes:\n      - type: bind\n        source: /etc\n        target: /etc\n", ""},
+		{"host network", "services:\n  x:\n    image: alpine\n    network_mode: host\n", ""},
+		{"join container netns", "services:\n  x:\n    image: alpine\n    network_mode: \"container:other\"\n", ""},
+		{"driver_opts bind", "services:\n  x:\n    image: alpine\n    volumes:\n      - \"escape:/mnt\"\nvolumes:\n  escape:\n    driver_opts:\n      type: none\n      o: bind\n      device: /\n", ""},
+		{"external volume", "services:\n  x:\n    image: alpine\nvolumes:\n  other:\n    external: true\n", ""},
+		{"external network", "services:\n  x:\n    image: alpine\nnetworks:\n  other:\n    external: true\n", ""},
+		{"port outside range", "services:\n  x:\n    image: alpine\n    ports:\n      - \"22:22\"\n", ""},
+		{"port long form outside range", "services:\n  x:\n    image: alpine\n    ports:\n      - target: 80\n        published: 443\n", ""},
+		{"random host port", "services:\n  x:\n    image: alpine\n    ports:\n      - \"80\"\n", ""},
 	}
 	for _, c := range cases {
-		if err := ValidateCompose(c.yaml, limits); err == nil {
+		err := ValidateCompose(c.yaml, limits)
+		if err == nil {
 			t.Errorf("%s: expected rejection, got nil", c.name)
+			continue
+		}
+		if c.wantSubstr != "" && !strings.Contains(err.Error(), c.wantSubstr) {
+			t.Errorf("%s: error %q does not mention %q", c.name, err, c.wantSubstr)
 		}
 	}
 }

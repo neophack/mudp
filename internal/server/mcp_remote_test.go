@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"mudp/internal/store"
@@ -105,6 +106,58 @@ func TestRemoteMCPRoutesSurface(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("GET /healthz = %d, want 200", rec.Code)
+	}
+}
+
+// TestRemoteMCPRoutesReachTransports is the positive half of the surface check:
+// the MCP transport paths must actually route to their handlers. A bad token
+// stops in resolveMcpContainer, which answers 401 "invalid or expired token"
+// (and records an attack row, since the request carries the remote marker) —
+// any 404 here means the route group itself was lost.
+func TestRemoteMCPRoutesReachTransports(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "mcp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate("admin", "test-admin-pw"); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{db: db}
+	h := a.remoteMCPRoutes()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		want   int
+	}{
+		{"streamable http endpoint", http.MethodPost, "/mcp/deadbeef", http.StatusUnauthorized},
+		{"sse endpoint", http.MethodGet, "/mcp/deadbeef/sse", http.StatusUnauthorized},
+		{"sse messages endpoint", http.MethodPost, "/mcp/deadbeef/messages", http.StatusUnauthorized},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		// Loopback peer: recordMcpAttack then resolves the client IP to a
+		// non-public address, which geoLookup refuses to look up remotely.
+		req.RemoteAddr = "127.0.0.1:1234"
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("%s: %s %s = %d, want %d (body=%s)", tc.name, tc.method, tc.path, rec.Code, tc.want, rec.Body.String())
+		}
+		if tc.want == http.StatusUnauthorized && !strings.Contains(rec.Body.String(), "invalid or expired token") {
+			t.Errorf("%s: body = %s, want the token rejection", tc.name, rec.Body.String())
+		}
+	}
+
+	// The streamable endpoint exists but only for POST: a GET on it is a 405
+	// from the router, not a 404 from the NotFound handler.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/mcp/deadbeef", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /mcp/deadbeef = %d, want 405 (route exists, wrong method)", rec.Code)
 	}
 }
 
@@ -216,4 +269,3 @@ func TestRecordMcpAttack(t *testing.T) {
 		t.Errorf("device not read from CF-Device-Type: got %q want mobile", got.Device)
 	}
 }
-

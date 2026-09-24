@@ -171,6 +171,36 @@ func TestNetdiskUploadTaskVisibleWhileBodyStreaming(t *testing.T) {
 	if got := adminTasksSnapshot(t, a); len(got) != 0 {
 		t.Fatalf("task still listed after upload finished: %+v", got)
 	}
+
+	// netdiskUpload records a single-file failure in results[i].Error and still
+	// answers 200, so the status code above cannot see a broken write. The
+	// batch must be reported ok with an empty per-file error, and big.bin (the
+	// part filename the writer goroutine streamed) must hold both 4096-byte
+	// chunks on disk.
+	var out struct {
+		OK      bool           `json:"ok"`
+		Results []uploadResult `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode upload response: %v; body=%s", err, rec.Body.String())
+	}
+	if !out.OK {
+		t.Fatalf("upload reported ok=false: %s", rec.Body.String())
+	}
+	if len(out.Results) != 1 || out.Results[0].Error != "" {
+		t.Fatalf("upload results = %+v, want one file with no error", out.Results)
+	}
+	root, err := a.userNetdiskRoot(u)
+	if err != nil {
+		t.Fatalf("netdisk root: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "big.bin"))
+	if err != nil {
+		t.Fatalf("read back big.bin: %v", err)
+	}
+	if len(data) != 8192 {
+		t.Fatalf("big.bin = %d bytes on disk, want 8192", len(data))
+	}
 }
 
 // TestNetdiskCopyTaskVisibleWhileRunning verifies a bulk netdisk copy shows up

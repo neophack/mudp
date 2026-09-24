@@ -57,6 +57,47 @@ func TestBayerDecodeFlatField(t *testing.T) {
 	})
 }
 
+// TestBayerDecodeNonFlatGolden pins the demosaic on a non-uniform frame with
+// expectations derived by hand from the bilinear algorithm in bayer.go (own
+// sample at G sites; axial average for one chroma channel and diagonal average
+// for the other at R/B sites; edge-clamped sampling), not from running the
+// code. The load-bearing property is the G-site axis assignment: the axis
+// whose colorAt(x-1,y) is R must take its R from the horizontal neighbors and
+// its B from the vertical ones. A flat field cannot see this — both axes of a
+// same-kind site average to the same per-color constants, so swapping r/b
+// there is invisible — which is exactly the regression this golden guards.
+func TestBayerDecodeNonFlatGolden(t *testing.T) {
+	// 4x4 RGGB, 8-bit, one byte per sample; every site address distinguishable
+	// and all bilinear averages exact integers:
+	//   R  G  R  G      200  96 176  88
+	//   G  B  G  B  =   104  48 112  56
+	//   R  G  R  G      160 120 168  64
+	//   G  B  G  B       72  40  80  32
+	buf := []byte{
+		200, 96, 176, 88,
+		104, 48, 112, 56,
+		160, 120, 168, 64,
+		72, 40, 80, 32,
+	}
+	// Hand-derived row-major RGBA. Border pixels exercise the edge-clamped
+	// duplicates (e.g. (0,0)'s g averages its clamped self twice). ±2 covers
+	// the float rounding of v/255*255.
+	want := []byte{
+		200, 150, 112, 255, 188, 96, 72, 255, 176, 118, 72, 255, 132, 88, 72, 255,
+		180, 104, 76, 255, 176, 108, 48, 255, 172, 112, 52, 255, 124, 80, 56, 255,
+		160, 114, 66, 255, 164, 120, 44, 255, 168, 94, 44, 255, 116, 64, 44, 255,
+		116, 72, 56, 255, 120, 78, 40, 255, 124, 80, 36, 255, 86, 52, 32, 255,
+	}
+	got := BayerDecode(buf, 4, 4, 8, "RGGB", 0, 4)
+	for i := range want {
+		if d := int(got[i]) - int(want[i]); d < -2 || d > 2 {
+			px := i / 4
+			t.Errorf("pixel (%d,%d) channel %d = %d, want %d (±2)",
+				px%4, px/4, i%4, got[i], want[i])
+		}
+	}
+}
+
 func TestBayerDecode16BitLittleEndian(t *testing.T) {
 	// 2x2 RGGB at 16-bit: R=1000 (0,0), G=500 (0,1)/(1,0), B=100 (1,1).
 	buf := []byte{

@@ -63,9 +63,9 @@ func TestRawFrameSizeParity(t *testing.T) {
 	}
 }
 
-// TestParseRasterParams covers the YUV-vs-RAW dispatch and isp flag. The
-// frontend always sends the matching parameter group, so presence of bitDepth
-// selects RAW mode and anything else selects YUV.
+// TestParseRasterParams covers the YUV-vs-RAW dispatch, the frame selector, and
+// the isp flag. The frontend always sends the matching parameter group, so
+// presence of bitDepth selects RAW mode and anything else selects YUV.
 func TestParseRasterParams(t *testing.T) {
 	t.Run("yuv", func(t *testing.T) {
 		p, msg := parseRasterParams(map[string][]string{
@@ -76,6 +76,24 @@ func TestParseRasterParams(t *testing.T) {
 		}
 		if p.Kind != "yuv" || p.Format != "nv12" || !p.ISP || p.Width != 968 || p.Height != 776 {
 			t.Errorf("parsed params = %+v", p)
+		}
+	})
+	t.Run("frame param", func(t *testing.T) {
+		// frame is 0-based (absent means the first frame) and passed through
+		// verbatim; serveRasterFrameJPEG multiplies it by the per-frame size.
+		p, msg := parseRasterParams(map[string][]string{
+			"width": {"8"}, "height": {"8"}, "format": {"i420"}, "frame": {"2"},
+		})
+		if msg != "" {
+			t.Fatalf("unexpected error: %s", msg)
+		}
+		if p.Frame != 2 {
+			t.Errorf("Frame = %d, want 2", p.Frame)
+		}
+		if _, msg := parseRasterParams(map[string][]string{
+			"width": {"8"}, "height": {"8"}, "format": {"i420"}, "frame": {"-1"},
+		}); msg == "" {
+			t.Error("expected an error for a negative frame")
 		}
 	})
 	t.Run("raw", func(t *testing.T) {
@@ -96,14 +114,26 @@ func TestParseRasterParams(t *testing.T) {
 	})
 }
 
-// writeSyntheticYUV writes a multi-frame i420 file: each frame is a full Y
-// plane of 128 followed by U/V planes of 128, so every frame decodes to a
-// flat mid-gray image. Returns the path and the per-frame byte count.
+// writeSyntheticYUV writes a multi-frame i420 file whose frames are
+// distinguishable: frame k carries a flat Y plane of 30+60*k while U/V stay
+// neutral 128, so frame k decodes to flat gray 30+60*k (BT.601 with neutral
+// chroma maps Y=v to (v,v,v)). The 60-level step between frames is what lets a
+// pixel assertion tell a correctly addressed frame from its neighbour. Returns
+// the path and the per-frame byte count.
 func writeSyntheticYUV(t *testing.T, path string, w, h, frames int) (perFrame int) {
 	t.Helper()
 	hw, hh := w/2, h/2
 	perFrame = w*h + 2*hw*hh
-	buf := bytes.Repeat([]byte{128}, perFrame*frames)
+	buf := make([]byte, perFrame*frames)
+	for k := 0; k < frames; k++ {
+		base := k * perFrame
+		for i := 0; i < w*h; i++ {
+			buf[base+i] = byte(30 + 60*k)
+		}
+		for i := w * h; i < perFrame; i++ {
+			buf[base+i] = 128 // neutral U/V
+		}
+	}
 	if err := os.WriteFile(path, buf, 0o644); err != nil {
 		t.Fatalf("write synthetic yuv: %v", err)
 	}
@@ -111,7 +141,9 @@ func writeSyntheticYUV(t *testing.T, path string, w, h, frames int) (perFrame in
 }
 
 // TestServeRasterFrameJPEGYUV writes a tiny synthetic YUV file and asserts the
-// handler returns a decodable JPEG of the requested frame's dimensions.
+// handler returns a decodable JPEG of the requested frame's dimensions *and*
+// luminance — a frame-addressing bug (offset 0 for every frame) must surface
+// as the wrong gray level, not just a same-sized image.
 func TestServeRasterFrameJPEGYUV(t *testing.T) {
 	const w, h = 8, 8
 	tmp := t.TempDir()
@@ -139,21 +171,29 @@ func TestServeRasterFrameJPEGYUV(t *testing.T) {
 	if b := img.Bounds(); b.Dx() != w || b.Dy() != h {
 		t.Errorf("jpeg bounds = %v, want %dx%d", b, w, h)
 	}
+	// Frame 1's Y plane is 30+60*1 = 90, neutral chroma → gray (90,90,90).
+	// Tolerance ±25 absorbs JPEG loss but cannot bridge the 60-level gap to
+	// frame 0.
+	r, g, b, _ := img.At(4, 4).RGBA()
+	if absInt(int(r>>8)-90) > 25 || absInt(int(g>>8)-90) > 25 || absInt(int(b>>8)-90) > 25 {
+		t.Errorf("frame 1 pixel = (%d,%d,%d), want ≈(90,90,90)", r>>8, g>>8, b>>8)
+	}
 }
 
-// TestServeRasterFrameJPEGRaw covers a Bayer RAW frame: a flat 16-bit field
-// demosaics to a uniform color, and the result must still be a valid JPEG of
-// the right size.
+// TestServeRasterFrameJPEGRaw covers a Bayer RAW frame decoded on the pure
+// (no-ISP) path: a RGGB field carrying three distinguishable values must
+// demosaic back to those values at a colour site, not just come back as a
+// valid JPEG of the right size.
 func TestServeRasterFrameJPEGRaw(t *testing.T) {
 	const w, h = 8, 8
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "frame.raw")
-	// 16-bit LE samples, all 0x0080 (= 128 in a 16-bit container, mid-range).
-	perFrame := rawFrameSize(w, h, 16)
-	buf := bytes.Repeat([]byte{0x80, 0x00}, perFrame/2)
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
-		t.Fatalf("write synthetic raw: %v", err)
-	}
+	// Sample values on the 16-bit scale: BayerDecode rescales v → v/65535*255,
+	// so 257*n lands on byte n. R sites hold 200, G sites 100, B sites 50.
+	const rSite = 200 * 257
+	const gSite = 100 * 257
+	const bSite = 50 * 257
+	writeBayerField16(t, path, w, h, rSite, gSite, bSite)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet,
@@ -171,6 +211,13 @@ func TestServeRasterFrameJPEGRaw(t *testing.T) {
 	}
 	if b := img.Bounds(); b.Dx() != w || b.Dy() != h {
 		t.Errorf("jpeg bounds = %v, want %dx%d", b, w, h)
+	}
+	// (2,2) is an R site away from the border: bilinear demosaic keeps the own
+	// channel and averages same-colour neighbours, so the pixel must be
+	// ≈(200,100,50). ±30 absorbs JPEG loss plus interpolation.
+	r, g, b, _ := img.At(2, 2).RGBA()
+	if absInt(int(r>>8)-200) > 30 || absInt(int(g>>8)-100) > 30 || absInt(int(b>>8)-50) > 30 {
+		t.Errorf("R-site pixel = (%d,%d,%d), want ≈(200,100,50)", r>>8, g>>8, b>>8)
 	}
 }
 
@@ -347,29 +394,32 @@ func TestParseRasterParamsIspManual(t *testing.T) {
 	})
 }
 
-// TestServeRasterFrameJPEGRawIspManualGray: a manual ispGray=1 preview must
-// come back grayscale (R==G==B within JPEG tolerance).
+// TestServeRasterFrameJPEGRawIspManualGray pins the wiring
+// "ispGray query key → parseIspManual → IspManual.GrayMode → pipeline" end to
+// end: with gray mode on, every output pixel must be neutral (R==G==B) even
+// for a strongly coloured input, while the same input without ispGray keeps
+// the Bayer colours apart. A flat neutral input would pass both halves
+// trivially, so the field carries R=200/G=100/B=50 on the byte scale.
 func TestServeRasterFrameJPEGRawIspManualGray(t *testing.T) {
 	const w, h = 8, 8
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "frame.raw")
-	buf := make([]byte, rawFrameSize(w, h, 16))
-	for i := 0; i < w*h; i++ {
-		buf[i*2] = 0x80 // 128 in a 16-bit container
-	}
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
-		t.Fatalf("write synthetic raw: %v", err)
-	}
+	path := filepath.Join(t.TempDir(), "frame.raw")
+	writeBayerField16(t, path, w, h, 200*257, 100*257, 50*257)
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet,
-		"/api/netdisk/raster?path=frame.raw&width=8&height=8&bitDepth=16&bayerPattern=RGGB&isp=1&ispGray=1&ispGamma=1", nil)
-	params, msg := parseRasterParams(req.URL.Query())
+	// Neutral BLC/gamma/contrast make the gray value hand-derivable: the raw
+	// sample at an R site (2,2) is 51400, mapped through the gamma LUT alone
+	// back to byte 200.
+	grayReq := httptest.NewRequest(http.MethodGet,
+		"/api/netdisk/raster?path=frame.raw&width=8&height=8&bitDepth=16&bayerPattern=RGGB"+
+			"&isp=1&ispGray=1&ispBlc=0,0,0,0&ispGamma=1&ispContrast=1", nil)
+	params, msg := parseRasterParams(grayReq.URL.Query())
 	if msg != "" {
 		t.Fatalf("parse: %s", msg)
 	}
-	serveRasterFrameJPEG(rec, req, path, params)
-
+	if params.IspManual == nil || !params.IspManual.GrayMode {
+		t.Fatalf("ispGray=1 did not select gray mode: %+v", params.IspManual)
+	}
+	rec := httptest.NewRecorder()
+	serveRasterFrameJPEG(rec, grayReq, path, params)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -377,9 +427,42 @@ func TestServeRasterFrameJPEGRawIspManualGray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode jpeg: %v", err)
 	}
-	r, g, b, _ := img.At(4, 4).RGBA()
-	if absInt(int(r>>8)-int(g>>8)) > 2 || absInt(int(g>>8)-int(b>>8)) > 2 {
+	r, g, b, _ := img.At(2, 2).RGBA()
+	// Gray mode writes one byte to all three channels pre-JPEG, and a neutral
+	// image cannot acquire chroma in the JPEG, so the channels stay together.
+	if absInt(int(r>>8)-int(g>>8)) > 8 || absInt(int(g>>8)-int(b>>8)) > 8 {
 		t.Errorf("gray mode pixel = (%d,%d,%d), want R≈G≈B", r>>8, g>>8, b>>8)
+	}
+	if absInt(int(r>>8)-200) > 30 {
+		t.Errorf("gray mode R-site pixel = %d, want ≈200", r>>8)
+	}
+
+	// Control: the same request without ispGray runs the colour pipeline, which
+	// must keep the red site clearly redder than blue (hand check: the board
+	// pipeline maps this field at (2,2) to roughly (243,90,60) — nowhere near
+	// neutral).
+	colorReq := httptest.NewRequest(http.MethodGet,
+		"/api/netdisk/raster?path=frame.raw&width=8&height=8&bitDepth=16&bayerPattern=RGGB"+
+			"&isp=1&ispBlc=0,0,0,0&ispGamma=1", nil)
+	params, msg = parseRasterParams(colorReq.URL.Query())
+	if msg != "" {
+		t.Fatalf("parse: %s", msg)
+	}
+	if params.IspManual == nil || params.IspManual.GrayMode {
+		t.Fatalf("control request must stay in colour mode: %+v", params.IspManual)
+	}
+	rec = httptest.NewRecorder()
+	serveRasterFrameJPEG(rec, colorReq, path, params)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("control status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	img, _, err = image.Decode(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("decode control jpeg: %v", err)
+	}
+	r, g, b, _ = img.At(2, 2).RGBA()
+	if int(r>>8)-int(b>>8) <= 30 {
+		t.Errorf("colour pipeline pixel = (%d,%d,%d), want the R channel clearly above B", r>>8, g>>8, b>>8)
 	}
 }
 
@@ -400,6 +483,30 @@ func writeSyntheticRaw(t *testing.T, path string, w, h int, lo, hi int) {
 			v := hi
 			if y%2 == 0 && x%2 == 0 { // R site in RGGB
 				v = lo
+			}
+			i := (y*w + x) * 2
+			buf[i] = byte(v & 0xFF)
+			buf[i+1] = byte(v >> 8)
+		}
+	}
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		t.Fatalf("write synthetic raw: %v", err)
+	}
+}
+
+// writeBayerField16 writes a single-frame 16-bit LE Bayer dump whose three CFA
+// colours carry independent values (RGGB: R sites, G sites, B sites).
+func writeBayerField16(t *testing.T, path string, w, h int, rSite, gSite, bSite int) {
+	t.Helper()
+	buf := make([]byte, rawFrameSize(w, h, 16))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			v := gSite
+			switch {
+			case y%2 == 0 && x%2 == 0: // R site in RGGB
+				v = rSite
+			case y%2 == 1 && x%2 == 1: // B site in RGGB
+				v = bSite
 			}
 			i := (y*w + x) * 2
 			buf[i] = byte(v & 0xFF)
@@ -477,7 +584,11 @@ func TestServeRasterFrameJPEGOddDimensions(t *testing.T) {
 			t.Run(fmt.Sprintf("%s_%dx%d", format, w, h), func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "frame.yuv")
 				per := yuvFrameSize(format, w, h)
-				if err := os.WriteFile(path, make([]byte, per), 0o600); err != nil {
+				// Fill every byte with 128: every one of these formats then
+				// decodes to flat mid-gray (Y=128 plus neutral 128 chroma), so
+				// the JPEG must come back neither crushed to black (a decode
+				// that read zeros) nor blown out.
+				if err := os.WriteFile(path, bytes.Repeat([]byte{0x80}, per), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				rec := httptest.NewRecorder()
@@ -494,6 +605,10 @@ func TestServeRasterFrameJPEGOddDimensions(t *testing.T) {
 				}
 				if b := img.Bounds(); b.Dx() != w || b.Dy() != h {
 					t.Errorf("jpeg bounds = %v, want %dx%d", b, w, h)
+				}
+				r, g, b, _ := img.At(0, 0).RGBA()
+				if absInt(int(r>>8)-128) > 30 || absInt(int(g>>8)-128) > 30 || absInt(int(b>>8)-128) > 30 {
+					t.Errorf("%s %dx%d: pixel = (%d,%d,%d), want ≈(128,128,128)", format, w, h, r>>8, g>>8, b>>8)
 				}
 			})
 		}
