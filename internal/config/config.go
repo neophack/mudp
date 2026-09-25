@@ -37,7 +37,7 @@ func Load() Config {
 		Addr:            env("MUDP_ADDR", "0.0.0.0:9000"),
 		DBPath:          env("MUDP_DB", defaultDBPath()),
 		DockerHost:      env("MUDP_DOCKER_HOST", ""),
-		DefaultLanguage:   env("MUDP_DEFAULT_LANGUAGE", "en_US"),
+		DefaultLanguage:   env("MUDP_DEFAULT_LANGUAGE", ""),
 		TrustedProxies:    env("MUDP_TRUSTED_PROXIES", ""),
 		CaptchaTestAnswers: env("MUDP_CAPTCHA_TEST_ANSWERS", "") != "" && env("MUDP_CAPTCHA_TEST_ANSWERS", "") != "0",
 	}

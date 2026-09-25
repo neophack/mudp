@@ -512,6 +512,12 @@ func (a *App) containerLogsStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
+	// Closed on handler return so the reader goroutine can also escape a send
+	// parked on a full readCh: rc.Close() alone only helps when it is inside
+	// Read, not when a second log line arrived while the buffer still held the
+	// first.
+	done := make(chan struct{})
+	defer close(done)
 
 	// Read in a dedicated goroutine so a blocked Docker log follower does not
 	// keep this handler alive after the client disconnects.
@@ -526,7 +532,11 @@ func (a *App) containerLogsStream(w http.ResponseWriter, r *http.Request) {
 				// Copy the slice because buf is reused after the next Read.
 				out := make([]byte, n)
 				copy(out, buf[:n])
-				readCh <- out
+				select {
+				case readCh <- out:
+				case <-done:
+					return
+				}
 			}
 			if err != nil {
 				errCh <- err

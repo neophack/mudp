@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -71,24 +72,71 @@ type chunkUploadState struct {
 	RelPath string `json:"relPath" ` //nolint:revive
 }
 
+// lockIdleTTL bounds how long a lockCache entry survives without an acquire.
+// It must sit far above the longest critical section these locks guard (a
+// 160 MiB segment write over a slow link): entries are stamped on every
+// acquire, so a held or waited-on entry always looks fresh and only genuinely
+// idle ones are evicted.
+const lockIdleTTL = time.Hour
+
+// lockCache is a keyed mutex pool with idle eviction. The keys are unbounded —
+// one per destination and one per destination#index ever uploaded — so without
+// eviction the tables would grow for the lifetime of the process.
+type lockCache struct {
+	mu      sync.Mutex
+	entries map[string]*lockEntry
+	lastGC  time.Time
+}
+
+type lockEntry struct {
+	mu   sync.Mutex
+	seen time.Time
+}
+
+// lock acquires the mutex for key and returns the unlock func the caller must
+// defer. The sweep runs on the acquire path at most once per TTL, mirroring
+// RateLimiter.gcLocked. Eviction cannot strand a live entry: seen is stamped
+// under c.mu before the entry mutex is taken, so an entry old enough to evict
+// has neither a holder nor a waiter. The only escape is a goroutine frozen
+// between stamp and Lock for a full TTL, and even then the failure degrades to
+// one interleaved segment write — which the per-chunk and whole-file CRC32
+// checks catch and the client re-sends.
+func (c *lockCache) lock(key string) func() {
+	now := time.Now()
+	c.mu.Lock()
+	if now.Sub(c.lastGC) >= lockIdleTTL {
+		for k, e := range c.entries {
+			if now.Sub(e.seen) > lockIdleTTL {
+				delete(c.entries, k)
+			}
+		}
+		c.lastGC = now
+	}
+	e, ok := c.entries[key]
+	if !ok {
+		e = &lockEntry{seen: now}
+		c.entries[key] = e
+	}
+	e.seen = now
+	c.mu.Unlock()
+	e.mu.Lock()
+	return e.mu.Unlock
+}
+
 // chunkStateLocks serializes the read-modify-write of one destination's resume
 // state across concurrent chunk uploads for that SAME file (the client
 // uploads chunks with concurrency > 1 by design). Without this, two goroutines
 // can each read the same Received map, mark a different index, and the second
 // write silently clobbers the first — the chunk's bytes are on disk, but the
 // record that it arrived is lost, which later surfaces as a bogus "missing
-// chunks" error on complete. Keyed by destination path; entries are never
-// evicted, but each is just a *sync.Mutex, so the steady-state memory cost is
-// negligible relative to the uploads themselves.
-var chunkStateLocks sync.Map // map[string]*sync.Mutex
+// chunks" error on complete. Keyed by destination path; idle entries are
+// evicted (see lockCache).
+var chunkStateLocks = &lockCache{entries: map[string]*lockEntry{}}
 
 // lockChunkState acquires the per-destination lock, returning the unlock func
 // the caller must defer.
 func lockChunkState(dst string) func() {
-	v, _ := chunkStateLocks.LoadOrStore(dst, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	return chunkStateLocks.lock(dst)
 }
 
 // chunkSegmentLocks serializes writeChunkSegment for one (destination, index)
@@ -98,17 +146,13 @@ func lockChunkState(dst string) func() {
 // concurrently, interleaving bytes into a corrupt segment. Keyed by
 // "dst#index" rather than just dst, so chunks at different indices — which the
 // client intentionally uploads with concurrency > 1 — are not serialized
-// against each other.
-var chunkSegmentLocks sync.Map // map[string]*sync.Mutex
+// against each other. Idle entries are evicted (see lockCache).
+var chunkSegmentLocks = &lockCache{entries: map[string]*lockEntry{}}
 
 // lockChunkSegment acquires the per-(destination,index) lock, returning the
 // unlock func the caller must defer.
 func lockChunkSegment(dst string, index int) func() {
-	key := fmt.Sprintf("%s#%d", dst, index)
-	v, _ := chunkSegmentLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	return chunkSegmentLocks.lock(fmt.Sprintf("%s#%d", dst, index))
 }
 
 // chunkStatePath returns the path of the resume state file for a destination.
@@ -134,7 +178,7 @@ func newUploadID() (string, error) {
 // are rejected outright: every O(TotalChunks) loop downstream must stay
 // genuinely bounded even for state files that predate the init validation.
 func readChunkState(dst string) (*chunkUploadState, error) {
-	data, err := os.ReadFile(chunkStatePath(dst))
+	data, err := readStateFileWithRetry(chunkStatePath(dst))
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +217,23 @@ func writeChunkState(dst string, st *chunkUploadState) error {
 		return err
 	}
 	return renameWithRetry(tmp, statePath)
+}
+
+// readStateFileWithRetry wraps os.ReadFile with a short retry loop for
+// transient Windows errors — the reader-side twin of renameWithRetry. The
+// state file is replaced via write-temp + rename, and a reader that opens the
+// destination while that rename commits can be refused with a sharing
+// violation / ACCESS_DENIED even though nothing is wrong; handleChunk would
+// turn that into a bogus 404 ("no in-progress upload") and lose the chunk. A
+// missing file is returned immediately: it is the normal "no upload in
+// progress" answer, not a transient failure.
+func readStateFileWithRetry(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	for attempt := 0; err != nil && !errors.Is(err, os.ErrNotExist) && attempt < 5; attempt++ {
+		time.Sleep(time.Duration(attempt+1) * 2 * time.Millisecond)
+		data, err = os.ReadFile(path)
+	}
+	return data, err
 }
 
 // renameWithRetry wraps os.Rename with a short retry loop. On Windows,
