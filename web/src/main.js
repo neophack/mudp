@@ -1,5 +1,5 @@
 import { createApp } from "vue";
-import * as ElementPlusIconsVue from "@element-plus/icons-vue";
+import { epIcons } from "./epIcons";
 // Element Plus components are resolved per-template by unplugin-vue-components
 // (see vite.config.js), so there is no app-wide install. These style entries
 // cover what templates can't: ElMessage and ElMessageBox are imported directly
@@ -18,8 +18,9 @@ initTheme();
 
 const app = createApp(App);
 // Element Plus icon props are string component names ("Search", "VideoPlay"…),
-// resolved through globally registered icon components.
-for (const [name, component] of Object.entries(ElementPlusIconsVue)) {
+// resolved through globally registered icon components — only the icons the
+// app actually references (see epIcons.js).
+for (const [name, component] of Object.entries(epIcons)) {
   app.component(name, component);
 }
 app.use(router);

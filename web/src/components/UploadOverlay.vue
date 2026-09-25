@@ -54,22 +54,14 @@ function fmtEta(sec) {
 
 export default {
   name: "UploadOverlay",
-  data() {
-    return { state: getUploadOverlayState(), tick: 0 };
-  },
   computed: {
-    // getUploadOverlayState swaps the whole object whenever a new upload batch
-    // starts; re-read it on every render so the card follows the latest batch.
+    // getUploadOverlayState swaps a whole object per upload batch; reading it
+    // through the stable reactive host registers the dependency, so this
+    // recomputes exactly when a batch starts or the overlay closes — no
+    // polling timer.
     s() {
-      void this.tick;
       return getUploadOverlayState();
     },
-  },
-  mounted() {
-    this._timer = setInterval(() => { this.tick++; }, 500);
-  },
-  beforeUnmount() {
-    clearInterval(this._timer);
   },
   methods: {
     tt,

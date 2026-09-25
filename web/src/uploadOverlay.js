@@ -15,12 +15,15 @@ export function fmtSpeed(bps) {
 const MAX_ACTIVE = 100; // rows on the wire at once
 const MAX_SETTLED = 20; // recently finished rows kept visible
 
-// The single overlay instance; calling show again replaces it.
-let overlayState = null;
+// The single overlay instance; calling show again replaces it. It lives in a
+// stable reactive container so the Vue component can track `current`
+// reactively — swapping a batch in (or clearing it on close) re-renders the
+// overlay, with no polling timer needed.
+const overlayHost = reactive({ current: null });
 let overlaySeq = 0;
 
 export function showUploadOverlay() {
-  overlayState = reactive({
+  const s = reactive({
     visible: true,
     label: "Uploading…",
     overall: { done: 0, failed: 0, total: 0, loaded: 0, bytesTotal: 0, speedBps: 0, etaSec: 0, percent: 0 },
@@ -28,7 +31,7 @@ export function showUploadOverlay() {
     settled: [], // { id, name, size, status: "done"|"error", msg, retry }
     overflowDone: 0,
   });
-  const s = overlayState;
+  overlayHost.current = s;
   const findActive = (slot) => s.active.find((r) => r.id === slot);
   const findSettled = (slot) => s.settled.find((r) => r.id === slot);
 
@@ -132,11 +135,11 @@ export function showUploadOverlay() {
 
     close() {
       s.visible = false;
-      if (overlayState === s) overlayState = null;
+      if (overlayHost.current === s) overlayHost.current = null;
     },
   };
 }
 
 export function getUploadOverlayState() {
-  return overlayState;
+  return overlayHost.current;
 }
