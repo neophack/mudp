@@ -46,6 +46,7 @@
 <script>
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
+import { store } from "@/store";
 import { tt, setLanguage } from "@/i18n";
 import { getCurrentLanguage, SUPPORTED_LANGS } from "@/lib/i18n.js";
 
@@ -82,6 +83,10 @@ export default {
       this.busy = true;
       try {
         await api("/api/setup/init", { method: "POST", body: JSON.stringify(this.form) });
+        // Clear the flag the route guard reads: leaving it set bounces the
+        // push("/login") below straight back to /setup, stranding the operator
+        // on the wizard until a manual reload.
+        store.setupNeeded = false;
         ElMessage.success(tt("setup.completeToast"));
         this.$router.push("/login");
       } catch (err) {

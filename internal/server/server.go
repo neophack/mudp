@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"mudp/internal/auth"
 	"mudp/internal/config"
@@ -60,6 +61,10 @@ type App struct {
 	cacheAt          time.Time
 	registryMu       sync.Mutex
 	setupMu          sync.Mutex
+	// taskSnapMu/… cache the chunked-upload slice of /api/tasks (see tasks.go).
+	taskSnapMu       sync.Mutex
+	taskSnapAt       time.Time
+	taskSnapCache    []ActiveTask
 	backupJobs       *BackupJobRegistry
 	activeTasks      *ActiveTaskRegistry
 	chunkUploads     *ChunkUploadRegistry
@@ -219,6 +224,11 @@ func (a *App) Routes() http.Handler {
 	// here — both land in the aggregated error monitor (errmon.go).
 	r.Use(a.recordErrors)
 	r.Use(middleware.RequestLogger)
+	// Compress the text-heavy responses: the console bundle is ~1.4MB of JS
+	// plus JSON APIs, all ~3x smaller over the wire. SSE streams and binary
+	// downloads are untouched (their content types are not in the list, and
+	// hijacked WebSocket connections never reach the wrapper).
+	r.Use(chimw.Compress(5, "text/html", "text/css", "text/javascript", "application/javascript", "application/json", "image/svg+xml"))
 
 	// Rate limiting keys on the client address. Behind a reverse proxy every
 	// request would otherwise share the proxy's address and one busy client
@@ -626,6 +636,13 @@ func (a *App) staticHandler() http.Handler {
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		if path != "" {
 			if _, err := fs.Stat(spa, path); err == nil {
+				// Vite emits content-hashed file names under assets/: they never
+				// change for a given URL, so browsers may skip revalidation
+				// entirely. Unhashed root files (share.js, world map data) stay
+				// unmarked and index.html is always revalidated.
+				if strings.HasPrefix(path, "assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
 				spaServer.ServeHTTP(w, r)
 				return
 			}
@@ -634,7 +651,10 @@ func (a *App) staticHandler() http.Handler {
 				return
 			}
 		}
-		// Let the SPA router handle the client-side route.
+		// Let the SPA router handle the client-side route. no-cache: a stale
+		// index.html would reference hashed assets that no longer exist after
+		// an upgrade.
+		w.Header().Set("Cache-Control", "no-cache")
 		r.URL.Path = "/"
 		spaServer.ServeHTTP(w, r)
 	})
@@ -1611,13 +1631,43 @@ func (a *App) containerAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Action == "remove" {
 		a.evictCachedContainers(req.ID)
-		a.triggerRuntimeCacheRefresh()
 	} else {
-		// Synchronously refresh so the next list request reflects the new state.
-		a.refreshRuntimeCache(r.Context())
+		a.updateCachedContainerState(req.ID, req.Action)
 	}
+	// The optimistic cache update above already reflects the new state, so the
+	// response returns immediately; the real sweep (sizes, ports, IP changes)
+	// continues in the background and reconciles any drift.
+	a.triggerRuntimeCacheRefresh()
 	a.record(r, "container."+req.Action, target)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// updateCachedContainerState optimistically rewrites a cached container's
+// state after a successful start/stop/restart/pause/unpause, so the next list
+// request reflects the action without waiting for a full Docker sweep. The
+// background refresh that every action triggers reconciles status text, ports
+// and sizes moments later.
+func (a *App) updateCachedContainerState(id, action string) {
+	state := map[string]string{
+		"start": "running", "restart": "running", "unpause": "running",
+		"stop": "exited", "pause": "paused",
+	}[action]
+	if state == "" {
+		return
+	}
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+	for i := range a.cachedContainers {
+		c := &a.cachedContainers[i]
+		if c.ID == id || strings.HasPrefix(c.ID, id) {
+			c.State = state
+			// A stopped container reports no memory; a started one gets its
+			// figure back with the background sweep.
+			if state != "running" {
+				c.MemoryMB = 0
+			}
+		}
+	}
 }
 
 // containerAuditTarget renders a container for audit logs as "name (owner)",
@@ -1801,16 +1851,17 @@ func (a *App) containerBatch(w http.ResponseWriter, r *http.Request) {
 			failed = append(failed, id)
 			continue
 		}
+		if req.Action == "remove" {
+			a.evictCachedContainers(id)
+		} else {
+			a.updateCachedContainerState(id, req.Action)
+		}
 		ok = append(ok, id)
 		okTargets = append(okTargets, target)
 	}
-	if req.Action == "remove" && len(ok) > 0 {
-		a.evictCachedContainers(ok...)
-		a.triggerRuntimeCacheRefresh()
-	} else if len(ok) > 0 {
-		// Synchronously refresh so the next list request reflects the new state.
-		a.refreshRuntimeCache(r.Context())
-	}
+	// State is already reflected optimistically (or evicted for removes); the
+	// coalesced background sweep reconciles ports/sizes/status text.
+	a.triggerRuntimeCacheRefresh()
 	if len(ok) > 0 {
 		a.record(r, "container.batch."+req.Action, strings.Join(okTargets, ", "))
 	}

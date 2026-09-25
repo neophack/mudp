@@ -125,7 +125,13 @@ test.describe("first-run setup wizard", () => {
     await page.fill("input[name='adminUsername']", "wizard-admin");
     await page.fill("input[name='adminPassword']", "wizard-password-1");
     await page.fill("input[name='siteName']", "向导站点");
-    await page.click("form.auth-card .auth-submit");
+    // Wait for the init POST to land: navigating earlier aborts it mid-flight
+    // and the reload would show the wizard again with setup still pending.
+    const [initResp] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes("/api/setup/init"), { timeout: 15000 }),
+      page.click("form.auth-card .auth-submit"),
+    ]);
+    if (!initResp.ok()) throw new Error(`setup init failed: ${initResp.status()}`);
 
     // the wizard hands over to the login page; the fresh credentials work
     await expect(page.locator("form.auth-card")).toBeVisible({ timeout: 15000 });

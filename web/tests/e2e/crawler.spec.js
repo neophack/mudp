@@ -26,6 +26,11 @@ test.afterAll(async () => {
   if (server) await server.stop();
 });
 
+// A healthy-Docker host seeds rows on every page, so the crawler presses
+// dozens of buttons per tab; the 60s global default only fits a Docker-less
+// host. Give the full sweep room.
+test.setTimeout(300000);
+
 test("desktop crawler: every button on every admin tab opens and closes cleanly", async ({ page }) => {
   const h = installPage(page);
   await login(page, server.adminUser, server.adminPassword);

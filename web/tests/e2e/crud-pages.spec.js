@@ -2,7 +2,7 @@
 // netdisk (every toolbar + row action), users, user groups, settings, MCP
 // guard rails, and the global overlays. Runs as admin at desktop size.
 import { test, expect } from "@playwright/test";
-import { startServer, seed } from "./fixtures/server.js";
+import { startServer, seed, apiClient } from "./fixtures/server.js";
 import { installPage, login, logout, openTab, closeModals, toastText } from "./fixtures/ui.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -14,7 +14,10 @@ let info;
 
 test.beforeAll(async () => {
   server = await startServer({ port: 19041 });
-  info = await seed(server, { runId: "crud" });
+  // containers:false keeps the workspace empty: the MCP guard-rail test
+  // asserts the no-container path, which must not depend on whether this
+  // host's Docker happened to let the seeder's container start.
+  info = await seed(server, { runId: "crud", containers: false });
   // Seed files directly into the admin per-user netdisk folder.
   const root = path.join(server.netdiskRoot, "admin-1");
   fs.mkdirSync(path.join(root, "docs"), { recursive: true });
@@ -200,6 +203,17 @@ test("settings: dark theme, site name, registries CRUD", async ({ page }) => {
 });
 
 test("mcp: creating a token without containers offers the jump", async ({ page }) => {
+  // The assertion targets the empty-workspace path: wind back any containers
+  // still listed (leftovers from earlier runs on this host, or anything else)
+  // so the test never depends on host state, then let the containers route
+  // refresh the store before navigating on.
+  const admin = await apiClient(server.url, server.adminUser, server.adminPassword);
+  for (const c of (await admin.get("/api/containers")) || []) {
+    await admin.post("/api/containers/action", { id: c.id, action: "remove" });
+  }
+  await admin.dispose();
+  await openTab(page, "containers");
+  await expect(page.locator(".el-table__row")).toHaveCount(0, { timeout: 10000 });
   await openTab(page, "mcp");
   await page.locator("button", { hasText: "创建令牌" }).first().click();
   const box = page.locator(".el-message-box:visible");

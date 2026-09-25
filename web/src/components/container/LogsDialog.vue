@@ -59,6 +59,11 @@ export default {
       if (v) this.startFollow();
       else this.stopFollow();
     },
+    // The follow stream bakes the tail count into its URL; changing the
+    // selector while following must rebuild the stream, not just refetch once.
+    tail() {
+      if (this.follow) this.startFollow();
+    },
   },
   beforeUnmount() {
     this.stopFollow();
@@ -91,6 +96,11 @@ export default {
           const data = JSON.parse(ev.data);
           if (data.line) {
             this.content = (this.content === "Loading…" ? "" : this.content) + data.line;
+            // Bound the buffer in long follow sessions: keep the newest lines
+            // (a screenful more than the largest tail) so an hours-long watch
+            // doesn't grow the <pre> without limit.
+            const lines = this.content.split("\n");
+            if (lines.length > 6000) this.content = lines.slice(-5000).join("\n");
             this.scrollDown();
           }
         } catch { /* malformed frame */ }

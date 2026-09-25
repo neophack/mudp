@@ -74,6 +74,11 @@
         <h2>{{ tt("processes.title") }}</h2>
         <span class="card-head-sub hint">{{ tt("processes.sub") }}</span>
       </div>
+      <!-- A failed poll must not read as "no processes": say so with a retry. -->
+      <div v-if="failed" class="error-box">
+        ✗ {{ tt("processes.loadFailed") }}
+        <el-button size="small" style="margin-left: 12px" @click="refresh">{{ tt("common.retry") }}</el-button>
+      </div>
       <el-input
         v-model="filter"
         class="filter-input"

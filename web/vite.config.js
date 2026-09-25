@@ -1,5 +1,7 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+import Components from "unplugin-vue-components/vite";
+import { ElementPlusResolver } from "unplugin-vue-components/resolvers";
 import path from "node:path";
 
 // Dev workflow: `npm run dev` starts Vite on :5173 and proxies every
@@ -14,7 +16,15 @@ for (const p of ["/api", "/lib", "/share.js"]) {
 }
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    // Element Plus components (and their styles, plus the v-loading-style
+    // directives) are resolved per template usage, so the app ships only what
+    // it renders instead of the full library. Function APIs that the plugin
+    // cannot see — ElMessage/ElMessageBox called from <script> — keep their
+    // explicit imports and get their styles pinned in main.js.
+    Components({ resolvers: [ElementPlusResolver()] }),
+  ],
   resolve: {
     alias: {
       // The framework-independent helpers under web/lib are shared with the

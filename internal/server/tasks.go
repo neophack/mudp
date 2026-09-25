@@ -162,6 +162,25 @@ func (r *ActiveTaskRegistry) snapshot() []ActiveTask {
 	return out
 }
 
+// taskSnapTTL bounds the chunked-upload snapshot cache. /api/tasks is polled
+// every ~3s per client, and each chunk snapshot re-reads every session's
+// on-disk resume state — with many concurrent viewers and uploads that is a
+// steady stream of redundant stat+read round-trips. The registry data changes
+// at human pace, so two seconds of staleness is invisible.
+const taskSnapTTL = 2 * time.Second
+
+// cachedChunkSnapshot serves the chunked-upload slice of the task list from a
+// short-lived cache. The returned slice must be treated as read-only.
+func (a *App) cachedChunkSnapshot() []ActiveTask {
+	a.taskSnapMu.Lock()
+	defer a.taskSnapMu.Unlock()
+	if a.taskSnapCache == nil || time.Since(a.taskSnapAt) >= taskSnapTTL {
+		a.taskSnapCache = a.chunkUploads.snapshot()
+		a.taskSnapAt = time.Now()
+	}
+	return a.taskSnapCache
+}
+
 func newActiveTaskID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
@@ -289,7 +308,7 @@ func (a *App) collectTasks() []ActiveTask {
 		out = append(out, a.activeTasks.snapshot()...)
 	}
 	if a.chunkUploads != nil {
-		out = append(out, a.chunkUploads.snapshot()...)
+		out = append(out, a.cachedChunkSnapshot()...)
 	}
 	if a.backupJobs != nil {
 		jobs := a.backupJobs.snapshot()

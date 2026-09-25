@@ -176,8 +176,12 @@ export async function seed(server, opts = {}) {
 
   // 4. One running container, one volume and one network per account, so both
   //    the admin and the user view have rows with per-row action buttons.
+  //    opts.containers === false skips the containers entirely, for specs that
+  //    assert on an empty workspace (they must not depend on whether this
+  //    host's Docker happened to cooperate).
   const containers = {};
   for (const [role, client] of [["admin", admin], ["user", user]]) {
+    if (opts.containers === false) break;
     if (!imagePublished) break;
     const create = await client.post("/api/containers", {
       name: `e2e-${role}-${runId}`,

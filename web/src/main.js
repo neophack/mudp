@@ -1,7 +1,13 @@
 import { createApp } from "vue";
-import ElementPlus from "element-plus";
 import * as ElementPlusIconsVue from "@element-plus/icons-vue";
-import "element-plus/dist/index.css";
+// Element Plus components are resolved per-template by unplugin-vue-components
+// (see vite.config.js), so there is no app-wide install. These style entries
+// cover what templates can't: ElMessage and ElMessageBox are imported directly
+// by views, and the loading style backs the v-loading directive usage.
+import "element-plus/es/components/message/style/css";
+import "element-plus/es/components/message-box/style/css";
+import "element-plus/es/components/loading/style/css";
+// Dark palette variables ("dark" class on <html>, driven by store.js).
 import "element-plus/theme-chalk/dark/css-vars.css";
 import App from "./App.vue";
 import { router } from "./router";
@@ -11,7 +17,6 @@ import "./styles/index.css";
 initTheme();
 
 const app = createApp(App);
-app.use(ElementPlus);
 // Element Plus icon props are string component names ("Search", "VideoPlay"…),
 // resolved through globally registered icon components.
 for (const [name, component] of Object.entries(ElementPlusIconsVue)) {

@@ -124,20 +124,17 @@ export async function fillCaptcha(page) {
   await page.fill("input[name='captcha']", answer);
 }
 
-// loginCaptured avoids the refresh-click entirely: it captures the captcha
-// response the login page loads by itself, so answer and challenge id are
-// always the pair that is on screen. Use it for fresh single-shot logins
-// (setup handover, pending checks) where a first wrong submit would muddy
-// the test.
+// loginCaptured performs a fresh single-shot login (setup handover, pending
+// checks) where a first wrong submit would muddy the test. It navigates to
+// /login and refreshes the challenge explicitly rather than racing the page's
+// own captcha fetch: the setup handover may have loaded /login before we
+// attached a listener, so the auto-fetch response can already be gone.
 export async function loginCaptured(page, username, password) {
-  const [resp] = await Promise.all([
-    page.waitForResponse((r) => r.url().includes("/api/captcha")),
-    page.goto("/login"),
-  ]);
+  await page.goto("/login");
   await page.locator("form.auth-card").waitFor();
   await page.fill("input[name='username']", username);
   await page.fill("input[name='password']", password);
-  await page.fill("input[name='captcha']", resp.headers()["x-mudp-captcha-answer"]);
+  await fillCaptcha(page);
   await page.click("form.auth-card .auth-submit");
   await expect(page.locator("aside nav")).toBeVisible({ timeout: 90000 });
 }
