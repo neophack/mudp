@@ -2168,11 +2168,13 @@ func (db *DB) SaveResourceSamples(samples []ResourceSample) error {
 	return tx.Commit()
 }
 
+// maxResourceSamples caps the history read: one minute of samples per
+// container over 24h across a busy host approaches tens of thousands of rows,
+// more than any chart shows. Newest rows win; ascending order is restored
+// after the query.
+const maxResourceSamples = 20000
+
 func (db *DB) ResourceSamples(userID int64, admin bool, since time.Time) ([]ResourceSample, error) {
-	// Hard cap: one minute of samples per container over 24h across a busy
-	// host approaches tens of thousands of rows, more than any chart shows.
-	// Newest rows win; the ordering is restored to ascending afterwards.
-	const maxSamples = 20000
 	q := `select id, user_id, username, container_id, container_name, cpu_pct, mem_mb, disk_mb, gpu_pct, created_at from resource_samples where created_at >= ?`
 	args := []any{since.Format(time.RFC3339)}
 	if !admin {
@@ -2180,7 +2182,7 @@ func (db *DB) ResourceSamples(userID int64, admin bool, since time.Time) ([]Reso
 		args = append(args, userID)
 	}
 	q += ` order by created_at desc limit ?`
-	args = append(args, maxSamples)
+	args = append(args, maxResourceSamples)
 	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err

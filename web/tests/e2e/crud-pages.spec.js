@@ -97,6 +97,43 @@ test("netdisk: batch share creates a link", async ({ page }) => {
   await closeModals(page);
 });
 
+test("netdisk: deleting an external share asks first, and cancel keeps it", async ({ page }) => {
+  // Seed the share over the API so this test owns its fixture end to end.
+  const admin = await apiClient(server.url, server.adminUser, server.adminPassword);
+  const created = await admin.post("/api/netdisk/share", { paths: ["notes.txt"], name: "confirm-share" });
+  if (!created.ok) throw new Error(`share create failed: ${created.status} ${created.body}`);
+  await admin.dispose();
+
+  await openTab(page, "netdisk");
+  const sharesCard = page.locator(".card", { hasText: "外链" }).first();
+  const shareRow = sharesCard.locator(".el-table__row", { hasText: "confirm-share" }).first();
+  await shareRow.waitFor();
+
+  // Cancel leaves the share alive.
+  await shareRow.locator("button", { hasText: "删除" }).click();
+  const box = page.locator(".el-message-box:visible");
+  await expect(box).toContainText("confirm-share");
+  await box.locator("button").first().click();
+  await expect(sharesCard.locator(".el-table__row", { hasText: "confirm-share" })).toHaveCount(1);
+
+  // Confirming removes it.
+  await shareRow.locator("button", { hasText: "删除" }).click();
+  await box.waitFor();
+  await box.locator("button").last().click();
+  await expect(sharesCard.locator(".el-table__row", { hasText: "confirm-share" })).toHaveCount(0, { timeout: 10000 });
+});
+
+test("images: pull with an empty reference warns instead of closing silently", async ({ page }) => {
+  await openTab(page, "images");
+  await page.locator("button", { hasText: "拉取镜像" }).first().click();
+  const dlg = page.locator(".el-dialog:visible").first();
+  await dlg.locator("button", { hasText: "拉取并发布" }).last().click();
+  await expect(page.locator(".el-message").last()).toContainText("镜像引用");
+  // The dialog must stay open so the operator can actually fill the field.
+  await expect(page.locator(".el-dialog:visible").first()).toBeVisible();
+  await closeModals(page);
+});
+
 test("netdisk: text and image preview dialogs", async ({ page }) => {
   await openTab(page, "netdisk");
   await row(page, "notes.txt").waitFor();

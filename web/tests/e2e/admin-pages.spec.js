@@ -38,6 +38,14 @@ test("dashboard: neutral empty ring, env card visible for admin", async ({ page 
   await expect(page.locator("section.card", { hasText: "容器" }).first()).toBeVisible();
 });
 
+test("hardware: live charts actually paint canvases", async ({ page }) => {
+  // Guards the echarts on-demand registration: if a chart type or component
+  // is missing from the bundle the page still lays out but renders no canvas.
+  await openTab(page, "hardware");
+  await page.waitForSelector(".echart-box canvas", { timeout: 15000 });
+  expect(await page.locator(".echart-box canvas").count()).toBeGreaterThanOrEqual(2);
+});
+
 test("audit: rows render, filter narrows, CSV export present", async ({ page }) => {
   await openTab(page, "audit");
   const rows = page.locator(".el-table__row");
