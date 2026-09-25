@@ -83,9 +83,13 @@ export function installPage(page) {
       }
     },
     // assertClean fails the test with the collected diagnostics attached.
-    assertClean: (context = "") => {
+    // ignore503 lets a suite run on machines without a Docker daemon: every
+    // Docker-backed endpoint answers 503 by design there, while any other 5xx
+    // is still a real bug.
+    assertClean: (context = "", { ignore503 = false } = {}) => {
       expect(jsErrors, `JS errors${context ? " during " + context : ""}`).toEqual([]);
-      expect(serverErrors, `5xx responses${context ? " during " + context : ""}`).toEqual([]);
+      const errs = ignore503 ? serverErrors.filter((e) => !e.startsWith("503 ")) : serverErrors;
+      expect(errs, `5xx responses${context ? " during " + context : ""}`).toEqual([]);
     },
   };
 }
@@ -120,6 +124,24 @@ export async function fillCaptcha(page) {
   await page.fill("input[name='captcha']", answer);
 }
 
+// loginCaptured avoids the refresh-click entirely: it captures the captcha
+// response the login page loads by itself, so answer and challenge id are
+// always the pair that is on screen. Use it for fresh single-shot logins
+// (setup handover, pending checks) where a first wrong submit would muddy
+// the test.
+export async function loginCaptured(page, username, password) {
+  const [resp] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes("/api/captcha")),
+    page.goto("/login"),
+  ]);
+  await page.locator("form.auth-card").waitFor();
+  await page.fill("input[name='username']", username);
+  await page.fill("input[name='password']", password);
+  await page.fill("input[name='captcha']", resp.headers()["x-mudp-captcha-answer"]);
+  await page.click("form.auth-card .auth-submit");
+  await expect(page.locator("aside nav")).toBeVisible({ timeout: 90000 });
+}
+
 export async function logout(page) {
   await page.click("aside .profile button");
   await expect(page.locator("form.auth-card")).toBeVisible({ timeout: 15000 });
@@ -136,26 +158,34 @@ export async function openTab(page, tab) {
 }
 
 export function modal(page) {
-  return page.locator(".el-dialog__wrapper:visible .el-dialog").last();
+  return page.locator(".el-dialog__wrapper:visible .el-dialog, .el-dialog:visible").last();
 }
 
 // closeModals dismisses every open modal. Esc is tried first (ui.js binds it
 // globally), but some panels — the terminal in particular — hand keyboard
 // focus to an embedded widget (xterm.js) that swallows the keypress before it
 // reaches document, so each [data-close] button is clicked as a fallback.
+const OPEN_OVERLAYS = ".el-dialog__wrapper:visible, .el-message-box__wrapper:visible, .el-dialog:visible, .el-message-box:visible";
+
 export async function closeModals(page) {
   for (let i = 0; i < 8; i++) {
-    if ((await page.locator(".el-dialog__wrapper:visible, .el-message-box__wrapper:visible").count()) === 0) return;
+    if ((await page.locator(OPEN_OVERLAYS).count()) === 0) return;
     await page.keyboard.press("Escape");
     await page.waitForTimeout(150);
-    if ((await page.locator(".el-dialog__wrapper:visible, .el-message-box__wrapper:visible").count()) === 0) return;
-    const closeBtn = page.locator(".el-dialog__wrapper:visible .el-dialog__headerbtn, .el-message-box__wrapper:visible .el-message-box__headerbtn").last();
-    if ((await closeBtn.count()) > 0 && (await closeBtn.isVisible())) {
-      await closeBtn.click();
+    if ((await page.locator(OPEN_OVERLAYS).count()) === 0) return;
+    const closeBtn = page.locator(".el-dialog:visible, .el-message-box:visible").first().locator(".el-dialog__headerbtn, .el-message-box__headerbtn");
+    if ((await closeBtn.count()) > 0) {
+      // force: an in-flight fade counts as "not stable" and would stall here;
+      // a stale/invisible match is non-fatal, the next loop round re-checks
+      try {
+        await closeBtn.first().click({ force: true, timeout: 1500 });
+      } catch {
+        /* fall through to the final count assertion */
+      }
       await page.waitForTimeout(150);
     }
   }
-  await expect(page.locator(".el-dialog__wrapper:visible, .el-message-box__wrapper:visible")).toHaveCount(0);
+  await expect(page.locator(OPEN_OVERLAYS)).toHaveCount(0);
 }
 
 // describeButtons snapshots the clickable buttons inside a scope, keeping a

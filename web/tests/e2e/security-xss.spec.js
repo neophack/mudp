@@ -75,7 +75,7 @@ test("a group name containing a <script> payload renders as inert text, never ex
   const marker = await page.evaluate(() => window.__xssMarker);
   expect(marker).toBe(false);
 
-  h.assertClean("creating a group with an XSS payload name");
+  h.assertClean("creating a group with an XSS payload name", { ignore503: true });
 });
 
 test("an uploaded filename with HTML-special characters renders as inert text in the netdisk list", async ({ page }) => {
@@ -106,5 +106,5 @@ test("an uploaded filename with HTML-special characters renders as inert text in
   const marker = await page.evaluate(() => window.__xssMarker2);
   expect(marker).toBe(false);
 
-  h.assertClean("uploading a filename with HTML-special characters");
+  h.assertClean("uploading a filename with HTML-special characters", { ignore503: true });
 });

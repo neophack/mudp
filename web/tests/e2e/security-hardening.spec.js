@@ -92,7 +92,7 @@ test("share dialog creates a password-protected link; /pan page gates it behind 
   const relLink = ((await chip.nth(0).textContent()) || "").trim();
   shareToken = relLink.split("/").pop();
   shareLink = `http://127.0.0.1:${PORT}/pan/${shareToken}`;
-  h.assertClean("creating a password-protected share");
+  h.assertClean("creating a password-protected share", { ignore503: true });
 
   // Visit the link from a pristine (logged-out) context: the password
   // backdrop must appear and the file list must stay empty.
