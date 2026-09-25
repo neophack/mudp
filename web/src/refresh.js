@@ -16,7 +16,10 @@ import { store, refreshSection, fetchNotifications } from "@/store";
 // view-local data and register a hook below instead of a store section.
 const ROUTE_REFRESH = {
   containers: { ms: 5000, sections: ["containers"] },
-  dashboard: { ms: 8000, sections: ["dashboard"] },
+  // The dashboard renders "My Containers" from the containers section and
+  // "Recent Activity" from audit, so those must move with it (audit gets its
+  // own slower view-level poll — it's an admin-only, heavier endpoint).
+  dashboard: { ms: 8000, sections: ["dashboard", "containers"] },
   images: { ms: 10000, sections: ["images"] },
   volumes: { ms: 10000, sections: ["volumes"] },
   networks: { ms: 10000, sections: ["networks"] },
@@ -44,9 +47,13 @@ let timer = null;
 let inFlight = false;
 
 // dialogOpen reports whether an Element overlay (dialog/drawer/message-box)
-// is currently on screen — background refreshes must not run behind one.
+// is currently on screen — background refreshes must not run behind one. EP
+// keeps closed overlays in the DOM (display:none), so go by computed style.
 function overlayOpen() {
-  return !!(document.querySelector(".v-modal") || document.querySelector(".el-message-box__wrapper"));
+  for (const el of document.querySelectorAll(".el-overlay")) {
+    if (getComputedStyle(el).display !== "none") return true;
+  }
+  return false;
 }
 
 function userTyping() {

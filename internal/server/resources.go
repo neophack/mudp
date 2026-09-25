@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"mudp/internal/dockerx"
@@ -39,12 +40,29 @@ func (a *App) refreshRuntimeCache(ctx context.Context) {
 // triggerRuntimeCacheRefresh runs a cache refresh in the background so that
 // mutating endpoints (create, start, stop, etc.) do not return stale data on
 // the next list request. It uses a detached context so the refresh survives
-// the HTTP request lifecycle.
+// the HTTP request lifecycle. Bursts coalesce: while one refresh is running,
+// further triggers only set the pending flag, and the running sweep repeats
+// once at the end — so a batch create of 20 containers costs one or two full
+// sweeps instead of twenty.
 func (a *App) triggerRuntimeCacheRefresh() {
+	a.refreshPending.Store(true)
+	if !a.refreshInFlight.CompareAndSwap(false, true) {
+		return
+	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		a.refreshRuntimeCache(ctx)
+		defer func() {
+			a.refreshInFlight.Store(false)
+			// A trigger may have landed between the final pending check below
+			// and this release; re-arm so it is not lost.
+			if a.refreshPending.Load() {
+				a.triggerRuntimeCacheRefresh()
+			}
+		}()
+		for a.refreshPending.CompareAndSwap(true, false) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			a.refreshRuntimeCache(ctx)
+			cancel()
+		}
 	}()
 }
 
@@ -121,7 +139,15 @@ func (a *App) collectResourceSnapshot(ctx context.Context) []store.ResourceSampl
 	if err != nil {
 		return nil
 	}
-	a.refreshRuntimeCache(ctx)
+	// The 15s cache tick usually ran moments ago; only sweep again when the
+	// cached list is actually stale, so the sample tick doesn't redo the
+	// per-container stats that refreshRuntimeCache just did.
+	a.cacheMu.RLock()
+	fresh := time.Since(a.cacheAt) < 20*time.Second
+	a.cacheMu.RUnlock()
+	if !fresh {
+		a.refreshRuntimeCache(ctx)
+	}
 	containers := a.runtimeContainers("", true)
 	usersByName := map[string]store.User{}
 	for _, u := range users {
@@ -129,23 +155,49 @@ func (a *App) collectResourceSnapshot(ctx context.Context) []store.ResourceSampl
 	}
 	var samples []store.ResourceSample
 	now := time.Now().Format(time.RFC3339)
+	// Stats samples are one network call per running container; bounded
+	// concurrency keeps a 30-container host from spending seconds in here.
+	type pendingSample struct {
+		s      store.ResourceSample
+		statID string
+	}
+	pending := make([]pendingSample, 0, len(containers))
 	for _, c := range containers {
 		u, ok := usersByName[c.Labels["mudp.user"]]
 		if !ok {
 			continue
 		}
-		s := store.ResourceSample{
+		p := pendingSample{s: store.ResourceSample{
 			UserID: u.ID, Username: u.Username, ContainerID: c.ID, Container: c.Name,
 			MemoryMB: c.MemoryMB, DiskMB: c.DiskMB, CreatedAt: now,
-		}
+			GPUPercent: c.GPUPercent,
+		}}
 		if c.State == "running" {
-			if one, err := a.docker.SampleStats(ctx, c.ID); err == nil {
-				s.CPUPercent = one.CPUPercent
-				s.MemoryMB = one.MemoryMB
-			}
+			p.statID = c.ID
 		}
-		s.GPUPercent = c.GPUPercent
-		samples = append(samples, s)
+		pending = append(pending, p)
+	}
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i := range pending {
+		if pending[i].statID == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(p *pendingSample) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if one, err := a.docker.SampleStats(ctx, p.statID); err == nil {
+				p.s.CPUPercent = one.CPUPercent
+				p.s.MemoryMB = one.MemoryMB
+			}
+		}(&pending[i])
+	}
+	wg.Wait()
+	samples = make([]store.ResourceSample, len(pending))
+	for i := range pending {
+		samples[i] = pending[i].s
 	}
 	if err := a.db.SaveResourceSamples(samples); err == nil {
 		a.snapshotMu.Lock()
@@ -177,6 +229,21 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 	processWatchTick := time.NewTicker(processWatchInterval)
 
 	stop := make(chan struct{})
+	// Scheduled backups can run for minutes (every user, every file); they get
+	// their own goroutine so a long backup never stalls the 15s cache refresh,
+	// the process watch or resource sampling. maybeRunScheduledBackup marks
+	// its schedule row before starting, so overlapping ticks cannot double-run.
+	go func() {
+		for {
+			select {
+			case <-backupTick.C:
+				a.maybeRunScheduledBackup(ctx)
+			case <-stop:
+				backupTick.Stop()
+				return
+			}
+		}
+	}()
 	go func() {
 		// Initial passes (process watch, resource sample, prune) used to run
 		// synchronously before the HTTP listener bound. Every one of them
@@ -204,8 +271,6 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 				if err := a.db.Checkpoint(); err != nil {
 					// Best-effort; noisy logs on shutdown are unhelpful.
 				}
-			case <-backupTick.C:
-				a.maybeRunScheduledBackup(ctx)
 			case <-processWatchTick.C:
 				a.watchProcesses(ctx)
 			case <-stop:
@@ -213,7 +278,6 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 				sample.Stop()
 				prune.Stop()
 				checkpoint.Stop()
-				backupTick.Stop()
 				processWatchTick.Stop()
 				return
 			}

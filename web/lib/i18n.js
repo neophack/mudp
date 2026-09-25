@@ -34,6 +34,9 @@ const translations = {
     "nav.processes": "进程",
     "nav.errors": "错误监控",
     "nav.toggleMenu": "菜单",
+    "nav.groupWorkspace": "工作区",
+    "nav.groupResources": "资源",
+    "nav.groupSystem": "系统",
 
     // Shell actions
     "action.searchContainers": "搜索容器",
@@ -90,6 +93,7 @@ const translations = {
     // Common
     "common.save": "保存",
     "common.cancel": "取消",
+    "common.search": "搜索",
     "common.close": "关闭",
     "common.edit": "编辑",
     "common.delete": "删除",
@@ -139,11 +143,12 @@ const translations = {
     "login.feishuCompanyNotAllowed": "当前飞书账号所属公司不在允许列表中，请联系管理员。",
     "login.captcha": "图形验证码",
     "login.captchaError": "验证码不正确，请重试。",
+    "login.badCredentials": "用户名或密码不正确。",
     "login.captchaRefresh": "点击刷新验证码",
 
     // Pending approval
     "pending.title": "等待管理员审批",
-    "pending.greeting": "你好 <strong>{name}</strong>，你的账号已创建，并已被加入待审批组。",
+    "pending.greeting": "你好 {name}，你的账号已创建，并已被加入待审批组。",
     "pending.hint": "请联系管理员将你加入一个业务组后再开始使用本平台。",
 
     // Sidebar / shell
@@ -199,6 +204,8 @@ const translations = {
     "containers.filterRunning": "运行中",
     "containers.filterStopped": "已停止",
     "containers.filterPaused": "已暂停",
+    "containers.filterUnhealthy": "异常",
+    "containers.loadFailed": "容器列表加载失败（Docker 可能不可用）",
     "containers.selectedN": "已选择 {n} 个",
     "containers.batchStart": "▶ 启动",
     "containers.batchStop": "■ 停止",
@@ -233,6 +240,8 @@ const translations = {
     "create.title": "新建容器",
     "create.namePlaceholder": "容器名称，例如 dev01",
     "create.selectImage": "选择镜像",
+    "create.noImages": "还没有可用镜像，请先在镜像页拉取、构建或注册一个。",
+    "create.goImages": "去镜像页",
     "create.envPlaceholder": "环境变量，每行一个 KEY=VALUE",
     "create.portsPlaceholder": "容器端口，每行一个，如 8080[/tcp|/udp]",
     "create.portHintAssigned": "主机端口将从你的端口段 {lo}-{hi} 自动分配",
@@ -338,6 +347,7 @@ const translations = {
     "images.noGroupsHint": "暂无用户组。不勾选任何组，则该镜像对所有用户可见。",
     "images.presetUpdated": "镜像已更新",
     "images.pullTitle": "拉取镜像",
+    "images.refRequired": "请填写镜像引用（如 nginx:alpine）",
     "images.pullSourcePlaceholder": "源镜像，例如 ubuntu:22.04",
     "images.pullNamePlaceholder": "显示名称，例如 ubuntu",
     "images.pullPublish": "拉取并发布",
@@ -360,6 +370,8 @@ const translations = {
     "images.built": "已构建 {tags}",
     "images.importTitle2": "导入镜像（tar）",
     "images.importHint": "加载此前用 docker save 保存的镜像。",
+    "images.chooseFile": "选择文件",
+    "images.noFileChosen": "未选择文件",
     "images.import2": "导入",
     "images.selectTar": "请选择一个 tar 文件",
     "images.importing": "导入中…",
@@ -688,6 +700,7 @@ const translations = {
     "settings.appearance": "外观",
     "settings.appearanceHint": "浅色或深色界面，可跟随系统自动切换。",
     "settings.defaultLanguageSub": "新用户将使用的默认语言。",
+    "settings.followBrowser": "跟随浏览器",
     "settings.siteNameSub": "显示在浏览器标签页与侧边栏中的站点名称。",
     "settings.registriesSub": "为拉取私有镜像配置仓库凭证。",
     "settings.mcpExternalSub": "通过 Cloudflare 隧道将 MCP 端点发布到局域网之外。",
@@ -793,7 +806,8 @@ const translations = {
     "mcp.creating": "创建中…",
     "mcp.tokenCreated": "令牌已创建",
     "mcp.selectContainerFirst": "请先选择一个容器",
-    "mcp.noContainers": "暂无可用容器",
+    "mcp.noContainers": "还没有可用容器。先创建并启动一个容器，再回来生成令牌。",
+    "mcp.goContainers": "去容器页",
     "mcp.configTitle": "MCP 配置",
     "mcp.oldTokenBody": "此令牌（用于 {name}）创建于明文存储之前，因此无法再次显示其完整值。",
     "mcp.oldTokenHint": "请删除此令牌并新建一个，以获取可复制的配置。",
@@ -865,6 +879,8 @@ const translations = {
     "netdisk.share": "分享",
     "netdisk.deleteConfirmOne": "删除 {name}？",
     "netdisk.deleted": "已删除",
+    "netdisk.deletedNFailed": "已删除 {ok} 项，{err} 项失败",
+    "netdisk.shareDeleteConfirm": "删除外链「{name}」？删除后链接立即失效。",
     "netdisk.renamePrompt": "新名称",
     "netdisk.renamed": "已重命名",
     "netdisk.batchDeleteConfirm": "删除 {n} 项？",
@@ -1137,6 +1153,10 @@ const translations = {
     "security.accessMap": "访问位置地图",
     "security.accessMapHint": "每个点代表一个访问来源，点的大小映射访问次数。",
     "security.topCountries": "访问来源国家/地区 Top 5（公网）",
+    "security.legendAccess": "访问次数",
+    "security.legendOk": "合法访问",
+    "security.legendProbe": "单次/低频探测",
+    "security.legendHeavy": "高频攻击",
     "security.topIPs": "访问来源公网 IP Top 5",
     "security.unknown": "未知",
     "security.none": "暂无",
@@ -1474,10 +1494,11 @@ const translations = {
     "errors.noErrors": "没有记录到的错误。",
     "errors.viewStack": "查看堆栈",
     "errors.noStack": "无堆栈信息",
-    "errors.resolve": "解决",
+    "errors.resolve": "标记解决",
     "errors.resolved": "已解决",
     "errors.clearAll": "清空",
     "errors.cleared": "已清空",
+    "errors.clearConfirm": "将删除所有聚合错误事件，且不可恢复。确定清空？",
     "errors.export": "导出 CSV",
     "errors.first": "首次",
     "errors.last": "最近",
@@ -1509,6 +1530,9 @@ const translations = {
     "nav.processes": "Processes",
     "nav.errors": "Errors",
     "nav.toggleMenu": "Menu",
+    "nav.groupWorkspace": "Workspace",
+    "nav.groupResources": "Resources",
+    "nav.groupSystem": "System",
 
     // Shell actions
     "action.searchContainers": "Search containers",
@@ -1565,6 +1589,7 @@ const translations = {
     // Common
     "common.save": "Save",
     "common.cancel": "Cancel",
+    "common.search": "Search",
     "common.close": "Close",
     "common.edit": "Edit",
     "common.delete": "Delete",
@@ -1614,11 +1639,12 @@ const translations = {
     "login.feishuCompanyNotAllowed": "Your Feishu account's company is not allowed. Please contact the administrator.",
     "login.captcha": "Captcha code",
     "login.captchaError": "Incorrect captcha. Please try again.",
+    "login.badCredentials": "Incorrect username or password.",
     "login.captchaRefresh": "Click to refresh captcha",
 
     // Pending approval
     "pending.title": "Waiting for Admin Approval",
-    "pending.greeting": "Hello <strong>{name}</strong>, your account has been created and placed in the pending approval group.",
+    "pending.greeting": "Hello {name}, your account has been created and placed in the pending approval group.",
     "pending.hint": "Please contact an administrator to add you to a business group before you can start using the platform.",
 
     // Sidebar / shell
@@ -1674,6 +1700,8 @@ const translations = {
     "containers.filterRunning": "Running",
     "containers.filterStopped": "Stopped",
     "containers.filterPaused": "Paused",
+    "containers.filterUnhealthy": "Unhealthy",
+    "containers.loadFailed": "Failed to load containers (Docker may be unavailable)",
     "containers.selectedN": "{n} selected",
     "containers.batchStart": "▶ Start",
     "containers.batchStop": "■ Stop",
@@ -1708,6 +1736,8 @@ const translations = {
     "create.title": "New Container",
     "create.namePlaceholder": "Container name, e.g. dev01",
     "create.selectImage": "Select image",
+    "create.noImages": "No images available yet. Pull, build or register one on the Images page first.",
+    "create.goImages": "Go to Images",
     "create.envPlaceholder": "Environment variables, one KEY=VALUE per line",
     "create.portsPlaceholder": "Container ports, one per line, e.g. 8080[/tcp|/udp]",
     "create.portHintAssigned": "Host ports are auto-allocated from your range {lo}-{hi}",
@@ -1813,6 +1843,7 @@ const translations = {
     "images.noGroupsHint": "No groups yet. Leave unchecked to make the image visible to all users.",
     "images.presetUpdated": "Image updated",
     "images.pullTitle": "Pull Image",
+    "images.refRequired": "Enter an image reference (e.g. nginx:alpine)",
     "images.pullSourcePlaceholder": "Source image, e.g. ubuntu:22.04",
     "images.pullNamePlaceholder": "Display name, e.g. ubuntu",
     "images.pullPublish": "Pull and Publish",
@@ -1835,6 +1866,8 @@ const translations = {
     "images.built": "Built {tags}",
     "images.importTitle2": "Import Image (tar)",
     "images.importHint": "Load an image previously saved with docker save.",
+    "images.chooseFile": "Choose file",
+    "images.noFileChosen": "No file chosen",
     "images.import2": "Import",
     "images.selectTar": "Select a tar file",
     "images.importing": "Importing…",
@@ -2163,6 +2196,7 @@ const translations = {
     "settings.appearance": "Appearance",
     "settings.appearanceHint": "Light or dark interface; Auto follows your system.",
     "settings.defaultLanguageSub": "The default language used for new users.",
+    "settings.followBrowser": "Follow browser",
     "settings.siteNameSub": "The site name shown in the browser tab and sidebar.",
     "settings.registriesSub": "Configure credentials for pulling images from private registries.",
     "settings.mcpExternalSub": "Publish MCP endpoints beyond the LAN via a Cloudflare tunnel.",
@@ -2268,7 +2302,8 @@ const translations = {
     "mcp.creating": "Creating...",
     "mcp.tokenCreated": "Token created",
     "mcp.selectContainerFirst": "Select a container first",
-    "mcp.noContainers": "No containers available",
+    "mcp.noContainers": "No containers yet. Create and start one first, then come back for a token.",
+    "mcp.goContainers": "Go to Containers",
     "mcp.configTitle": "MCP Configuration",
     "mcp.oldTokenBody": "This token (for {name}) was created before tokens were stored in cleartext, so its full value can't be shown again.",
     "mcp.oldTokenHint": "Delete this token and create a new one to get a copyable config.",
@@ -2340,6 +2375,8 @@ const translations = {
     "netdisk.share": "Share",
     "netdisk.deleteConfirmOne": "Delete {name}?",
     "netdisk.deleted": "Deleted",
+    "netdisk.deletedNFailed": "{ok} deleted, {err} failed",
+    "netdisk.shareDeleteConfirm": "Delete the share link \"{name}\"? It will stop working immediately.",
     "netdisk.renamePrompt": "New name",
     "netdisk.renamed": "Renamed",
     "netdisk.batchDeleteConfirm": "Delete {n} item(s)?",
@@ -2612,6 +2649,10 @@ const translations = {
     "security.accessMap": "Access map",
     "security.accessMapHint": "Each dot is one source location; size scales with visit count.",
     "security.topCountries": "Top countries / regions (public)",
+    "security.legendAccess": "Visits",
+    "security.legendOk": "Legit access",
+    "security.legendProbe": "One-off probe",
+    "security.legendHeavy": "High-frequency attack",
     "security.topIPs": "Top public IPs",
     "security.unknown": "Unknown",
     "security.none": "None",
@@ -2949,10 +2990,11 @@ const translations = {
     "errors.noErrors": "No recorded errors.",
     "errors.viewStack": "View stack",
     "errors.noStack": "No stack captured",
-    "errors.resolve": "Resolve",
+    "errors.resolve": "Mark resolved",
     "errors.resolved": "Resolved",
     "errors.clearAll": "Clear all",
     "errors.cleared": "Cleared",
+    "errors.clearConfirm": "This permanently deletes every aggregated error event. Clear all?",
     "errors.export": "Export CSV",
     "errors.first": "First",
     "errors.last": "Last",
@@ -2975,7 +3017,11 @@ export function initI18n(userLanguage, systemDefaultLanguage, groupLanguage = nu
   } else if (systemDefaultLanguage && SUPPORTED_LANGS.includes(systemDefaultLanguage)) {
     currentLanguage = systemDefaultLanguage;
   } else {
-    currentLanguage = DEFAULT_LANGUAGE;
+    // No explicit preference anywhere (first visitor, admin never set a
+    // default): follow the browser so a Chinese browser sees Chinese instead
+    // of the English fallback.
+    const nav = typeof navigator !== "undefined" ? navigator.language || "" : "";
+    currentLanguage = nav.toLowerCase().startsWith("zh") ? LANG_CHINESE : DEFAULT_LANGUAGE;
   }
   
   applyLanguage();

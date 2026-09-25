@@ -9,6 +9,10 @@
           <el-select v-model="form.image" style="width: 100%" :placeholder="tt('create.selectImage')" @change="applyPreset">
             <el-option v-for="img in images" :key="img.name" :value="img.name" :label="img.name + (hasPreset(img) ? ' ⚙' : '')" />
           </el-select>
+          <div v-if="!images.length" class="hint no-images-hint">
+            {{ tt("create.noImages") }}
+            <el-button link type="primary" size="small" @click="goImages">{{ tt("create.goImages") }}</el-button>
+          </div>
         </el-form-item>
         <el-form-item :label="tt('common.gpu')">
           <el-select v-model="form.gpus" style="width: 100%">
@@ -29,13 +33,12 @@
         <el-form-item v-if="attachableNetworks.length" :label="tt('create.networks')">
           <div class="check-grid">
             <label v-for="n in attachableNetworks" :key="n.fullName || n.name" class="check" :class="{ locked: isNetworkLocked(n) }">
-              <input
+              <span class="check-main"><input
                 v-model="form.networks"
                 type="checkbox"
                 :value="n.fullName || n.name"
                 :disabled="isNetworkLocked(n)"
-              />
-              {{ n.name }}
+              /> {{ n.name }}</span>
               <span v-if="originLabel(n)" class="hint">({{ originLabel(n) }})</span>
               <span v-if="n.forward" class="hint">· {{ tt("create.netHintForward") }}</span>
               <span v-if="isNetworkLocked(n)" class="hint">· {{ tt("create.networkNotInPool") }}</span>
@@ -52,16 +55,16 @@
           </el-select>
         </el-form-item>
         <div class="check-grid">
-          <label class="check"><input v-model="form.forward8080" type="checkbox"> {{ tt("create.forward8080") }}</label>
-          <label class="check"><input v-model="form.forward8090" type="checkbox"> {{ tt("create.forward8090") }}</label>
-          <label class="check"><input v-model="form.mountNetdisk" type="checkbox"> {{ tt("create.mountNetdisk") }}</label>
-          <label class="check"><input v-model="form.mountShm" type="checkbox"> {{ tt("create.mountShm") }}</label>
+          <label class="check"><span class="check-main"><input v-model="form.forward8080" type="checkbox"> {{ tt("create.forward8080") }}</span></label>
+          <label class="check"><span class="check-main"><input v-model="form.forward8090" type="checkbox"> {{ tt("create.forward8090") }}</span></label>
+          <label class="check"><span class="check-main"><input v-model="form.mountNetdisk" type="checkbox"> {{ tt("create.mountNetdisk") }}</span></label>
+          <label class="check"><span class="check-main"><input v-model="form.mountShm" type="checkbox"> {{ tt("create.mountShm") }}</span></label>
         </div>
         <!-- Offered once the caller's group actually has a shared-disk root; the
              caller's own read-only/read-write access is their persistent
              shared-disk setting, not chosen here. -->
         <div v-if="s.me?.sharedDiskConfigured" class="shared-disk-section">
-          <label class="check"><input v-model="form.mountSharedDisk" type="checkbox"> {{ tt("create.mountSharedDisk") }}</label>
+          <label class="check"><span class="check-main"><input v-model="form.mountSharedDisk" type="checkbox"> {{ tt("create.mountSharedDisk") }}</span></label>
           <p class="hint">{{ tt("create.sharedDiskAccessHint") }}</p>
         </div>
         <!-- Collapsible advanced block. Empty fields inherit the image defaults
@@ -233,6 +236,10 @@ export default {
   methods: {
     tt,
     isAdmin,
+    goImages() {
+      this.$emit("update:visible", false);
+      this.$router.push("/images");
+    },
     hasPreset(img) {
       const p = img.preset;
       return p && (p.gpus || (p.ports && p.ports.length) || p.description);
@@ -423,6 +430,11 @@ export default {
    the name plus hints outgrow the grid cell. */
 .check { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px; font-size: 13px; }
 .check.locked { opacity: 0.5; }
+/* Checkbox and its text are one unbreakable flex item: without this, a
+   wrapped row leaves the checkbox alone at the end of the previous line,
+   visually detached from its label. Hint spans stay outside and wrap. */
+.check-main { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.no-images-hint { width: 100%; margin-top: 2px; }
 .shared-disk-section { margin-top: 8px; }
 .advanced-block { margin-top: 10px; border-top: 1px dashed var(--line); }
 .adv-input { margin-bottom: 8px; }

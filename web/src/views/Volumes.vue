@@ -7,8 +7,9 @@
         <el-button size="small" type="primary" @click="dialog = true">{{ tt("volumes.newVolume") }}</el-button>
       </div>
     </div>
+    <el-input v-model="search" :placeholder="tt('common.search')" prefix-icon="Search" clearable size="small" style="width: min(260px, 100%); margin-bottom: 10px" />
     <el-table
-      :data="s.volumes"
+      :data="filtered"
       size="small"
       :empty-text="tt('volumes.noVolumesCreate')"
       :row-class-name="s.isMobile ? 'row-tappable' : ''"
@@ -88,6 +89,7 @@ export default {
   components: { ActionSheet, VolumeFilesDialog },
   data() {
     return {
+      search: "",
       s: store,
       dialog: false,
       form: { name: "", driver: "local" },
@@ -96,6 +98,11 @@ export default {
     };
   },
   computed: {
+    filtered() {
+      const q = this.search.trim().toLowerCase();
+      if (!q) return this.s.volumes;
+      return (this.s.volumes).filter((r) => String(r.name || "").toLowerCase().includes(q) || String(r.driver || "").toLowerCase().includes(q));
+    },
     sheetSubtitle() {
       const r = this.sheet.row;
       if (!r) return "";

@@ -221,7 +221,10 @@ export default {
         // The challenge was consumed either way; always show a fresh one and
         // map the bare server string to a localized message.
         this.loadCaptcha();
-        ElMessage.error(err.message === "incorrect captcha" ? tt("login.captchaError") : err.message);
+        // Map the bare server strings to localized messages; anything else
+        // (unexpected 5xx etc.) passes through as-is.
+        const known = { "incorrect captcha": "login.captchaError", "invalid username or password": "login.badCredentials" };
+        ElMessage.error(known[err.message] ? tt(known[err.message]) : err.message);
       } finally {
         this.busy = false;
       }

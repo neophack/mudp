@@ -51,6 +51,10 @@ export const store = reactive({
   // to pick icons/tints without re-deriving it.
   isDark: false,
   theme: localStorage.getItem("mudp:theme") || "auto",
+  // Per-section load outcome: a failing section used to render as a silent
+  // empty list, indistinguishable from genuinely no data. Views show a
+  // "load failed" state when their flag is set.
+  sectionErrors: {},
 });
 
 // Apply the resolved theme to <html>: data-theme="dark" drives our own tokens
@@ -120,6 +124,9 @@ export async function refreshSection(...keys) {
   keys.forEach((k, i) => {
     if (out[i] !== null) {
       store[k] = out[i] || [];
+      delete store.sectionErrors[k];
+    } else {
+      store.sectionErrors[k] = true;
     }
   });
   if (keys.includes("dashboard") && store.dashboard?.usage) {
@@ -140,8 +147,12 @@ export async function refreshAll() {
   // updates independently; a failed section keeps its previous state.
   const results = await Promise.allSettled(jobs);
   results.forEach((r, i) => {
-    if (r.status !== "fulfilled") return;
+    if (r.status !== "fulfilled") {
+      store.sectionErrors[labels[i]] = true;
+      return;
+    }
     store[labels[i]] = r.value || [];
+    delete store.sectionErrors[labels[i]];
   });
   if (store.dashboard?.usage) {
     store.usage = store.dashboard.usage;

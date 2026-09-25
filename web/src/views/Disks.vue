@@ -28,9 +28,9 @@
         <label class="check"><input v-model="schedule.enabled" type="checkbox"> {{ tt("disks.enabled") }}</label>
         <div class="bk-sched-time">
           <label>{{ tt("disks.dailyAt") }}</label>
-          <el-input v-model="schedule.hour" type="number" min="0" max="23" size="small" style="width: 80px" :title="tt('disks.hourTitle')" />
+          <el-input v-model="schedule.hour" maxlength="2" size="small" style="width: 64px" :title="tt('disks.hourTitle')" @blur="padScheduleField('hour')" />
           <span>:</span>
-          <el-input v-model="schedule.minute" type="number" min="0" max="59" size="small" style="width: 80px" :title="tt('disks.minuteTitle')" />
+          <el-input v-model="schedule.minute" maxlength="2" size="small" style="width: 64px" :title="tt('disks.minuteTitle')" @blur="padScheduleField('minute')" />
         </div>
         <el-button size="small" type="primary" @click="saveSchedule">{{ tt("disks.saveSchedule") }}</el-button>
         <p class="hint">{{ scheduleStatus }}</p>
@@ -107,9 +107,9 @@ export default {
       });
     }
     try {
-      this.schedule = (await api("/api/backup/schedule")) || { enabled: false, hour: 2, minute: 0 };
+      this.schedule = this.paddedSchedule((await api("/api/backup/schedule")) || { enabled: false, hour: 2, minute: 0 });
     } catch {
-      this.schedule = { enabled: false, hour: 2, minute: 0, lastRunAt: "" };
+      this.schedule = this.paddedSchedule({ enabled: false, hour: 2, minute: 0, lastRunAt: "" });
     }
     try {
       const cfg = await api("/api/admin/disks/config");
@@ -171,13 +171,22 @@ export default {
         ElMessage.error(err.message);
       }
     },
+    paddedSchedule(sched) {
+      return { ...sched, hour: String(sched.hour ?? 2).padStart(2, "0"), minute: String(sched.minute ?? 0).padStart(2, "0") };
+    },
+    padScheduleField(field) {
+      if (field !== "hour" && field !== "minute") return;
+      const max = field === "hour" ? 23 : 59;
+      const n = Math.max(0, Math.min(max, parseInt(this.schedule[field], 10) || 0));
+      this.schedule[field] = String(n).padStart(2, "0");
+    },
     async saveSchedule() {
       const enabled = !!this.schedule.enabled;
       const hour = Math.max(0, Math.min(23, parseInt(this.schedule.hour, 10) || 0));
       const minute = Math.max(0, Math.min(59, parseInt(this.schedule.minute, 10) || 0));
       try {
         await api("/api/backup/schedule", { method: "POST", body: JSON.stringify({ hour, minute, enabled }) });
-        this.schedule = { ...this.schedule, hour, minute, enabled };
+        this.schedule = this.paddedSchedule({ ...this.schedule, hour, minute, enabled });
         ElMessage.success(tt("disks.scheduleSaved"));
       } catch (err) {
         ElMessage.error(err.message);

@@ -9,18 +9,21 @@
         </button>
       </div>
       <nav class="shell-nav">
-        <button
-          v-for="item in menuItems"
-          :key="item.name"
-          class="nav-item"
-          :class="{ active: $route.name === item.name }"
-          :data-tab="item.key"
-          :title="tt('nav.' + item.name)"
-          @click="navigate(item)"
-        >
-          <span class="ico"><v-icon :name="item.key" /></span>
-          <span v-show="!collapsed" class="nav-label">{{ tt("nav." + item.name) }}</span>
-        </button>
+        <template v-for="group in menuGroups" :key="group.key">
+          <div v-show="!collapsed" class="nav-group-label">{{ tt("nav." + group.key) }}</div>
+          <button
+            v-for="item in group.items"
+            :key="item.name"
+            class="nav-item"
+            :class="{ active: $route.name === item.name }"
+            :data-tab="item.key"
+            :title="tt('nav.' + item.name)"
+            @click="navigate(item)"
+          >
+            <span class="ico"><v-icon :name="item.key" /></span>
+            <span v-show="!collapsed" class="nav-label">{{ tt("nav." + item.name) }}</span>
+          </button>
+        </template>
       </nav>
       <div class="profile">
         <strong :title="userName">{{ userName }}</strong>
@@ -58,7 +61,11 @@
         </div>
       </header>
       <div class="app-main">
-        <router-view :key="$route.fullPath" />
+        <router-view v-slot="{ Component }">
+          <transition name="page" mode="out-in">
+            <component :is="Component" :key="$route.fullPath" />
+          </transition>
+        </router-view>
       </div>
     </section>
 
@@ -72,17 +79,20 @@
           </div>
         </div>
         <nav class="drawer-nav">
-          <button
-            v-for="item in menuItems"
-            :key="item.name"
-            class="nav-item"
-            :class="{ active: $route.name === item.name }"
-            :data-tab="item.key"
-            @click="navigate(item)"
-          >
-            <span class="ico"><v-icon :name="item.key" /></span>
-            <span class="nav-label">{{ tt("nav." + item.name) }}</span>
-          </button>
+          <template v-for="group in menuGroups" :key="group.key">
+            <div class="nav-group-label">{{ tt("nav." + group.key) }}</div>
+            <button
+              v-for="item in group.items"
+              :key="item.name"
+              class="nav-item"
+              :class="{ active: $route.name === item.name }"
+              :data-tab="item.key"
+              @click="navigate(item)"
+            >
+              <span class="ico"><v-icon :name="item.key" /></span>
+              <span class="nav-label">{{ tt("nav." + item.name) }}</span>
+            </button>
+          </template>
         </nav>
         <div class="drawer-foot">
           <button class="drawer-logout" :title="tt('user.logout')" @click="logout">
@@ -110,27 +120,30 @@ import NotificationsPanel from "@/layout/NotificationsPanel.vue";
 
 // Tab order from the old shell, keyed by nav id; the route name is the same
 // and matches its i18n key (nav.<key> / subtitle.<key>).
+// Sidebar sections: everyday workspace, shared resources, then system-level
+// pages. Purely presentational — keys drive the small group captions.
+const MENU_GROUPS = ["groupWorkspace", "groupResources", "groupSystem"];
 const MENU = [
-  { key: "dashboard", name: "dashboard" },
-  { key: "netdisk", name: "netdisk" },
-  { key: "containers", name: "containers" },
-  { key: "mcp", name: "mcp" },
-  { key: "processes", name: "processes" },
-  { key: "usage", name: "usage" },
-  { key: "images", name: "images" },
-  { key: "volumes", name: "volumes" },
-  { key: "networks", name: "networks" },
-  { key: "forwards", name: "forwards", admin: true },
-  { key: "stacks", name: "stacks" },
-  { key: "hardware", name: "hardware" },
-  { key: "users", name: "users", admin: true },
-  { key: "audit", name: "audit", admin: true },
-  { key: "security", name: "security", admin: true },
-  { key: "errors", name: "errors", admin: true },
-  { key: "disks", name: "disks", admin: true },
-  { key: "database", name: "database", admin: true },
-  { key: "settings", name: "settings" },
-  { key: "help", name: "help" },
+  { key: "dashboard", name: "dashboard", group: "groupWorkspace" },
+  { key: "netdisk", name: "netdisk", group: "groupWorkspace" },
+  { key: "containers", name: "containers", group: "groupWorkspace" },
+  { key: "mcp", name: "mcp", group: "groupWorkspace" },
+  { key: "processes", name: "processes", group: "groupWorkspace" },
+  { key: "usage", name: "usage", group: "groupWorkspace" },
+  { key: "images", name: "images", group: "groupResources" },
+  { key: "volumes", name: "volumes", group: "groupResources" },
+  { key: "networks", name: "networks", group: "groupResources" },
+  { key: "forwards", name: "forwards", admin: true, group: "groupResources" },
+  { key: "stacks", name: "stacks", group: "groupResources" },
+  { key: "hardware", name: "hardware", group: "groupResources" },
+  { key: "users", name: "users", admin: true, group: "groupSystem" },
+  { key: "audit", name: "audit", admin: true, group: "groupSystem" },
+  { key: "security", name: "security", admin: true, group: "groupSystem" },
+  { key: "errors", name: "errors", admin: true, group: "groupSystem" },
+  { key: "disks", name: "disks", admin: true, group: "groupSystem" },
+  { key: "database", name: "database", admin: true, group: "groupSystem" },
+  { key: "settings", name: "settings", group: "groupSystem" },
+  { key: "help", name: "help", group: "groupSystem" },
 ];
 
 export default {
@@ -154,6 +167,12 @@ export default {
     menuItems() {
       const admin = isAdmin();
       return MENU.filter((item) => admin || !item.admin);
+    },
+    menuGroups() {
+      return MENU_GROUPS.map((group) => ({
+        key: group,
+        items: this.menuItems.filter((item) => item.group === group),
+      })).filter((g) => g.items.length);
     },
     userName() {
       return this.s.me?.displayName || this.s.me?.username || "";

@@ -301,9 +301,9 @@ func (a *App) netdiskList(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		// Use Lstat so symlinks are not followed; skip them entirely.
-		li, err := os.Lstat(filepath.Join(dir, entry.Name()))
-		if err != nil || isLinkMode(li.Mode()) {
+		// ReadDir already reports lstat semantics in Type() (no extra syscall);
+		// skip symlinks so they are never followed.
+		if entry.Type()&os.ModeSymlink != 0 || isLinkMode(info.Mode()) {
 			continue
 		}
 		p := filepath.ToSlash(filepath.Join(rel, entry.Name()))
@@ -359,18 +359,43 @@ func (a *App) netdiskDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "paths are required")
 		return
 	}
+	// Path validation is a hard request-level failure: a path that normalises
+	// to the root is a malformed or hostile request, not a per-item condition
+	// (regression: it once wiped a user's whole netdisk). Only operational
+	// failures below are reported per item, so a batch where some files are
+	// locked stays actionable instead of all-or-nothing.
 	for _, p := range req.Paths {
-		full, _, err := cleanUserEntryPath(root, p)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if err := os.RemoveAll(full); err != nil {
+		if _, _, err := cleanUserEntryPath(root, p); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	// Per-item results so a partially-failing selection is actionable: the UI
+	// can name the paths that could not be removed instead of showing one
+	// opaque error for the whole batch.
+	type deleteResult struct {
+		Path  string `json:"path"`
+		Error string `json:"error,omitempty"`
+	}
+	results := make([]deleteResult, 0, len(req.Paths))
+	deleted := 0
+	for _, p := range req.Paths {
+		full, _, err := cleanUserEntryPath(root, p)
+		if err != nil {
+			results = append(results, deleteResult{Path: p, Error: err.Error()})
+			continue
+		}
+		if err := os.RemoveAll(full); err != nil {
+			results = append(results, deleteResult{Path: p, Error: err.Error()})
+			continue
+		}
+		results = append(results, deleteResult{Path: p})
+		deleted++
+	}
+	if deleted > 0 {
+		a.invalidateDirSize(root)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": deleted == len(req.Paths), "results": results})
 }
 
 func (a *App) netdiskRename(w http.ResponseWriter, r *http.Request) {
@@ -528,6 +553,10 @@ func (a *App) netdiskCopy(w http.ResponseWriter, r *http.Request) {
 		if !useBytes {
 			task.addDone(1)
 		}
+	}
+	if !req.Move && count > 0 {
+		// Copies grow the netdisk; moves only rearrange it.
+		a.invalidateDirSize(root)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})
 }
@@ -700,8 +729,11 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 	var results []uploadResult
 
 	// Pre-compute how much additional space is required, accounting for
-	// partially-uploaded files that may be resumed.
-	used := dirSize(root)
+	// partially-uploaded files that may be resumed. The used-baseline comes
+	// from the size cache (a full walk here would stall every upload behind a
+	// recursive scan of the whole netdisk); writes below mark the entry stale
+	// so the next check picks up a fresh scan in the background.
+	used := a.netdiskUsedEstimate(root)
 	var additional, totalBytes int64
 	projected := used
 	for i, fh := range files {
@@ -771,6 +803,9 @@ func (a *App) netdiskUpload(w http.ResponseWriter, r *http.Request) {
 	// ok reflects only fully-saved files so the client can tell a partial failure
 	// (some files landed, some didn't) from total success.
 	okCount := len(files) - countFailedResults(results)
+	if okCount > 0 {
+		a.invalidateDirSize(root)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": okCount == len(files), "count": len(files), "results": results})
 }
 
@@ -829,10 +864,12 @@ func (a *App) netdiskChunkInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Quota/disk projection: reject if the additional bytes would blow the
-	// user's netdisk quota or leave no free disk space.
+	// user's netdisk quota or leave no free disk space. The used baseline is
+	// the cached size (rescanned in the background after every write), not a
+	// blocking walk — one of these runs per chunk-init.
 	quotaCheck := func(add int64) error {
 		if u.NetdiskQuotaBytes > 0 {
-			used := dirSize(root)
+			used := a.netdiskUsedEstimate(root)
 			if used+add > u.NetdiskQuotaBytes {
 				return fmt.Errorf("upload would exceed netdisk quota")
 			}
@@ -890,7 +927,12 @@ func (a *App) netdiskChunkComplete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	handleChunkComplete(w, r, dir, a.chunkReg().finish)
+	handleChunkComplete(w, r, dir, func(dst string) {
+		a.chunkReg().finish(dst)
+		if root, rerr := a.userNetdiskRoot(currentUser(r)); rerr == nil {
+			a.invalidateDirSize(root)
+		}
+	})
 }
 
 func (a *App) netdiskChunkAbort(w http.ResponseWriter, r *http.Request) {
@@ -1037,6 +1079,13 @@ func (a *App) dirSizeCached(root string) (bytes int64, stale bool, updatedAt str
 	const ttl = 2 * time.Minute
 	now := time.Now()
 	a.dirSizeMu.Lock()
+	// Lazily allocate so a zero-value App (tests, early startup) works.
+	if a.dirSizeCache == nil {
+		a.dirSizeCache = map[string]dirSizeEntry{}
+	}
+	if a.dirSizeRunning == nil {
+		a.dirSizeRunning = map[string]bool{}
+	}
 	entry, ok := a.dirSizeCache[root]
 	running := a.dirSizeRunning[root]
 	needRefresh := !ok || now.Sub(entry.updated) > ttl
@@ -1062,6 +1111,35 @@ func (a *App) refreshDirSize(root string) {
 	a.dirSizeCache[root] = dirSizeEntry{bytes: bytes, updated: time.Now()}
 	delete(a.dirSizeRunning, root)
 	a.dirSizeMu.Unlock()
+}
+
+// invalidateDirSize marks root's cached size stale so the next quota check
+// kicks off a background rescan, instead of every upload/delete walking the
+// whole tree. The stale value stays readable meanwhile, so checks remain
+// bounded by the previous scan plus the request's own projection.
+func (a *App) invalidateDirSize(root string) {
+	a.dirSizeMu.Lock()
+	if e, ok := a.dirSizeCache[root]; ok {
+		e.updated = time.Time{}
+		a.dirSizeCache[root] = e
+	}
+	a.dirSizeMu.Unlock()
+}
+
+// netdiskUsedEstimate returns the user's netdisk usage for quota checks: the
+// cached size when a scan has completed before (kicking off a background
+// rescan when stale), or a one-time synchronous walk when no scan result
+// exists yet — so the very first upload after a cold start still enforces the
+// quota exactly.
+func (a *App) netdiskUsedEstimate(root string) int64 {
+	a.dirSizeMu.Lock()
+	_, known := a.dirSizeCache[root]
+	a.dirSizeMu.Unlock()
+	used, _, _ := a.dirSizeCached(root)
+	if !known {
+		return dirSize(root)
+	}
+	return used
 }
 
 func dirSize(root string) int64 {

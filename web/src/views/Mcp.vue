@@ -494,6 +494,21 @@ export default {
     },
     async createToken() {
       if (!this.form.containerId) {
+        // A token targets one container: with none in the workspace the toast
+        // alone is a dead end, so offer the jump to the Containers page.
+        if (!(store.containers || []).length) {
+          try {
+            await ElMessageBox.confirm(tt("mcp.noContainers"), tt("mcp.createToken"), {
+              type: "warning",
+              confirmButtonText: tt("mcp.goContainers"),
+              cancelButtonText: tt("common.cancel"),
+            });
+          } catch {
+            return;
+          }
+          this.$router.push("/containers");
+          return;
+        }
         ElMessage.warning(tt("mcp.selectContainerFirst"));
         return;
       }
@@ -623,8 +638,11 @@ export default {
 .mcp-config-section h4 { margin: 0 0 6px; font-size: 13px; }
 .mcp-transport-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .mcp-config-actions { margin-top: 8px; display: flex; justify-content: flex-end; }
-.mcp-live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; margin-right: 6px; animation: mcp-pulse 1.6s infinite; }
-@keyframes mcp-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); } 50% { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); } }
+.mcp-live-dot { position: relative; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; margin-right: 6px; }
+/* Pulse via a scaled pseudo-element (transform+opacity, composited) — an
+   animated box-shadow repaints the dot every frame for the same effect. */
+.mcp-live-dot::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: rgba(34, 197, 94, 0.5); animation: mcp-pulse 1.6s var(--ease-out, ease-out) infinite; }
+@keyframes mcp-pulse { from { transform: scale(1); opacity: 0.7; } to { transform: scale(2.4); opacity: 0; } }
 .mcp-log-list { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; }
 .mcp-log-list li { border-top: 1px solid var(--line); padding: 8px 0; }
 .mcp-log-head { display: flex; justify-content: space-between; gap: 10px; }

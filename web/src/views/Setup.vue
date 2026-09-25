@@ -18,6 +18,16 @@
     <div class="auth-pane">
       <form class="auth-card" @submit.prevent="submit">
         <h1>{{ tt("setup.title") }}</h1>
+        <div class="login-lang">
+          <button
+            v-for="l in langs"
+            :key="l"
+            type="button"
+            class="lang-btn"
+            :class="{ active: l === currentLang }"
+            @click="switchLang(l)"
+          >{{ l === "zh_CN" ? "中文" : "English" }}</button>
+        </div>
         <label class="field-label">{{ tt("setup.adminUsername") }}</label>
         <el-input v-model="form.adminUsername" name="adminUsername" placeholder="admin" autocomplete="username" />
         <label class="field-label">{{ tt("setup.adminPassword") }}</label>
@@ -36,7 +46,8 @@
 <script>
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
-import { tt } from "@/i18n";
+import { tt, setLanguage } from "@/i18n";
+import { getCurrentLanguage, SUPPORTED_LANGS } from "@/lib/i18n.js";
 
 export default {
   name: "Setup",
@@ -49,10 +60,17 @@ export default {
         usersGroupNetdiskPath: "",
       },
       busy: false,
+    currentLang: getCurrentLanguage(),
+    langs: SUPPORTED_LANGS,
     };
   },
   methods: {
     tt,
+    switchLang(lang) {
+      localStorage.setItem("mudp_language", lang);
+      setLanguage(lang);
+      this.currentLang = getCurrentLanguage();
+    },
     async submit() {
       if (this.busy) return;
       // Mirror the old form's required attributes: fail fast client-side

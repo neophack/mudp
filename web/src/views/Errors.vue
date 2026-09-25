@@ -66,7 +66,7 @@
 </template>
 
 <script>
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store } from "@/store";
 import { tt } from "@/i18n";
@@ -108,6 +108,17 @@ export default {
       }
     },
     async clearAll() {
+      // Clearing wipes every aggregated event at once — the only destructive
+      // action in the app without an undo path, so confirm like the rest.
+      try {
+        await ElMessageBox.confirm(tt("errors.clearConfirm"), tt("errors.clearAll"), {
+          type: "warning",
+          confirmButtonText: tt("common.confirm"),
+          cancelButtonText: tt("common.cancel"),
+        });
+      } catch {
+        return; // dismissed
+      }
       try {
         await api("/api/admin/errors/clear", { method: "POST" });
         ElMessage.success(tt("errors.cleared"));

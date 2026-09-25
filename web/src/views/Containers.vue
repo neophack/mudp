@@ -33,6 +33,15 @@
       </div>
     </div>
 
+    <!-- A failed list fetch must not masquerade as "no containers": say so
+         and offer a retry instead of rendering an empty table. -->
+    <div v-if="s.sectionErrors.containers" class="card">
+      <div class="error-box">
+        ✗ {{ tt("containers.loadFailed") }}
+        <el-button size="small" style="margin-left: 12px" @click="retryLoad">{{ tt("common.retry") }}</el-button>
+      </div>
+    </div>
+
     <div class="card">
       <el-table
         :data="filtered"
@@ -136,7 +145,7 @@
 <script>
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
-import { store, refreshAll, isAdmin, canMutate, displayNameForUsername } from "@/store";
+import { store, refreshSection, isAdmin, canMutate, displayNameForUsername } from "@/store";
 import { tt } from "@/i18n";
 import ActionSheet from "@/components/ActionSheet.vue";
 import CreateDialog from "@/components/container/CreateDialog.vue";
@@ -220,6 +229,10 @@ export default {
     isAdmin,
     canMutate,
     displayNameForUsername,
+    async retryLoad() {
+      delete store.sectionErrors.containers;
+      await refreshSection("containers");
+    },
     num(v) {
       return typeof v === "number" && isFinite(v) ? v : 0;
     },
@@ -320,7 +333,7 @@ export default {
         if (action === "remove") {
           store.containers = (store.containers || []).filter((c) => c.id !== id && !(c.id && c.id.startsWith(id)));
         }
-        await refreshAll();
+        await refreshSection("containers", "dashboard");
         ElMessage.success(tt("containers.done"));
       } catch (err) {
         ElMessage.error(err.message);
@@ -348,7 +361,7 @@ export default {
         if (action === "remove") {
           store.containers = (store.containers || []).filter((c) => !matchesAnyId(c.id, ids));
         }
-        await refreshAll();
+        await refreshSection("containers", "dashboard");
         this.selected = new Set();
         const okN = (res.ok || []).length;
         const failN = (res.failed || []).length;

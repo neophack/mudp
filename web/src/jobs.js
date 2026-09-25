@@ -142,6 +142,9 @@ export function startBackupJobsPolling() {
   // One poller for the whole app lifetime; idempotent so repeated calls no-op.
   if (backupPollTimer) return;
   const tick = () => {
+    // Hidden tabs pause polling; the merge logic catches up on the next
+    // visible tick (missing tasks flip to done, fresh jobs appear).
+    if (document.hidden) return;
     api("/api/backup/jobs")
       .then((jobs) => mergeBackupJobs(jobs || []))
       .catch(() => { /* best-effort; keep the previous snapshot */ });
@@ -205,6 +208,8 @@ export function startTaskPolling() {
   // One poller for the whole app lifetime; idempotent so repeated calls no-op.
   if (taskPollTimer) return;
   const tick = () => {
+    // Hidden tabs pause polling (see startBackupJobsPolling).
+    if (document.hidden) return;
     api("/api/tasks")
       .then((tasks) => mergeUserTasks(tasks || []))
       .catch(() => { /* best-effort; keep the previous snapshot */ });

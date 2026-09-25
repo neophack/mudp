@@ -59,7 +59,8 @@
             <div class="row-title">{{ tt("settings.defaultLanguage") }}</div>
             <div class="row-desc">{{ tt("admin.userCanOverride") }}</div>
           </div>
-          <el-select v-model="defaultLanguage" size="small" class="row-select" @change="saveDefaultLanguage">
+          <el-select v-model="defaultLanguage" size="small" class="row-select" :placeholder="tt('settings.followBrowser')" @change="saveDefaultLanguage">
+            <el-option value="" :label="tt('settings.followBrowser')" />
             <el-option v-for="lang in langs" :key="lang" :value="lang" :label="langName(lang)" />
           </el-select>
         </div>
@@ -252,7 +253,7 @@ export default {
     location() { return window.location; },
   },
   async mounted() {
-    this.defaultLanguage = store.me?.defaultLanguage || "en_US";
+    this.defaultLanguage = store.me?.defaultLanguage || "";
     if (!isAdmin()) return;
     const [site, capacity, company, registries, feishu, mcp] = await Promise.all([
       api("/api/admin/settings/site").catch(() => ({ siteName: "" })),

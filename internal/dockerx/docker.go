@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -1135,18 +1136,31 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 			PortLinks: links, Forwarded: forwarded,
 		})
 	}
+	// Per-running-container memory/GPU samples are independent network calls
+	// (each with its own sub-second timeout); serially they stacked up to
+	// 750ms×N onto every cache refresh and every start/stop response. Fan out
+	// with a bounded semaphore so a busy host refreshes in well under a second.
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
 	for i := range out {
-		if out[i].State == "running" {
-			mem, _ := d.memoryMB(ctx, out[i].ID)
-			out[i].MemoryMB = mem
-			if gpu, _ := d.GPUUsage(ctx, out[i].GPU); gpu.MemoryTotalMB > 0 || gpu.Percent > 0 {
-				out[i].GPUPercent = gpu.Percent
-				out[i].GPUMemoryMB = gpu.MemoryMB
-				out[i].GPUMemoryTotalMB = gpu.MemoryTotalMB
-				out[i].GPUMemoryPct = gpu.MemoryPct
-			}
+		if out[i].State != "running" {
+			continue
 		}
+		wg.Add(1)
+		go func(c *Container) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			c.MemoryMB, _ = d.memoryMB(ctx, c.ID)
+			if gpu, _ := d.GPUUsage(ctx, c.GPU); gpu.MemoryTotalMB > 0 || gpu.Percent > 0 {
+				c.GPUPercent = gpu.Percent
+				c.GPUMemoryMB = gpu.MemoryMB
+				c.GPUMemoryTotalMB = gpu.MemoryTotalMB
+				c.GPUMemoryPct = gpu.MemoryPct
+			}
+		}(&out[i])
 	}
+	wg.Wait()
 	return out, nil
 }
 

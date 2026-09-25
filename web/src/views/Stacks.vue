@@ -4,8 +4,9 @@
       <h2>{{ tt("stacks.title") }}</h2>
       <el-button v-if="canMutate()" type="primary" size="small" @click="openEditor(null)">{{ tt("stacks.newStack") }}</el-button>
     </div>
+    <el-input v-model="search" :placeholder="tt('common.search')" prefix-icon="Search" clearable size="small" style="width: min(260px, 100%); margin-bottom: 10px" />
     <el-table
-      :data="s.stacks"
+      :data="filtered"
       size="small"
       :empty-text="tt('stacks.noStacksCreate')"
       :row-class-name="s.isMobile ? 'row-tappable' : ''"
@@ -112,6 +113,7 @@ export default {
   components: { ActionSheet, StackRunDialog },
   data() {
     return {
+      search: "",
       s: store,
       editor: { visible: false, isNew: true, id: 0, name: "", env: "", composeYaml: "", saving: false },
       run: { visible: false, title: "" },
@@ -119,6 +121,11 @@ export default {
     };
   },
   computed: {
+    filtered() {
+      const q = this.search.trim().toLowerCase();
+      if (!q) return this.s.stacks;
+      return (this.s.stacks).filter((r) => String(r.name || "").toLowerCase().includes(q));
+    },
     sheetSubtitle() {
       const r = this.sheet.row;
       if (!r) return "";

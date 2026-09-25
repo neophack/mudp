@@ -4,7 +4,7 @@
       <div class="upload-title">{{ s.label }}</div>
       <button type="button" class="upload-close" aria-label="Close" :title="tt('common.close')" @click="s.visible = false">&times;</button>
     </div>
-    <div class="upload-bar"><div class="bar-fill" :style="{ width: s.overall.percent + '%' }"></div></div>
+    <div class="upload-bar"><div class="bar-fill" :style="{ transform: 'scaleX(' + s.overall.percent / 100 + ')' }"></div></div>
     <div class="upload-meta">
       {{ fmtBytes(s.overall.loaded) }} / {{ fmtBytes(s.overall.bytesTotal) }} · {{ fmtSpeed(s.overall.speedBps) }} · {{ Math.round(s.overall.percent) }}%
       <template v-if="s.overall.etaSec > 0 && s.overall.percent < 100"> · {{ fmtEta(s.overall.etaSec) }} left</template>
@@ -18,7 +18,7 @@
           <span class="upload-file-name" :title="row.name">{{ row.name }}</span>
           <span class="upload-file-size">{{ fmtBytes(row.size) }}</span>
         </div>
-        <div class="upload-file-bar"><div class="bar-fill" :style="{ width: row.percent + '%' }"></div></div>
+        <div class="upload-file-bar"><div class="bar-fill" :style="{ transform: 'scaleX(' + row.percent / 100 + ')' }"></div></div>
         <div class="upload-file-meta">
           <span class="upload-file-status">{{ fmtBytes(row.loaded) }} · {{ row.percent }}% · {{ fmtSpeed(row.speedBps) }}</span>
         </div>
@@ -29,7 +29,7 @@
           <span class="upload-file-name" :title="row.name">{{ row.name }}</span>
           <span class="upload-file-size">{{ fmtBytes(row.size) }}</span>
         </div>
-        <div class="upload-file-bar"><div class="bar-fill" :style="{ width: row.status === 'error' ? row.percent : 100 + '%' }"></div></div>
+        <div class="upload-file-bar"><div class="bar-fill" :style="{ transform: 'scaleX(' + (row.status === 'error' ? row.percent : 100) / 100 + ')' }"></div></div>
         <div class="upload-file-meta">
           <span class="upload-file-status">{{ row.status === "error" ? row.msg : tt("common.done") }}</span>
           <button v-if="row.status === 'error' && row.retry" type="button" class="upload-file-retry" @click.stop="row.retry()">{{ tt("common.retry") }}</button>
@@ -87,33 +87,33 @@ export default {
   bottom: 20px;
   width: 340px;
   max-height: 60vh;
-  background: #0f172a;
-  color: #e2e8f0;
+  background: var(--card);
+  color: var(--ink);
   border-radius: 10px;
   padding: 12px;
   z-index: 2100;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--card-shadow, 0 10px 30px rgba(0, 0, 0, 0.2));
   display: flex;
   flex-direction: column;
 }
 .upload-head { display: flex; align-items: center; margin-bottom: 8px; }
 .upload-title { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.upload-close { background: none; border: none; color: #94a3b8; font-size: 16px; cursor: pointer; line-height: 1; }
-.upload-close:hover { color: #e2e8f0; }
-.upload-bar { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
-.upload-bar .bar-fill { height: 100%; background: var(--brand); transition: width 0.2s; }
-.upload-meta, .upload-counts { font-size: 11.5px; color: #94a3b8; margin-top: 4px; }
+.upload-close { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; line-height: 1; }
+.upload-close:hover { color: var(--ink); }
+.upload-bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.upload-bar .bar-fill { height: 100%; background: var(--brand); transform-origin: 0 50%; transition: transform 0.16s var(--ease-out, ease-out); }
+.upload-meta, .upload-counts { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 .upload-file-list { margin-top: 8px; overflow-y: auto; max-height: 40vh; }
 .upload-file-row { padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, 0.08); }
 .upload-file-head { display: flex; gap: 8px; font-size: 12px; }
 .upload-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.upload-file-size { color: #94a3b8; }
-.upload-file-bar { height: 3px; background: rgba(255, 255, 255, 0.12); border-radius: 2px; overflow: hidden; margin: 4px 0; }
-.upload-file-bar .bar-fill { height: 100%; background: var(--brand); transition: width 0.2s; }
+.upload-file-size { color: var(--muted); }
+.upload-file-bar { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; margin: 4px 0; }
+.upload-file-bar .bar-fill { height: 100%; background: var(--brand); transform-origin: 0 50%; transition: transform 0.16s var(--ease-out, ease-out); }
 .upload-file-row.is-done .upload-file-bar .bar-fill { background: var(--ok); }
 .upload-file-row.is-error .upload-file-bar .bar-fill { background: var(--danger); }
-.upload-file-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #94a3b8; }
-.upload-file-retry { margin-left: auto; background: none; border: 1px solid #64748b; color: #e2e8f0; border-radius: 4px; font-size: 10.5px; padding: 1px 8px; cursor: pointer; }
+.upload-file-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.upload-file-retry { margin-left: auto; background: none; border: 1px solid var(--line); color: var(--ink); border-radius: 4px; font-size: 10.5px; padding: 1px 8px; cursor: pointer; }
 .upload-file-retry:hover { border-color: var(--brand); color: #fff; }
-.upload-overflow { font-size: 11px; color: #64748b; padding: 4px 0; }
+.upload-overflow { font-size: 11px; color: var(--muted); padding: 4px 0; }
 </style>

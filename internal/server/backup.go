@@ -562,6 +562,13 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 	// Per-item sizes are kept (not just summed) so the copy loop below can
 	// report byte-accurate progress, including the one-shot credit for an
 	// item that completes via a same-filesystem rename (see netdiskCopyOne).
+	// For restores into the netdisk the sum feeds the quota projection, so
+	// every source is walked exactly. For backup/shared destinations the sum
+	// only feeds the free-space pre-check and the progress bar, so the walk
+	// is bounded — a huge selection must not delay the transfer start — and
+	// falls back to per-item progress when the bound is hit.
+	useBytes := toDisk == "netdisk"
+	scanDeadline := time.Now().Add(300 * time.Millisecond)
 	sizes := make([]int64, len(req.Items))
 	var required int64
 	for i, it := range req.Items {
@@ -579,11 +586,17 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 		if isSymlink(src) {
 			continue
 		}
-		sizes[i] = pathSize(src)
+		if useBytes {
+			sizes[i] = pathSize(src)
+		} else if size, ok := pathSizeBefore(src, scanDeadline); ok {
+			sizes[i] = size
+		} else {
+			useBytes = false
+		}
 		required += sizes[i]
 	}
 	if toDisk == "netdisk" {
-		used := dirSize(toRoot)
+		used := a.netdiskUsedEstimate(toRoot)
 		if u.NetdiskQuotaBytes > 0 && used+required > u.NetdiskQuotaBytes {
 			writeErr(w, http.StatusInsufficientStorage, "transfer would exceed netdisk quota")
 			return
@@ -600,12 +613,13 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task, doneTask := a.tasksReg().start("netdisk.transfer", fmt.Sprintf("%s · %s→%s · %d item(s)", u.Username, fromDisk, toDisk, len(req.Items)), u)
-	// Cross-disk transfers are documented as separate mounts (netdisk vs.
-	// backup), so a same-filesystem rename essentially never applies here --
-	// unlike the same-disk copy endpoints, byte progress is worth reporting
-	// unconditionally, and required (above) already sized every item up front
-	// for the quota/free-space checks, so this is free.
-	task.setTotal(required)
+	if useBytes {
+		task.setTotal(required)
+	} else {
+		// Sizing was cut off: count by item rather than report a byte total
+		// the copy loop can never reach.
+		task.setTotal(int64(len(req.Items)))
+	}
 	defer doneTask()
 
 	results := make([]map[string]string, 0, len(req.Items))
@@ -633,7 +647,13 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		task.setMessage(filepath.Base(from))
-		if err := netdiskCopyOne(from, to, req.Move, policy, sizes[i], task.addDone); err != nil {
+		var onBytes func(int64)
+		size := int64(0)
+		if useBytes {
+			size = sizes[i]
+			onBytes = task.addDone
+		}
+		if err := netdiskCopyOne(from, to, req.Move, policy, size, onBytes); err != nil {
 			res["status"] = "error"
 			res["error"] = err.Error()
 		} else {
@@ -645,6 +665,9 @@ func (a *App) netdiskTransfer(w http.ResponseWriter, r *http.Request) {
 			count++
 		}
 		results = append(results, res)
+		if !useBytes {
+			task.addDone(1)
+		}
 	}
 	a.record(r, "netdisk.transfer", fmt.Sprintf("%s->%s %d item(s)", fromDisk, toDisk, count))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})

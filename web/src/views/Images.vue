@@ -11,8 +11,9 @@
         <el-button size="small" type="primary" @click="openPull">{{ tt("images.pull") }}</el-button>
       </div>
     </div>
+    <el-input v-model="search" :placeholder="tt('common.search')" prefix-icon="Search" clearable size="small" style="width: min(260px, 100%); margin-bottom: 10px" />
     <el-table
-      :data="s.images"
+      :data="filtered"
       size="small"
       :empty-text="isAdmin() ? tt('images.noImagesAdmin') : tt('images.noImages')"
       :row-class-name="s.isMobile && isAdmin() ? 'row-tappable' : ''"
@@ -107,7 +108,11 @@
 
     <!-- Import -->
     <el-dialog v-model="dialogs.import" :title="tt('images.importTitle2')" width="440px" append-to-body>
-      <input type="file" accept=".tar" @change="importFile = $event.target.files[0]" />
+      <div class="import-file-row">
+        <input ref="importPicker" type="file" accept=".tar" hidden @change="onImportPicked" />
+        <el-button size="small" @click="$refs.importPicker.click()">{{ tt("images.chooseFile") }}</el-button>
+        <span class="import-file-name ellipsis" :title="importFile ? importFile.name : ''">{{ importFile ? importFile.name : tt("images.noFileChosen") }}</span>
+      </div>
       <p class="hint">{{ tt("images.importHint") }}</p>
       <template #footer>
         <el-button @click="dialogs.import = false">{{ tt("common.cancel") }}</el-button>
@@ -338,6 +343,7 @@ export default {
   components: { SseProgress, ActionSheet },
   data() {
     return {
+      search: "",
       s: store,
       dialogs: { pull: false, build: false, import: false, register: false, reregister: false, preset: false, progress: false },
       sheet: { visible: false, row: null },
@@ -362,6 +368,11 @@ export default {
     };
   },
   computed: {
+    filtered() {
+      const q = this.search.trim().toLowerCase();
+      if (!q) return this.s.images;
+      return (this.s.images).filter((r) => String(r.name || "").toLowerCase().includes(q) || String(r.displayName || "").toLowerCase().includes(q) || String(r.dockerRef || "").toLowerCase().includes(q));
+    },
     poolNetworks() {
       return (store.networks || []).filter((n) => !n.system);
     },
@@ -421,6 +432,7 @@ export default {
     },
     openImport() {
       this.importFile = null;
+      if (this.$refs.importPicker) this.$refs.importPicker.value = "";
       this.dialogs.import = true;
     },
     openRegister() {
@@ -553,6 +565,9 @@ export default {
         ElMessage.error(err.message);
       }
     },
+    onImportPicked(e) {
+      this.importFile = e.target.files[0] || null;
+    },
     submitImport() {
       if (!this.importFile) {
         ElMessage.warning(tt("images.selectTar"));
@@ -630,7 +645,10 @@ export default {
         name: this.pullForm.name.trim(),
         groupIds: this.pullForm.groupIds.map(Number),
       };
-      if (!payload.sourceRef) return;
+      if (!payload.sourceRef) {
+        ElMessage.warning(tt("images.refRequired"));
+        return;
+      }
       this.dialogs.pull = false;
       const job = registerJob({ kind: "image.pull", name: payload.sourceRef });
       this.runStream({
@@ -748,4 +766,8 @@ export default {
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .env-gen { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
 .two-col { display: flex; gap: 8px; }
+</style>
+<style scoped>
+.import-file-row { display: flex; align-items: center; gap: 8px; }
+.import-file-name { color: var(--muted); font-size: 13px; min-width: 0; }
 </style>

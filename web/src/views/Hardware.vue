@@ -117,6 +117,7 @@
 <script>
 import { api } from "@/api";
 import { tt } from "@/i18n";
+import { store } from "@/store";
 import EChart from "@/components/EChart.vue";
 import SparkE from "@/components/SparkE.vue";
 
@@ -124,13 +125,17 @@ const POLL_MS = 5000;
 // 120 samples @ 5s = 10 minutes of history, similar to htop's default window.
 const HISTORY_LEN = 120;
 
-function lineOption(values, times, color) {
+// Axis colors follow the resolved theme: the light-mode defaults are near-
+// invisible (grid) or glaring (labels) on the dark background.
+function lineOption(values, times, color, dark) {
+  const labelColor = dark ? "#8b93a7" : "#94a3b8";
+  const gridColor = dark ? "#2b3342" : "#eef2f7";
   return {
     grid: { left: 34, right: 8, top: 8, bottom: 20 },
     xAxis: {
       type: "category",
       data: times.map((t) => new Date(t).toLocaleTimeString()),
-      axisLabel: { fontSize: 10, color: "#94a3b8" },
+      axisLabel: { fontSize: 10, color: labelColor },
       axisLine: { show: false },
       axisTick: { show: false },
     },
@@ -138,8 +143,8 @@ function lineOption(values, times, color) {
       type: "value",
       min: 0,
       max: 100,
-      axisLabel: { fontSize: 10, color: "#94a3b8", formatter: "{value}%" },
-      splitLine: { lineStyle: { color: "#eef2f7" } },
+      axisLabel: { fontSize: 10, color: labelColor, formatter: "{value}%" },
+      splitLine: { lineStyle: { color: gridColor } },
     },
     tooltip: {
       trigger: "axis",
@@ -196,8 +201,9 @@ export default {
         [tt("hardware.colStorageDriver"), sys.storageDriver],
       ].filter(([, v]) => v !== undefined && v !== null && v !== "");
     },
-    cpuOption() { return lineOption(this.history.cpu, this.history.t, "#3370ff"); },
-    memOption() { return lineOption(this.history.mem, this.history.t, "#10b981"); },
+    // Reading store.isDark here re-derives the option on theme switches.
+    cpuOption() { return lineOption(this.history.cpu, this.history.t, "#3370ff", store.isDark); },
+    memOption() { return lineOption(this.history.mem, this.history.t, "#10b981", store.isDark); },
   },
   mounted() {
     this.refresh();

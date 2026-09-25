@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -40,15 +41,20 @@ import (
 )
 
 type App struct {
-	cfg              config.Config
-	db               *store.DB
-	docker           *dockerx.Client
-	auth             auth.Signer
-	mcpHub           *mcp.SSEHub
-	lastSnapshot     time.Time
-	snapshotMu       sync.Mutex
-	cacheMu          sync.RWMutex
-	refreshMu        sync.Mutex
+	cfg          config.Config
+	db           *store.DB
+	docker       *dockerx.Client
+	auth         auth.Signer
+	mcpHub       *mcp.SSEHub
+	lastSnapshot time.Time
+	snapshotMu   sync.Mutex
+	cacheMu      sync.RWMutex
+	refreshMu    sync.Mutex
+	// refreshInFlight/refreshPending coalesce background cache refreshes: a
+	// burst of mutations (batch create, batch start) collapses into at most
+	// one follow-up sweep instead of one full Docker scan per endpoint call.
+	refreshInFlight  atomic.Bool
+	refreshPending   atomic.Bool
 	cachedSystem     dockerx.SystemInfo
 	cachedContainers []dockerx.Container
 	cacheAt          time.Time
@@ -91,6 +97,11 @@ type App struct {
 	// watcher (see processes.go). An App field so the watcher logic can be
 	// tested without a Docker daemon.
 	processProbe func(ctx context.Context, containerID string) (map[string]string, error)
+	// procCacheMu/procCache back a short-TTL snapshot of /api/processes, so
+	// the page's polling doesn't re-run `docker top` on every running
+	// container for every connected client (see processes.go).
+	procCacheMu sync.Mutex
+	procCache   map[string]procCacheEntry
 	// captchas backs the login GIF challenge: id → answer, single-use with a
 	// short TTL (see captcha.go).
 	captchas *captchaStore
@@ -278,6 +289,17 @@ func (a *App) Routes() http.Handler {
 	r.With(apiRateLimiter.Middleware).Get("/mcp/{token}/sse", a.mcpSSE)
 	r.With(apiRateLimiter.Middleware).Post("/mcp/{token}/messages", a.mcpMessages)
 
+	// Logout stays inside auth+CSRF (docs/SECURITY-AUDIT.md L-1: it is a
+	// state-changing route, and leaving it outside let any cross-site form
+	// force a victim's logout) but is deliberately NOT behind the pending
+	// gate: an un-approvable account must still be able to sign out.
+	r.Group(func(r chi.Router) {
+		r.Use(apiRateLimiter.Middleware)
+		r.Use(a.authMiddleware)
+		r.Use(middleware.CSRFProtect)
+		r.Post("/api/logout", a.logout)
+	})
+
 	// Activated-user business endpoints (any non-pending role).
 	r.Group(func(r chi.Router) {
 		r.Use(apiRateLimiter.Middleware)
@@ -285,11 +307,6 @@ func (a *App) Routes() http.Handler {
 		r.Use(a.activatedMiddleware)
 		r.Use(middleware.CSRFProtect)
 
-		// Logout lives INSIDE the auth+CSRF group (docs/SECURITY-AUDIT.md L-1):
-		// it is a state-changing route, and leaving it outside let any
-		// cross-site form force a victim's logout. The frontend's api() helper
-		// already attaches the CSRF header and self-heals a stale token.
-		r.Post("/api/logout", a.logout)
 		r.Get("/api/containers", a.containers)
 		r.Post("/api/containers", a.containers)
 		r.Post("/api/containers/create/stream", a.createStream)
@@ -1617,11 +1634,66 @@ func (a *App) containerAuditTarget(ctx context.Context, id string) string {
 	return name
 }
 
+// batchAuditTargets resolves "name (owner)" audit labels for many container
+// IDs in one pass over the runtime cache, instead of the per-ID inspect +
+// user-lookup round-trips containerAuditTarget does. IDs missing from the
+// cache (created after the last refresh, or already gone) fall back to the
+// live per-ID resolution.
+func (a *App) batchAuditTargets(ctx context.Context, ids []string) map[string]string {
+	out := make(map[string]string, len(ids))
+	byID := make(map[string]dockerx.Container)
+	for _, c := range a.runtimeContainers("", true) {
+		byID[c.ID] = c
+	}
+	owners := map[string]string{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		c, ok := byID[id]
+		if !ok {
+			for full, cc := range byID {
+				if strings.HasPrefix(full, id) {
+					c, ok = cc, true
+					break
+				}
+			}
+		}
+		if !ok {
+			out[id] = a.containerAuditTarget(ctx, id)
+			continue
+		}
+		name := c.Name
+		if name == "" {
+			name = c.ID
+		}
+		display, seen := owners[c.Owner]
+		if !seen {
+			display = a.userDisplayName(c.Owner)
+			owners[c.Owner] = display
+		}
+		if display != "" {
+			out[id] = fmt.Sprintf("%s (%s)", name, display)
+		} else {
+			out[id] = name
+		}
+	}
+	return out
+}
+
 // containerOwnedBy reports whether the given user may touch a container. Admins
 // own everything; others must own the matching container.
 func (a *App) containerOwnedBy(ctx context.Context, u *store.User, id string) bool {
 	if u.Role == "admin" {
 		return true
+	}
+	// Fast path: ownership comes from immutable labels the 15s runtime cache
+	// already holds, so the cache answers with no Docker round-trip. This runs
+	// on every SSE log/stats connection, terminal and file-browser request;
+	// only a cache miss (e.g. a container created after the last refresh)
+	// falls back to a live list.
+	for _, c := range a.runtimeContainers(u.Username, false) {
+		if strings.HasPrefix(c.ID, id) || c.ID == id {
+			return true
+		}
 	}
 	items, err := a.docker.ListContainers(ctx, u.Username, false, a.forwardNetworks())
 	if err != nil {
@@ -1706,6 +1778,7 @@ func (a *App) containerBatch(w http.ResponseWriter, r *http.Request) {
 		ID    string `json:"id"`
 		Error string `json:"error"`
 	}
+	targets := a.batchAuditTargets(r.Context(), req.IDs)
 	var ok, failed []string
 	var okTargets []string
 	var failures []batchFailure
@@ -1721,8 +1794,8 @@ func (a *App) containerBatch(w http.ResponseWriter, r *http.Request) {
 			failed = append(failed, id)
 			continue
 		}
-		// Resolve name/owner before the action: a removed container is gone.
-		target := a.containerAuditTarget(r.Context(), id)
+		// Resolved up front (before the action): a removed container is gone.
+		target := targets[id]
 		if err := a.docker.Action(r.Context(), id, req.Action); err != nil {
 			failures = append(failures, batchFailure{ID: id, Error: err.Error()})
 			failed = append(failed, id)

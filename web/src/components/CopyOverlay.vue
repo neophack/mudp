@@ -4,7 +4,7 @@
       <div class="copy-title">{{ overlay.title }}</div>
       <button type="button" class="copy-close" aria-label="Close" :title="tt('common.close')" @click="dismiss">&times;</button>
     </div>
-    <div class="copy-bar"><div class="bar-fill" :style="{ width: pct + '%' }"></div></div>
+    <div class="copy-bar"><div class="bar-fill" :style="{ transform: 'scaleX(' + pct / 100 + ')' }"></div></div>
     <div class="copy-meta">{{ meta }}</div>
   </div>
 </template>

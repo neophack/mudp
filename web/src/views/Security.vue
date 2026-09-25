@@ -44,6 +44,7 @@
         <world-map
           :points="points"
           mode="single"
+          :legend-titles="[tt('security.legendAccess')]"
           :country-data="countryData"
           :tooltip-html="accessTooltip"
           height="460px"
@@ -250,7 +251,7 @@
               <span class="mcp-legend-item"><i class="mcp-dot mcp-dot-red"></i>{{ tt("mcp.legendAttackHigh") }}</span>
             </div>
           </div>
-          <world-map :points="mapPoints" mode="mcp" :tooltip-html="attackTooltip" height="460px" />
+          <world-map :points="mapPoints" mode="mcp" :legend-titles="[tt('security.legendOk'), tt('security.legendProbe'), tt('security.legendHeavy')]" :tooltip-html="attackTooltip" height="460px" />
         </section>
 
         <section class="card">

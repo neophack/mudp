@@ -30,12 +30,12 @@
             <input ref="filePicker" type="file" multiple hidden @change="onFilesPicked" />
             <input ref="folderPicker" type="file" webkitdirectory directory multiple hidden @change="onFilesPicked" />
           </template>
-          <template v-if="canMutate()">
-            <el-button size="small" type="danger" plain :disabled="!selection.length || !allOwn" :title="!allOwn ? tt('netdisk.batchMixedForeign') : ''" @click="batchDelete">{{ tt("netdisk.deleteN", { n: selection.length }) }}</el-button>
-            <el-button size="small" :disabled="!selection.length" @click="batchCopyMove(false)">{{ tt("netdisk.copyN", { n: selection.length }) }}</el-button>
-            <el-button size="small" :disabled="!selection.length || !allOwn" :title="!allOwn ? tt('netdisk.batchMixedForeign') : ''" @click="batchCopyMove(true)">{{ tt("netdisk.moveN", { n: selection.length }) }}</el-button>
-            <el-button v-if="mode === 'netdisk'" size="small" :disabled="!selection.length" @click="batchShare">{{ tt("netdisk.shareN", { n: selection.length }) }}</el-button>
-            <el-button v-if="mode !== 'shareddisk'" size="small" type="primary" plain :disabled="!selection.length" @click="batchDownload">{{ tt("netdisk.downloadN", { n: selection.length }) }}</el-button>
+          <template v-if="canMutate() && selection.length">
+            <el-button size="small" type="danger" plain :disabled="!allOwn" :title="!allOwn ? tt('netdisk.batchMixedForeign') : ''" @click="batchDelete">{{ tt("netdisk.deleteN", { n: selection.length }) }}</el-button>
+            <el-button size="small" @click="batchCopyMove(false)">{{ tt("netdisk.copyN", { n: selection.length }) }}</el-button>
+            <el-button size="small" :disabled="!allOwn" :title="!allOwn ? tt('netdisk.batchMixedForeign') : ''" @click="batchCopyMove(true)">{{ tt("netdisk.moveN", { n: selection.length }) }}</el-button>
+            <el-button v-if="mode === 'netdisk'" size="small" @click="batchShare">{{ tt("netdisk.shareN", { n: selection.length }) }}</el-button>
+            <el-button v-if="mode !== 'shareddisk'" size="small" type="primary" plain @click="batchDownload">{{ tt("netdisk.downloadN", { n: selection.length }) }}</el-button>
           </template>
         </div>
       </div>
@@ -56,6 +56,7 @@
 
       <el-table
         ref="table"
+        v-loading="loading"
         :data="sortedItems"
         size="small"
         :empty-text="tt('netdisk.noFiles')"
@@ -256,6 +257,10 @@ export default {
       },
       items: [],
       quota: null,
+      // refreshSeq drops out-of-order responses (a slow reply for an old
+      // directory must not overwrite newer state); loading drives the table.
+      loading: false,
+      refreshSeq: 0,
       shares: [],
       adminShares: [],
       backupWarning: "",
@@ -381,7 +386,9 @@ export default {
       // netdisk, which is always available.
       if (this.mode === "backup" && !this.backupConfigured) this.mode = "netdisk";
       if (this.mode === "shareddisk" && !this.sharedDiskConfigured) this.mode = "netdisk";
+      const seq = ++this.refreshSeq;
       const path = this.path;
+      this.loading = true;
       try {
         const listURL = this.mode === "backup"
           ? `/api/netdisk/backup/browse?path=${encodeURIComponent(path)}`
@@ -395,6 +402,7 @@ export default {
           this.mode === "netdisk" ? api("/api/netdisk/shares").catch(() => []) : Promise.resolve([]),
           this.mode === "netdisk" && isAdmin() ? api("/api/admin/netdisk/shares").catch(() => []) : Promise.resolve([]),
         ]);
+        if (seq !== this.refreshSeq) return; // a newer navigation superseded us
         this.items = list.items || [];
         this.quota = this.mode === "backup" ? (list.quota || null) : quota;
         this.shares = shares || [];
@@ -407,6 +415,7 @@ export default {
         // at their root).
         if (this.mode === "netdisk") store.netdisk = { ...(store.netdisk || { path: "" }), path: list.path || "" };
       } catch (err) {
+        if (seq !== this.refreshSeq) return;
         if (this.mode === "backup") {
           this.items = [];
           this.quota = null;
@@ -414,6 +423,8 @@ export default {
         } else {
           ElMessage.error(err.message);
         }
+      } finally {
+        if (seq === this.refreshSeq) this.loading = false;
       }
     },
     backupUnavailableMessage(errOrMsg) {
@@ -555,6 +566,17 @@ export default {
     downloadRow(f) {
       window.open(this.downloadHref(f), "_blank");
     },
+    // The delete endpoints answer with per-item results ({path, error}) where
+    // some items could not be removed; surface a partial-failure warning
+    // instead of a blanket success.
+    reportDeleteOutcome(res) {
+      const failed = (res?.results || []).filter((r) => r.error);
+      if (failed.length) {
+        ElMessage.warning(tt("netdisk.deletedNFailed", { ok: res.results.length - failed.length, err: failed.length }));
+      } else {
+        ElMessage.success(tt("netdisk.deleted"));
+      }
+    },
     async remove(paths, name) {
       try {
         await ElMessageBox.confirm(tt("netdisk.deleteConfirmOne", { name }), tt("common.delete"), {
@@ -565,8 +587,8 @@ export default {
       } catch { return; }
       const endpoint = this.mode === "shareddisk" ? "/api/shareddisk/delete" : this.mode === "backup" ? "/api/netdisk/backup/delete" : "/api/netdisk/delete";
       try {
-        await api(endpoint, { method: "POST", body: JSON.stringify({ paths }) });
-        ElMessage.success(tt("netdisk.deleted"));
+        const res = await api(endpoint, { method: "POST", body: JSON.stringify({ paths }) });
+        this.reportDeleteOutcome(res);
         this.selection = [];
         this.refresh();
       } catch (err) {
@@ -585,8 +607,8 @@ export default {
       } catch { return; }
       const endpoint = this.mode === "shareddisk" ? "/api/shareddisk/delete" : this.mode === "backup" ? "/api/netdisk/backup/delete" : "/api/netdisk/delete";
       try {
-        await api(endpoint, { method: "POST", body: JSON.stringify({ paths }) });
-        ElMessage.success(tt("netdisk.deleted"));
+        const res = await api(endpoint, { method: "POST", body: JSON.stringify({ paths }) });
+        this.reportDeleteOutcome(res);
         this.selection = [];
         this.refresh();
       } catch (err) {
@@ -670,6 +692,15 @@ export default {
       }
     },
     async deleteShare(s) {
+      // External links may already be shared with other people, so deleting
+      // one is confirm-worthy — same as every other destructive action here.
+      try {
+        await ElMessageBox.confirm(tt("netdisk.shareDeleteConfirm", { name: s.name || s.token }), tt("common.delete"), {
+          confirmButtonText: tt("common.confirm"),
+          cancelButtonText: tt("common.cancel"),
+          type: "warning",
+        });
+      } catch { return; }
       try {
         await api("/api/netdisk/share/delete", { method: "POST", body: JSON.stringify({ token: s.token }) });
         ElMessage.success(tt("netdisk.externalLinkDeleted"));

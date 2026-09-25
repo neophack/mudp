@@ -60,8 +60,10 @@
     </section>
 
     <!-- Row 2: environment (wide) + donut chart -->
-    <div class="dash-row-2">
-      <section class="card">
+    <div class="dash-row-2" :class="{ 'user-home': !admin }">
+      <!-- Host details (public IP, kernel, agent runtime) are admin-only: a
+           plain user should see their own workspace, not server internals. -->
+      <section v-if="admin" class="card">
         <div class="card-head">
           <h2>{{ tt("dash.environment") }}</h2>
           <el-tag size="small" :type="healthy ? 'success' : 'danger'">
@@ -93,7 +95,7 @@
             <li><span class="swatch" style="background: var(--ok)"></span>{{ tt("containers.filterRunning") }} <strong>{{ sys.containers?.running || 0 }}</strong></li>
             <li><span class="swatch" style="background: var(--warn)"></span>{{ tt("containers.filterPaused") }} <strong>{{ sys.containers?.paused || 0 }}</strong></li>
             <li><span class="swatch" style="background: var(--muted)"></span>{{ tt("containers.filterStopped") }} <strong>{{ sys.containers?.stopped || 0 }}</strong></li>
-            <li v-if="(sys.containers?.unhealthy || 0) > 0"><span class="swatch" style="background: var(--danger)"></span>Unhealthy <strong>{{ sys.containers.unhealthy }}</strong></li>
+            <li v-if="(sys.containers?.unhealthy || 0) > 0"><span class="swatch" style="background: var(--danger)"></span>{{ tt("containers.filterUnhealthy") }} <strong>{{ sys.containers.unhealthy }}</strong></li>
           </ul>
         </div>
       </section>
@@ -128,7 +130,7 @@
         <div class="card-head"><h2>{{ tt("dash.myWorkspace") }}</h2></div>
         <div class="card-body">
           <div class="kv"><span>{{ tt("nav.containers") }}</span><strong>{{ used }}{{ mine.cap ? ` / ${mine.cap}` : "" }}</strong></div>
-          <div class="bar"><div class="bar-fill" :style="{ width: quotaPct + '%' }"></div></div>
+          <div class="bar"><div class="bar-fill" :style="{ transform: 'scaleX(' + quotaPct / 100 + ')' }"></div></div>
           <div class="kv-row">
             <div class="kv"><span>{{ tt("containers.filterRunning") }}</span><strong>{{ mine.running ?? 0 }}</strong></div>
             <div class="kv"><span>{{ tt("hardware.memory") }}</span><strong>{{ fmtMB(mine.memoryMb) }}</strong></div>
@@ -208,7 +210,7 @@
 
 <script>
 import { api } from "@/api";
-import { store, isAdmin } from "@/store";
+import { store, isAdmin, refreshSection } from "@/store";
 import { tt } from "@/i18n";
 import { openUpgrade, isUpgrading } from "@/upgrade";
 import { detectClientIP, readIPCache, isCacheFresh } from "@/lib/publicip.js";
@@ -223,6 +225,23 @@ function donutOptionFor(c) {
     { name: "stopped", value: c.stopped || 0, itemStyle: { color: "#94a3b8" } },
   ];
   if ((c.unhealthy || 0) > 0) data.push({ name: "unhealthy", value: c.unhealthy, itemStyle: { color: "#ef4444" } });
+  const total = data.reduce((sum, d) => sum + d.value, 0);
+  if (total === 0) {
+    // With no containers at all, ECharts would render a fake full-circle
+    // sector; show a neutral empty ring instead so the chart can't be read
+    // as "there are stopped containers".
+    return {
+      tooltip: { show: false },
+      series: [{
+        type: "pie",
+        radius: ["62%", "88%"],
+        label: { show: false },
+        silent: true,
+        data: [{ value: 1, itemStyle: { color: "#cbd5e1", opacity: 0.45 } }],
+      }],
+      graphic: [],
+    };
+  }
   return {
     tooltip: { trigger: "item" },
     series: [{
@@ -301,6 +320,23 @@ export default {
     }
     this.probeClientIP();
     this.fillVersion(false);
+    // "Recent Activity" reads the audit section, which the route poller skips
+    // (admin-only, heavier than the rest of the dashboard): refresh it here on
+    // a slower cadence while the page is open.
+    if (isAdmin()) {
+      await refreshSection("audit").catch(() => {});
+      this.auditTimer = setInterval(() => {
+        if (!document.hidden && !document.querySelector(".el-overlay:not([style*=\"display: none\"])")) {
+          refreshSection("audit").catch(() => {});
+        }
+      }, 30000);
+    }
+  },
+  beforeUnmount() {
+    if (this.auditTimer) {
+      clearInterval(this.auditTimer);
+      this.auditTimer = null;
+    }
   },
   methods: {
     tt,
@@ -394,6 +430,7 @@ export default {
 <style scoped>
 .dash-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
 .dash-row-2, .dash-row-3 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }
+.dash-row-2.user-home { grid-template-columns: minmax(0, 1fr); }
 .dash-stack > * + * { margin-top: 16px; }
 
 /* Stat tiles: tinted icon square + big number. */
@@ -443,7 +480,7 @@ dl.detail dd { margin: 0; word-break: break-word; }
 .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
 .kv span:first-child { color: var(--muted); }
 .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 8px 0; }
-.bar-fill { height: 100%; background: var(--brand); transition: width 0.3s; }
+.bar-fill { height: 100%; background: var(--brand); transform-origin: 0 50%; transition: transform 0.2s var(--ease-out, ease-out); }
 .kv-row { display: flex; gap: 18px; margin-top: 8px; }
 .kv-row .kv { flex: 1; flex-direction: column; gap: 2px; }
 .client-ip-block { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }

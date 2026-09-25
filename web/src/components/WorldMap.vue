@@ -8,7 +8,7 @@
 // [lon, lat, count] rows drive a horizontal calculable visualMap scaling
 // symbolSize, and (optionally) a map series sharing the geo for a choropleth.
 // The country-polygon geojson is fetched once and registered as "world".
-import * as echarts from "echarts";
+import echarts from "@/echarts";
 
 let worldPromise = null;
 
@@ -71,6 +71,9 @@ export default {
     // "single": one brand-blue series. "mcp": access green + attack
     // yellow/red series split by kind/severity.
     mode: { type: String, default: "single" },
+    // Optional per-series legend titles, shown next to each visualMap slider
+    // so the bottom legends explain themselves instead of showing bare maxes.
+    legendTitles: { type: Array, default: () => [] },
     // tooltipHtml(point) supplies the hover body for a point.
     tooltipHtml: { type: Function, default: null },
     // Optional choropleth input: [{ name, value }] mapped onto the countries.
@@ -84,9 +87,9 @@ export default {
     seriesGroups() {
       if (this.mode === "mcp") {
         return [
-          { points: this.points.filter((p) => p.kind === "access"), color: "#22c55e", border: "#166534" },
-          { points: this.points.filter((p) => p.kind !== "access" && (p.severity || 0) < 2), color: "#f59e0b", border: "#92400e" },
-          { points: this.points.filter((p) => p.kind !== "access" && (p.severity || 0) >= 2), color: "#ef4444", border: "#991b1b" },
+          { title: "access", points: this.points.filter((p) => p.kind === "access"), color: "#22c55e", border: "#166534" },
+          { title: "probe", points: this.points.filter((p) => p.kind !== "access" && (p.severity || 0) < 2), color: "#f59e0b", border: "#92400e" },
+          { title: "heavy", points: this.points.filter((p) => p.kind !== "access" && (p.severity || 0) >= 2), color: "#ef4444", border: "#991b1b" },
         ].filter((g) => g.points.length);
       }
       return [{ points: this.points, color: "#3882ff", border: "#1d4ed8" }];
@@ -133,6 +136,7 @@ export default {
       // the count dimension (0..max across all points).
       groups.forEach((g, i) => {
         const gMax = g.points.reduce((m, p) => Math.max(m, p.count || 0), 0) || this.maxCount;
+        const legendTitle = this.legendTitles[i] || g.title;
         visualMap.push({
           orient: "horizontal",
           calculable: true,
@@ -143,7 +147,7 @@ export default {
           min: 0,
           max: gMax,
           dimension: 2,
-          text: [String(gMax), "0"],
+          text: [legendTitle || String(gMax), "0"],
           inRange: { symbolSize: [6, 26] },
           controller: { inRange: { color: [g.color] } },
           formatter: (v) => String(Math.round(v)),

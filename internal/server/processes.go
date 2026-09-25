@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"mudp/internal/dockerx"
@@ -14,28 +15,78 @@ import (
 // processWatchInterval is how often the watcher polls each watched container.
 const processWatchInterval = 10 * time.Second
 
+// processesCacheTTL bounds how long /api/processes reuses a snapshot. The page
+// polls every few seconds and process lists tolerate brief staleness, so the
+// poller can share one snapshot instead of each client fanning out a `docker
+// top` per running container.
+const processesCacheTTL = 3 * time.Second
+
+type procCacheEntry struct {
+	at    time.Time
+	procs []dockerx.TopProcess
+}
+
 // processes lists every process across the caller's running containers, plus
 // the caller's active exit-watches. Admins see all containers.
 func (a *App) processes(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
-	containers := a.runtimeContainers(u.Username, u.Role == "admin")
-	processes := make([]dockerx.TopProcess, 0)
-	for _, c := range containers {
-		if c.State != "running" {
-			continue
+	key := u.Username
+	if u.Role == "admin" {
+		key += "|admin"
+	}
+	a.procCacheMu.Lock()
+	entry, fresh := a.procCache[key]
+	a.procCacheMu.Unlock()
+	if !fresh || time.Since(entry.at) > processesCacheTTL {
+		entry = procCacheEntry{at: time.Now(), procs: a.collectProcesses(r.Context(), u)}
+		a.procCacheMu.Lock()
+		if a.procCache == nil {
+			a.procCache = map[string]procCacheEntry{}
 		}
-		procs, err := a.docker.ContainerTop(r.Context(), c)
-		if err != nil {
-			continue
-		}
-		processes = append(processes, procs...)
+		a.procCache[key] = entry
+		a.procCacheMu.Unlock()
 	}
 	watches, err := a.db.ProcessWatchesForUser(u.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to load watches")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"processes": processes, "watches": watches})
+	writeJSON(w, http.StatusOK, map[string]any{"processes": entry.procs, "watches": watches})
+}
+
+// collectProcesses runs `docker top` across the caller's running containers
+// with bounded concurrency; a serial loop made the admin view wait for one
+// round-trip per container.
+func (a *App) collectProcesses(ctx context.Context, u *store.User) []dockerx.TopProcess {
+	containers := a.runtimeContainers(u.Username, u.Role == "admin")
+	running := make([]dockerx.Container, 0, len(containers))
+	for _, c := range containers {
+		if c.State == "running" {
+			running = append(running, c)
+		}
+	}
+	perContainer := make([][]dockerx.TopProcess, len(running))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i := range running {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			procs, err := a.docker.ContainerTop(ctx, running[i])
+			if err != nil {
+				return
+			}
+			perContainer[i] = procs
+		}(i)
+	}
+	wg.Wait()
+	processes := make([]dockerx.TopProcess, 0)
+	for _, procs := range perContainer {
+		processes = append(processes, procs...)
+	}
+	return processes
 }
 
 // containerProcesses lists the processes of one container the caller owns.

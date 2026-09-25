@@ -26,7 +26,14 @@
   --ok: #10b981;
   --warn: #f59e0b;
   --danger: #ef4444;
-  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --card-shadow: none;
+  /* Motion tokens: short, decisive timings read as "fast and precise".
+     Only transform/opacity/color ever animate — never layout properties. */
+  --dur-1: 0.1s;
+  --dur-2: 0.16s;
+  --dur-3: 0.22s;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-inout: cubic-bezier(0.4, 0, 0.2, 1);
   color-scheme: light;
 }
 
@@ -84,7 +91,28 @@ html[data-theme="dark"] {
   --el-fill-color-light: var(--hover);
   --el-fill-color-lighter: var(--hover);
   --el-mask-color: rgba(0, 0, 0, 0.4);
+  /* Flat + fast: dialogs, drawers, popovers and toasts snap in over 0.16s
+     instead of Element's 0.3s default; one radius everywhere. */
+  --el-transition-duration: var(--dur-2);
+  --el-transition-duration-fast: var(--dur-1);
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 999px;
+  --el-animation-duration: var(--dur-2);
 }
+/* Element hardcodes some durations in component classes; clamp the overlays
+   that users interact with most so nothing lingers on screen. */
+.el-overlay,
+.el-dialog,
+.el-message-box,
+.el-drawer,
+.el-message,
+.el-popper,
+.el-select-dropdown,
+.el-dropdown-menu {
+  animation-duration: var(--dur-2) !important;
+  transition-duration: var(--dur-2) !important;
+}
+.el-message { animation-duration: var(--dur-2) !important; }
 html[data-theme="dark"] {
   --el-color-primary-light-8: rgba(51, 112, 255, 0.32);
   --el-color-primary-light-9: rgba(51, 112, 255, 0.2);
@@ -125,7 +153,7 @@ body {
   backdrop-filter: saturate(180%) blur(20px);
   border-right: 1px solid var(--line);
   color: var(--ink);
-  transition: width 0.2s ease;
+  transition: width var(--dur-2) var(--ease-inout);
   overflow: hidden;
 }
 .shell-aside.collapsed { width: 64px; }
@@ -168,6 +196,16 @@ body {
   flex-direction: column;
   gap: 2px;
 }
+.nav-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  padding: 12px 14px 4px;
+  user-select: none;
+}
+.drawer-nav .nav-group-label { padding: 12px 6px 4px; }
+.shell-nav .nav-item:first-child ~ .nav-group-label, .shell-nav .nav-group-label { margin-top: 2px; }
 .shell-nav .nav-item, .drawer-nav .nav-item {
   display: flex;
   align-items: center;
@@ -183,7 +221,7 @@ body {
   text-align: left;
   white-space: nowrap;
   overflow: hidden;
-  transition: background 0.15s, color 0.15s;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
 .shell-nav .nav-item:hover, .drawer-nav .nav-item:hover { background: var(--hover); color: var(--ink); }
 .shell-nav .nav-item.active, .drawer-nav .nav-item.active {
@@ -322,6 +360,10 @@ body {
 .primary-line { font-weight: 600; }
 .secondary-line { color: var(--muted); font-size: 12px; }
 
+/* Buttons answer instantly: transform press feedback rides the compositor,
+   so taps feel immediate without repainting anything. */
+.el-button { transition: color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out); }
+.el-button:not(.is-disabled):active { transform: scale(0.97); }
 .el-button.is-link { color: var(--brand) !important; }
 .el-table th.el-table__cell { background: var(--table-head) !important; color: var(--muted); font-weight: 600; }
 .el-table .el-link { font-size: 12.5px; }
@@ -408,7 +450,7 @@ body {
 
 /* Dialogs: slim header/body rhythm so forms fit one screen, macOS sheet
    roundness. */
-.el-dialog { border-radius: 14px; background: var(--card); }
+.el-dialog { border-radius: 12px; background: var(--card); }
 .el-dialog__header { padding: 13px 16px 9px; margin-right: 0; }
 /* Long object names in dialog titles ("Logs — <container>") clip with an
    ellipsis instead of pushing the width or wrapping. */
@@ -420,7 +462,7 @@ body {
 /* Forms and inputs follow the compact scale. */
 .el-form-item { margin-bottom: 13px; }
 .el-message { border-radius: 12px; }
-.el-message-box { border-radius: 14px; }
+.el-message-box { border-radius: 12px; }
 
 /* Light drawers: mobile nav rail and the bottom action sheet both read as
    iOS sheets now that the shell is light. */
@@ -758,7 +800,6 @@ body {
   background: var(--card);
   color: var(--ink);
   font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
 }
 
 /* Narrow screens: the hero loses its gradient and stacks above the form as
@@ -839,3 +880,23 @@ body {
 .viewer-md table { border-collapse: collapse; }
 .viewer-md table td, .viewer-md table th { border: 1px solid var(--line); padding: 4px 8px; }
 .viewer-md blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--brand); color: var(--muted); }
+
+/* ---------- Route transition ---------- */
+/* A 0.12s fade with a 4px rise keeps page swaps from feeling like hard cuts
+   while staying faster than a blink; out-phase is even shorter so the next
+   page never waits on the old one. Opacity + transform only — no reflow. */
+.page-enter-active { transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out); }
+.page-leave-active { transition: opacity var(--dur-1) ease; }
+.page-enter-from { opacity: 0; transform: translateY(4px); }
+.page-leave-to { opacity: 0; }
+
+/* ---------- Reduced motion ---------- */
+/* Users who ask the OS for less motion get an effectively static UI: progress
+   fills snap, overlays appear without travel, the aurora stands still. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

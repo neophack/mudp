@@ -20,27 +20,27 @@ type DB struct {
 }
 
 type User struct {
-	ID                    int64    `json:"id"`
-	Username              string   `json:"username"`
-	DisplayName           string   `json:"displayName,omitempty"`
-	Role                  string   `json:"role"`
-	Group                 string   `json:"group,omitempty"`
-	PortPrefix            int      `json:"portPrefix"`
-	CreatedAt             string   `json:"createdAt"`
-	LastLoginAt           *string  `json:"lastLoginAt,omitempty"`
-	Disabled              bool     `json:"disabled"`
-	ContainerCap          int      `json:"containerCap"`
-	NetdiskQuotaBytes     int64    `json:"netdiskQuotaBytes"`
-	FeishuOpenID          string   `json:"feishuOpenId,omitempty"`
-	FeishuAvatar          string   `json:"feishuAvatar,omitempty"`
-	FeishuEmail           string   `json:"feishuEmail,omitempty"`
-	FeishuEnterpriseEmail string   `json:"feishuEnterpriseEmail,omitempty"`
-	FeishuMobile          string   `json:"feishuMobile,omitempty"`
-	FeishuTenantKey       string   `json:"feishuTenantKey,omitempty"`
-	FeishuTenantName      string   `json:"feishuTenantName,omitempty"`
-	FeishuDepartment      string   `json:"feishuDepartment,omitempty"`
-	Comment               string   `json:"comment,omitempty"`
-	Language              string   `json:"language,omitempty"`
+	ID                    int64   `json:"id"`
+	Username              string  `json:"username"`
+	DisplayName           string  `json:"displayName,omitempty"`
+	Role                  string  `json:"role"`
+	Group                 string  `json:"group,omitempty"`
+	PortPrefix            int     `json:"portPrefix"`
+	CreatedAt             string  `json:"createdAt"`
+	LastLoginAt           *string `json:"lastLoginAt,omitempty"`
+	Disabled              bool    `json:"disabled"`
+	ContainerCap          int     `json:"containerCap"`
+	NetdiskQuotaBytes     int64   `json:"netdiskQuotaBytes"`
+	FeishuOpenID          string  `json:"feishuOpenId,omitempty"`
+	FeishuAvatar          string  `json:"feishuAvatar,omitempty"`
+	FeishuEmail           string  `json:"feishuEmail,omitempty"`
+	FeishuEnterpriseEmail string  `json:"feishuEnterpriseEmail,omitempty"`
+	FeishuMobile          string  `json:"feishuMobile,omitempty"`
+	FeishuTenantKey       string  `json:"feishuTenantKey,omitempty"`
+	FeishuTenantName      string  `json:"feishuTenantName,omitempty"`
+	FeishuDepartment      string  `json:"feishuDepartment,omitempty"`
+	Comment               string  `json:"comment,omitempty"`
+	Language              string  `json:"language,omitempty"`
 	// PinyinName is derived from the Feishu profile name: Han characters are
 	// converted to tone-free pinyin, non-Han characters (e.g. a Latin name or
 	// initials) pass through unchanged, and all spaces are stripped. Empty for
@@ -1058,14 +1058,17 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 func (db *DB) UserByID(id int64) (*User, error) {
 	var u User
 	var disabled, sharedRW int
-	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,pinyin_name,shared_disk_read_write from users where id=?`, id).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW)
+	// The group name rides along in the same query: this runs on every
+	// authenticated request (session lookup), so a second per-request query
+	// for the join would double the auth-path read load.
+	err := db.QueryRow(`select u.id,u.username,u.display_name,u.role,u.disabled,u.container_cap,u.netdisk_quota_bytes,u.port_prefix,u.created_at,u.last_login_at,u.feishu_open_id,u.feishu_avatar,u.feishu_email,u.feishu_enterprise_email,u.feishu_mobile,u.feishu_tenant_key,u.feishu_tenant_name,u.feishu_department,u.comment,u.pinyin_name,u.shared_disk_read_write,coalesce(g.name,'')
+		from users u left join groups g on g.id=u.group_id where u.id=?`, id).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW, &u.Group)
 	u.SharedDiskReadWrite = sharedRW != 0
 	if err != nil {
 		return nil, err
 	}
 	u.Disabled = disabled != 0
-	u.Group = db.UserGroupName(u.ID)
 	return &u, nil
 }
 
@@ -1148,7 +1151,11 @@ func (db *DB) checkUserCapacity(tx executor) error {
 }
 
 func (db *DB) Users() ([]User, error) {
-	rows, err := db.Query(`select id,username,display_name,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,pinyin_name,shared_disk_read_write from users order by username`)
+	// Join the group name here instead of calling UserGroupName per row: the
+	// admin user list, dashboard rollup and audit views all consume this, and
+	// the per-row query turned it into an N+1.
+	rows, err := db.Query(`select u.id,u.username,u.display_name,u.role,u.disabled,u.container_cap,u.netdisk_quota_bytes,u.port_prefix,u.created_at,u.last_login_at,u.feishu_open_id,u.feishu_avatar,u.feishu_email,u.feishu_enterprise_email,u.feishu_mobile,u.feishu_tenant_key,u.feishu_tenant_name,u.feishu_department,u.comment,u.pinyin_name,u.shared_disk_read_write,coalesce(g.name,'')
+		from users u left join groups g on g.id=u.group_id order by u.username`)
 	if err != nil {
 		return nil, err
 	}
@@ -1157,12 +1164,11 @@ func (db *DB) Users() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var disabled, sharedRW int
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW, &u.Group); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
 		u.SharedDiskReadWrite = sharedRW != 0
-		u.Group = db.UserGroupName(u.ID)
 		users = append(users, u)
 	}
 	return users, rows.Err()
@@ -1385,6 +1391,8 @@ func (db *DB) ImagesForUser(userID int64, admin bool) ([]Image, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	// One query for every image→group mapping, instead of a join per image.
+	groups := db.allImageGroupNames()
 	var imgs []Image
 	for rows.Next() {
 		var img Image
@@ -1395,7 +1403,7 @@ func (db *DB) ImagesForUser(userID int64, admin bool) ([]Image, error) {
 		if p, err := DecodePreset(presetJSON); err == nil {
 			img.Preset = p
 		}
-		img.Groups = db.ImageGroupNames(img.ID)
+		img.Groups = groups[img.ID]
 		imgs = append(imgs, img)
 	}
 	return imgs, rows.Err()
@@ -1504,6 +1512,25 @@ func (db *DB) ImageGroupNames(imageID int64) []string {
 		var s string
 		if rows.Scan(&s) == nil {
 			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// allImageGroupNames loads the image→group-name mapping for every image in one
+// query, for list endpoints that would otherwise issue a join per image.
+func (db *DB) allImageGroupNames() map[int64][]string {
+	rows, err := db.Query(`select gi.image_id, g.name from group_images gi join groups g on g.id=gi.group_id order by g.name`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := map[int64][]string{}
+	for rows.Next() {
+		var id int64
+		var name string
+		if rows.Scan(&id, &name) == nil {
+			out[id] = append(out[id], name)
 		}
 	}
 	return out
@@ -2142,13 +2169,18 @@ func (db *DB) SaveResourceSamples(samples []ResourceSample) error {
 }
 
 func (db *DB) ResourceSamples(userID int64, admin bool, since time.Time) ([]ResourceSample, error) {
+	// Hard cap: one minute of samples per container over 24h across a busy
+	// host approaches tens of thousands of rows, more than any chart shows.
+	// Newest rows win; the ordering is restored to ascending afterwards.
+	const maxSamples = 20000
 	q := `select id, user_id, username, container_id, container_name, cpu_pct, mem_mb, disk_mb, gpu_pct, created_at from resource_samples where created_at >= ?`
 	args := []any{since.Format(time.RFC3339)}
 	if !admin {
 		q += ` and user_id=?`
 		args = append(args, userID)
 	}
-	q += ` order by created_at asc`
+	q += ` order by created_at desc limit ?`
+	args = append(args, maxSamples)
 	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -2162,7 +2194,13 @@ func (db *DB) ResourceSamples(userID int64, admin bool, since time.Time) ([]Reso
 		}
 		out = append(out, s)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
 }
 
 func (db *DB) CreateNetdiskShare(ownerID int64, token, name string, paths []string, expiresAt string, permanent bool, passwordHash, password string) error {

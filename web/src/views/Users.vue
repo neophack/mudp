@@ -361,7 +361,7 @@ export default {
     return {
       s: store,
       createVisible: false,
-      userForm: { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: 0 },
+      userForm: { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: this.defaultGroupId() },
       feishuTest: { userId: null, message: "" },
       feishuTestSending: false,
       usage: null,
@@ -517,7 +517,7 @@ export default {
       }
     },
     openCreateUser() {
-      this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: 0 };
+      this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: this.defaultGroupId() };
       this.createVisible = true;
     },
     async sendFeishuTest() {
@@ -535,6 +535,9 @@ export default {
         this.feishuTestSending = false;
       }
     },
+    defaultGroupId() {
+      return ((store.groups || []).find((g) => g.name === "users") || {}).id || 0;
+    },
     async createUser() {
       const f = this.userForm;
       const payload = {
@@ -550,7 +553,7 @@ export default {
         await refreshSection("users", "groups");
         this.createVisible = false;
         ElMessage.success(tt("users.userCreated"));
-        this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: 0 };
+        this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: this.defaultGroupId() };
       } catch (err) {
         if (err.message === "user capacity full") ElMessage.error(tt("users.capacityFull"));
         else ElMessage.error(err.message);

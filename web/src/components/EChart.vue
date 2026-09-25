@@ -5,7 +5,7 @@
 <script>
 // Thin ECharts wrapper: mounts a chart into the div, applies option updates
 // in place, and keeps the canvas sized to its container via ResizeObserver.
-import * as echarts from "echarts";
+import echarts from "@/echarts";
 
 export default {
   name: "EChart",
