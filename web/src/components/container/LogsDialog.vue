@@ -17,7 +17,7 @@
 <script>
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 
 export default {
   name: "LogsDialog",
@@ -32,14 +32,19 @@ export default {
       tail: 300,
       follow: false,
       grep: "",
+      // The applied filter lags the input by a debounce: in follow mode every
+      // appended line reruns `filtered`, so typing must not trigger a full
+      // re-filter per keystroke. (The timer handle lives on `this` outside
+      // data — underscore keys are reserved there.)
+      grepApplied: "",
       wrap: true,
       es: null,
     };
   },
   computed: {
     filtered() {
-      if (!this.grep) return this.content;
-      const needle = this.grep.toLowerCase();
+      if (!this.grepApplied) return this.content;
+      const needle = this.grepApplied.toLowerCase();
       return this.content
         .split("\n")
         .filter((l) => l.toLowerCase().includes(needle))
@@ -47,6 +52,12 @@ export default {
     },
   },
   watch: {
+    grep() {
+      clearTimeout(this._grepTimer);
+      this._grepTimer = setTimeout(() => {
+        this.grepApplied = this.grep;
+      }, 200);
+    },
     visible(v) {
       if (v) {
         this.content = "Loading…";
@@ -66,6 +77,7 @@ export default {
     },
   },
   beforeUnmount() {
+    clearTimeout(this._grepTimer);
     this.stopFollow();
   },
   methods: {
@@ -84,7 +96,7 @@ export default {
         this.content = data.logs || tt("logs.noLogs");
         this.scrollDown();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     startFollow() {

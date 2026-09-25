@@ -123,7 +123,7 @@
 import { ElMessage } from "element-plus";
 import { api, readCSRFCookie, readSSE } from "@/api";
 import { store, refreshAll, isAdmin } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import { registerJob } from "@/jobs";
 
 const STAGE_ORDER = ["image", "create", "start", "refresh", "done"];
@@ -306,7 +306,7 @@ export default {
             this.form.env = resolved.env.join("\n");
           }
         } catch (err) {
-          ElMessage.error(err.message);
+          ElMessage.error(errText(err));
         }
       }
     },

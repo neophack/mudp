@@ -146,7 +146,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store, refreshSection, isAdmin, canMutate, displayNameForUsername } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import ActionSheet from "@/components/ActionSheet.vue";
 import CreateDialog from "@/components/container/CreateDialog.vue";
 import LogsDialog from "@/components/container/LogsDialog.vue";
@@ -336,7 +336,7 @@ export default {
         await refreshSection("containers", "dashboard");
         ElMessage.success(tt("containers.done"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       } finally {
         this.pendingActions.delete(key);
       }
@@ -368,7 +368,7 @@ export default {
         if (failN === 0) ElMessage.success(tt("containers.batchResult", { ok: okN, action }));
         else ElMessage.warning(tt("containers.batchResultPartial", { ok: okN, fail: failN }));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

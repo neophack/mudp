@@ -4,6 +4,10 @@
       <h2>{{ tt("networks.title") }}</h2>
       <el-button v-if="isAdmin()" type="primary" size="small" @click="dialog = true">{{ tt("networks.newNetwork") }}</el-button>
     </div>
+    <div v-if="s.sectionErrors.networks" class="error-box">
+      ✗ {{ tt("networks.loadFailed") }}
+      <el-button size="small" style="margin-left: 12px" @click="retryLoad">{{ tt("common.retry") }}</el-button>
+    </div>
     <p v-if="isAdmin()" class="hint" style="margin: 0 0 10px">{{ tt("networks.adminHint") }}</p>
     <el-table
       :data="s.networks"
@@ -118,7 +122,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store, isAdmin, canMutate, refreshSection } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import NetworkDetailDialog from "@/components/network/NetworkDetailDialog.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
 
@@ -152,6 +156,10 @@ export default {
     },
   },
   methods: {
+    async retryLoad() {
+      delete store.sectionErrors.networks;
+      await refreshSection("networks");
+    },
     tt,
     isAdmin,
     canMutate,
@@ -194,7 +202,7 @@ export default {
         this.share.visible = false;
         ElMessage.success(tt("networks.accessUpdated"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     // Switches one network between Docker publishing and mudp forwarding: on a
@@ -228,7 +236,7 @@ export default {
           ElMessage.success(forward ? tt("networks.forwardOn", { name: n.name }) : tt("networks.forwardOff", { name: n.name }));
         }
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async submit() {
@@ -239,7 +247,7 @@ export default {
         this.dialog = false;
         ElMessage.success(tt("networks.created"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async remove(n) {
@@ -255,7 +263,7 @@ export default {
         await refreshSection("networks");
         ElMessage.success(tt("networks.deleted"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

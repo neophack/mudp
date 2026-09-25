@@ -70,7 +70,7 @@
 <script>
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import { fmtBytes } from "@/lib/common.js";
 
 export default {
@@ -119,7 +119,7 @@ export default {
         this.prune.visible = false;
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

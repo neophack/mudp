@@ -7,6 +7,10 @@
         <el-button size="small" type="primary" @click="dialog = true">{{ tt("volumes.newVolume") }}</el-button>
       </div>
     </div>
+    <div v-if="s.sectionErrors.volumes" class="error-box">
+      ✗ {{ tt("volumes.loadFailed") }}
+      <el-button size="small" style="margin-left: 12px" @click="retryLoad">{{ tt("common.retry") }}</el-button>
+    </div>
     <el-input v-model="search" :placeholder="tt('common.search')" prefix-icon="Search" clearable size="small" style="width: min(260px, 100%); margin-bottom: 10px" />
     <el-table
       :data="filtered"
@@ -80,7 +84,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store, canMutate, refreshSection, displayNameForUsername } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import VolumeFilesDialog from "@/components/volume/VolumeFilesDialog.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
 
@@ -110,6 +114,10 @@ export default {
     },
   },
   methods: {
+    async retryLoad() {
+      delete store.sectionErrors.volumes;
+      await refreshSection("volumes");
+    },
     tt,
     canMutate,
     displayNameForUsername,
@@ -140,7 +148,7 @@ export default {
         this.dialog = false;
         ElMessage.success(tt("volumes.created"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async remove(v) {
@@ -156,7 +164,7 @@ export default {
         await refreshSection("volumes");
         ElMessage.success(tt("volumes.deleted"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async prune() {
@@ -172,7 +180,7 @@ export default {
         await refreshSection("volumes");
         ElMessage.success(tt("volumes.pruneResult", { n: r.removed || 0, size: this.fmtMB((r.bytesFreed || 0) / 1024 / 1024) }));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

@@ -322,7 +322,7 @@
 import { ElMessage } from "element-plus";
 import { api, copyText } from "@/api";
 import { store, displayNameForUsername } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import { formatDate } from "@/lib/common.js";
 import WorldMap from "@/components/WorldMap.vue";
 
@@ -399,7 +399,7 @@ export default {
         this.stats = stats || {};
         this.points = points || [];
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     accessTooltip(p) {
@@ -455,7 +455,7 @@ export default {
         this.logs = Array.isArray(data) ? data : [];
         this.hasMore = this.logs.length === this.pageSize;
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     exportCsv() {
@@ -486,7 +486,7 @@ export default {
           ipWorkerUrl: s.ipWorkerUrl || "",
         };
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async saveSettings() {
@@ -502,7 +502,7 @@ export default {
         await api("/api/admin/security/settings", { method: "POST", body: JSON.stringify(s) });
         ElMessage.success(tt("security.saved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async toggleWorkerSource() {

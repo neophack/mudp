@@ -205,6 +205,14 @@ const translations = {
     "containers.filterStopped": "已停止",
     "containers.filterPaused": "已暂停",
     "containers.filterUnhealthy": "异常",
+    "images.loadFailed": "镜像列表加载失败",
+    "volumes.loadFailed": "卷列表加载失败",
+    "networks.loadFailed": "网络列表加载失败",
+    "stacks.loadFailed": "堆栈列表加载失败",
+    "err.docker_unavailable": "Docker 不可用，请稍后重试。",
+    "err.not_owner": "该资源不属于当前用户。",
+    "err.quota_exceeded": "已超出网盘配额。",
+    "err.timeout": "请求超时，请重试。",
     "containers.loadFailed": "容器列表加载失败（Docker 可能不可用）",
     "containers.selectedN": "已选择 {n} 个",
     "containers.batchStart": "▶ 启动",
@@ -1701,6 +1709,14 @@ const translations = {
     "containers.filterStopped": "Stopped",
     "containers.filterPaused": "Paused",
     "containers.filterUnhealthy": "Unhealthy",
+    "images.loadFailed": "Failed to load images",
+    "volumes.loadFailed": "Failed to load volumes",
+    "networks.loadFailed": "Failed to load networks",
+    "stacks.loadFailed": "Failed to load stacks",
+    "err.docker_unavailable": "Docker is unavailable. Please try again shortly.",
+    "err.not_owner": "This resource does not belong to you.",
+    "err.quota_exceeded": "Netdisk quota exceeded.",
+    "err.timeout": "The request timed out. Please retry.",
     "containers.loadFailed": "Failed to load containers (Docker may be unavailable)",
     "containers.selectedN": "{n} selected",
     "containers.batchStart": "▶ Start",
@@ -3118,4 +3134,17 @@ export function translateBatch(keys) {
     result[key] = t(key);
   });
   return result;
+}
+
+// errText maps a stable error code (attached by the server's writeErr
+// classifier) to a localized message, so the common failure modes — Docker
+// down, not-your-resource, quota, timeout — render in the UI language
+// instead of raw Docker English. Unmapped or unknown codes fall back to the
+// raw server message.
+export function errText(err) {
+  const code = err?.code;
+  if (!code) return err?.message || String(err ?? "");
+  const key = "err." + code;
+  const localized = t(key);
+  return localized === key ? err?.message || key : localized;
 }

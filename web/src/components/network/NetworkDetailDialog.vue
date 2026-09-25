@@ -54,7 +54,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store, canMutate, refreshSection } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 
 export default {
   name: "NetworkDetailDialog",
@@ -115,7 +115,7 @@ export default {
         await refreshSection("containers");
         await this.load();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       } finally {
         this.attaching = false;
       }
@@ -137,7 +137,7 @@ export default {
         await refreshSection("containers");
         await this.load();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

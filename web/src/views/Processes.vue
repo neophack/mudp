@@ -131,7 +131,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store, isAdmin, displayNameForUsername } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 
 const POLL_MS = 5000;
 
@@ -208,7 +208,7 @@ export default {
         this.history = [];
         ElMessage.success(tt("processes.historyCleared"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     fmtTime(iso) {
@@ -227,7 +227,7 @@ export default {
         ElMessage.success(tt("processes.watched"));
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async unwatch(w) {
@@ -239,7 +239,7 @@ export default {
         ElMessage.success(tt("processes.unwatched"));
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     fmtMem(mb) {

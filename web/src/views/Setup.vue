@@ -47,7 +47,7 @@
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
 import { store } from "@/store";
-import { tt, setLanguage } from "@/i18n";
+import { tt, setLanguage, errText } from "@/i18n";
 import { getCurrentLanguage, SUPPORTED_LANGS } from "@/lib/i18n.js";
 
 export default {
@@ -90,7 +90,7 @@ export default {
         ElMessage.success(tt("setup.completeToast"));
         this.$router.push("/login");
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       } finally {
         this.busy = false;
       }

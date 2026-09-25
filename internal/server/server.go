@@ -2393,8 +2393,30 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// classifyErr maps an error message to a stable frontend code, so the console
+// can localize the common failure modes instead of showing raw Docker/OS
+// English. Unmatched messages carry no code and are shown verbatim.
+func classifyErr(msg string) string {
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "docker unavailable"), strings.Contains(lower, "cannot connect to the docker daemon"), strings.Contains(lower, "is not running"):
+		return "docker_unavailable"
+	case strings.Contains(lower, "not your container"), strings.Contains(lower, "not yours"), strings.Contains(lower, "only the owner"):
+		return "not_owner"
+	case strings.Contains(lower, "exceed netdisk quota"), strings.Contains(lower, "exceeds netdisk quota"):
+		return "quota_exceeded"
+	case strings.Contains(lower, "deadline exceeded"), strings.Contains(lower, "timed out"), strings.Contains(lower, "timeout"):
+		return "timeout"
+	}
+	return ""
+}
+
 func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	payload := map[string]string{"error": msg}
+	if code := classifyErr(msg); code != "" {
+		payload["code"] = code
+	}
+	writeJSON(w, status, payload)
 }
 
 func respond(w http.ResponseWriter, v any, err error) {

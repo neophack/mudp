@@ -72,7 +72,7 @@
 <script>
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 
 export default {
   name: "FilesDialog",
@@ -181,7 +181,7 @@ export default {
         await Promise.all([this.loadContainer(), this.loadNetdisk()]);
         this.status = "";
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
         this.status = err.message;
       } finally {
         this.busy = false;

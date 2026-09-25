@@ -223,7 +223,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store, isAdmin, applySiteName, setTheme } from "@/store";
-import { tt, setLanguage } from "@/i18n";
+import { tt, setLanguage, errText } from "@/i18n";
 import { SUPPORTED_LANGS, getLanguageName, getCurrentLanguage } from "@/lib/i18n.js";
 import VIcon from "@/components/VIcon.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
@@ -304,7 +304,7 @@ export default {
         // Reload so every part of the app picks up the new language.
         setTimeout(() => location.reload(), 500);
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async saveSharedDisk() {
@@ -314,7 +314,7 @@ export default {
         if (store.me) store.me.sharedDiskReadWrite = readWrite;
         ElMessage.success(tt("settings.sharedDiskAccessSaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async saveDefaultLanguage() {
@@ -325,7 +325,7 @@ export default {
         });
         ElMessage.success(tt("admin.saved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async saveSite() {
@@ -338,7 +338,7 @@ export default {
         applySiteName(this.siteName);
         ElMessage.success(tt("settings.siteSaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async saveCapacity() {
@@ -350,7 +350,7 @@ export default {
         this.capacity = String(res.capacity);
         ElMessage.success(tt("settings.userCapacitySaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async saveCompany() {
@@ -362,7 +362,7 @@ export default {
         this.tenantKey = res.tenantKey || "";
         ElMessage.success(tt("settings.companySaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async saveFeishu() {
@@ -378,7 +378,7 @@ export default {
         store.feishu = !!this.feishu.enabled;
         ElMessage.success(tt("settings.feishuSaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async saveMcpRemote() {
@@ -398,7 +398,7 @@ export default {
         store.mcpRemote = null;
         ElMessage.success(res.running ? tt("settings.mcpLive") : tt("settings.mcpSaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     openRegistry(r) {
@@ -417,7 +417,7 @@ export default {
         this.registryDialog.visible = false;
         ElMessage.success(tt("settings.registrySaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async deleteRegistry(r) {
@@ -433,7 +433,7 @@ export default {
         this.registries = this.registries.filter((x) => x.id !== r.id);
         ElMessage.success(tt("settings.registryDeleted"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async testRegistry(r) {
@@ -441,7 +441,7 @@ export default {
         await api("/api/registries/test", { method: "POST", body: JSON.stringify({ id: r.id }) });
         ElMessage.success(tt("settings.loginSuccessful"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

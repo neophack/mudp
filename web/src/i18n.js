@@ -8,6 +8,9 @@ import elementZH from "element-plus/es/locale/lang/zh-cn";
 import { t as rawT, switchLanguage as rawSwitch, getCurrentLanguage, LANG_CHINESE } from "@/lib/i18n.js";
 import { store } from "@/store";
 
+// Localized error rendering for API failures (see lib/i18n.js errText).
+export { errText } from "@/lib/i18n.js";
+
 // Element's own strings (select placeholders, ElMessageBox buttons, table empty
 // text, date pickers) come from its locale pack, not from lib/i18n — without
 // this they stay English while the rest of the console is Chinese. The ref

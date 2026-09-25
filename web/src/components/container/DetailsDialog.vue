@@ -92,7 +92,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store, isAdmin, canMutate, refreshSection } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 
 export default {
   name: "DetailsDialog",
@@ -187,7 +187,7 @@ export default {
         });
         ElMessage.success(tt("details.settingsSaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       } finally {
         this.saving = false;
       }
@@ -212,7 +212,7 @@ export default {
         ElMessage.success(tt("details.duplicated"));
         this.$emit("update:visible", false);
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async commit() {
@@ -241,7 +241,7 @@ export default {
         ElMessage.success(tt("details.committedAs", { name: res.name }));
         await refreshSection("images");
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

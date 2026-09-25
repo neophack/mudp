@@ -42,7 +42,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api, readCSRFCookie } from "@/api";
 import { store, canMutate } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import { uploadWithProgress } from "@/lib/upload.js";
 import { hashFileCRC32 } from "@/lib/hashfile.js";
 import { uploadLargeFile } from "@/lib/chunkupload.js";
@@ -131,7 +131,7 @@ export default {
         ElMessage.success(tt("volfiles.folderCreated"));
         await this.load();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async deleteSelected() {
@@ -152,7 +152,7 @@ export default {
         ElMessage.success(tt("volfiles.deletedN", { n: paths.length }));
         await this.load();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async rename(item) {
@@ -170,7 +170,7 @@ export default {
         ElMessage.success(tt("volfiles.renamed"));
         await this.load();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     pick() {
@@ -300,7 +300,7 @@ export default {
         await this.load();
         this.status = "";
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
         this.status = err.message;
       } finally {
         this.busy = false;

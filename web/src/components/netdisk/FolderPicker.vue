@@ -47,7 +47,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 
 export default {
   name: "FolderPicker",
@@ -201,7 +201,7 @@ export default {
         ElMessage.success(tt("netdisk.folderCreated"));
         await this.load(this.path);
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     confirm() {

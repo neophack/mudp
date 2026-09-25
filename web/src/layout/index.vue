@@ -111,7 +111,7 @@
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
 import { store, refreshAll, isAdmin, setTheme } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import { activeJobCount } from "@/jobs";
 import { refreshActiveRoute } from "@/refresh";
 import VIcon from "@/components/VIcon.vue";
@@ -234,7 +234,7 @@ export default {
         await refreshAll();
         ElMessage.success(tt("toast.refreshed"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

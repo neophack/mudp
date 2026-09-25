@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { t, switchLanguage, getCurrentLanguage, LANG_CHINESE, LANG_ENGLISH } from "../../lib/i18n.js";
+import { t, errText, switchLanguage, getCurrentLanguage, LANG_CHINESE, LANG_ENGLISH } from "../../lib/i18n.js";
 
 // The optimization pass added several user-facing keys (netdisk partial
 // delete results, unhealthy legend, pull validation). These pin their
@@ -36,5 +36,17 @@ describe("t() dictionary coverage and interpolation", () => {
     await switchLanguage(LANG_ENGLISH);
     expect(t("totally.bogus.key", "fallback {x}", { x: 7 })).toBe("fallback 7");
     expect(t("totally.bogus.key")).toBe("totally.bogus.key");
+  });
+
+  it("localizes known error codes and falls back to the raw message", async () => {
+    await switchLanguage(LANG_CHINESE);
+    expect(errText({ code: "docker_unavailable", message: "docker unavailable" })).toContain("Docker 不可用");
+    expect(errText({ code: "quota_exceeded", message: "upload would exceed netdisk quota" })).toContain("配额");
+    await switchLanguage(LANG_ENGLISH);
+    expect(errText({ code: "timeout", message: "context deadline exceeded" })).toContain("timed out");
+    // Unknown code or no code at all: the raw server message wins.
+    expect(errText({ code: "mystery_code", message: "raw detail" })).toBe("raw detail");
+    expect(errText({ message: "no such image" })).toBe("no such image");
+    expect(errText(undefined)).toBe("");
   });
 });

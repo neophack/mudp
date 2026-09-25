@@ -38,6 +38,9 @@ export async function api(path, opts = {}, retryCSRF = true) {
     }
     const err = new Error(data.error || res.statusText);
     err.pending = data.pending === true;
+    // Stable code from the server's classifier (see writeErr): lets callers
+    // show a localized message via errText instead of raw Docker English.
+    err.code = data.code || "";
     throw err;
   }
   return data;

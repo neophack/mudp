@@ -231,7 +231,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api, copyText } from "@/api";
 import { store, canMutate, isAdmin, displayNameForUsername } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import { fmtBytes, joinPath } from "@/lib/common.js";
 import { fileIconSvg } from "@/lib/fileicon.js";
 import { beginLocalCopy } from "@/overlays";
@@ -421,7 +421,7 @@ export default {
           this.quota = null;
           this.backupWarning = this.backupUnavailableMessage(err);
         } else {
-          ElMessage.error(err.message);
+          ElMessage.error(errText(err));
         }
       } finally {
         if (seq === this.refreshSeq) this.loading = false;
@@ -468,7 +468,7 @@ export default {
         ElMessage.success(tt("netdisk.folderCreated"));
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     // A regular user may only mutate shared-disk rows inside their own folder.
@@ -592,7 +592,7 @@ export default {
         this.selection = [];
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async batchDelete() {
@@ -612,7 +612,7 @@ export default {
         this.selection = [];
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     batchCopyMove(move) {
@@ -706,7 +706,7 @@ export default {
         ElMessage.success(tt("netdisk.externalLinkDeleted"));
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async deleteAdminShares() {
@@ -727,7 +727,7 @@ export default {
         ElMessage.success(tt("netdisk.externalLinksDeleted"));
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async rename(f) {
@@ -749,7 +749,7 @@ export default {
         ElMessage.success(tt("netdisk.renamed"));
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     batchDownload() {

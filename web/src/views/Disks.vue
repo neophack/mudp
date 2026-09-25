@@ -72,7 +72,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 
 export default {
   name: "Disks",
@@ -140,7 +140,7 @@ export default {
         await api("/api/admin/disks/config", { method: "POST", body: JSON.stringify(payload) });
         ElMessage.success(tt("disks.mountConfigSaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async mountNow() {
@@ -151,7 +151,7 @@ export default {
         // Force a fresh fetch so the just-mounted disk shows up immediately.
         await this.refreshDisks();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async backupDb() {
@@ -168,7 +168,7 @@ export default {
           }),
         }).catch(() => {});
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     paddedSchedule(sched) {
@@ -189,7 +189,7 @@ export default {
         this.schedule = this.paddedSchedule({ ...this.schedule, hour, minute, enabled });
         ElMessage.success(tt("disks.scheduleSaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async runNow() {
@@ -197,7 +197,7 @@ export default {
         const out = await api("/api/netdisk/backup/all", { method: "POST" });
         ElMessage.success(tt("disks.backupStarted", { n: out.started || 0 }));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async unmount(d) {
@@ -213,7 +213,7 @@ export default {
         ElMessage.success(tt("disks.unmountDone"));
         await this.refreshDisks();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

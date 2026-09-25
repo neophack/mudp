@@ -339,7 +339,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store, refreshSection, isAdmin, displayName, displayNameForUsername } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import { registerRouteRefresh, unregisterRouteRefresh } from "@/refresh";
 import { fmtBytes } from "@/lib/common.js";
 import ActionSheet from "@/components/ActionSheet.vue";
@@ -513,7 +513,7 @@ export default {
         await refreshSection("users", "groups");
         ElMessage.success(tt("users.groupCreated"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     openCreateUser() {
@@ -530,7 +530,7 @@ export default {
         });
         ElMessage.success(tt("users.feishuTestSent"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       } finally {
         this.feishuTestSending = false;
       }
@@ -556,7 +556,7 @@ export default {
         this.userForm = { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: this.defaultGroupId() };
       } catch (err) {
         if (err.message === "user capacity full") ElMessage.error(tt("users.capacityFull"));
-        else ElMessage.error(err.message);
+        else ElMessage.error(errText(err));
       }
     },
     openGroupSettings(group) {
@@ -592,7 +592,7 @@ export default {
         this.groupDialog.visible = false;
         if (calls.length) ElMessage.success(tt("users.groupSettingsSaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     openGroups(user) {
@@ -613,7 +613,7 @@ export default {
         this.groupsDialog.visible = false;
         ElMessage.success(tt("users.groupsUpdated"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     openEdit(user) {
@@ -647,7 +647,7 @@ export default {
         this.editDialog.visible = false;
         ElMessage.success(tt("users.userUpdated"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async approve(user) {
@@ -662,7 +662,7 @@ export default {
         await refreshSection("users", "groups");
         ElMessage.success(tt("users.userApproved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async deactivate(user) {
@@ -682,7 +682,7 @@ export default {
         await refreshSection("users", "groups");
         ElMessage.success(tt("users.userDeactivated"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async remove(user) {
@@ -702,7 +702,7 @@ export default {
         await refreshSection("users", "groups");
         ElMessage.success(tt("users.userDeleted"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

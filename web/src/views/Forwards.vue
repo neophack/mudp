@@ -128,7 +128,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import ActionSheet from "@/components/ActionSheet.vue";
 
 export default {
@@ -253,7 +253,7 @@ export default {
         if (res.warning) ElMessage.warning(tt("forwards.addedWithWarn", { warn: res.warning }));
         else ElMessage.success(tt("forwards.forwardAdded"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async remove(rule) {
@@ -270,7 +270,7 @@ export default {
         await this.reload();
         ElMessage.success(tt("forwards.forwardDeleted"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async saveNetworks() {
@@ -284,7 +284,7 @@ export default {
         if (res.warning) ElMessage.warning(tt("forwards.savedWithWarn", { warn: res.warning }));
         else ElMessage.success(tt("forwards.networksSaved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       } finally {
         this.savingNets = false;
       }
@@ -299,7 +299,7 @@ export default {
         this.auth = { enabled: !!this.authForm.enabled, consoleUrl: (this.authForm.consoleUrl || "").trim() };
         ElMessage.success(tt("forwardAuth.saved"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       } finally {
         this.savingAuth = false;
       }

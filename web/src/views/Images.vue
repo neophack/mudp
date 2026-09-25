@@ -11,6 +11,10 @@
         <el-button size="small" type="primary" @click="openPull">{{ tt("images.pull") }}</el-button>
       </div>
     </div>
+    <div v-if="s.sectionErrors.images" class="error-box">
+      ✗ {{ tt("images.loadFailed") }}
+      <el-button size="small" style="margin-left: 12px" @click="retryLoad">{{ tt("common.retry") }}</el-button>
+    </div>
     <el-input v-model="search" :placeholder="tt('common.search')" prefix-icon="Search" clearable size="small" style="width: min(260px, 100%); margin-bottom: 10px" />
     <el-table
       :data="filtered"
@@ -274,7 +278,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api, readCSRFCookie, readSSE } from "@/api";
 import { store, isAdmin, refreshSection } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import { registerJob } from "@/jobs";
 import SseProgress from "@/components/SseProgress.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
@@ -389,6 +393,10 @@ export default {
     },
   },
   methods: {
+    async retryLoad() {
+      delete store.sectionErrors.images;
+      await refreshSection("images");
+    },
     tt,
     isAdmin,
     onRowClick(row) {
@@ -504,7 +512,7 @@ export default {
         await refreshSection("images");
         ElMessage.success(tt("images.presetUpdated"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       } finally {
         this.presetSaving = false;
       }
@@ -525,7 +533,7 @@ export default {
         await refreshSection("images");
         ElMessage.success(tt("images.imageDeleted"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async submitRegister() {
@@ -544,7 +552,7 @@ export default {
         await refreshSection("images");
         ElMessage.success(tt("images.imageRegistered"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async submitReRegister() {
@@ -562,7 +570,7 @@ export default {
         await refreshSection("images");
         ElMessage.success(tt("images.imageReRegistered"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     onImportPicked(e) {
@@ -699,60 +707,25 @@ export default {
         retry: () => this.openBuild(),
       });
     },
-    async streamImport(file) {
+    streamImport(file) {
       this.dialogs.import = false;
+      // runStream already handles raw File bodies; the import path is just a
+      // labeled variant of the shared SSE pipeline.
       const job = registerJob({ kind: "image.import", name: file.name });
-      this.progress = { active: true, label: tt("images.importing"), logs: tt("images.importing") + "\n", error: "" };
-      this.progressTitle = tt("images.importTitle2");
-      this.progressKind = "import";
-      this.progressRetryFn = null;
-      this.dialogs.progress = true;
-      try {
-        const res = await fetch("/api/images/import", {
-          method: "POST",
-          credentials: "same-origin",
-          body: file,
-          headers: { Accept: "text/event-stream", "X-CSRF-Token": readCSRFCookie() || store.csrfToken || "" },
-          signal: job.signal,
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          this.progress.error = data.error || tt("images.importFailed", { status: res.status });
-          job.error(this.progress.error);
-          ElMessage.error(this.progress.error);
-          return;
-        }
-        await readSSE(res, (event, data) => {
-          if (event === "progress") {
-            const line = data.message || "";
-            this.progress.logs += line + "\n";
-            job.log(line);
-          } else if (event === "error") {
-            this.progress.error = data.message || tt("images.importFailed2");
-            job.error(this.progress.error);
-            ElMessage.error(this.progress.error);
-          } else if (event === "done") {
-            this.progress.logs += `[done] ${tt("images.imageLoaded")}\n`;
-            job.done(tt("images.imageLoaded"));
-            ElMessage.success(tt("images.imageImported"));
-            refreshSection("images");
-            setTimeout(() => { this.dialogs.progress = false; }, 800);
-          } else if (event === "cancelled") {
-            this.progress.active = false;
-            this.progress.logs += `[cancelled] ${data.message || ""}\n`;
-            job.cancel();
-          }
-        });
-      } catch (err) {
-        if (job.signal.aborted) {
-          this.progress.error = tt("create.cancelled");
-          job.cancel();
-        } else {
-          this.progress.error = err.message;
-          job.error(err.message);
-        }
-        ElMessage.error(this.progress.error);
-      }
+      this.runStream({
+        kind: "import",
+        title: tt("images.importTitle2"),
+        label: tt("images.importing"),
+        url: "/api/images/import",
+        body: file,
+        signal: job.signal,
+        job,
+        onDone: () => {
+          this.progress.logs += `[done] ${tt("images.imageLoaded")}\n`;
+          job.done(tt("images.imageLoaded"));
+          ElMessage.success(tt("images.imageImported"));
+        },
+      });
     },
   },
 };

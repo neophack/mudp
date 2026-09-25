@@ -31,7 +31,7 @@
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
 import { store, fetchNotifications, displayNameForUsername } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import VIcon from "@/components/VIcon.vue";
 
 export default {
@@ -57,7 +57,7 @@ export default {
       if (!n.read) {
         api("/api/notifications/read", { method: "POST", body: JSON.stringify({ ids: [n.id] }) })
           .then(fetchNotifications)
-          .catch((err) => ElMessage.error(err.message));
+          .catch((err) => ElMessage.error(errText(err)));
       }
     },
     detail(n) {
@@ -69,7 +69,7 @@ export default {
     removeOne(id) {
       api("/api/notifications/delete", { method: "POST", body: JSON.stringify({ ids: [id] }) })
         .then(fetchNotifications)
-        .catch((err) => ElMessage.error(err.message));
+        .catch((err) => ElMessage.error(errText(err)));
     },
     markAllRead() {
       api("/api/notifications/read", { method: "POST", body: JSON.stringify({ all: true }) })
@@ -77,7 +77,7 @@ export default {
           fetchNotifications();
           this.$emit("update:visible", false);
         })
-        .catch((err) => ElMessage.error(err.message));
+        .catch((err) => ElMessage.error(errText(err)));
     },
     clearAll() {
       api("/api/notifications/delete", { method: "POST", body: JSON.stringify({ all: true }) })
@@ -85,7 +85,7 @@ export default {
           fetchNotifications();
           this.$emit("update:visible", false);
         })
-        .catch((err) => ElMessage.error(err.message));
+        .catch((err) => ElMessage.error(errText(err)));
     },
   },
 };

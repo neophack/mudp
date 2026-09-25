@@ -31,7 +31,7 @@
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
 import { store, displayNameForUsername } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 
 export default {
   name: "Audit",
@@ -49,7 +49,7 @@ export default {
       try {
         store.audit = await api("/api/admin/audit?" + params.toString());
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     exportCsv() {

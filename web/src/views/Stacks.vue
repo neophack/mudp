@@ -4,6 +4,10 @@
       <h2>{{ tt("stacks.title") }}</h2>
       <el-button v-if="canMutate()" type="primary" size="small" @click="openEditor(null)">{{ tt("stacks.newStack") }}</el-button>
     </div>
+    <div v-if="s.sectionErrors.stacks" class="error-box">
+      ✗ {{ tt("stacks.loadFailed") }}
+      <el-button size="small" style="margin-left: 12px" @click="retryLoad">{{ tt("common.retry") }}</el-button>
+    </div>
     <el-input v-model="search" :placeholder="tt('common.search')" prefix-icon="Search" clearable size="small" style="width: min(260px, 100%); margin-bottom: 10px" />
     <el-table
       :data="filtered"
@@ -82,7 +86,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api, readCSRFCookie, readSSE } from "@/api";
 import { store, canMutate, refreshSection, displayNameForUsername } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 import { registerJob } from "@/jobs";
 import { stackRun } from "@/components/stack/stackRun";
 import StackRunDialog from "@/components/stack/StackRunDialog.vue";
@@ -142,6 +146,10 @@ export default {
     },
   },
   methods: {
+    async retryLoad() {
+      delete store.sectionErrors.stacks;
+      await refreshSection("stacks");
+    },
     tt,
     canMutate,
     displayNameForUsername,
@@ -188,7 +196,7 @@ export default {
         const s = await api("/api/stacks/get?id=" + row.id);
         this.openEditor(s);
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async save() {
@@ -205,7 +213,7 @@ export default {
         ElMessage.success(e.isNew ? tt("stacks.stackSaved") : tt("stacks.stackUpdated"));
         if (e.isNew && r.id) this.runDeploy(r.id);
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       } finally {
         e.saving = false;
       }
@@ -236,7 +244,7 @@ export default {
         await refreshSection("stacks", "containers");
         ElMessage.success(tt("stacks.deleted"));
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     runDeploy(id) {
@@ -336,7 +344,7 @@ export default {
             stackRun.active = false;
             stackRun.done = true;
           }
-          ElMessage.error(err.message);
+          ElMessage.error(errText(err));
         }
       }
     },

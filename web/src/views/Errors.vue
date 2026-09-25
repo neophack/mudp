@@ -69,7 +69,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store } from "@/store";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 
 export default {
   name: "Errors",
@@ -104,7 +104,7 @@ export default {
         ElMessage.success(tt("errors.resolved"));
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
     async clearAll() {
@@ -124,7 +124,7 @@ export default {
         ElMessage.success(tt("errors.cleared"));
         this.refresh();
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       }
     },
   },

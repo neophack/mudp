@@ -58,7 +58,7 @@
 <script>
 import { ElMessage } from "element-plus";
 import { api, copyText } from "@/api";
-import { tt } from "@/i18n";
+import { tt, errText } from "@/i18n";
 
 // no I, O, 0, 1 — legibility.
 function randomCode(len = 4) {
@@ -131,7 +131,7 @@ export default {
         this.created = await api("/api/netdisk/share", { method: "POST", body: JSON.stringify(body) });
         this.step = "link";
       } catch (err) {
-        ElMessage.error(err.message);
+        ElMessage.error(errText(err));
       } finally {
         this.creating = false;
       }
