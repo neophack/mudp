@@ -346,10 +346,17 @@ export default {
       return this.rowActions(this.sheet.row);
     },
     // Size the fixed column to the widest action set on screen so the icons
-    // never wrap onto a second line.
+    // never wrap onto a second line. The count only varies with whether the
+    // row has an external URL (role/remote are constants) — one row per kind.
     actionsColWidth() {
       let n = 1;
-      for (const row of store.mcpTokens || []) n = Math.max(n, this.rowActions(row).length);
+      const seen = new Set();
+      for (const row of store.mcpTokens || []) {
+        const key = this.externalUrlFor(row) ? "ext" : "plain";
+        if (seen.has(key)) continue;
+        seen.add(key);
+        n = Math.max(n, this.rowActions(row).length);
+      }
       return n * 26 + (n - 1) * 2 + 24;
     },
     remote() {

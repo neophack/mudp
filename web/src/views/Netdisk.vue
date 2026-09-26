@@ -54,6 +54,7 @@
         <div class="netdisk-used" v-html="quotaHtml"></div>
       </div>
 
+      <el-alert v-if="truncated" type="warning" :closable="false" style="margin-bottom: 10px" :title="tt('netdisk.truncatedHint', { n: items.length })" />
       <el-table
         ref="table"
         v-loading="loading"
@@ -256,6 +257,7 @@ export default {
         shareddisk: { path: "", selection: [] },
       },
       items: [],
+      truncated: false,
       quota: null,
       // refreshSeq drops out-of-order responses (a slow reply for an old
       // directory must not overwrite newer state); loading drives the table.
@@ -301,9 +303,17 @@ export default {
     },
     // Six icon buttons at most (download/rename/copy/move/share/delete); size
     // the fixed column to the widest set on screen so nothing wraps or clips.
+    // The count only varies with the mode and, on the shared disk, whether the
+    // row belongs to the caller — one representative row per kind suffices.
     actionsColWidth() {
       let n = 1;
-      for (const row of this.sortedItems) n = Math.max(n, this.rowActions(row).length);
+      const seen = new Set();
+      for (const row of this.sortedItems) {
+        const key = this.mode + "|" + (this.mode === "shareddisk" && this.isOwnSharedDiskRow(row) ? "own" : "");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        n = Math.max(n, this.rowActions(row).length);
+      }
       return n * 26 + (n - 1) * 2 + 24;
     },
     fileCount() {
@@ -404,6 +414,7 @@ export default {
         ]);
         if (seq !== this.refreshSeq) return; // a newer navigation superseded us
         this.items = list.items || [];
+        this.truncated = !!list.truncated;
         this.quota = this.mode === "backup" ? (list.quota || null) : quota;
         this.shares = shares || [];
         this.adminShares = adminShares || [];

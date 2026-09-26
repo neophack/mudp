@@ -279,6 +279,12 @@ func resolveFrom(p string, hops int) (string, error) {
 	return resolved, nil
 }
 
+// netdiskListMaxEntries bounds one directory listing: a folder with tens of
+// thousands of entries would otherwise serialize into an unbounded JSON
+// payload the browser table cannot usefully render either. The client gets a
+// truncated flag and steers users into subfolders instead.
+const netdiskListMaxEntries = 5000
+
 func (a *App) netdiskList(w http.ResponseWriter, r *http.Request) {
 	root, err := a.userNetdiskRoot(currentUser(r))
 	if err != nil {
@@ -294,6 +300,10 @@ func (a *App) netdiskList(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	truncated := len(entries) > netdiskListMaxEntries
+	if truncated {
+		entries = entries[:netdiskListMaxEntries]
 	}
 	items := make([]fileItem, 0, len(entries))
 	for _, entry := range entries {
@@ -312,7 +322,7 @@ func (a *App) netdiskList(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, fileItem{Name: entry.Name(), Path: p, Dir: entry.IsDir(), Size: info.Size(), ModTime: info.ModTime().Format(time.RFC3339)})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": filepath.ToSlash(rel), "items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"path": filepath.ToSlash(rel), "items": items, "truncated": truncated})
 }
 
 func (a *App) netdiskMkdir(w http.ResponseWriter, r *http.Request) {

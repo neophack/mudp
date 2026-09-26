@@ -199,9 +199,17 @@ export default {
     },
     // Ten icons at most (a running container); size the fixed column to the
     // widest set actually rendered so the icons never wrap onto a second line.
+    // rowActions builds an array + i18n lookups, but its length only varies
+    // with the row's state — one representative row per state is enough,
+    // instead of rebuilding every row's actions on each poll.
     actionsColWidth() {
       let n = 1;
-      for (const row of this.filtered) n = Math.max(n, this.rowActions(row).length);
+      const seen = new Set();
+      for (const row of this.filtered) {
+        if (seen.has(row.state)) continue;
+        seen.add(row.state);
+        n = Math.max(n, this.rowActions(row).length);
+      }
       return n * 26 + (n - 1) * 2 + 24;
     },
     filtered() {

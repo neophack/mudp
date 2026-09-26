@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -61,6 +62,54 @@ func netdiskDeleteRequest(t *testing.T, a *App, u *store.User, body string) *htt
 	rec := httptest.NewRecorder()
 	a.netdiskDelete(rec, req)
 	return rec
+}
+
+func netdiskListRequest(t *testing.T, a *App, u *store.User, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/netdisk?"+query, nil)
+	req = req.WithContext(context.WithValue(req.Context(), userKey, u))
+	rec := httptest.NewRecorder()
+	a.netdiskList(rec, req)
+	return rec
+}
+
+// A directory with more entries than the cap lists only the first
+// netdiskListMaxEntries and reports truncated, so one huge folder can't
+// serialize an unbounded payload; normal directories are untouched.
+func TestNetdiskListTruncatesLargeDirectories(t *testing.T) {
+	a, u, root := newQuotaTestApp(t)
+	// Cap-many files plus a marker that sorts after all of them: the listing
+	// must stop at the cap and drop the marker.
+	for i := 0; i < netdiskListMaxEntries; i++ {
+		name := filepath.Join(root, fmt.Sprintf("f%010d", i))
+		if err := os.WriteFile(name, []byte{0}, 0o600); err != nil {
+			t.Fatalf("seed file %d: %v", i, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "zzz-beyond-cap.txt"), []byte{0}, 0o600); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+
+	resp := decodeJSONBody(t, netdiskListRequest(t, a, u, "path="))
+	items, _ := resp["items"].([]any)
+	if len(items) != netdiskListMaxEntries {
+		t.Fatalf("items = %d, want the cap %d", len(items), netdiskListMaxEntries)
+	}
+	if resp["truncated"] != true {
+		t.Errorf("truncated = %v, want true", resp["truncated"])
+	}
+
+	// A normal directory is not flagged.
+	if err := os.MkdirAll(filepath.Join(root, "small"), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	resp = decodeJSONBody(t, netdiskListRequest(t, a, u, "path=small"))
+	if resp["truncated"] != false {
+		t.Errorf("small dir truncated = %v, want false", resp["truncated"])
+	}
+	if _, ok := resp["items"]; !ok {
+		t.Error("small dir response missing items")
+	}
 }
 
 func decodeJSONBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {

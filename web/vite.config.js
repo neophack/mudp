@@ -35,5 +35,18 @@ export default defineConfig({
     },
   },
   server: { port: 5173, proxy },
-  build: { outDir: "dist" },
+  build: {
+    outDir: "dist",
+    rollupOptions: {
+      output: {
+        // Vendor code changes far less often than app code; keeping it in its
+        // own immutable-cached chunk means an upgrade re-downloads only the
+        // app bundle, not the framework.
+        manualChunks: {
+          vue: ["vue", "vue-router"],
+          "element-plus": ["element-plus"],
+        },
+      },
+    },
+  },
 });

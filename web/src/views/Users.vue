@@ -9,6 +9,10 @@
         </div>
         <el-button type="primary" size="small" @click="openCreateUser">{{ tt("users.newUser") }}</el-button>
       </div>
+      <div v-if="s.sectionErrors.users" class="error-box">
+        ✗ {{ tt("users.loadFailed") }}
+        <el-button size="small" style="margin-left: 12px" @click="retryLoad">{{ tt("common.retry") }}</el-button>
+      </div>
       <el-table
         :data="s.users"
         size="small"
@@ -419,6 +423,10 @@ export default {
     unregisterRouteRefresh("users");
   },
   methods: {
+    async retryLoad() {
+      delete store.sectionErrors.users;
+      await refreshSection("users", "groups");
+    },
     tt,
     displayName,
     displayNameForUsername,

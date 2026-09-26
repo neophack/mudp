@@ -133,3 +133,28 @@ func TestContainerOwnedByUsesRuntimeCache(t *testing.T) {
 		t.Error("bob should not own alice's container")
 	}
 }
+
+func TestCarryDiskSizes(t *testing.T) {
+	previous := []dockerx.Container{
+		{ID: "kept", DiskMB: 42.5},
+		{ID: "gone", DiskMB: 99},
+	}
+	next := []dockerx.Container{
+		{ID: "kept", DiskMB: 0},
+		{ID: "new", DiskMB: 0},
+	}
+	out := carryDiskSizes(previous, next)
+	if out[0].DiskMB != 42.5 {
+		t.Errorf("kept container DiskMB = %v, want the previous 42.5 carried across the unsized sweep", out[0].DiskMB)
+	}
+	if out[1].DiskMB != 0 {
+		t.Errorf("new container DiskMB = %v, want 0 until the next sized sweep", out[1].DiskMB)
+	}
+	// Empty inputs pass through unchanged (no panic).
+	if got := carryDiskSizes(nil, next); len(got) != 2 {
+		t.Errorf("empty previous: len = %d, want passthrough", len(got))
+	}
+	if got := carryDiskSizes(previous, nil); got != nil {
+		t.Errorf("empty next: got %v, want nil passthrough", got)
+	}
+}

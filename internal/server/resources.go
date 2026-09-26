@@ -12,12 +12,33 @@ import (
 	"mudp/internal/store"
 )
 
+// refreshRuntimeCache refreshes the container/system cache without disk-size
+// sampling. Docker's SizeRw walk (an du per container) is the most expensive
+// part of the sweep and disk usage barely moves between the once-a-minute
+// sized sweeps, so the 15s heartbeat and post-mutation triggers carry the
+// last known figures forward instead (see carryDiskSizes).
 func (a *App) refreshRuntimeCache(ctx context.Context) {
+	a.refreshRuntimeCacheSized(ctx, false)
+}
+
+func (a *App) refreshRuntimeCacheSized(ctx context.Context, withSize bool) {
 	a.refreshMu.Lock()
 	defer a.refreshMu.Unlock()
 
 	sys := a.docker.SystemInfo(ctx)
-	containers, err := a.docker.ListContainersWithSize(ctx, "", true, a.forwardNetworks())
+	var containers []dockerx.Container
+	var err error
+	if withSize {
+		containers, err = a.docker.ListContainersWithSize(ctx, "", true, a.forwardNetworks())
+	} else {
+		containers, err = a.docker.ListContainers(ctx, "", true, a.forwardNetworks())
+		if err == nil {
+			a.cacheMu.RLock()
+			previous := a.cachedContainers
+			a.cacheMu.RUnlock()
+			containers = carryDiskSizes(previous, containers)
+		}
+	}
 	if err != nil {
 		containers = nil
 	}
@@ -35,6 +56,25 @@ func (a *App) refreshRuntimeCache(ctx context.Context) {
 	// pass after every create/start/stop for free — a container that restarts
 	// onto a new IP is repointed without anyone asking.
 	a.syncPortForwardLogged(ctx)
+}
+
+// carryDiskSizes copies the last known disk usage from the previous cache onto
+// the freshly listed containers, matched by full ID. New containers keep a
+// zero figure until the next sized sweep.
+func carryDiskSizes(previous, next []dockerx.Container) []dockerx.Container {
+	if len(previous) == 0 || len(next) == 0 {
+		return next
+	}
+	sizes := make(map[string]float64, len(previous))
+	for _, c := range previous {
+		sizes[c.ID] = c.DiskMB
+	}
+	for i := range next {
+		if mb, ok := sizes[next[i].ID]; ok {
+			next[i].DiskMB = mb
+		}
+	}
+	return next
 }
 
 // triggerRuntimeCacheRefresh runs a cache refresh in the background so that
@@ -140,13 +180,13 @@ func (a *App) collectResourceSnapshot(ctx context.Context) []store.ResourceSampl
 		return nil
 	}
 	// The 15s cache tick usually ran moments ago; only sweep again when the
-	// cached list is actually stale, so the sample tick doesn't redo the
-	// per-container stats that refreshRuntimeCache just did.
+	// cached list is actually stale — and that sweep is the sized one, which
+	// is where the expensive per-container disk walk belongs (once a minute).
 	a.cacheMu.RLock()
 	fresh := time.Since(a.cacheAt) < 20*time.Second
 	a.cacheMu.RUnlock()
 	if !fresh {
-		a.refreshRuntimeCache(ctx)
+		a.refreshRuntimeCacheSized(ctx, true)
 	}
 	containers := a.runtimeContainers("", true)
 	usersByName := map[string]store.User{}

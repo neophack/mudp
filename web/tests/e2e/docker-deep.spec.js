@@ -80,6 +80,14 @@ test.describe("docker deep coverage", () => {
 
     const row = page.locator(".el-table__row", { hasText: name }).first();
 
+    // The wizard starts the container, but under a loaded Docker Desktop the
+    // start can lag the row's appearance; if so, start it explicitly instead
+    // of timing out on the stats button that only running rows show.
+    if (await row.locator('.row-action-btn[title="启动"]').count()) {
+      await row.locator('.row-action-btn[title="启动"]').click();
+      await expect(row.locator('.row-action-btn[title="停止"]')).toBeVisible({ timeout: 30000 });
+    }
+
     // logs dialog carries output from the sleep command's container
     await row.locator('.row-action-btn[title="日志"]').click();
     const logs = page.locator(".el-dialog:visible").first();
