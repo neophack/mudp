@@ -41,6 +41,39 @@ func TestIsSecureRequest(t *testing.T) {
 	}
 }
 
+// TestIsSecureRequestWithGate pins the trusted-proxy contract: when a gate is
+// installed (as the server does at startup), X-Forwarded-Proto is only
+// believed for requests the gate accepts, so a direct client cannot forge its
+// way to a Secure cookie flag.
+func TestIsSecureRequestWithGate(t *testing.T) {
+	SetSecureCheck(func(r *http.Request) bool {
+		return r.Header.Get("X-Trusted-Peer") == "yes"
+	})
+	t.Cleanup(func() { SetSecureCheck(nil) })
+
+	req := httptest.NewRequest(http.MethodGet, "http://example/", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	if IsSecureRequest(req) {
+		t.Fatal("forwarded https accepted from a peer the gate rejects")
+	}
+	req.Header.Set("X-Trusted-Peer", "yes")
+	if !IsSecureRequest(req) {
+		t.Fatal("forwarded https rejected from a peer the gate accepts")
+	}
+	// The gate never overrides a real TLS connection...
+	req = httptest.NewRequest(http.MethodGet, "http://example/", nil)
+	req.TLS = &tls.ConnectionState{}
+	if !IsSecureRequest(req) {
+		t.Fatal("TLS connection rejected despite the gate")
+	}
+	// ...and installing a gate must not make plain-http-without-header secure.
+	req = httptest.NewRequest(http.MethodGet, "http://example/", nil)
+	req.Header.Set("X-Trusted-Peer", "yes")
+	if IsSecureRequest(req) {
+		t.Fatal("plain http with no forwarded proto reported secure")
+	}
+}
+
 func TestRequestID(t *testing.T) {
 	t.Run("round trip", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)

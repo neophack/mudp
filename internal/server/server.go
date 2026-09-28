@@ -58,9 +58,13 @@ type App struct {
 	refreshPending   atomic.Bool
 	cachedSystem     dockerx.SystemInfo
 	cachedContainers []dockerx.Container
-	cacheAt          time.Time
-	registryMu       sync.Mutex
-	setupMu          sync.Mutex
+	// cachedBasis holds the host-wide image/volume/network lists from the same
+	// sweep, so a non-admin dashboard can derive its per-user scoped counts
+	// in memory instead of re-querying Docker on every poll.
+	cachedBasis dockerx.ScopeBasis
+	cacheAt     time.Time
+	registryMu  sync.Mutex
+	setupMu     sync.Mutex
 	// taskSnapMu/… cache the chunked-upload slice of /api/tasks (see tasks.go).
 	taskSnapMu       sync.Mutex
 	taskSnapAt       time.Time
@@ -248,6 +252,10 @@ func (a *App) Routes() http.Handler {
 	// Remember the proxy set so handlers can resolve the real client IP
 	// (including CDN headers) for the security monitor.
 	a.trusted = trusted
+	// Session/CSRF cookie Secure flags go through the same gate as HSTS: only
+	// a configured trusted proxy may vouch for X-Forwarded-Proto: https, so a
+	// direct client cannot forge its way to a Secure-marked cookie.
+	httpx.SetSecureCheck(func(r *http.Request) bool { return middleware.RequestIsSecure(r, trusted) })
 
 	// Liveness/readiness stay open so a load balancer can poll them; they reveal
 	// nothing beyond up/down. Metrics expose process internals, so they require
@@ -263,7 +271,10 @@ func (a *App) Routes() http.Handler {
 	r.With(loginRateLimiter.Middleware).Post("/api/login", a.login)
 	r.Get("/api/me", a.me)
 	r.Get("/api/setup/status", a.setupStatus)
-	r.Post("/api/setup/init", a.setupInit)
+	// Same strict limiter as login: this is a public, pre-auth write endpoint
+	// that creates the administrator account; the limiter blunts repeated
+	// probing of it while the setup window is open.
+	r.With(loginRateLimiter.Middleware).Post("/api/setup/init", a.setupInit)
 	r.Get("/api/feishu/config", a.feishuConfigPublic)
 	r.Get("/api/feishu/login", a.feishuLogin)
 	r.Get("/api/feishu/callback", a.feishuCallback)
@@ -340,6 +351,11 @@ func (a *App) Routes() http.Handler {
 		// admin-wide default (adminLanguageSettings, below) is admin-only.
 		r.Get("/api/user/language", a.userLanguage)
 		r.Post("/api/user/language", a.userLanguage)
+		// Self-service password change. Verifies the current credential, stores
+		// the new hash and bumps the session epoch (revoking every other
+		// session), then re-issues the caller's own cookie so this browser
+		// stays signed in.
+		r.Post("/api/user/password", a.userPasswordChange)
 		// Self-service shared-disk (共享盘) access preference: read-only vs
 		// read-write for the caller's own subfolder, wherever the shared disk
 		// is mounted (see User.SharedDiskReadWrite).
@@ -663,13 +679,15 @@ func (a *App) staticHandler() http.Handler {
 // authMiddleware loads the session user into the request context, or rejects.
 func (a *App) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uid, ok := a.auth.UserID(r)
+		uid, epoch, ok := a.auth.UserID(r)
 		if !ok {
 			writeErr(w, http.StatusUnauthorized, "login required")
 			return
 		}
 		u, err := a.db.UserByID(uid)
-		if err != nil || u.Disabled {
+		// A stale epoch means the credential this cookie was minted from has
+		// since been changed or reset — treat it exactly like a missing one.
+		if err != nil || u.Disabled || u.SessionEpoch != epoch {
 			writeErr(w, http.StatusUnauthorized, "login required")
 			return
 		}
@@ -737,7 +755,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.recordAccess(ci, store.AccessEventLoginSuccess, u.Username, "", true)
-	a.auth.Set(w, r, u.ID)
+	a.auth.Set(w, r, u.ID, u.SessionEpoch)
 	if netdiskPath, err := a.db.NetdiskPathForUser(u.ID); err == nil && netdiskPath != "" {
 		_ = EnsureUserNetdiskDir(netdiskPath, u.Username, fmt.Sprintf("%d", u.ID), u.DisplayName)
 	}
@@ -809,13 +827,16 @@ func (a *App) meResponse(u *store.User, csrfToken string) meUser {
 }
 
 func (a *App) me(w http.ResponseWriter, r *http.Request) {
-	uid, ok := a.auth.UserID(r)
+	uid, epoch, ok := a.auth.UserID(r)
 	if !ok {
 		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
 		return
 	}
 	u, err := a.db.UserByID(uid)
-	if err != nil || u.Disabled {
+	// Same epoch discipline as authMiddleware: a cookie minted from a since-
+	// revoked credential reports unauthenticated, so the SPA re-routes to the
+	// login form instead of loading a console whose every request would 401.
+	if err != nil || u.Disabled || u.SessionEpoch != epoch {
 		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
 		return
 	}
@@ -2136,7 +2157,7 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Format(time.RFC3339)
 	_, _ = a.db.Exec(`update users set last_login_at=? where id=?`, now, u.ID)
 	a.recordAccess(a.collectClient(r), store.AccessEventLoginSuccess, u.Username, "feishu sso", true)
-	a.auth.Set(w, r, u.ID)
+	a.auth.Set(w, r, u.ID, u.SessionEpoch)
 	if netdiskPath, err := a.db.NetdiskPathForUser(u.ID); err == nil && netdiskPath != "" {
 		_ = EnsureUserNetdiskDir(netdiskPath, u.Username, fmt.Sprintf("%d", u.ID), u.DisplayName)
 	}

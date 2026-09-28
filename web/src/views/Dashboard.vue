@@ -430,7 +430,11 @@ export default {
 <style scoped>
 .dash-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
 .dash-row-2, .dash-row-3 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }
-.dash-row-2.user-home { grid-template-columns: minmax(0, 1fr); }
+/* On a user's own dashboard the donut card is row 2's only card, and the
+   Feishu identity card is a small info tile: cap the column so neither
+   stretches across the full page. */
+.dash-row-2.user-home { grid-template-columns: minmax(0, 460px); }
+.dash-row-feishu { display: grid; grid-template-columns: minmax(0, 460px); }
 .dash-stack > * + * { margin-top: 16px; }
 
 /* Stat tiles: tinted icon square + big number. */

@@ -24,7 +24,10 @@ type HardwareSnapshot struct {
 // history lives under /api/resources/history).
 func (a *App) hardwareSnapshot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	sys := a.docker.SystemInfo(ctx)
+	// Host facts come from the shared 15s sweep cache: nothing on this page
+	// changes faster, and the page self-refreshes, so a direct daemon Info()
+	// per poll was pure load.
+	sys := a.runtimeSystem()
 	host := a.docker.HostMetrics(ctx)
 	gpus := a.docker.GPUList(ctx)
 	if gpus == nil {

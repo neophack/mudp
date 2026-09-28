@@ -114,6 +114,11 @@ type Container struct {
 	// because it currently sits on a network the administrator marked for
 	// forwarding. Drives the "forward" badge in the UI.
 	Forwarded bool `json:"forwarded,omitempty"`
+	// ImageID and Health are internal scope facts: the dashboard derives a
+	// user's image count and health rollup from them in memory. Never sent
+	// to clients.
+	ImageID string `json:"-"`
+	Health  string `json:"-"`
 }
 
 // PortLink is one clickable host-side access URL for a container TCP port.
@@ -1133,7 +1138,7 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 		out = append(out, Container{
 			ID: c.ID, Name: display, FullName: full, Owner: c.Labels[UserLabel], Image: c.Labels["mudp.image"], State: c.State, Status: c.Status,
 			Ports: ports, Labels: c.Labels, DiskMB: float64(c.SizeRw) / 1024 / 1024, GPU: c.Labels["mudp.gpu"], CreatedAt: c.Created,
-			PortLinks: links, Forwarded: forwarded,
+			PortLinks: links, Forwarded: forwarded, ImageID: c.ImageID, Health: HealthFromStatus(c.Status),
 		})
 	}
 	// Per-running-container memory/GPU samples are independent network calls
@@ -1162,6 +1167,22 @@ func (d *Client) listContainers(ctx context.Context, username string, admin, inc
 	}
 	wg.Wait()
 	return out, nil
+}
+
+// HealthFromStatus extracts the healthcheck status from a container's Status
+// string. The daemon formats Status as e.g. "Up 2 minutes (healthy)" when a
+// healthcheck is configured, and the list summary in this client version
+// carries no dedicated health field. Returns "" when none is present.
+func HealthFromStatus(status string) string {
+	switch {
+	case strings.HasSuffix(status, "(healthy)"):
+		return "healthy"
+	case strings.HasSuffix(status, "(unhealthy)"):
+		return "unhealthy"
+	case strings.HasSuffix(status, "(health: starting)"):
+		return "starting"
+	}
+	return ""
 }
 
 // lookupEnvValue returns the value of key within a "KEY=VALUE" env list.

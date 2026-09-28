@@ -50,18 +50,18 @@ func TestSystemInfoShape(t *testing.T) {
 	}
 }
 
-// TestSystemInfoForUserShape exercises the per-user scoped snapshot. It only
-// asserts invariants (non-negative counts, total >= running, host fields
-// populated) since the exact counts depend on who owns what on the live host.
-func TestSystemInfoForUserShape(t *testing.T) {
+// TestSystemInfoWithScopeBasisShape exercises the snapshot plus the scope
+// basis the server derives per-user views from. Asserts invariants only:
+// non-negative counts, total >= running, and a basis that actually carries
+// the host's images and system networks.
+func TestSystemInfoWithScopeBasisShape(t *testing.T) {
 	c := skipIfNoDocker(t)
 	ctx, cancel := infoCtx(t)
 	defer cancel()
-	info := c.SystemInfoForUser(ctx, "nobody-owns-this-name")
+	info, basis := c.SystemInfoWithScopeBasis(ctx)
 	if !info.Healthy {
 		t.Skipf("daemon reported unhealthy: %s", info.HealthyMsg)
 	}
-	// Host fields are always populated regardless of scope.
 	if info.DockerVer == "" {
 		t.Error("DockerVer empty on healthy daemon")
 	}
@@ -71,43 +71,40 @@ func TestSystemInfoForUserShape(t *testing.T) {
 	if info.Images.Count < 0 || info.Volumes.Count < 0 || info.Networks < 0 {
 		t.Error("negative resource counts")
 	}
-	// A user that owns nothing should still see the built-in system networks
-	// (bridge, host, none) but none of their own managed resources.
-	if info.Networks < 3 {
-		t.Errorf("expected at least 3 system networks, got %d", info.Networks)
+	// Every mudp-published image counted in the snapshot must be present in
+	// the basis (the basis is a superset: all non-derived images).
+	if len(basis.ImageSizes) < info.Images.Count {
+		t.Errorf("basis has %d images, snapshot counts %d mudp-published", len(basis.ImageSizes), info.Images.Count)
 	}
-	// All three counts are scoped by label equality with the owner name, and no
-	// live resource can carry "nobody-owns-this-name", so exact zeros are
-	// guaranteed regardless of what else exists on the host.
-	if info.Containers.Total != 0 {
-		t.Errorf("Containers.Total = %d, want 0 for an owner that cannot exist", info.Containers.Total)
+	// Docker's built-in networks (bridge, host, none) are always listed.
+	system := 0
+	for _, n := range basis.Networks {
+		if n.System {
+			system++
+		}
 	}
-	if info.Images.Count != 0 {
-		t.Errorf("Images.Count = %d, want 0 for an owner that cannot exist", info.Images.Count)
+	if system < 3 {
+		t.Errorf("expected at least 3 system networks in basis, got %d", system)
 	}
-	if info.Volumes.Count != 0 {
-		t.Errorf("Volumes.Count = %d, want 0 for an owner that cannot exist", info.Volumes.Count)
+	if len(basis.Volumes) != info.Volumes.Count {
+		t.Errorf("basis has %d volumes, snapshot counts %d", len(basis.Volumes), info.Volumes.Count)
 	}
 }
 
-// TestSystemInfoForUserEmptyUsernameFallback ensures an empty username keeps
-// the platform-wide semantics (no panic, no owner filtering), matching
-// SystemInfo.
-func TestSystemInfoForUserEmptyUsernameFallback(t *testing.T) {
-	c := skipIfNoDocker(t)
-	ctx, cancel := infoCtx(t)
-	defer cancel()
-	info := c.SystemInfoForUser(ctx, "")
-	if !info.Healthy {
-		t.Skipf("daemon reported unhealthy: %s", info.HealthyMsg)
+func TestHealthFromStatus(t *testing.T) {
+	cases := []struct{ status, want string }{
+		{"Up 2 minutes (healthy)", "healthy"},
+		{"Up 2 minutes (unhealthy)", "unhealthy"},
+		{"Up 2 minutes (health: starting)", "starting"},
+		{"Up 2 minutes", ""},
+		{"Exited (0) 3 seconds ago", ""},
+		{"Created", ""},
+		{"", ""},
 	}
-	// Empty username == platform-wide, so SystemInfo and the fallback must agree.
-	want := c.SystemInfo(ctx)
-	if info.Containers.Total != want.Containers.Total ||
-		info.Images.Count != want.Images.Count ||
-		info.Volumes.Count != want.Volumes.Count ||
-		info.Networks != want.Networks {
-		t.Error("SystemInfoForUser(\"\") disagrees with SystemInfo()")
+	for _, c := range cases {
+		if got := HealthFromStatus(c.status); got != c.want {
+			t.Errorf("HealthFromStatus(%q) = %q, want %q", c.status, got, c.want)
+		}
 	}
 }
 

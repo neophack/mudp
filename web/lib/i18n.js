@@ -84,6 +84,16 @@ const translations = {
     "settings.sharedDiskReadOnly": "只读",
     "settings.sharedDiskReadWrite": "读写",
     "settings.sharedDiskAccessSaved": "共享盘权限已保存",
+    "settings.changePassword": "修改密码",
+    "settings.changePasswordSub": "更换登录密码；其他设备会被退出登录",
+    "settings.changePasswordBtn": "修改",
+    "settings.currentPassword": "当前密码",
+    "settings.newPassword": "新密码（至少 10 位）",
+    "settings.confirmPassword": "确认新密码",
+    "settings.passwordMismatch": "两次输入的新密码不一致",
+    "settings.passwordSaved": "密码已修改，其他设备已退出登录",
+    "settings.passwordWrongCurrent": "当前密码不正确",
+    "settings.passwordSSOOnly": "该账号通过飞书登录，没有可修改的密码",
     "settings.admin": "管理员设置",
 
     // Languages
@@ -1590,6 +1600,16 @@ const translations = {
     "settings.sharedDiskReadOnly": "Read-only",
     "settings.sharedDiskReadWrite": "Read-write",
     "settings.sharedDiskAccessSaved": "Shared-disk access saved",
+    "settings.changePassword": "Change password",
+    "settings.changePasswordSub": "Update your login password; other devices will be signed out",
+    "settings.changePasswordBtn": "Change",
+    "settings.currentPassword": "Current password",
+    "settings.newPassword": "New password (at least 10 characters)",
+    "settings.confirmPassword": "Confirm new password",
+    "settings.passwordMismatch": "The new passwords do not match",
+    "settings.passwordSaved": "Password changed; other devices have been signed out",
+    "settings.passwordWrongCurrent": "Current password is incorrect",
+    "settings.passwordSSOOnly": "This account signs in through Feishu SSO and has no password",
     "settings.admin": "Administrator Settings",
 
     // Languages

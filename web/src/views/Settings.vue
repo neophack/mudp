@@ -47,6 +47,18 @@
           >{{ tt("theme." + opt) }}</button>
         </div>
       </div>
+
+      <!-- Password: self-service rotation. The server verifies the current
+           credential, stores the new hash and bumps the session epoch — other
+           devices get logged out, this browser is re-issued its cookie. -->
+      <div class="row">
+        <span class="row-icon tint-red"><v-icon name="key" :size="16" /></span>
+        <div class="row-main">
+          <div class="row-title">{{ tt("settings.changePassword") }}</div>
+          <div class="row-desc">{{ tt("settings.changePasswordSub") }}</div>
+        </div>
+        <el-button size="small" @click="openPassword">{{ tt("settings.changePasswordBtn") }}</el-button>
+      </div>
     </div>
 
     <!-- Admin section -->
@@ -216,6 +228,17 @@
         <el-button type="primary" @click="saveRegistry">{{ tt("common.save") }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- Self-service password change. -->
+    <el-dialog v-model="pw.visible" :title="tt('settings.changePassword')" width="400px" append-to-body>
+      <el-input v-model="pw.current" type="password" show-password :placeholder="tt('settings.currentPassword')" size="small" class="mb" />
+      <el-input v-model="pw.next" type="password" show-password :placeholder="tt('settings.newPassword')" size="small" class="mb" />
+      <el-input v-model="pw.confirm" type="password" show-password :placeholder="tt('settings.confirmPassword')" size="small" @keyup.enter="savePassword" />
+      <template #footer>
+        <el-button @click="pw.visible = false">{{ tt("common.cancel") }}</el-button>
+        <el-button type="primary" @click="savePassword">{{ tt("common.confirm") }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -246,6 +269,7 @@ export default {
       feishu: { appId: "", appSecret: "", enabled: false },
       mcpForm: { enabled: false, port: 19090, domain: "", safeNetwork: "openwrt-lan" },
       mcpRemote: null,
+      pw: { visible: false, current: "", next: "", confirm: "" },
       registryDialog: { visible: false, existing: null, form: { name: "", url: "", username: "", token: "" } },
     };
   },
@@ -315,6 +339,31 @@ export default {
         ElMessage.success(tt("settings.sharedDiskAccessSaved"));
       } catch (err) {
         ElMessage.error(errText(err));
+      }
+    },
+    openPassword() {
+      this.pw = { visible: true, current: "", next: "", confirm: "" };
+    },
+    async savePassword() {
+      if (this.pw.next !== this.pw.confirm) {
+        ElMessage.error(tt("settings.passwordMismatch"));
+        return;
+      }
+      try {
+        await api("/api/user/password", {
+          method: "POST",
+          body: JSON.stringify({ current: this.pw.current, new: this.pw.next }),
+        });
+        this.pw.visible = false;
+        ElMessage.success(tt("settings.passwordSaved"));
+      } catch (err) {
+        // The backend's short reason list, localized like the login errors.
+        const known = {
+          "current password is incorrect": "settings.passwordWrongCurrent",
+          "this account signs in through SSO and has no password": "settings.passwordSSOOnly",
+        };
+        const msg = err?.message || "";
+        ElMessage.error(known[msg] ? tt(known[msg]) : errText(err));
       }
     },
     async saveDefaultLanguage() {
@@ -473,6 +522,7 @@ export default {
 .tint-teal { background: #14b8a6; }
 .tint-indigo { background: #6366f1; }
 .tint-orange { background: var(--warn); }
+.tint-red { background: var(--danger, #ef4444); }
 .row-main { flex: 1; min-width: 0; }
 .row-title { font-size: 13.5px; font-weight: 600; }
 .row-desc { font-size: 12px; color: var(--muted); margin-top: 1px; }

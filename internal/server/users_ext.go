@@ -81,6 +81,38 @@ func (a *App) userUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// userPasswordChange lets a signed-in user rotate their own password. SSO-only
+// accounts are rejected by the store (they have no password to verify against).
+// On success the session epoch has moved, so the caller's own cookie is
+// re-issued with the new epoch — other devices stay logged out.
+func (a *App) userPasswordChange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Current string `json:"current"`
+		New     string `json:"new"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.New == "" {
+		writeErr(w, http.StatusBadRequest, "new password is required")
+		return
+	}
+	u := currentUser(r)
+	epoch, err := a.db.ChangeOwnPassword(u.ID, req.Current, req.New)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.auth.Set(w, r, u.ID, epoch)
+	a.record(r, "user.password", targetName(u))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // approveUser moves a pending user into the default users group. It is the
 // one-click approval flow used by administrators.
 func (a *App) approveUser(w http.ResponseWriter, r *http.Request) {

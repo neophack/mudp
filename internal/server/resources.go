@@ -25,7 +25,10 @@ func (a *App) refreshRuntimeCacheSized(ctx context.Context, withSize bool) {
 	a.refreshMu.Lock()
 	defer a.refreshMu.Unlock()
 
-	sys := a.docker.SystemInfo(ctx)
+	// The scope basis falls out of the same image/volume/network listings the
+	// system snapshot already makes — no extra Docker calls, and the non-admin
+	// dashboard derives its per-user counts from it in memory.
+	sys, basis := a.docker.SystemInfoWithScopeBasis(ctx)
 	var containers []dockerx.Container
 	var err error
 	if withSize {
@@ -44,6 +47,7 @@ func (a *App) refreshRuntimeCacheSized(ctx context.Context, withSize bool) {
 	}
 	a.cacheMu.Lock()
 	a.cachedSystem = sys
+	a.cachedBasis = basis
 	if err == nil {
 		a.cachedContainers = containers
 	}
@@ -295,7 +299,11 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 		a.watchProcesses(initCtx)
 		a.collectResourceSnapshot(initCtx)
 		a.pruneOldData(initCtx)
-		if n, reclaimed, err := a.docker.PruneImages(initCtx); err == nil && n > 0 {
+		if n, reclaimed, err := a.docker.PruneImages(initCtx); err != nil {
+			// A persistently failing prune leaves dangling images piling up in
+			// the daemon's storage; surface it instead of failing silently.
+			log.Printf("image prune failed: %v", err)
+		} else if n > 0 {
 			log.Printf("pruned %d dangling images (%d bytes reclaimed)", n, reclaimed)
 		}
 		cancelInit()
@@ -308,8 +316,10 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 			case <-prune.C:
 				a.pruneOldData(ctx)
 			case <-checkpoint.C:
+				// A failing checkpoint lets the WAL grow unboundedly between
+				// restarts; a log line is the cheapest way to notice.
 				if err := a.db.Checkpoint(); err != nil {
-					// Best-effort; noisy logs on shutdown are unhelpful.
+					log.Printf("wal checkpoint failed: %v", err)
 				}
 			case <-processWatchTick.C:
 				a.watchProcesses(ctx)
@@ -327,32 +337,28 @@ func (a *App) StartBackgroundJobs(ctx context.Context) func() {
 }
 
 func (a *App) pruneOldData(ctx context.Context) {
-	if err := a.db.PruneAuditLogs(time.Now().Add(-90 * 24 * time.Hour)); err != nil {
-		// Best-effort; do not fail requests due to pruning errors.
+	// Retention pruning is the only thing keeping these tables bounded; a
+	// persistent failure (locked db, disk full) must be visible in the logs
+	// rather than silently growing the database file.
+	logIfErr := func(what string, err error) {
+		if err != nil {
+			log.Printf("prune %s: %v", what, err)
+		}
 	}
-	if err := a.db.PruneResourceSamples(time.Now().Add(-30 * 24 * time.Hour)); err != nil {
-		// Best-effort.
-	}
+	logIfErr("audit logs", a.db.PruneAuditLogs(time.Now().Add(-90*24*time.Hour)))
+	logIfErr("resource samples", a.db.PruneResourceSamples(time.Now().Add(-30*24*time.Hour)))
 	// Feishu send history is a short-lived delivery log, not an archive.
-	if err := a.db.PruneFeishuMessages(time.Now().Add(-7 * 24 * time.Hour)); err != nil {
-		// Best-effort.
-	}
+	logIfErr("feishu messages", a.db.PruneFeishuMessages(time.Now().Add(-7*24*time.Hour)))
 	// Access-log retention is admin-configurable; fall back to 90 days when unset.
 	retention := 90
 	if s := a.securitySettings(); s.RetentionDays > 0 {
 		retention = s.RetentionDays
 	}
-	if err := a.db.PruneAccessLogs(time.Now().Add(-time.Duration(retention) * 24 * time.Hour)); err != nil {
-		// Best-effort.
-	}
+	logIfErr("access logs", a.db.PruneAccessLogs(time.Now().Add(-time.Duration(retention)*24*time.Hour)))
 	// MCP usage & attack logs are kept for one month: long enough to review what
 	// an agent did and who probed the external port, short enough to bound growth.
-	if err := a.db.PruneMCPUsageLogs(time.Now().Add(-30 * 24 * time.Hour)); err != nil {
-		// Best-effort.
-	}
-	if err := a.db.PruneMCPAttackLogs(time.Now().Add(-30 * 24 * time.Hour)); err != nil {
-		// Best-effort.
-	}
+	logIfErr("mcp usage logs", a.db.PruneMCPUsageLogs(time.Now().Add(-30*24*time.Hour)))
+	logIfErr("mcp attack logs", a.db.PruneMCPAttackLogs(time.Now().Add(-30*24*time.Hour)))
 }
 
 func (a *App) adminProcesses(w http.ResponseWriter, r *http.Request) {

@@ -55,6 +55,12 @@ type User struct {
 	// container always gets read-write on every folder regardless of this
 	// setting — see sharedDiskMountsFor.
 	SharedDiskReadWrite bool `json:"sharedDiskReadWrite"`
+	// SessionEpoch is bumped on every credential change (password set or
+	// reset). Session cookies carry the epoch they were issued against; a
+	// mismatch invalidates them, so a leaked or remembered cookie cannot
+	// outlive the credential it was minted from. Internal only — never sent
+	// to clients.
+	SessionEpoch int64 `json:"-"`
 }
 
 // ValidRole reports whether r is one of the supported RBAC roles.
@@ -229,7 +235,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 46
+const schemaVersion = 48
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -292,6 +298,33 @@ var migrations = []migration{
 	{44, "drop users.feishu_webhook", migrateDropUserFeishuWebhook},
 	{45, "create feishu_messages", migrateCreateFeishuMessages},
 	{46, "user single group", migrateUserSingleGroup},
+	{47, "add users.session_epoch", migrateAddSessionEpoch},
+	{48, "add log filter indexes", migrateAddLogFilterIndexes},
+}
+
+// migrateAddSessionEpoch adds the per-user session revocation counter. Zero is
+// a valid epoch, so existing rows (default 0) keep working: cookies issued
+// before the upgrade carry no epoch and fail the new 4-part format, which
+// simply forces one re-login.
+func migrateAddSessionEpoch(db executor) error {
+	return execIgnoring(db, `alter table users add column session_epoch integer not null default 0`, sqliteDuplicateColumn)
+}
+
+// migrateAddLogFilterIndexes indexes the columns the audit and access-log
+// pages filter on. Both tables grow without bound until their retention
+// pruning fires, and the admin pages filter by actor/action (audit) and
+// username (access) far more often than by created_at, which was the only
+// indexed column.
+func migrateAddLogFilterIndexes(db executor) error {
+	for _, stmt := range []string{
+		`create index if not exists idx_audit_logs_actor_action on audit_logs(actor, action)`,
+		`create index if not exists idx_access_logs_username on access_logs(username)`,
+	} {
+		if err := execIgnoring(db, stmt, "already exists"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // migrateUserSingleGroup replaces the user_groups many-to-many join table with
@@ -932,6 +965,16 @@ func (db *DB) nextPortPrefix(tx *sql.Tx) (int, error) {
 	return next, nil
 }
 
+// bcryptCost is the work factor for password hashing. Cost 12 costs roughly
+// 4x the library default per login (a few hundred milliseconds), an acceptable
+// price behind the captcha + rate limiter for slowing offline cracking of a
+// leaked database by the same factor.
+const bcryptCost = 12
+
+// BcryptCost exports the work factor for other packages hashing their own
+// secrets (netdisk share extraction codes) so they cost the same to crack.
+const BcryptCost = bcryptCost
+
 func (db *DB) CreateUser(username, password, role string, groupID int64, containerCap int, quotaBytes int64) error {
 	if containerCap <= 0 {
 		containerCap = 10
@@ -942,7 +985,7 @@ func (db *DB) CreateUser(username, password, role string, groupID int64, contain
 	if err := ValidatePassword(password); err != nil {
 		return err
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
 	if err != nil {
 		return err
 	}
@@ -1007,7 +1050,7 @@ const NoPasswordSentinel = "!"
 // bcrypt costs tens of milliseconds, an early sql.ErrNoRows return costs
 // microseconds.
 var dummyPasswordHash = func() []byte {
-	h, err := bcrypt.GenerateFromPassword([]byte("mudp-constant-time-auth-placeholder"), bcrypt.DefaultCost)
+	h, err := bcrypt.GenerateFromPassword([]byte("mudp-constant-time-auth-placeholder"), bcryptCost)
 	if err != nil {
 		panic(err)
 	}
@@ -1025,8 +1068,8 @@ func (db *DB) Authenticate(username, password string) (*User, error) {
 	var u User
 	var hash string
 	var disabled, sharedRW int
-	err := db.QueryRow(`select id,username,display_name,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,pinyin_name,shared_disk_read_write from users where username=?`, username).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW)
+	err := db.QueryRow(`select id,username,display_name,password_hash,role,disabled,container_cap,netdisk_quota_bytes,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,pinyin_name,shared_disk_read_write,session_epoch from users where username=?`, username).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &hash, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW, &u.SessionEpoch)
 	u.SharedDiskReadWrite = sharedRW != 0
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(password))
@@ -1061,9 +1104,9 @@ func (db *DB) UserByID(id int64) (*User, error) {
 	// The group name rides along in the same query: this runs on every
 	// authenticated request (session lookup), so a second per-request query
 	// for the join would double the auth-path read load.
-	err := db.QueryRow(`select u.id,u.username,u.display_name,u.role,u.disabled,u.container_cap,u.netdisk_quota_bytes,u.port_prefix,u.created_at,u.last_login_at,u.feishu_open_id,u.feishu_avatar,u.feishu_email,u.feishu_enterprise_email,u.feishu_mobile,u.feishu_tenant_key,u.feishu_tenant_name,u.feishu_department,u.comment,u.pinyin_name,u.shared_disk_read_write,coalesce(g.name,'')
+	err := db.QueryRow(`select u.id,u.username,u.display_name,u.role,u.disabled,u.container_cap,u.netdisk_quota_bytes,u.port_prefix,u.created_at,u.last_login_at,u.feishu_open_id,u.feishu_avatar,u.feishu_email,u.feishu_enterprise_email,u.feishu_mobile,u.feishu_tenant_key,u.feishu_tenant_name,u.feishu_department,u.comment,u.pinyin_name,u.shared_disk_read_write,u.session_epoch,coalesce(g.name,'')
 		from users u left join groups g on g.id=u.group_id where u.id=?`, id).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW, &u.Group)
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW, &u.SessionEpoch, &u.Group)
 	u.SharedDiskReadWrite = sharedRW != 0
 	if err != nil {
 		return nil, err
@@ -1154,7 +1197,7 @@ func (db *DB) Users() ([]User, error) {
 	// Join the group name here instead of calling UserGroupName per row: the
 	// admin user list, dashboard rollup and audit views all consume this, and
 	// the per-row query turned it into an N+1.
-	rows, err := db.Query(`select u.id,u.username,u.display_name,u.role,u.disabled,u.container_cap,u.netdisk_quota_bytes,u.port_prefix,u.created_at,u.last_login_at,u.feishu_open_id,u.feishu_avatar,u.feishu_email,u.feishu_enterprise_email,u.feishu_mobile,u.feishu_tenant_key,u.feishu_tenant_name,u.feishu_department,u.comment,u.pinyin_name,u.shared_disk_read_write,coalesce(g.name,'')
+	rows, err := db.Query(`select u.id,u.username,u.display_name,u.role,u.disabled,u.container_cap,u.netdisk_quota_bytes,u.port_prefix,u.created_at,u.last_login_at,u.feishu_open_id,u.feishu_avatar,u.feishu_email,u.feishu_enterprise_email,u.feishu_mobile,u.feishu_tenant_key,u.feishu_tenant_name,u.feishu_department,u.comment,u.pinyin_name,u.shared_disk_read_write,u.session_epoch,coalesce(g.name,'')
 		from users u left join groups g on g.id=u.group_id order by u.username`)
 	if err != nil {
 		return nil, err
@@ -1164,7 +1207,7 @@ func (db *DB) Users() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var disabled, sharedRW int
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW, &u.Group); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.NetdiskQuotaBytes, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW, &u.SessionEpoch, &u.Group); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
@@ -1608,8 +1651,8 @@ func (db *DB) UserByFeishu(openID string) (*User, error) {
 	}
 	var u User
 	var disabled, sharedRW int
-	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,pinyin_name,shared_disk_read_write from users where feishu_open_id=?`, openID).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW)
+	err := db.QueryRow(`select id,username,display_name,role,disabled,container_cap,port_prefix,created_at,last_login_at,feishu_open_id,feishu_avatar,feishu_email,feishu_enterprise_email,feishu_mobile,feishu_tenant_key,feishu_tenant_name,feishu_department,comment,pinyin_name,shared_disk_read_write,session_epoch from users where feishu_open_id=?`, openID).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.ContainerCap, &u.PortPrefix, &u.CreatedAt, &u.LastLoginAt, &u.FeishuOpenID, &u.FeishuAvatar, &u.FeishuEmail, &u.FeishuEnterpriseEmail, &u.FeishuMobile, &u.FeishuTenantKey, &u.FeishuTenantName, &u.FeishuDepartment, &u.Comment, &u.PinyinName, &sharedRW, &u.SessionEpoch)
 	if err != nil {
 		return nil, err
 	}
@@ -2038,15 +2081,17 @@ func (db *DB) UpdateUser(id int64, password, role string, containerCap int, netd
 	defer tx.Rollback()
 	if password != "" {
 		// An empty password means "leave unchanged"; anything else is a real
-		// credential and must clear the same bar as a new account.
+		// credential and must clear the same bar as a new account. The epoch
+		// bump in the same statement invalidates every session already issued
+		// for this user, including other devices and a stolen cookie.
 		if err := ValidatePassword(password); err != nil {
 			return err
 		}
-		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`update users set password_hash=? where id=?`, string(hash), id); err != nil {
+		if _, err := tx.Exec(`update users set password_hash=?, session_epoch=session_epoch+1 where id=?`, string(hash), id); err != nil {
 			return err
 		}
 	}
@@ -2075,6 +2120,41 @@ func (db *DB) UpdateUser(id int64, password, role string, containerCap int, netd
 		}
 	}
 	return tx.Commit()
+}
+
+// ChangeOwnPassword rotates the caller's own credential: it verifies the
+// current password (SSO-only accounts have none to verify and are rejected),
+// stores the new hash, and bumps the session epoch — all in one transaction.
+// Returns the new epoch so the caller can re-issue the session cookie without
+// logging the user out.
+func (db *DB) ChangeOwnPassword(id int64, current, next string) (int64, error) {
+	if err := ValidatePassword(next); err != nil {
+		return 0, err
+	}
+	var hash string
+	if err := db.QueryRow(`select password_hash from users where id=?`, id).Scan(&hash); err != nil {
+		return 0, err
+	}
+	if !isUsablePasswordHash(hash) {
+		return 0, errors.New("this account signs in through SSO and has no password")
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(current)) != nil {
+		return 0, errors.New("current password is incorrect")
+	}
+	newHash, err := bcrypt.GenerateFromPassword([]byte(next), bcryptCost)
+	if err != nil {
+		return 0, err
+	}
+	var epoch int64
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if err := tx.QueryRow(`update users set password_hash=?, session_epoch=session_epoch+1 where id=? returning session_epoch`, string(newHash), id).Scan(&epoch); err != nil {
+		return 0, err
+	}
+	return epoch, tx.Commit()
 }
 
 func (db *DB) UpdateUserPortPrefix(id int64, prefix int) error {

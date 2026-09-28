@@ -14,12 +14,12 @@ import (
 )
 
 // mintCookie replicates the signing scheme from auth.go to hand-craft cookie
-// values for tests: the value is base64url("uid:exp:sig") where sig is
-// base64url(HMAC-SHA256(secret, "uid:exp")). Tests must not rely on the
+// values for tests: the value is base64url("uid:exp:epoch:sig") where sig is
+// base64url(HMAC-SHA256(secret, "uid:exp:epoch")). Tests must not rely on the
 // unexported Signer.sign so a broken signer cannot make UserID agree with
 // itself.
-func mintCookie(secret string, uid, exp int64) string {
-	body := fmt.Sprintf("%d:%d", uid, exp)
+func mintCookie(secret string, uid, exp, epoch int64) string {
+	body := fmt.Sprintf("%d:%d:%d", uid, exp, epoch)
 	m := hmac.New(sha256.New, []byte(secret))
 	m.Write([]byte(body))
 	sig := base64.RawURLEncoding.EncodeToString(m.Sum(nil))
@@ -33,13 +33,40 @@ func requestWithCookie(value string) *http.Request {
 	return r
 }
 
+// sig is the test-side HMAC used by hand-built malformed cases that still
+// need a structurally valid signature.
+func sig(secret, body string) string {
+	m := hmac.New(sha256.New, []byte(secret))
+	m.Write([]byte(body))
+	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+}
+
+// TestSignerEpochRoundTrip pins the revocation contract: the epoch travels
+// inside the signed body, so a cookie issued against epoch 4 verifies with
+// epoch 4 and nothing else — the server's epoch comparison then rejects any
+// cookie minted before a password change.
+func TestSignerEpochRoundTrip(t *testing.T) {
+	s := New("test-secret")
+	rec := httptest.NewRecorder()
+	s.Set(rec, httptest.NewRequest("GET", "https://x/login", nil), 11, 4)
+	value := rec.Result().Cookies()[0].Value
+
+	if _, epoch, ok := s.UserID(requestWithCookie(value)); !ok || epoch != 4 {
+		t.Fatalf("UserID = (epoch %d, ok %v), want (4, true)", epoch, ok)
+	}
+	stale := mintCookie("test-secret", 11, time.Now().Add(time.Hour).Unix(), 3)
+	if _, epoch, ok := s.UserID(requestWithCookie(stale)); !ok || epoch != 3 {
+		t.Fatalf("hand-minted cookie rejected: (epoch %d, ok %v), want (3, true)", epoch, ok)
+	}
+}
+
 // TestSignerSetUserIDRoundTrip issues a cookie through a recorder, attaches it
 // to a fresh request the way a browser would, and expects the same user ID.
 func TestSignerSetUserIDRoundTrip(t *testing.T) {
 	s := New("test-secret")
 	for _, uid := range []int64{1, 42, 1 << 40} {
 		rec := httptest.NewRecorder()
-		s.Set(rec, httptest.NewRequest("GET", "https://x/login", nil), uid)
+		s.Set(rec, httptest.NewRequest("GET", "https://x/login", nil), uid, 0)
 
 		cookies := rec.Result().Cookies()
 		if len(cookies) != 1 {
@@ -49,12 +76,15 @@ func TestSignerSetUserIDRoundTrip(t *testing.T) {
 			t.Fatalf("uid %d: cookie name = %q, want %q", uid, cookies[0].Name, CookieName)
 		}
 
-		got, ok := s.UserID(requestWithCookie(cookies[0].Value))
+		got, epoch, ok := s.UserID(requestWithCookie(cookies[0].Value))
 		if !ok {
 			t.Fatalf("uid %d: UserID rejected the cookie it just issued", uid)
 		}
 		if got != uid {
 			t.Errorf("UserID = %d, want %d", got, uid)
+		}
+		if epoch != 0 {
+			t.Errorf("epoch = %d, want 0", epoch)
 		}
 	}
 }
@@ -64,7 +94,7 @@ func TestSignerSetUserIDRoundTrip(t *testing.T) {
 func TestSignerTamperedSignature(t *testing.T) {
 	s := New("test-secret")
 	rec := httptest.NewRecorder()
-	s.Set(rec, httptest.NewRequest("GET", "http://x/login", nil), 7)
+	s.Set(rec, httptest.NewRequest("GET", "http://x/login", nil), 7, 2)
 	issued := rec.Result().Cookies()[0].Value
 
 	raw, err := base64.RawURLEncoding.DecodeString(issued)
@@ -72,20 +102,20 @@ func TestSignerTamperedSignature(t *testing.T) {
 		t.Fatalf("issued cookie is not base64: %v", err)
 	}
 	parts := strings.Split(string(raw), ":")
-	if len(parts) != 3 {
-		t.Fatalf("issued cookie has %d parts, want 3", len(parts))
+	if len(parts) != 4 {
+		t.Fatalf("issued cookie has %d parts, want 4", len(parts))
 	}
 	// Flip the first signature char to a different base64url char, keeping the
 	// length and charset valid so the rejection comes from the HMAC check.
-	sig := parts[2]
+	sig := parts[3]
 	replacement := byte('A')
 	if sig[0] == 'A' {
 		replacement = 'B'
 	}
-	parts[2] = string(replacement) + sig[1:]
+	parts[3] = string(replacement) + sig[1:]
 	tampered := base64.RawURLEncoding.EncodeToString([]byte(strings.Join(parts, ":")))
 
-	if uid, ok := s.UserID(requestWithCookie(tampered)); ok {
+	if uid, _, ok := s.UserID(requestWithCookie(tampered)); ok {
 		t.Errorf("tampered signature accepted as user %d", uid)
 	}
 }
@@ -94,13 +124,13 @@ func TestSignerTamperedSignature(t *testing.T) {
 // under another.
 func TestSignerWrongSecret(t *testing.T) {
 	rec := httptest.NewRecorder()
-	New("secret-a").Set(rec, httptest.NewRequest("GET", "http://x/login", nil), 9)
+	New("secret-a").Set(rec, httptest.NewRequest("GET", "http://x/login", nil), 9, 0)
 	value := rec.Result().Cookies()[0].Value
 
-	if _, ok := New("secret-a").UserID(requestWithCookie(value)); !ok {
+	if _, _, ok := New("secret-a").UserID(requestWithCookie(value)); !ok {
 		t.Error("same-secret verification failed")
 	}
-	if uid, ok := New("secret-b").UserID(requestWithCookie(value)); ok {
+	if uid, _, ok := New("secret-b").UserID(requestWithCookie(value)); ok {
 		t.Errorf("cookie from secret-a verified under secret-b as user %d", uid)
 	}
 }
@@ -109,9 +139,9 @@ func TestSignerWrongSecret(t *testing.T) {
 // the past; a valid signature must not rescue an expired session.
 func TestSignerExpiredCookie(t *testing.T) {
 	s := New("test-secret")
-	value := mintCookie("test-secret", 5, time.Now().Add(-time.Hour).Unix())
+	value := mintCookie("test-secret", 5, time.Now().Add(-time.Hour).Unix(), 0)
 
-	if uid, ok := s.UserID(requestWithCookie(value)); ok {
+	if uid, _, ok := s.UserID(requestWithCookie(value)); ok {
 		t.Errorf("expired cookie accepted as user %d", uid)
 	}
 }
@@ -129,12 +159,14 @@ func TestSignerMalformedCookies(t *testing.T) {
 		{"not base64", "!!!not-base64!!!"},
 		{"base64 of garbage", b64("\x00\x01\x02\xff")},
 		{"two parts", b64("1:9999999999")},
-		{"four parts", b64("1:9999999999:abc:def")},
-		{"bad signature", b64("1:9999999999:AAAA")},
-		{"non-numeric expiry", b64("1:abc:x")},
+		{"three parts", b64("1:9999999999:0")},
+		{"five parts", b64("1:9999999999:0:abc:def")},
+		{"bad signature", b64("1:9999999999:0:AAAA")},
+		{"non-numeric expiry", b64("1:abc:0:x")},
+		{"non-numeric epoch", b64("1:9999999999:abc:" + sig("test-secret", "1:9999999999:abc"))},
 		{"non-numeric uid with valid sig", func() string {
 			// Hand-signed payload whose uid is not a number.
-			body := "abc:9999999999"
+			body := "abc:9999999999:0"
 			m := hmac.New(sha256.New, []byte("test-secret"))
 			m.Write([]byte(body))
 			return b64(body + ":" + base64.RawURLEncoding.EncodeToString(m.Sum(nil)))
@@ -142,7 +174,7 @@ func TestSignerMalformedCookies(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if uid, ok := s.UserID(requestWithCookie(c.value)); ok {
+			if uid, _, ok := s.UserID(requestWithCookie(c.value)); ok {
 				t.Errorf("malformed cookie accepted as user %d", uid)
 			}
 		})
@@ -151,7 +183,7 @@ func TestSignerMalformedCookies(t *testing.T) {
 
 // TestSignerNoCookie: a request without the session cookie is not authenticated.
 func TestSignerNoCookie(t *testing.T) {
-	if uid, ok := New("test-secret").UserID(httptest.NewRequest("GET", "http://x/", nil)); ok {
+	if uid, _, ok := New("test-secret").UserID(httptest.NewRequest("GET", "http://x/", nil)); ok {
 		t.Errorf("cookie-less request authenticated as user %d", uid)
 	}
 }
@@ -173,7 +205,7 @@ func TestSignerSetCookieAttributes(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			before := time.Now()
 			rec := httptest.NewRecorder()
-			s.Set(rec, c.request, 1)
+			s.Set(rec, c.request, 1, 4)
 			after := time.Now()
 
 			cookies := rec.Result().Cookies()

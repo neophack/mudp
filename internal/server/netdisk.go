@@ -1229,7 +1229,7 @@ func (a *App) netdiskShareCreate(w http.ResponseWriter, r *http.Request) {
 	passwordHash := ""
 	password := strings.TrimSpace(req.Password)
 	if password != "" {
-		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), store.BcryptCost)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1402,11 +1402,24 @@ func (a *App) netdiskShareDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if info.IsDir() {
+		// Public, unauthenticated endpoint: refuse to zip up a bottomless
+		// folder. The size walk is metadata-only and far cheaper than the zip
+		// stream it guards; anything over the cap still downloads fine
+		// file-by-file.
+		if size := pathSize(full); size > maxShareZipBytes {
+			writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("folder is too large to download as one zip (limit %d MB); download its files individually", maxShareZipBytes/(1<<20)))
+			return
+		}
 		serveZipDownload(w, full, info.Name()+".zip")
 		return
 	}
 	serveFileDownload(w, r, full, info.Name())
 }
+
+// maxShareZipBytes caps directory zips on the public share endpoint, where
+// anyone with the link can otherwise trigger an unbounded walk+zip of the
+// owner's folder on every request.
+const maxShareZipBytes = 2 << 30 // 2 GiB
 
 // netdiskShareRaw serves a single file inline on the public share page so a
 // visitor can preview it. Same resolution + password + scope checks as the

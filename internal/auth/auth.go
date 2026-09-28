@@ -31,9 +31,9 @@ func New(secret string) Signer {
 	return Signer{secret: []byte(secret)}
 }
 
-func (s Signer) Set(w http.ResponseWriter, r *http.Request, userID int64) {
+func (s Signer) Set(w http.ResponseWriter, r *http.Request, userID, epoch int64) {
 	exp := time.Now().Add(SessionTTL).Unix()
-	body := fmt.Sprintf("%d:%d", userID, exp)
+	body := fmt.Sprintf("%d:%d:%d", userID, exp, epoch)
 	sig := s.sign(body)
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
@@ -58,29 +58,41 @@ func (s Signer) Clear(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s Signer) UserID(r *http.Request) (int64, bool) {
+// UserID verifies the session cookie and returns the user id plus the session
+// epoch it was issued against. The caller compares the epoch against the
+// user's current one: bumping a user's epoch (password change, admin reset)
+// instantly invalidates every session already in the wild, so a leaked or
+// remembered cookie cannot outlive the credential it was minted from.
+func (s Signer) UserID(r *http.Request) (int64, int64, bool) {
 	c, err := r.Cookie(CookieName)
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
 	parts := strings.Split(string(raw), ":")
-	if len(parts) != 3 {
-		return 0, false
+	if len(parts) != 4 {
+		return 0, 0, false
 	}
-	body := parts[0] + ":" + parts[1]
-	if !hmac.Equal([]byte(parts[2]), []byte(s.sign(body))) {
-		return 0, false
+	body := parts[0] + ":" + parts[1] + ":" + parts[2]
+	if !hmac.Equal([]byte(parts[3]), []byte(s.sign(body))) {
+		return 0, 0, false
 	}
 	exp, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil || time.Now().Unix() > exp {
-		return 0, false
+		return 0, 0, false
 	}
 	uid, err := strconv.ParseInt(parts[0], 10, 64)
-	return uid, err == nil
+	if err != nil {
+		return 0, 0, false
+	}
+	epoch, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return uid, epoch, true
 }
 
 func (s Signer) sign(body string) string {

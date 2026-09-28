@@ -116,6 +116,13 @@ func SecurityHeaders(trusted *TrustedProxies) func(http.Handler) http.Handler {
 	}
 }
 
+// RequestIsSecure is isSecure exported for the server wiring: it backs
+// httpx.SetSecureCheck so session/CSRF cookie Secure flags apply the same
+// trusted-proxy gate as HSTS (docs/SECURITY-AUDIT.md L-5).
+func RequestIsSecure(r *http.Request, trusted *TrustedProxies) bool {
+	return isSecure(r, trusted)
+}
+
 // isSecure reports whether the response should be treated as HTTPS-served:
 // either the connection itself is TLS, or the request came from a trusted
 // reverse proxy that says the client leg was HTTPS. The proxy gate mirrors the

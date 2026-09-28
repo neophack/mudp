@@ -1,8 +1,8 @@
 package server
 
 import (
-	"context"
 	"net/http"
+	"time"
 
 	"mudp/internal/dockerx"
 	"mudp/internal/store"
@@ -45,7 +45,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	// Admins see platform-wide counts; everyone else sees only their own
 	// resource footprint so the dashboard reflects what they actually own.
-	sys := a.dashboardSystem(r.Context(), u.Username, u.Role == "admin")
+	sys := a.dashboardSystem(u.Username, u.Role == "admin")
 
 	items := a.runtimeContainers(u.Username, u.Role == "admin")
 	mine := mineRollup{Cap: u.ContainerCap}
@@ -75,13 +75,87 @@ func buildUsage(r *http.Request, a *App) []usageRow {
 	return buildUsageFromContainers(r, a, items)
 }
 
-func (a *App) dashboardSystem(ctx context.Context, username string, admin bool) dockerx.SystemInfo {
+func (a *App) dashboardSystem(username string, admin bool) dockerx.SystemInfo {
 	if admin {
 		return a.runtimeSystem()
 	}
-	// Use the Docker-aware per-user scoping helper so non-admins do not see
-	// platform-wide image/volume/network counts.
-	return a.docker.SystemInfoForUser(ctx, username)
+	// The caller's own view, derived in memory from the shared 15s sweep: host
+	// fields come from the cached platform snapshot, per-user resource counts
+	// from the cached container list plus the sweep's scope basis. The route
+	// polls every few seconds per user, so re-querying Docker here (the old
+	// SystemInfoForUser path) multiplied into hundreds of daemon calls per
+	// minute across the user base.
+	return a.scopedSystem(username)
+}
+
+// scopedSystem assembles the per-user dashboard snapshot without any Docker
+// calls: host facts are copied from the cached platform SystemInfo, container
+// stats come from the caller's own cached containers, and images/volumes/
+// networks are narrowed from the sweep's ScopeBasis by owner label and image
+// reference.
+func (a *App) scopedSystem(username string) dockerx.SystemInfo {
+	sys := a.runtimeSystem()
+	a.cacheMu.RLock()
+	basis := a.cachedBasis
+	a.cacheMu.RUnlock()
+	sys.ServerTime = time.Now().Unix()
+
+	cs := dockerx.ContainerStats{}
+	imageIDs := map[string]bool{}
+	for _, c := range a.runtimeContainers(username, false) {
+		cs.Total++
+		switch c.State {
+		case "running":
+			cs.Running++
+		case "paused":
+			cs.Paused++
+		case "exited", "dead", "created":
+			cs.Stopped++
+		}
+		switch c.Health {
+		case "healthy":
+			cs.Healthy++
+		case "unhealthy":
+			cs.Unhealthy++
+		}
+		if c.ImageID != "" {
+			imageIDs[c.ImageID] = true
+		}
+	}
+	sys.Containers = cs
+
+	// Images: the distinct non-derived images the user's containers reference
+	// (images carry no owner label, so reference is the ownership signal).
+	var imgCount int
+	var imgSize int64
+	for id := range imageIDs {
+		if size, ok := basis.ImageSizes[id]; ok {
+			imgCount++
+			imgSize += size
+		}
+	}
+	sys.Images = dockerx.ResourceStats{Count: imgCount, SizeB: imgSize, SizeMB: dockerx.SizeMB(imgSize)}
+
+	// Volumes and networks: the user's own, plus Docker's built-in networks so
+	// the tile stays consistent with the Networks page.
+	var volCount int
+	var volSize int64
+	for _, v := range basis.Volumes {
+		if v.Owner == username {
+			volCount++
+			volSize += v.SizeB
+		}
+	}
+	sys.Volumes = dockerx.ResourceStats{Count: volCount, SizeB: volSize, SizeMB: dockerx.SizeMB(volSize)}
+
+	nets := 0
+	for _, n := range basis.Networks {
+		if n.System || (n.Managed && n.Owner == username) {
+			nets++
+		}
+	}
+	sys.Networks = nets
+	return sys
 }
 
 func buildUsageFromContainers(r *http.Request, a *App, items []dockerx.Container) []usageRow {

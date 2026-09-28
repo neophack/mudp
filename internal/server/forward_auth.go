@@ -97,8 +97,13 @@ func (a *App) checkForwardAuth(rule portfwd.Rule, client net.Conn) ([]byte, bool
 
 	// A valid session cookie means the browser is already logged into the
 	// console — let it straight through, replaying the peeked request upstream.
-	if uid, ok := a.auth.UserID(req); ok && uid != 0 {
-		return headerBlock, true
+	// The epoch check matches authMiddleware so a cookie revoked by a password
+	// change is refused here too; the lookup is a primary-key select, noise
+	// next to the TCP relay itself.
+	if uid, epoch, ok := a.auth.UserID(req); ok && uid != 0 {
+		if u, err := a.db.UserByID(uid); err == nil && !u.Disabled && u.SessionEpoch == epoch {
+			return headerBlock, true
+		}
 	}
 
 	// Not authenticated: redirect the browser to the console login page, carrying

@@ -72,29 +72,60 @@ type ResourceStats struct {
 	SizeMB float64 `json:"sizeMb"`
 }
 
+// ScopeBasis carries the host-wide owner/size facts the server needs to derive
+// a single user's dashboard resource counts in memory (see server.scopedSystem)
+// instead of re-querying Docker on every dashboard poll. ImageSizes holds every
+// non-derived image on the host; Volumes/Networks hold mudp-managed resources
+// with their owner label, plus Docker's built-in system networks.
+type ScopeBasis struct {
+	ImageSizes map[string]int64
+	Volumes    []VolumeScope
+	Networks   []NetworkScope
+}
+
+// VolumeScope is one mudp-managed volume with its owner label and usage.
+type VolumeScope struct {
+	Owner string
+	SizeB int64
+}
+
+// NetworkScope is one network visible to the dashboard: either a Docker
+// built-in (System) or a mudp-managed one with its owner label.
+type NetworkScope struct {
+	Owner   string
+	System  bool
+	Managed bool
+}
+
+// SizeMB renders a byte figure as rounded megabytes for the dashboard tiles.
+func SizeMB(b int64) float64 { return round2(float64(b) / 1024 / 1024) }
+
 // SystemInfo gathers the platform-wide environment snapshot used by the
 // admin dashboard. Every sub-query is best-effort: a missing piece never
 // fails the whole call so a partially-reachable daemon still renders a
 // usable dashboard. Counts span every mudp-managed resource on the host.
 func (d *Client) SystemInfo(ctx context.Context) SystemInfo {
-	return d.gatherSystemInfo(ctx, "")
+	sys, _ := d.gatherSystemInfo(ctx)
+	return sys
 }
 
-// SystemInfoForUser gathers the same environment snapshot but scopes the
-// resource counts (containers, volumes, networks, images) to a single user.
-// Environment/host fields (OS, kernel, CPUs, memory, Docker version, agent)
-// are always host-wide since they are identical for everyone. Used by the
-// non-admin dashboard so a user sees only their own footprint. An empty
-// username falls back to the platform-wide rollup.
-func (d *Client) SystemInfoForUser(ctx context.Context, username string) SystemInfo {
-	return d.gatherSystemInfo(ctx, username)
+// SystemInfoWithScopeBasis is SystemInfo plus the ScopeBasis the server uses
+// to derive per-user scoped views in memory. The basis is a free by-product:
+// it reuses the very image/volume/network listings the snapshot itself needs,
+// so the 15s sweep pays no extra Docker calls for it.
+func (d *Client) SystemInfoWithScopeBasis(ctx context.Context) (SystemInfo, ScopeBasis) {
+	return d.gatherSystemInfo(ctx)
 }
 
-// gatherSystemInfo is the shared implementation for SystemInfo and
-// SystemInfoForUser. username == "" means platform-wide (admin view);
-// any other value restricts resource counts to that owner.
-func (d *Client) gatherSystemInfo(ctx context.Context, username string) SystemInfo {
-	scoped := username != ""
+// gatherSystemInfo builds the platform-wide snapshot. Host fields (OS, kernel,
+// CPUs, memory, Docker version, agent) are host-wide facts; resource counts
+// span every mudp-managed resource on the host.
+func (d *Client) gatherSystemInfo(ctx context.Context) (SystemInfo, ScopeBasis) {
+	basis := ScopeBasis{
+		ImageSizes: map[string]int64{},
+		Volumes:    []VolumeScope{},
+		Networks:   []NetworkScope{},
+	}
 	out := SystemInfo{
 		Name:       hostname(),
 		AgentGoRt:  runtime.Version(),
@@ -110,7 +141,7 @@ func (d *Client) gatherSystemInfo(ctx context.Context, username string) SystemIn
 	info, err := d.c.Info(ctx)
 	if err != nil {
 		out.HealthyMsg = fmt.Sprintf("Docker unreachable: %v", err)
-		return out
+		return out, basis
 	}
 	out.Healthy = true
 	out.OSType = info.OSType
@@ -120,30 +151,17 @@ func (d *Client) gatherSystemInfo(ctx context.Context, username string) SystemIn
 	out.CPUs = info.NCPU
 	out.MemoryGB = round2(float64(info.MemTotal) / 1024 / 1024 / 1024)
 	out.StorageDrv = info.Driver
-	// Environment/host fields above are identical for everyone; resource
-	// counts below are computed from the mudp-managed list and, when scoped,
-	// further narrowed to the caller's own resources.
 
 	if ver, err := d.c.ServerVersion(ctx); err == nil {
 		out.DockerVer = ver.Version
 		out.APIVersion = ver.APIVersion
 	}
 
-	// Determine the set of image IDs the scoped user's containers actually
-	// reference. For the platform-wide view this stays empty, which signals
-	// "use the mudp-published image catalog" in the images section below.
-	var userImageIDs map[string]bool
-	if scoped {
-		userImageIDs = d.userImageSet(ctx, username)
-	}
-
-	// Images.
-	//   Platform-wide: only mudp-published images (tagged with the mudp prefix).
-	//   Scoped: only the distinct images this user's containers reference,
-	//           since images carry no per-user owner label.
-	//   Either way, internal derived images (final fused runtime images) are
-	//   skipped so the dashboard only counts
-	//   real user-facing base images.
+	// Images. The snapshot counts only mudp-published images (tagged with the
+	// mudp prefix); internal derived images (final fused runtime images) are
+	// skipped so the dashboard only counts real user-facing base images. The
+	// basis keeps every non-derived image so a user's own view can later pick
+	// out the images their containers reference.
 	if imgs, err := d.c.ImageList(ctx, types.ImageListOptions{}); err == nil {
 		var size int64
 		count := 0
@@ -151,62 +169,55 @@ func (d *Client) gatherSystemInfo(ctx context.Context, username string) SystemIn
 			if isDerivedImage(im) {
 				continue
 			}
-			var match bool
-			if scoped {
-				match = userImageIDs[im.ID]
-			} else {
-				for _, tag := range im.RepoTags {
-					if strings.HasPrefix(tag, Prefix) && !strings.Contains(tag, "<none>") {
-						match = true
-						break
-					}
+			basis.ImageSizes[im.ID] = im.Size
+			for _, tag := range im.RepoTags {
+				if strings.HasPrefix(tag, Prefix) && !strings.Contains(tag, "<none>") {
+					count++
+					size += im.Size
+					break
 				}
 			}
-			if match {
-				count++
-				size += im.Size
-			}
 		}
-		out.Images = ResourceStats{Count: count, SizeB: size, SizeMB: round2(float64(size) / 1024 / 1024)}
+		out.Images = ResourceStats{Count: count, SizeB: size, SizeMB: SizeMB(size)}
 	}
 
-	// Volumes: mudp-managed; scoped to the caller's own when requested.
-	if dv, err := d.c.VolumeList(ctx, volumetypes.ListOptions{Filters: managedVolumeFilter(username)}); err == nil {
+	// Volumes: mudp-managed, with per-owner facts recorded for the basis.
+	if dv, err := d.c.VolumeList(ctx, volumetypes.ListOptions{Filters: managedVolumeFilter("")}); err == nil {
 		var size int64
 		for _, v := range dv.Volumes {
+			var usage int64
 			if v.UsageData != nil {
-				size += v.UsageData.Size
+				usage = v.UsageData.Size
 			}
+			size += usage
+			basis.Volumes = append(basis.Volumes, VolumeScope{Owner: v.Labels[UserLabel], SizeB: usage})
 		}
-		out.Volumes = ResourceStats{Count: len(dv.Volumes), SizeB: size, SizeMB: round2(float64(size) / 1024 / 1024)}
+		out.Volumes = ResourceStats{Count: len(dv.Volumes), SizeB: size, SizeMB: SizeMB(size)}
 	}
 
-	// Networks: count what the user would see in the Networks view — mudp-managed
-	// networks (the caller's own, when scoped) plus Docker's built-in defaults
-	// (bridge, host, none). This keeps the dashboard tile consistent with the
-	// Networks page for both admins and regular users.
+	// Networks: count what the Networks view shows — mudp-managed networks plus
+	// Docker's built-in defaults (bridge, host, none). The basis keeps both
+	// kinds so a user's view can count system networks plus their own.
 	if nets, err := d.c.NetworkList(ctx, types.NetworkListOptions{}); err == nil {
 		count := 0
 		for _, n := range nets {
-			if IsSystemNetworkName(n.Name) {
-				count++
-				continue
-			}
-			if n.Labels[ManagedLabel] != "true" {
-				continue
-			}
-			if scoped && n.Labels[UserLabel] != username {
+			managed := n.Labels[ManagedLabel] == "true"
+			system := IsSystemNetworkName(n.Name)
+			if !managed && !system {
 				continue
 			}
 			count++
+			basis.Networks = append(basis.Networks, NetworkScope{
+				Owner: n.Labels[UserLabel], System: system, Managed: managed,
+			})
 		}
 		out.Networks = count
 	}
 
-	// Containers: mudp-managed, broken down by lifecycle state; scoped to the
-	// caller's own when requested.
-	containerFilter := managedLabelFilter(username)
-	if list, err := d.c.ContainerList(ctx, container.ListOptions{All: true, Filters: containerFilter}); err == nil {
+	// Containers: mudp-managed, broken down by lifecycle state. The health
+	// rollup reads the health status the summary already carries, so the old
+	// two extra filtered ContainerList calls per snapshot are gone.
+	if list, err := d.c.ContainerList(ctx, container.ListOptions{All: true, Filters: managedLabelFilter("")}); err == nil {
 		cs := ContainerStats{Total: len(list)}
 		for _, c := range list {
 			switch c.State {
@@ -217,37 +228,16 @@ func (d *Client) gatherSystemInfo(ctx context.Context, username string) SystemIn
 			case "exited", "dead", "created":
 				cs.Stopped++
 			}
+			switch HealthFromStatus(c.Status) {
+			case "healthy":
+				cs.Healthy++
+			case "unhealthy":
+				cs.Unhealthy++
+			}
 		}
 		out.Containers = cs
 	}
-
-	// Health rollup needs per-container listing (same scope as above).
-	if list, err := d.c.ContainerList(ctx, container.ListOptions{All: true, Filters: healthFilter("healthy", username)}); err == nil {
-		out.Containers.Healthy = len(list)
-	}
-	if list, err := d.c.ContainerList(ctx, container.ListOptions{All: true, Filters: healthFilter("unhealthy", username)}); err == nil {
-		out.Containers.Unhealthy = len(list)
-	}
-	return out
-}
-
-// userImageSet returns the distinct image IDs backing the containers a user
-// owns. Used to scope the dashboard's image count to what that user actually
-// runs, since Docker images carry no per-user owner label. Best-effort: on
-// any error it returns an empty set so the caller degrades to "no images".
-func (d *Client) userImageSet(ctx context.Context, username string) map[string]bool {
-	set := map[string]bool{}
-	args := filters.NewArgs(filters.Arg("label", ManagedLabel+"=true"), filters.Arg("label", UserLabel+"="+username))
-	list, err := d.c.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
-	if err != nil {
-		return set
-	}
-	for _, c := range list {
-		if c.ImageID != "" {
-			set[c.ImageID] = true
-		}
-	}
-	return set
+	return out, basis
 }
 
 // derivedImageTagPrefixes are the repo-tag prefixes of internal fused images
@@ -280,18 +270,6 @@ func isDerivedImage(im image.Summary) bool {
 func (d *Client) DockerPing(ctx context.Context) error {
 	_, err := d.c.Ping(ctx)
 	return err
-}
-
-// healthFilter builds a label+health filter for the container health rollups.
-// A non-empty username additionally scopes the match to that owner.
-func healthFilter(state, username string) filters.Args {
-	args := filters.NewArgs()
-	args.Add("label", ManagedLabel+"=true")
-	args.Add("health", state)
-	if username != "" {
-		args.Add("label", UserLabel+"="+username)
-	}
-	return args
 }
 
 // managedLabelFilter matches only mudp-managed resources (label
