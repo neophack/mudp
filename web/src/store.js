@@ -177,8 +177,16 @@ export async function refreshSection(...keys) {
 }
 
 export async function refreshAll() {
-  const jobs = [api("/api/images"), api("/api/containers"), api("/api/dashboard"), api("/api/volumes"), api("/api/networks"), api("/api/stacks")];
-  const labels = ["images", "containers", "dashboard", "volumes", "networks", "stacks"];
+  const jobs = [api("/api/images"), api("/api/containers"), api("/api/dashboard"), api("/api/volumes"), api("/api/networks")];
+  const labels = ["images", "containers", "dashboard", "volumes", "networks"];
+  // Stacks are closed for regular users by default; skip the call instead of
+  // painting a phantom section error every refresh cycle.
+  if (store.me?.stacksEnabled) {
+    jobs.push(api("/api/stacks"));
+    labels.push("stacks");
+  } else {
+    store.stacks = [];
+  }
   fetchNotifications().catch(() => {});
   if (isAdmin()) {
     jobs.push(api("/api/users"), api("/api/groups"), api("/api/admin/audit?limit=200"));

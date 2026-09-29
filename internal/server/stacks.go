@@ -13,9 +13,66 @@ import (
 	"mudp/internal/store"
 )
 
+// stacksSettingKey stores the global feature toggle in the settings table.
+// Absent or anything but "1" means off, so the feature ships disabled for
+// regular users and an admin turns it on deliberately.
+const stacksSettingKey = "stacks_enabled"
+
+// stacksEnabled reports whether the admin has opened compose stacks to
+// non-admin roles. Admins are never gated: they manage every stack anyway.
+func (a *App) stacksEnabled() bool {
+	v, _ := a.db.Setting(stacksSettingKey)
+	return v == "1"
+}
+
+// stacksAllowed is the gate every stack endpoint runs first. Admins always
+// pass; everyone else needs the admin toggle from stacksSetting.
+func (a *App) stacksAllowed(u *store.User) bool {
+	return u != nil && (u.Role == store.RoleAdmin || a.stacksEnabled())
+}
+
+// stacksSetting lets an admin read/write the stacks feature toggle. It lives
+// with the other stack handlers so the gate and its switch share one file.
+func (a *App) stacksSetting(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]bool{"enabled": a.stacksEnabled()})
+	case http.MethodPost:
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		value := ""
+		if req.Enabled {
+			value = "1"
+		}
+		if err := a.db.SaveSetting(stacksSettingKey, value); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if u := currentUser(r); u != nil {
+			if req.Enabled {
+				a.db.Audit(u.Username, "settings.stacks", "enabled stacks for regular users")
+			} else {
+				a.db.Audit(u.Username, "settings.stacks", "disabled stacks for regular users")
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"enabled": req.Enabled})
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
 // stacks handles GET (list) and POST (create/update).
 func (a *App) stacks(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
+	if !a.stacksAllowed(u) {
+		writeErr(w, http.StatusForbidden, "stacks are disabled by the administrator")
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		stacks, err := a.db.StacksForUser(u.ID, u.Role == "admin")
@@ -118,6 +175,10 @@ func (a *App) stackGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r)
+	if !a.stacksAllowed(u) {
+		writeErr(w, http.StatusForbidden, "stacks are disabled by the administrator")
+		return
+	}
 	id := parseID(r.URL.Query().Get("id"))
 	if id == 0 {
 		writeErr(w, http.StatusBadRequest, "id is required")
@@ -143,6 +204,10 @@ func (a *App) stackDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r)
+	if !a.stacksAllowed(u) {
+		writeErr(w, http.StatusForbidden, "stacks are disabled by the administrator")
+		return
+	}
 	if !canMutate(u) {
 		writeErr(w, http.StatusForbidden, "read-only role cannot delete stacks")
 		return
@@ -179,6 +244,10 @@ func (a *App) stackUpStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r)
+	if !a.stacksAllowed(u) {
+		writeErr(w, http.StatusForbidden, "stacks are disabled by the administrator")
+		return
+	}
 	if !canMutate(u) {
 		writeErr(w, http.StatusForbidden, "read-only role cannot deploy stacks")
 		return
@@ -222,6 +291,10 @@ func (a *App) stackDownStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r)
+	if !a.stacksAllowed(u) {
+		writeErr(w, http.StatusForbidden, "stacks are disabled by the administrator")
+		return
+	}
 	if !canMutate(u) {
 		writeErr(w, http.StatusForbidden, "read-only role cannot tear down stacks")
 		return

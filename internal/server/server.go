@@ -568,6 +568,10 @@ func (a *App) Routes() http.Handler {
 		r.Post("/api/settings/feishu/test", a.feishuNotifyTest)
 		r.Get("/api/admin/settings/site", a.siteSettings)
 		r.Post("/api/admin/settings/site", a.siteSettings)
+		// Compose stacks feature toggle: off by default for regular users
+		// (the gate itself lives with the stack handlers in stacks.go).
+		r.Get("/api/admin/settings/stacks", a.stacksSetting)
+		r.Post("/api/admin/settings/stacks", a.stacksSetting)
 		r.Get("/api/admin/settings/capacity", a.userCapacitySettings)
 		r.Post("/api/admin/settings/capacity", a.userCapacitySettings)
 		r.Get("/api/admin/settings/company", a.companySettings)
@@ -795,6 +799,10 @@ type meUser struct {
 	// something that only errors once opened.
 	BackupConfigured     bool `json:"backupConfigured"`
 	SharedDiskConfigured bool `json:"sharedDiskConfigured"`
+	// Whether compose stacks are open to this account: always true for
+	// admins, otherwise the admin toggle (stacksSetting). The sidebar uses
+	// it to hide the Stacks entry entirely while the feature is closed.
+	StacksEnabled bool `json:"stacksEnabled"`
 }
 
 // meResponse builds the state.me payload for u. Both /api/me and /api/login
@@ -823,6 +831,7 @@ func (a *App) meResponse(u *store.User, csrfToken string) meUser {
 		Version:              currentVersion,
 		BackupConfigured:     backupPath != "",
 		SharedDiskConfigured: sharedDiskPath != "",
+		StacksEnabled:        a.stacksAllowed(u),
 	}
 }
 

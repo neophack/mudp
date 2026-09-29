@@ -146,6 +146,17 @@
             <el-button type="primary" size="small" @click="saveCompany">{{ tt("settings.saveCompany") }}</el-button>
           </div>
         </div>
+
+        <!-- Stacks feature toggle: regular users get compose stacks only
+             while this is on; admins always keep access. -->
+        <div class="row">
+          <span class="row-icon tint-teal"><v-icon name="stacks" :size="16" /></span>
+          <div class="row-main">
+            <div class="row-title">{{ tt("settings.stacksToggle") }}</div>
+            <div class="row-desc">{{ tt("settings.stacksToggleHint") }}</div>
+          </div>
+          <el-switch v-model="stacksEnabled" @change="saveStacks" />
+        </div>
       </div>
 
       <!-- Registries -->
@@ -300,6 +311,7 @@ export default {
       siteName: "",
       capacity: "",
       tenantKey: "",
+      stacksEnabled: false,
       registries: [],
       feishu: { appId: "", appSecret: "", enabled: false },
       mcpForm: { enabled: false, port: 19090, domain: "", safeNetwork: "openwrt-lan" },
@@ -314,10 +326,11 @@ export default {
   async mounted() {
     this.defaultLanguage = store.me?.defaultLanguage || "";
     if (!isAdmin()) return;
-    const [site, capacity, company, registries, feishu, mcp] = await Promise.all([
+    const [site, capacity, company, stacks, registries, feishu, mcp] = await Promise.all([
       api("/api/admin/settings/site").catch(() => ({ siteName: "" })),
       api("/api/admin/settings/capacity").catch(() => ({ capacity: 50 })),
       api("/api/admin/settings/company").catch(() => ({ tenantKey: "" })),
+      api("/api/admin/settings/stacks").catch(() => ({ enabled: false })),
       api("/api/registries").catch(() => []),
       api("/api/settings/feishu").catch(() => ({ appId: "", appSecret: "", enabled: false })),
       api("/api/admin/mcp/remote").catch(() => null),
@@ -325,6 +338,7 @@ export default {
     this.siteName = site.siteName || "";
     this.capacity = String(capacity.capacity || 50);
     this.tenantKey = company.tenantKey || "";
+    this.stacksEnabled = !!stacks.enabled;
     this.registries = registries || [];
     this.feishu = { appId: feishu.appId || "", appSecret: feishu.appSecret || "", enabled: !!feishu.enabled };
     if (mcp) {
@@ -449,6 +463,19 @@ export default {
         this.tenantKey = res.tenantKey || "";
         ElMessage.success(tt("settings.companySaved"));
       } catch (err) {
+        ElMessage.error(errText(err));
+      }
+    },
+    async saveStacks() {
+      try {
+        await api("/api/admin/settings/stacks", {
+          method: "POST",
+          body: JSON.stringify({ enabled: !!this.stacksEnabled }),
+        });
+        ElMessage.success(tt("settings.stacksSaved"));
+      } catch (err) {
+        // Roll the switch back so it never shows a state the server refused.
+        this.stacksEnabled = !this.stacksEnabled;
         ElMessage.error(errText(err));
       }
     },

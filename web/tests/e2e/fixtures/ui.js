@@ -1,13 +1,16 @@
 import { expect } from "@playwright/test";
 
-// Tabs the sidebar renders per role, mirroring render() in web/app.js.
+// Tabs the sidebar renders per role, mirroring layout/index.vue's MENU.
+// "stacks" is feature-flagged: regular users only see it after the admin
+// turns the toggle on (a fresh instance ships with it off), so it is not in
+// USER_TABS.
 export const ADMIN_TABS = [
   "dashboard", "netdisk", "containers", "mcp", "processes", "usage", "images", "volumes",
   "networks", "forwards", "stacks", "hardware", "users", "audit", "security", "errors", "disks", "database", "settings", "help",
 ];
 export const USER_TABS = [
   "dashboard", "netdisk", "containers", "mcp", "processes", "usage", "images", "volumes",
-  "networks", "stacks", "hardware", "settings", "help",
+  "networks", "hardware", "settings", "help",
 ];
 // Tabs only an admin may reach.
 export const ADMIN_ONLY_TABS = ADMIN_TABS.filter((t) => !USER_TABS.includes(t));

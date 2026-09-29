@@ -23,7 +23,7 @@ export const router = createRouter({
         { path: "volumes", name: "volumes", component: () => import("@/views/Volumes.vue"), meta: { key: "volumes" } },
         { path: "networks", name: "networks", component: () => import("@/views/Networks.vue"), meta: { key: "networks" } },
         { path: "forwards", name: "forwards", component: () => import("@/views/Forwards.vue"), meta: { key: "forwards", admin: true } },
-        { path: "stacks", name: "stacks", component: () => import("@/views/Stacks.vue"), meta: { key: "stacks" } },
+        { path: "stacks", name: "stacks", component: () => import("@/views/Stacks.vue"), meta: { key: "stacks", flag: "stacksEnabled" } },
         { path: "hardware", name: "hardware", component: () => import("@/views/Hardware.vue"), meta: { key: "hardware" } },
         { path: "users", name: "users", component: () => import("@/views/Users.vue"), meta: { key: "users", admin: true } },
         { path: "audit", name: "audit", component: () => import("@/views/Audit.vue"), meta: { key: "audit", admin: true } },
@@ -64,6 +64,9 @@ router.beforeEach(async (to, from, next) => {
     if (!store.me) return next("/login");
     if (store.me.pending) return next("/pending");
     if (to.meta.admin && !isAdmin()) return next("/dashboard");
+    // Feature-flagged pages (e.g. stacks, closed for regular users by default):
+    // a stale bookmark or back-button entry must not land on them.
+    if (to.meta.flag && !store.me?.[to.meta.flag]) return next("/dashboard");
   }
   next();
 });

@@ -134,7 +134,9 @@ const MENU = [
   { key: "volumes", name: "volumes", group: "groupResources" },
   { key: "networks", name: "networks", group: "groupResources" },
   { key: "forwards", name: "forwards", admin: true, group: "groupResources" },
-  { key: "stacks", name: "stacks", group: "groupResources" },
+  // Stacks are closed to regular users unless the admin opens them; me.stacksEnabled
+  // (admin OR toggle) decides visibility — see the router guard for the same check.
+  { key: "stacks", name: "stacks", flag: "stacksEnabled", group: "groupResources" },
   { key: "hardware", name: "hardware", group: "groupResources" },
   { key: "users", name: "users", admin: true, group: "groupSystem" },
   { key: "audit", name: "audit", admin: true, group: "groupSystem" },
@@ -166,7 +168,7 @@ export default {
     },
     menuItems() {
       const admin = isAdmin();
-      return MENU.filter((item) => admin || !item.admin);
+      return MENU.filter((item) => (admin || !item.admin) && (!item.flag || this.s.me?.[item.flag]));
     },
     menuGroups() {
       return MENU_GROUPS.map((group) => ({

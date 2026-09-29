@@ -789,6 +789,11 @@ const translations = {
     "settings.saveCompany": "保存企业限制",
     "settings.companySaved": "企业限制已保存",
 
+    // Stacks feature toggle
+    "settings.stacksToggle": "堆栈功能",
+    "settings.stacksToggleHint": "默认关闭。开启后普通用户可创建并部署 docker-compose 堆栈，管理员始终可用。",
+    "settings.stacksSaved": "堆栈功能设置已保存",
+
     // MCP
     "mcp.loadingTokens": "加载 MCP 令牌中…",
     "mcp.ownerCol": "所有者",
@@ -2312,6 +2317,11 @@ const translations = {
     "settings.tenantKeyPlaceholder": "e.g. 2e0d30eb",
     "settings.saveCompany": "Save Tenant Restriction",
     "settings.companySaved": "Tenant restriction saved",
+
+    // Stacks feature toggle
+    "settings.stacksToggle": "Compose Stacks",
+    "settings.stacksToggleHint": "Off by default. When on, regular users can create and deploy docker-compose stacks; admins always can.",
+    "settings.stacksSaved": "Stacks setting saved",
 
     // MCP
     "mcp.loadingTokens": "Loading MCP tokens…",
