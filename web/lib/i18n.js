@@ -169,6 +169,12 @@ const translations = {
     "theme.auto": "跟随系统",
     "theme.light": "浅色",
     "theme.dark": "深色",
+    "theme.pack.daylight": "极昼",
+    "theme.pack.daylightSub": "毛玻璃与圆角，macOS 风格",
+    "theme.pack.graphite": "曜石",
+    "theme.pack.graphiteSub": "中性灰低圆角，极简工程感",
+    "theme.pack.ocean": "深海",
+    "theme.pack.oceanSub": "深色侧栏直角，企业级密度",
 
     // Common actions & verbs
     "common.create": "创建",
@@ -719,6 +725,8 @@ const translations = {
     "settings.languageSub": "选择界面显示语言，立即生效。",
     "settings.appearance": "外观",
     "settings.appearanceHint": "浅色或深色界面，可跟随系统自动切换。",
+    "settings.themePack": "主题",
+    "settings.themePackHint": "三套完整视觉：配色、圆角与密度各有不同，可与浅色/深色自由组合。",
     "settings.defaultLanguageSub": "新用户将使用的默认语言。",
     "settings.followBrowser": "跟随浏览器",
     "settings.siteNameSub": "显示在浏览器标签页与侧边栏中的站点名称。",
@@ -1685,6 +1693,12 @@ const translations = {
     "theme.auto": "Auto",
     "theme.light": "Light",
     "theme.dark": "Dark",
+    "theme.pack.daylight": "Daylight",
+    "theme.pack.daylightSub": "Frosted, rounded, macOS-inspired",
+    "theme.pack.graphite": "Graphite",
+    "theme.pack.graphiteSub": "Neutral grays, tight radii, minimal",
+    "theme.pack.ocean": "Ocean",
+    "theme.pack.oceanSub": "Navy sidebar, square, enterprise density",
 
     // Common actions & verbs
     "common.create": "Create",
@@ -2235,6 +2249,8 @@ const translations = {
     "settings.languageSub": "Choose the interface language; takes effect immediately.",
     "settings.appearance": "Appearance",
     "settings.appearanceHint": "Light or dark interface; Auto follows your system.",
+    "settings.themePack": "Theme",
+    "settings.themePackHint": "Three complete looks with distinct palettes, radii and density; pairs with light or dark mode.",
     "settings.defaultLanguageSub": "The default language used for new users.",
     "settings.followBrowser": "Follow browser",
     "settings.siteNameSub": "The site name shown in the browser tab and sidebar.",

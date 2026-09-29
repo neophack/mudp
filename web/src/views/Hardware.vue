@@ -30,7 +30,7 @@
       <div class="card hist-card">
         <div class="hist-head">
           <span class="hist-label">{{ tt("hardware.cpuUsage") }}</span>
-          <span class="hist-current" style="color: #3370ff">{{ last(history.cpu).toFixed(1) }}%</span>
+          <span class="hist-current" style="color: var(--brand)">{{ last(history.cpu).toFixed(1) }}%</span>
         </div>
         <e-chart v-if="history.cpu.length > 1" :option="cpuOption" height="140px" />
         <p v-else class="hint">{{ tt("common.collectingData") }}</p>
@@ -77,7 +77,7 @@
         <div class="gpu-trends">
           <div class="trend-row">
             <span class="trend-label">{{ tt("hardware.utilTrend") }}</span>
-            <spark :series="gpuHistory(g.index).util" color="#3370ff" />
+            <spark :series="gpuHistory(g.index).util" />
           </div>
           <div class="trend-row">
             <span class="trend-label">{{ tt("hardware.tempTrend") }}</span>
@@ -202,7 +202,7 @@ export default {
       ].filter(([, v]) => v !== undefined && v !== null && v !== "");
     },
     // Reading store.isDark here re-derives the option on theme switches.
-    cpuOption() { return lineOption(this.history.cpu, this.history.t, "#3370ff", store.isDark); },
+    cpuOption() { return lineOption(this.history.cpu, this.history.t, store.accentColor, store.isDark); },
     memOption() { return lineOption(this.history.mem, this.history.t, "#10b981", store.isDark); },
   },
   mounted() {

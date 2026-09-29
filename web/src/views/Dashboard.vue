@@ -449,7 +449,7 @@ export default {
   justify-content: center;
   color: #fff;
 }
-.tint-blue { background: #3370ff; }
+.tint-blue { background: var(--brand); }
 .tint-green { background: var(--ok); }
 .tint-purple { background: #8b5cf6; }
 .tint-orange { background: var(--warn); }

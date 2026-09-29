@@ -11,7 +11,7 @@
       <div class="stat-card">
         <div class="stat-card-head"><span>{{ tt("hardware.cpu") }}</span></div>
         <div class="stat-card-value">{{ (sample.cpuPct || 0).toFixed(1) }}%</div>
-        <div class="stat-card-sub"><spark :series="history.cpu" color="#3370ff" /></div>
+        <div class="stat-card-sub"><spark :series="history.cpu" /></div>
       </div>
       <div class="stat-card">
         <div class="stat-card-head"><span>{{ tt("common.memory") }}</span></div>
@@ -48,7 +48,7 @@
         <div class="stat-card">
           <div class="stat-card-head"><span>{{ tt("common.gpu") }}</span></div>
           <div class="stat-card-value">{{ (sample.gpuPct || 0).toFixed(1) }}%</div>
-          <div class="stat-card-sub"><spark :series="history.gpu" color="#3370ff" /></div>
+          <div class="stat-card-sub"><spark :series="history.gpu" /></div>
         </div>
         <div class="stat-card">
           <div class="stat-card-head"><span>{{ tt("stats.gpuMemory") }}</span></div>

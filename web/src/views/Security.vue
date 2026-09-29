@@ -143,13 +143,13 @@
     <!-- Settings -->
     <div v-else-if="tab === 'settings'" class="card">
       <div class="card-head"><h2>{{ tt("security.settingsTitle") }}</h2></div>
-      <el-switch v-model="settings.enabled" active-color="#3370ff" /> {{ tt("security.settingEnabled") }}
+      <el-switch v-model="settings.enabled" /> {{ tt("security.settingEnabled") }}
       <p class="hint">{{ tt("security.settingEnabledHint") }}</p>
-      <el-switch v-model="settings.geoipLookup" active-color="#3370ff" /> {{ tt("security.settingGeo") }}
+      <el-switch v-model="settings.geoipLookup" /> {{ tt("security.settingGeo") }}
       <p class="hint">{{ tt("security.settingGeoHint") }}</p>
-      <el-switch v-model="settings.vpnDetect" active-color="#3370ff" /> {{ tt("security.settingVpn") }}
+      <el-switch v-model="settings.vpnDetect" /> {{ tt("security.settingVpn") }}
       <p class="hint">{{ tt("security.settingVpnHint") }}</p>
-      <el-switch v-model="settings.collectClient" active-color="#3370ff" /> {{ tt("security.settingClient") }}
+      <el-switch v-model="settings.collectClient" /> {{ tt("security.settingClient") }}
       <p class="hint">{{ tt("security.settingClientHint") }}</p>
       <div class="sec-field">
         <label>{{ tt("security.settingRetention") }}</label>

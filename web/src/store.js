@@ -51,24 +51,66 @@ export const store = reactive({
   // to pick icons/tints without re-deriving it.
   isDark: false,
   theme: localStorage.getItem("mudp:theme") || "auto",
+  // Theme pack (daylight / graphite / ocean); accentColor mirrors the pack's
+  // accent for the current appearance, for consumers that can't read CSS
+  // variables (ECharts options).
+  pack: localStorage.getItem("mudp:pack") || "daylight",
+  accentColor: "#3370ff",
   // Per-section load outcome: a failing section used to render as a silent
   // empty list, indistinguishable from genuinely no data. Views show a
   // "load failed" state when their flag is set.
   sectionErrors: {},
 });
 
+// Theme packs, in picker order. Each is a complete visual language (surface
+// colors, radii, density, sidebar treatment) defined as CSS custom properties
+// in index.css under html[data-pack="…"]; only the bits ECharts can't read
+// from CSS live here. "accent"/"darkAccent" feed chart series colors in light
+// and dark mode; "preview" drives the mini mockup in the Settings picker. The
+// id doubles as the i18n key under "theme.pack.*".
+export const PACKS = [
+  {
+    id: "daylight",
+    accent: "#3370ff",
+    darkAccent: "#3370ff",
+    preview: { bg: "#f5f5f7", card: "#ffffff", side: "#eef0f4", brand: "#3370ff" },
+  },
+  {
+    id: "graphite",
+    accent: "#5e6ad2",
+    darkAccent: "#7b86e8",
+    preview: { bg: "#fafafa", card: "#ffffff", side: "#f1f1f3", brand: "#5e6ad2" },
+  },
+  {
+    id: "ocean",
+    accent: "#0f62fe",
+    darkAccent: "#4589ff",
+    preview: { bg: "#f3f6f9", card: "#ffffff", side: "#13233a", brand: "#0f62fe" },
+  },
+];
+
 // Apply the resolved theme to <html>: data-theme="dark" drives our own tokens
-// and the "dark" class switches Element Plus to its built-in dark palette.
+// and the "dark" class switches Element Plus to its built-in dark palette,
+// while data-pack selects the theme pack.
 function applyTheme() {
   const dark = store.theme === "dark" || (store.theme === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   store.isDark = dark;
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   document.documentElement.classList.toggle("dark", dark);
+  const pack = PACKS.find((p) => p.id === store.pack) || PACKS[0];
+  store.accentColor = dark ? pack.darkAccent : pack.accent;
+  document.documentElement.dataset.pack = pack.id;
 }
 
 export function setTheme(pref) {
   store.theme = pref;
   localStorage.setItem("mudp:theme", pref);
+  applyTheme();
+}
+
+export function setPack(id) {
+  store.pack = id;
+  localStorage.setItem("mudp:pack", id);
   applyTheme();
 }
 

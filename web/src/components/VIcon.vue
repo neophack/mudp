@@ -44,6 +44,7 @@ const ICONS = {
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  palette: '<path d="M12 2a10 10 0 0 0 0 20c1.1 0 2-.9 2-2v-1c0-.55.45-1 1-1h2a5 5 0 0 0 5-5c0-6.08-4.92-11-10-11Z"/><circle cx="7.5" cy="10.5" r="1"/><circle cx="12" cy="7.5" r="1"/><circle cx="16.5" cy="10.5" r="1"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   jobs: '<path d="M12 2v4"/><path d="m5 5 2.8 2.8"/><path d="m19 5-2.8 2.8"/><path d="M12 8a4 4 0 0 0-4 4v6h8v-6a4 4 0 0 0-4-4Z"/><path d="M8 22h8"/>',
   languages: '<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>',

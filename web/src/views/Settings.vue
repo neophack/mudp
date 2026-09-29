@@ -31,7 +31,7 @@
       </div>
       <!-- Appearance: macOS segmented control, light / dark / follow system. -->
       <div class="row">
-        <span class="row-icon tint-indigo"><v-icon :name="s.isDark ? 'moon' : 'sun'" :size="16" /></span>
+        <span class="row-icon tint-brand"><v-icon :name="s.isDark ? 'moon' : 'sun'" :size="16" /></span>
         <div class="row-main">
           <div class="row-title">{{ tt("settings.appearance") }}</div>
           <div class="row-desc">{{ tt("settings.appearanceHint") }}</div>
@@ -45,6 +45,40 @@
             type="button"
             @click="pickTheme(opt)"
           >{{ tt("theme." + opt) }}</button>
+        </div>
+      </div>
+      <!-- Theme pack: three complete visual languages, each with its own
+           surfaces, radii and accent; pairs with the light/dark toggle above. -->
+      <div class="row wrap">
+        <span class="row-icon tint-brand"><v-icon name="palette" :size="16" /></span>
+        <div class="row-main">
+          <div class="row-title">{{ tt("settings.themePack") }}</div>
+          <div class="row-desc">{{ tt("settings.themePackHint") }}</div>
+        </div>
+        <div class="pack-grid">
+          <button
+            v-for="p in packs"
+            :key="p.id"
+            class="pack-card"
+            :class="{ active: s.pack === p.id }"
+            type="button"
+            @click="pickPack(p.id)"
+          >
+            <span class="pack-preview" :style="{ '--p-bg': p.preview.bg, '--p-card': p.preview.card, '--p-side': p.preview.side, '--p-brand': p.preview.brand }" aria-hidden="true">
+              <span class="pp-side"></span>
+              <span class="pp-main">
+                <span class="pp-line w60"></span>
+                <span class="pp-cards">
+                  <i></i><i></i>
+                </span>
+                <span class="pp-line w80"></span>
+                <span class="pp-line w40"></span>
+              </span>
+              <span class="pp-dot"></span>
+            </span>
+            <span class="pack-name">{{ tt("theme.pack." + p.id) }}</span>
+            <span class="pack-desc">{{ tt("theme.pack." + p.id + "Sub") }}</span>
+          </button>
         </div>
       </div>
 
@@ -245,7 +279,7 @@
 <script>
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
-import { store, isAdmin, applySiteName, setTheme } from "@/store";
+import { store, isAdmin, applySiteName, setTheme, setPack, PACKS } from "@/store";
 import { tt, setLanguage, errText } from "@/i18n";
 import { SUPPORTED_LANGS, getLanguageName, getCurrentLanguage } from "@/lib/i18n.js";
 import VIcon from "@/components/VIcon.vue";
@@ -259,6 +293,7 @@ export default {
       s: store,
       sheet: { visible: false, row: null },
       langs: SUPPORTED_LANGS,
+      packs: PACKS,
       userLanguage: getCurrentLanguage(),
       defaultLanguage: "en_US",
       sharedDiskReadWrite: store.me?.sharedDiskReadWrite ? "rw" : "ro",
@@ -320,6 +355,9 @@ export default {
     langName: getLanguageName,
     pickTheme(pref) {
       setTheme(pref);
+    },
+    pickPack(id) {
+      setPack(id);
     },
     async saveUserLanguage() {
       try {
@@ -516,7 +554,8 @@ export default {
   justify-content: center;
   color: #fff;
 }
-.tint-blue { background: #3370ff; }
+.tint-brand { background: var(--brand); }
+.tint-blue { background: var(--brand); }
 .tint-green { background: var(--ok); }
 .tint-purple { background: #8b5cf6; }
 .tint-teal { background: #14b8a6; }
@@ -565,10 +604,66 @@ export default {
   font-weight: 600;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
 }
+/* Theme pack cards: a full-width row of three mini mockups. The preview is a
+   tiny fake window — sidebar rail, content lines, floating accent dot —
+   painted from the pack's own palette. Hover lifts, active rings in brand. */
+.pack-grid { flex-basis: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding-top: 2px; }
+.pack-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 10px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctrl);
+  background: var(--card);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out), transform var(--dur-2) var(--ease-spring);
+}
+.pack-card:hover { transform: translateY(-2px); border-color: var(--brand-tint-line); }
+.pack-card:active { transform: translateY(0) scale(0.98); }
+.pack-card.active {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand);
+}
+.pack-preview {
+  position: relative;
+  width: 100%;
+  height: 52px;
+  border-radius: calc(var(--radius-ctrl) - 2px);
+  background: var(--p-bg);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  display: flex;
+  margin-bottom: 6px;
+}
+.pp-side { width: 22%; background: var(--p-side); flex-shrink: 0; }
+.pp-main { flex: 1; padding: 7px 8px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pp-line { height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--p-side) 55%, var(--p-bg)); }
+.pp-line.w60 { width: 60%; }
+.pp-line.w80 { width: 80%; }
+.pp-line.w40 { width: 40%; }
+.pp-cards { display: flex; gap: 4px; }
+.pp-cards i { flex: 1; height: 12px; border-radius: 2px; background: var(--p-card); border: 1px solid color-mix(in srgb, var(--p-side) 70%, var(--p-bg)); }
+.pp-dot {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--p-brand);
+}
+.pack-name { font-size: 12.5px; font-weight: 600; }
+.pack-desc { font-size: 11px; color: var(--muted); }
 @media (max-width: 640px) {
   .row:has(.theme-segment) { flex-wrap: wrap; }
   .theme-segment { flex-basis: 100%; }
   .theme-seg-btn { flex: 1; }
+  .pack-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 @media (max-width: 640px) {

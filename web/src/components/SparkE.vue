@@ -7,13 +7,16 @@
 
 <script>
 import echarts from "@/echarts";
+import { store } from "@/store";
 
 export default {
   name: "SparkE",
   props: {
     // Y values; the x axis is implicit sample order.
     series: { type: Array, default: () => [] },
-    color: { type: String, default: "#3370ff" },
+    // Data-dimension colors are passed explicitly; empty follows the current
+    // accent theme (store.accentColor, resolved by store.js).
+    color: { type: String, default: "" },
     height: { type: String, default: "28px" },
     // autoscale: keep 0 as the floor (percentages) instead of the data minimum.
     autoscale: { type: Boolean, default: false },
@@ -21,6 +24,7 @@ export default {
   computed: {
     option() {
       const data = this.series || [];
+      const color = this.color || store.accentColor;
       return {
         animation: false,
         grid: { left: 0, right: 0, top: 3, bottom: 3 },
@@ -46,9 +50,9 @@ export default {
           data,
           showSymbol: false,
           smooth: false,
-          lineStyle: { width: 1.5, color: this.color },
-          itemStyle: { color: this.color },
-          areaStyle: { opacity: 0.12, color: this.color },
+          lineStyle: { width: 1.5, color },
+          itemStyle: { color },
+          areaStyle: { opacity: 0.12, color },
         }],
       };
     },

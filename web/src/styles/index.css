@@ -1,11 +1,16 @@
 /* MUDP console global styles: shell layout, shared primitives, and Element
-   theme adjustments, tuned to a macOS look — frosted sidebar, grouped cards
-   with hairline borders, system font stack, and a full light/dark token set.
-   Brand blue stays #3370ff. */
+   theme adjustments. Three theme packs ship, selected via <html data-pack>:
+   daylight (macOS-frosted default), graphite (neutral Linear-style), ocean
+   (enterprise navy sidebar). Appearance (data-theme light/dark) is orthogonal
+   and every pack defines both. Pack blocks live at the end of the token
+   section; everything else derives from the variables below. */
 
 :root {
+  /* Accent base color — the single value every pack overrides; the whole
+     tint/tint-line/dark ladder and Element's primary scale derive from it
+     with color-mix. */
   --brand: #3370ff;
-  --brand-dark: #2857d6;
+  --brand-dark: color-mix(in srgb, var(--brand) 84%, #10131f);
   --ink: #1d1d1f;
   --muted: #6e6e73;
   --line: #e5e5ea;
@@ -15,8 +20,8 @@
   --hover: rgba(0, 0, 0, 0.05);
   --fill: rgba(120, 120, 128, 0.12);
   --table-head: rgba(120, 120, 128, 0.05);
-  --brand-tint: #e8efff;
-  --brand-tint-line: #ccd9ff;
+  --brand-tint: color-mix(in srgb, var(--brand) 10%, #fff);
+  --brand-tint-line: color-mix(in srgb, var(--brand) 26%, #fff);
   --warn-bg: #fff8e6;
   --warn-line: #fde68a;
   --warn-strong: #92400e;
@@ -27,6 +32,19 @@
   --warn: #f59e0b;
   --danger: #ef4444;
   --card-shadow: none;
+  /* Structure tokens each pack may retune: corner radii, card padding, the
+     dark mixing base for Element's primary ladder, and the sidebar/header
+     color set (ocean swaps the sidebar to solid navy with its own ink). */
+  --radius-card: 12px;
+  --radius-ctrl: 8px;
+  --radius-sm: 6px;
+  --card-pad: 16px 18px;
+  --mix-dark: #1e1e20;
+  --sidebar-ink: var(--ink);
+  --sidebar-muted: var(--muted);
+  --sidebar-hover: var(--hover);
+  --sidebar-line: var(--line);
+  --header-bg: var(--sidebar);
   /* Motion tokens: short, decisive timings read as "fast and precise".
      Only transform/opacity/color ever animate — never layout properties. */
   --dur-1: 0.1s;
@@ -34,6 +52,9 @@
   --dur-3: 0.22s;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-inout: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Springy overshoot for entrances (dialogs, poppers, swatches) — the same
+     easeOutBack curve motion sites use for playful-but-quick reveals. */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   color-scheme: light;
 }
 
@@ -49,8 +70,8 @@ html[data-theme="dark"] {
   --hover: rgba(255, 255, 255, 0.08);
   --fill: rgba(120, 120, 128, 0.24);
   --table-head: rgba(120, 120, 128, 0.14);
-  --brand-tint: rgba(51, 112, 255, 0.22);
-  --brand-tint-line: rgba(51, 112, 255, 0.4);
+  --brand-tint: color-mix(in srgb, var(--brand) 22%, transparent);
+  --brand-tint-line: color-mix(in srgb, var(--brand) 40%, transparent);
   --warn-bg: rgba(245, 158, 11, 0.14);
   --warn-line: rgba(245, 158, 11, 0.35);
   --warn-strong: #fbbf24;
@@ -66,14 +87,14 @@ html[data-theme="dark"] {
    readable without per-component overrides. The selector list matches EP's
    own dark-mode specificity so light/dark tokens always win. */
 :root, html.dark {
-  --el-color-primary: #3370ff;
-  --el-color-primary-light-3: #6691ff;
-  --el-color-primary-light-5: #99b2ff;
-  --el-color-primary-light-7: #ccd9ff;
-  --el-color-primary-light-8: #e0e8ff;
-  --el-color-primary-light-9: #eff4ff;
-  --el-color-primary-dark-2: #2857d6;
-  --el-border-radius-base: 8px;
+  --el-color-primary: var(--brand);
+  --el-color-primary-light-3: color-mix(in srgb, var(--brand) 70%, #fff);
+  --el-color-primary-light-5: color-mix(in srgb, var(--brand) 50%, #fff);
+  --el-color-primary-light-7: color-mix(in srgb, var(--brand) 30%, #fff);
+  --el-color-primary-light-8: color-mix(in srgb, var(--brand) 20%, #fff);
+  --el-color-primary-light-9: color-mix(in srgb, var(--brand) 10%, #fff);
+  --el-color-primary-dark-2: var(--brand-dark);
+  --el-border-radius-base: var(--radius-ctrl);
   --el-font-size-base: 13px;
   --el-bg-color: var(--card);
   --el-bg-color-page: var(--bg);
@@ -95,7 +116,7 @@ html[data-theme="dark"] {
      instead of Element's 0.3s default; one radius everywhere. */
   --el-transition-duration: var(--dur-2);
   --el-transition-duration-fast: var(--dur-1);
-  --el-border-radius-small: 6px;
+  --el-border-radius-small: var(--radius-sm);
   --el-border-radius-round: 999px;
   --el-animation-duration: var(--dur-2);
 }
@@ -114,11 +135,104 @@ html[data-theme="dark"] {
 }
 .el-message { animation-duration: var(--dur-2) !important; }
 html[data-theme="dark"] {
-  --el-color-primary-light-8: rgba(51, 112, 255, 0.32);
-  --el-color-primary-light-9: rgba(51, 112, 255, 0.2);
+  --el-color-primary-light-3: color-mix(in srgb, var(--brand) 70%, var(--mix-dark));
+  --el-color-primary-light-5: color-mix(in srgb, var(--brand) 52%, var(--mix-dark));
+  --el-color-primary-light-7: color-mix(in srgb, var(--brand) 34%, var(--mix-dark));
+  --el-color-primary-light-8: color-mix(in srgb, var(--brand) 26%, var(--mix-dark));
+  --el-color-primary-light-9: color-mix(in srgb, var(--brand) 16%, var(--mix-dark));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--brand) 82%, var(--mix-dark));
+}
+
+/* ---------- Theme packs ---------- */
+
+/* Graphite — Linear/SaaS styling: neutral zinc grays, a restrained indigo
+   accent, tighter corners, whisper-quiet fills. Flat in both modes; the dark
+   mode sits near-black for an engineering-console feel. */
+html[data-pack="graphite"] {
+  --brand: #5e6ad2;
+  --ink: #18181b;
+  --muted: #71717a;
+  --line: #e4e4e7;
+  --bg: #fafafa;
+  --card: #ffffff;
+  --sidebar: #fbfbfc;
+  --hover: rgba(0, 0, 0, 0.04);
+  --fill: rgba(24, 24, 27, 0.06);
+  --table-head: rgba(24, 24, 27, 0.03);
+  --radius-card: 8px;
+  --radius-ctrl: 6px;
+  --radius-sm: 4px;
+}
+html[data-pack="graphite"][data-theme="dark"] {
+  --brand: #7b86e8;
+  --ink: #ededf0;
+  --muted: #8f8f99;
+  --line: #26262b;
+  --bg: #0f0f10;
+  --card: #17171a;
+  --sidebar: #131316;
+  --hover: rgba(255, 255, 255, 0.06);
+  --fill: rgba(255, 255, 255, 0.09);
+  --table-head: rgba(255, 255, 255, 0.05);
+  --mix-dark: #0f0f10;
+}
+
+/* Ocean — IBM Carbon-style enterprise: cool blue-gray surfaces, IBM blue,
+   the smallest radii in the set, denser cards, and a solid navy sidebar with
+   its own light ink that stays dark in both appearance modes. */
+html[data-pack="ocean"] {
+  --brand: #0f62fe;
+  --ink: #142433;
+  --muted: #5b6b7c;
+  --line: #d5dde5;
+  --bg: #f3f6f9;
+  --card: #ffffff;
+  --sidebar: #13233a;
+  --sidebar-ink: #e8eef6;
+  --sidebar-muted: #8fa3bb;
+  --sidebar-hover: rgba(255, 255, 255, 0.07);
+  --sidebar-line: rgba(255, 255, 255, 0.14);
+  --header-bg: rgba(243, 246, 249, 0.92);
+  --hover: rgba(15, 98, 254, 0.06);
+  --fill: #edf2f8;
+  --table-head: #eef2f7;
+  --radius-card: 6px;
+  --radius-ctrl: 4px;
+  --radius-sm: 3px;
+  --card-pad: 14px 16px;
+}
+html[data-pack="ocean"][data-theme="dark"] {
+  --brand: #4589ff;
+  --ink: #e6edf5;
+  --muted: #8fa0b3;
+  --line: #2a3543;
+  --bg: #12171f;
+  --card: #1a212b;
+  --sidebar: #0e1826;
+  --header-bg: rgba(18, 23, 31, 0.92);
+  --hover: rgba(255, 255, 255, 0.06);
+  --fill: rgba(255, 255, 255, 0.08);
+  --table-head: rgba(255, 255, 255, 0.06);
+  --mix-dark: #12171f;
 }
 
 * { box-sizing: border-box; }
+
+/* Slim overlay-style scrollbars: hairline track-less thumb that lightens on
+   hover, derived from the ink token so light/dark themes both read right. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 24%, transparent) transparent;
+}
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--ink) 38%, transparent); }
 
 html, body, #mudp-app { height: 100%; margin: 0; }
 
@@ -140,9 +254,9 @@ body {
   overflow: hidden;
 }
 
-/* macOS frosted sidebar: translucent rail over the page background with a
-   vibrancy-style blur, hairline edge, accent-filled item for the active
-   route — the same selection pattern as System Settings sidebars. */
+/* macOS frosted sidebar (daylight); graphite swaps in flat zinc, ocean a
+   solid navy rail — all through the sidebar token set, since the rail must
+   carry its own ink when a pack makes it dark in light mode. */
 .shell-aside {
   width: 224px;
   flex-shrink: 0;
@@ -151,8 +265,8 @@ body {
   background: var(--sidebar);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
-  border-right: 1px solid var(--line);
-  color: var(--ink);
+  border-right: 1px solid var(--sidebar-line);
+  color: var(--sidebar-ink);
   transition: width var(--dur-2) var(--ease-inout);
   overflow: hidden;
 }
@@ -163,7 +277,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 14px 14px;
-  color: var(--ink);
+  color: var(--sidebar-ink);
   font-weight: 650;
   white-space: nowrap;
 }
@@ -172,7 +286,7 @@ body {
   height: 10px;
   border-radius: 50%;
   background: var(--brand);
-  box-shadow: 0 0 0 4px rgba(51, 112, 255, 0.25);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 25%, transparent);
   flex-shrink: 0;
 }
 .shell-aside .brand .brand-text { overflow: hidden; text-overflow: ellipsis; }
@@ -180,13 +294,13 @@ body {
   margin-left: auto;
   background: none;
   border: none;
-  color: var(--muted);
+  color: var(--sidebar-muted);
   cursor: pointer;
   padding: 4px;
   border-radius: 8px;
   display: flex;
 }
-.shell-aside .sidebar-toggle:hover { color: var(--ink); background: var(--hover); }
+.shell-aside .sidebar-toggle:hover { color: var(--sidebar-ink); background: var(--sidebar-hover); }
 
 .shell-nav {
   flex: 1;
@@ -199,12 +313,12 @@ body {
 .nav-group-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--sidebar-muted);
   letter-spacing: 0.06em;
   padding: 12px 14px 4px;
   user-select: none;
 }
-.drawer-nav .nav-group-label { padding: 12px 6px 4px; }
+.drawer-nav .nav-group-label { padding: 12px 6px 4px; color: var(--muted); }
 .shell-nav .nav-item:first-child ~ .nav-group-label, .shell-nav .nav-group-label { margin-top: 2px; }
 .shell-nav .nav-item, .drawer-nav .nav-item {
   display: flex;
@@ -214,8 +328,8 @@ body {
   padding: 8px 10px;
   background: none;
   border: none;
-  border-radius: 8px;
-  color: var(--muted);
+  border-radius: var(--radius-ctrl);
+  color: var(--sidebar-muted);
   cursor: pointer;
   font-size: 13.5px;
   text-align: left;
@@ -223,7 +337,12 @@ body {
   overflow: hidden;
   transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
-.shell-nav .nav-item:hover, .drawer-nav .nav-item:hover { background: var(--hover); color: var(--ink); }
+.shell-nav .nav-item:hover { background: var(--sidebar-hover); color: var(--sidebar-ink); }
+/* The mobile nav drawer sits on the card surface, not on the sidebar rail, so
+   it keeps the regular content tokens (ocean's pale sidebar ink would wash
+   out on white). */
+.drawer-nav .nav-item { color: var(--muted); }
+.drawer-nav .nav-item:hover { background: var(--hover); color: var(--ink); }
 .shell-nav .nav-item.active, .drawer-nav .nav-item.active {
   background: var(--brand);
   color: #fff;
@@ -233,15 +352,15 @@ body {
 
 .shell-aside .profile {
   padding: 12px 14px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--sidebar-line);
   display: flex;
   flex-direction: column;
   gap: 2px;
-  color: var(--muted);
+  color: var(--sidebar-muted);
   font-size: 12px;
   overflow: hidden;
 }
-.shell-aside .profile strong { color: var(--ink); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shell-aside .profile strong { color: var(--sidebar-ink); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shell-aside .profile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shell-aside .profile button {
   display: flex;
@@ -264,7 +383,7 @@ body {
   align-items: center;
   gap: 14px;
   padding: 10px 18px;
-  background: var(--sidebar);
+  background: var(--header-bg);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 1px solid var(--line);
@@ -315,13 +434,14 @@ body {
 /* ---------- Cards & primitives ---------- */
 
 /* macOS grouped card: hairline border + subtle shadow floating on the gray
-   page background. */
+   page background. Radii and padding are pack tokens — ocean runs tighter
+   and denser than daylight's soft 12px. */
 .card {
   background: var(--card);
   border: 1px solid var(--line);
   box-shadow: var(--card-shadow);
-  border-radius: 12px;
-  padding: 16px 18px;
+  border-radius: var(--radius-card);
+  padding: var(--card-pad);
   margin-bottom: 16px;
 }
 .card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 650; }
@@ -448,21 +568,48 @@ body {
 .el-table .cell { line-height: 1.5; padding: 0 10px; }
 .el-table .el-table__header .cell { padding: 0 10px; }
 
-/* Dialogs: slim header/body rhythm so forms fit one screen, macOS sheet
-   roundness. */
-.el-dialog { border-radius: 12px; background: var(--card); }
-.el-dialog__header { padding: 13px 16px 9px; margin-right: 0; }
+/* Dialogs: macOS sheet model — the dialog never exceeds the viewport; the
+   header and footer stay pinned while a tall form scrolls inside the body.
+   max-height derives from Element's own margin-top variable so dialogs
+   placed high on screen (top="4vh") still get nearly the full height. */
+.el-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - var(--el-dialog-margin-top, 15vh) - 24px);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  --el-dialog-box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22), 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+.el-dialog.is-fullscreen { max-height: none; }
+.el-dialog__header { padding: 13px 16px 9px; margin-right: 0; flex-shrink: 0; }
 /* Long object names in dialog titles ("Logs — <container>") clip with an
    ellipsis instead of pushing the width or wrapping. */
 .el-dialog__title { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .el-dialog__title { font-size: 14.5px; font-weight: 650; }
-.el-dialog__body { padding: 10px 16px 14px; }
-.el-dialog__footer { padding: 8px 16px 13px; }
+.el-dialog__body { padding: 10px 16px 14px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.el-dialog__footer { padding: 8px 16px 13px; flex-shrink: 0; }
+
+/* Entrance choreography: the veil fades while the sheet rises 16px with a
+   springy overshoot (easeOutBack) and settles — quicker and more physical
+   than Element's default drop-from-above. Transform/opacity only. */
+.dialog-fade-enter-active { animation: veil-in var(--dur-2) var(--ease-out); }
+.dialog-fade-leave-active { animation: veil-out var(--dur-1) ease-in forwards; }
+.dialog-fade-enter-active .el-dialog { animation: sheet-in var(--dur-3) var(--ease-spring); }
+.dialog-fade-leave-active .el-dialog { animation: sheet-out var(--dur-1) ease-in forwards; }
+/* Confirm boxes share the choreography via their own transition classes. */
+.fade-in-linear-enter-active { animation: veil-in var(--dur-2) var(--ease-out); }
+.fade-in-linear-leave-active { animation: veil-out var(--dur-1) ease-in forwards; }
+.fade-in-linear-enter-active .el-overlay-message-box { animation: sheet-in var(--dur-3) var(--ease-spring); }
+.fade-in-linear-leave-active .el-overlay-message-box { animation: sheet-out var(--dur-1) ease-in forwards; }
+@keyframes veil-in { from { opacity: 0; } }
+@keyframes veil-out { to { opacity: 0; } }
+@keyframes sheet-in { from { opacity: 0; transform: translateY(16px) scale(0.96); } }
+@keyframes sheet-out { to { opacity: 0; transform: translateY(10px) scale(0.98); } }
 
 /* Forms and inputs follow the compact scale. */
 .el-form-item { margin-bottom: 13px; }
-.el-message { border-radius: 12px; }
-.el-message-box { border-radius: 12px; }
+.el-message { border-radius: var(--radius-card); }
+.el-message-box { border-radius: var(--radius-card); --el-messagebox-box-shadow: 0 24px 64px rgba(0, 0, 0, 0.24), 0 4px 16px rgba(0, 0, 0, 0.08); }
 
 /* Light drawers: mobile nav rail and the bottom action sheet both read as
    iOS sheets now that the shell is light. */
@@ -619,7 +766,7 @@ body {
 
 @media (max-width: 640px) {
   .app-main { padding: 10px; }
-  .card { padding: 12px; border-radius: 12px; }
+  .card { padding: 12px; border-radius: var(--radius-card); }
   /* Element Plus pins fixed columns with sticky positioning inside the table's
      own horizontal scroller, so wide action columns behave on phones as-is. */
   .el-button + .el-button { margin-left: 6px; }
@@ -658,7 +805,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 48px 40px;
-  background: linear-gradient(160deg, #2563eb 0%, #4a83ff 45%, #2857d6 100%);
+  background: linear-gradient(160deg, color-mix(in srgb, var(--brand) 78%, #10143c) 0%, color-mix(in srgb, var(--brand) 82%, #fff) 45%, var(--brand-dark) 100%);
   overflow: hidden;
 }
 /* macOS-aurora background: oversized blurred color blobs drifting slowly
@@ -734,7 +881,7 @@ body {
   box-shadow: none !important;
   padding: 4px 14px;
 }
-.auth-card .el-input__wrapper.is-focus { box-shadow: 0 0 0 2.5px rgba(51, 112, 255, 0.28) !important; }
+.auth-card .el-input__wrapper.is-focus { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--brand) 28%, transparent) !important; }
 .auth-card .el-input__inner { height: 42px; font-size: 16px; }
 .auth-submit {
   width: 100%;
@@ -819,10 +966,10 @@ body {
     width: 84px;
     height: 84px;
     border-radius: 20px;
-    background: linear-gradient(180deg, #4a83ff, #2857d6);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--brand) 82%, #fff), var(--brand-dark));
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
-    box-shadow: 0 14px 30px rgba(51, 112, 255, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    box-shadow: 0 14px 30px color-mix(in srgb, var(--brand) 32%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.25);
   }
   .login-brand .app-icon img { width: 56px; height: 56px; }
   .login-brand .app-name { font-size: 24px; letter-spacing: -0.3px; color: var(--ink); }

@@ -44,7 +44,7 @@
           <div class="stat-card-head">{{ displayNameForUsername(tr.user) }}</div>
           <div class="stat-card-value">{{ tr.maxCpu }}% {{ tt("hardware.cpu") }}</div>
           <div class="stat-card-sub">{{ tt("usage.peakGpu", { mem: tr.maxMem, gpu: tr.maxGpu }) }}</div>
-          <spark :series="tr.cpu" color="#3370ff" height="34px" />
+          <spark :series="tr.cpu" height="34px" />
         </div>
       </div>
     </div>
