@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 )
 
@@ -150,7 +152,7 @@ func (d *Client) ListNetworks(ctx context.Context, username string, admin bool, 
 			Scope:      n.Scope,
 			Labels:     n.Labels,
 			Owner:      owner,
-			Containers: len(n.Containers),
+			Containers: visibleEndpointCount(n.Containers, username, admin),
 			Internal:   n.Internal,
 		}
 		// Surface the first IPv4 IPAM config (subnet/gateway/range). IPv6-aware
@@ -216,6 +218,24 @@ func (d *Client) ListNetworks(ctx context.Context, username string, admin bool, 
 	}
 	// Managed networks first (the user's own), then host networks, then defaults.
 	return append(append(managed, external...), system...), nil
+}
+
+// visibleEndpointCount counts a network's attached endpoints the caller may
+// see: admins count everything; everyone else counts only their own
+// mudp-managed containers, so a shared network's row does not advertise how
+// many other users' containers sit on it. The same rule decides which
+// endpoints InspectNetwork lists out.
+func visibleEndpointCount(endpoints map[string]types.EndpointResource, username string, admin bool) int {
+	if admin {
+		return len(endpoints)
+	}
+	n := 0
+	for _, ep := range endpoints {
+		if strings.HasPrefix(ep.Name, UserContainerPrefix(username)) {
+			n++
+		}
+	}
+	return n
 }
 
 // IsSystemNetworkName reports whether a network name is one of Docker's
@@ -352,18 +372,57 @@ func (d *Client) InspectNetwork(ctx context.Context, full, username string, admi
 			break
 		}
 	}
-	// Expand the Containers map (id → endpoint JSON) into a sorted slice.
-	for cid, ep := range info.Containers {
-		nd.Containers = append(nd.Containers, NetworkContainer{
+	// Expand the Containers map (id → endpoint JSON) into a sorted slice,
+	// resolving display names and hiding other users' endpoints (see
+	// resolveNetworkEndpoints).
+	managed, err := d.c.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("label", ManagedLabel+"=true")),
+	})
+	if err != nil {
+		return NetworkDetail{}, err
+	}
+	nd.Containers = resolveNetworkEndpoints(info.Containers, managed, username, admin)
+	nd.Network.Containers = len(nd.Containers)
+	sortNetworkContainers(nd.Containers)
+	return nd, nil
+}
+
+// resolveNetworkEndpoints expands a network's endpoint map into the slice the
+// detail view shows. Display names come from the mudp.name label and ownership
+// from mudp.user, resolved against the caller's own mudp-managed containers.
+// A non-admin caller sees only their own containers: a shared network's other
+// members — other users' containers, or host containers mudp does not manage —
+// must not leak their names, IDs, or addresses through the detail view. Admins
+// see every endpoint, with managed ones resolved to their display names.
+func resolveNetworkEndpoints(endpoints map[string]types.EndpointResource, managed []types.Container, username string, admin bool) []NetworkContainer {
+	byID := make(map[string]types.Container, len(managed))
+	for _, c := range managed {
+		byID[c.ID] = c
+	}
+	var out []NetworkContainer
+	for cid, ep := range endpoints {
+		nc := NetworkContainer{
 			ID:      cid,
 			Name:    strings.TrimPrefix(ep.Name, "/"),
 			IPv4:    ep.IPv4Address,
 			IPv6:    ep.IPv6Address,
 			MacAddr: ep.MacAddress,
-		})
+		}
+		if c, ok := byID[cid]; ok && c.Labels[UserLabel] != "" {
+			if !admin && c.Labels[UserLabel] != username {
+				continue
+			}
+			if name := c.Labels[NameLabel]; name != "" {
+				nc.Name = name
+			}
+		} else if !admin {
+			continue
+		}
+		out = append(out, nc)
 	}
-	sortNetworkContainers(nd.Containers)
-	return nd, nil
+	sortNetworkContainers(out)
+	return out
 }
 
 // NetworkConnectContainer attaches a container to a network the user may use,
