@@ -10,7 +10,10 @@ test.use({ baseURL: "http://127.0.0.1:19042" });
 let server;
 
 test.beforeAll(async () => {
-  server = await startServer({ port: 19042 });
+  // docker:false is the state this suite is written against: every page here
+  // must work, and the errors page must carry docker-absent 503 rows, with no
+  // daemon on the host — CI runners have Docker, so it is pinned off.
+  server = await startServer({ port: 19042, docker: false });
   await seed(server, { runId: "admin" });
 });
 

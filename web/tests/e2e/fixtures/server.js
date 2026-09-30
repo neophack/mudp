@@ -36,8 +36,11 @@ async function waitForPort(port, timeout = 30000) {
 
 // startServer boots a throwaway mudp instance against a fresh SQLite database.
 // Options let a spec pick its own port so two spec files never fight over one.
-// Passing an explicit adminPassword of "" (rather than just omitting it) skips
-// the bootstrap admin entirely, leaving the server in its first-run state so a
+// opts.docker === false points DOCKER_HOST at a dead address so the instance
+// runs genuinely daemon-less, the state specs like admin-pages are written
+// against (docker-absent 503s on the errors page) on any machine. Passing an
+// explicit adminPassword of "" (rather than just omitting it) skips the
+// bootstrap admin entirely, leaving the server in its first-run state so a
 // spec can drive the setup wizard.
 export async function startServer(opts = {}) {
   const port = opts.port || 19000;
@@ -66,6 +69,9 @@ export async function startServer(opts = {}) {
     // the response header this flag exposes. Test servers only, never prod.
     MUDP_CAPTCHA_TEST_ANSWERS: "1",
   };
+  if (opts.docker === false) {
+    env.DOCKER_HOST = "tcp://127.0.0.1:1";
+  }
 
   const proc = spawn(binaryPath, [], { env, cwd: repoRoot, stdio: "pipe" });
   let stdout = "";

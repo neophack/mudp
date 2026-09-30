@@ -115,8 +115,9 @@ type NetworkAccess struct {
 }
 
 // MayUseSystem reports whether the caller may attach to one of Docker's
-// built-in networks. Only "bridge" is ever attachable: "host" would hand the
-// container every host interface and "none" cannot be joined at all.
+// built-in networks. Only the default bridge-equivalent (bridge on Linux,
+// nat on Windows) is ever attachable: "host" would hand the container every
+// host interface and "none" cannot be joined at all.
 func (a NetworkAccess) MayUseSystem(name string, admin bool) bool {
 	if !IsShareableSystemNetwork(name) {
 		return false
@@ -239,23 +240,25 @@ func visibleEndpointCount(endpoints map[string]types.EndpointResource, username 
 }
 
 // IsSystemNetworkName reports whether a network name is one of Docker's
-// built-in defaults (bridge, host, none). Shared by the Networks view, the
-// dashboard tile, and the server package's inspect-name resolution so all
-// three agree on what counts as a system network.
+// built-in defaults: bridge, host, none on Linux daemons, nat and none on
+// Windows ones. Shared by the Networks view, the dashboard tile, and the
+// server package's inspect-name resolution so all three agree on what counts
+// as a system network.
 func IsSystemNetworkName(name string) bool {
 	switch name {
-	case "bridge", "host", "none":
+	case "bridge", "host", "none", "nat":
 		return true
 	}
 	return false
 }
 
 // IsShareableSystemNetwork reports whether a built-in network can be restricted
-// to user groups. Only "bridge" can: it is the one built-in a container may join
-// without gaining the host's interfaces, so it is also the only one where
-// choosing who gets to join means anything.
+// to user groups. Only the default bridge-equivalent can: it is the one built-in
+// a container may join without gaining the host's interfaces, so it is also the
+// only one where choosing who gets to join means anything. That is "bridge" on
+// Linux and "nat" on Windows.
 func IsShareableSystemNetwork(name string) bool {
-	return name == "bridge"
+	return name == "bridge" || name == "nat"
 }
 
 // CreateNetwork creates a mudp-managed network owned by username.

@@ -76,15 +76,20 @@ func TestSystemInfoWithScopeBasisShape(t *testing.T) {
 	if len(basis.ImageSizes) < info.Images.Count {
 		t.Errorf("basis has %d images, snapshot counts %d mudp-published", len(basis.ImageSizes), info.Images.Count)
 	}
-	// Docker's built-in networks (bridge, host, none) are always listed.
+	// Docker's built-in networks are always listed: bridge, host, none on a
+	// Linux daemon, nat and none on a Windows one.
 	system := 0
 	for _, n := range basis.Networks {
 		if n.System {
 			system++
 		}
 	}
-	if system < 3 {
-		t.Errorf("expected at least 3 system networks in basis, got %d", system)
+	want := 3
+	if info.OSType == "windows" {
+		want = 2
+	}
+	if system < want {
+		t.Errorf("expected at least %d system networks in basis, got %d", want, system)
 	}
 	if len(basis.Volumes) != info.Volumes.Count {
 		t.Errorf("basis has %d volumes, snapshot counts %d", len(basis.Volumes), info.Volumes.Count)

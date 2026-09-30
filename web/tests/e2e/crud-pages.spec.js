@@ -22,7 +22,7 @@ test.beforeAll(async () => {
   const root = path.join(server.netdiskRoot, "admin-1");
   fs.mkdirSync(path.join(root, "docs"), { recursive: true });
   fs.writeFileSync(path.join(root, "notes.txt"), "hello crud\n");
-  fs.writeFileSync(path.join(root, "pic.png"), fs.readFileSync("D:/mudp/web/dist/mudp.png"));
+  fs.writeFileSync(path.join(root, "pic.png"), fs.readFileSync(path.join(import.meta.dirname, "..", "..", "public", "mudp.png")));
 });
 
 test.afterAll(async () => {
