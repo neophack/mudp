@@ -37,7 +37,7 @@
       <el-table-column v-if="!s.isMobile" :label="tt('networks.colSubnet')" min-width="140">
         <template #default="{ row }"><span class="secondary-line mono" :title="row.subnet">{{ row.subnet || "—" }}</span></template>
       </el-table-column>
-      <el-table-column v-if="!s.isMobile" :label="tt('common.containers')" width="90">
+      <el-table-column v-if="!s.isMobile" :label="tt('common.containers')" width="100">
         <template #default="{ row }">{{ row.containers || 0 }}</template>
       </el-table-column>
       <el-table-column v-if="!s.isMobile" :label="tt('common.owner')" width="110">
@@ -271,8 +271,7 @@ export default {
 </script>
 
 <style scoped>
-.card-head { display: flex; align-items: center; margin-bottom: 10px; }
-.card-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.card-head h2 { flex: 1; }
 /* Badges sit next to the name and may wrap below it; the name itself stays on
    one line with an ellipsis (full text on hover via :title). */
 .primary-line { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }

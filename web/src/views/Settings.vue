@@ -1,5 +1,5 @@
 <template>
-  <div class="settings-page">
+  <div class="stack settings-page">
     <!-- Personal section: iOS-style grouped list. Selects save on change;
          text inputs keep an explicit save per row. -->
     <p class="group-caption">{{ tt("settings.sectionPersonal") }}</p>
@@ -565,10 +565,12 @@ export default {
 <style scoped>
 /* iOS Settings-style single column: caption + grouped card of rows. */
 .settings-page { max-width: 780px; margin: 0 auto; }
-.settings-page > * + * { margin-top: 16px; }
 .group-caption { margin: 4px 6px -6px; font-size: 12px; font-weight: 600; color: var(--muted); }
 
-.row { display: flex; align-items: center; gap: 12px; padding: 13px 16px; }
+.row { display: flex; align-items: center; gap: 12px; padding: 13px 18px; }
+/* Grouped list: the rows carry the card's inset themselves, so the dividers
+   between them run edge to edge instead of floating inside a second pad. */
+.card.group { padding: 4px 0; }
 .group .row + .row { border-top: 1px solid var(--line); }
 .row.wrap { flex-wrap: wrap; }
 .row-icon {
@@ -696,6 +698,10 @@ export default {
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: minmax(0, 1fr); }
   .form-grid .el-input:last-child:nth-child(odd) { grid-column: auto; }
-  .row-select { width: 132px; }
+  /* Phones: rows inset like every other card, and a select drops under its
+     title (as the appearance segment does) instead of squeezing the text. */
+  .row { padding: 12px; }
+  .row:has(.row-select) { flex-wrap: wrap; }
+  .row-select { width: auto; flex-basis: 100%; }
 }
 </style>

@@ -167,9 +167,6 @@ export default {
 </script>
 
 <style scoped>
-.stack > * + * { margin-top: 16px; }
-.card-head { display: flex; align-items: center; margin-bottom: 10px; }
-.card-head h2 { margin: 0; font-size: 14px; }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
 .stat-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
 .stat-card-head { color: var(--muted); font-size: 12px; }

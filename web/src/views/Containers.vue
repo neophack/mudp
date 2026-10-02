@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="stack">
     <div class="toolbar">
       <el-input
         v-model="s.search"
@@ -147,6 +147,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store, refreshSection, isAdmin, canMutate, displayNameForUsername } from "@/store";
 import { tt, errText } from "@/i18n";
+import { actionsWidth } from "@/rowActions";
 import ActionSheet from "@/components/ActionSheet.vue";
 import CreateDialog from "@/components/container/CreateDialog.vue";
 import LogsDialog from "@/components/container/LogsDialog.vue";
@@ -203,14 +204,14 @@ export default {
     // with the row's state — one representative row per state is enough,
     // instead of rebuilding every row's actions on each poll.
     actionsColWidth() {
-      let n = 1;
+      let n = 0;
       const seen = new Set();
       for (const row of this.filtered) {
         if (seen.has(row.state)) continue;
         seen.add(row.state);
         n = Math.max(n, this.rowActions(row).length);
       }
-      return n * 26 + (n - 1) * 2 + 24;
+      return actionsWidth(n);
     },
     filtered() {
       const q = (store.search || "").trim().toLowerCase();

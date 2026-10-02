@@ -1,7 +1,7 @@
 <template>
   <div class="stack">
     <div v-if="loadFailed" class="card"><div class="error-box">✗ {{ tt("errors.loadFailed") }} {{ loadFailed }}</div></div>
-    <div class="dash-tiles">
+    <div class="tile-row">
       <section class="card stat-tile">
         <div class="stat-icon">🧯</div>
         <div class="stat-body"><div class="stat-value">{{ stats.events ?? 0 }}</div><div class="stat-label">{{ tt("errors.statIssues") }}</div></div>
@@ -132,14 +132,11 @@ export default {
 </script>
 
 <style scoped>
-.stack > * + * { margin-top: 16px; }
-.dash-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
-.stat-tile { display: flex; gap: 14px; align-items: center; margin-bottom: 0; }
+.stat-tile { display: flex; gap: 14px; align-items: center; }
 .stat-icon { font-size: 24px; }
 .stat-value { font-size: 22px; font-weight: 750; }
 .stat-label { color: var(--muted); font-size: 12.5px; }
-.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-.card-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.card-head h2 { flex: 1; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .stack-pre { background: #0f172a; color: #cbd5e1; border-radius: 8px; padding: 12px; font-size: 11.5px; max-height: 50vh; overflow: auto; white-space: pre-wrap; }
 </style>

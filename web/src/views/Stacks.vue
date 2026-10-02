@@ -353,8 +353,7 @@ export default {
 </script>
 
 <style scoped>
-.card-head { display: flex; align-items: center; margin-bottom: 12px; }
-.card-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.card-head h2 { flex: 1; }
 .tag-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 4px; }
 .ok-text { color: #10b981 !important; }
 .warn-text { color: #e6a23c !important; }

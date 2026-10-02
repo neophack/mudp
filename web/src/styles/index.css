@@ -39,6 +39,9 @@
   --radius-ctrl: 8px;
   --radius-sm: 6px;
   --card-pad: 16px 18px;
+  /* Page rhythm: the one spacing between sibling blocks — cards in a .stack,
+     tiles in a .tile-row, columns in a page grid. Phones tighten it. */
+  --gap: 16px;
   --mix-dark: #1e1e20;
   --sidebar-ink: var(--ink);
   --sidebar-muted: var(--muted);
@@ -394,7 +397,13 @@ body {
 .work-header .titles { min-width: 0; }
 .work-header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.2px; }
 .work-header p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
-.work-header .head-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.work-header .head-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+/* Icon buttons sit at one even pitch whether or not a badge wraps them; the
+   count bubble tucks onto the icon's corner instead of needing extra room,
+   and the text button keeps a little more air from the icon cluster. */
+.head-badge { display: flex; }
+.head-badge .el-badge__content.is-fixed { top: 0; right: 4px; transform: translate(50%, -30%); }
+.head-actions .ghost-btn { margin-left: 6px; }
 
 .work-header .mobile-nav-toggle {
   display: none;
@@ -404,8 +413,6 @@ body {
   color: var(--ink);
   padding: 4px;
 }
-.head-badge { margin-right: 14px; }
-.head-badge + .head-badge { margin-left: -6px; }
 
 .icon-btn {
   padding: 8px !important;
@@ -442,13 +449,32 @@ body {
   box-shadow: var(--card-shadow);
   border-radius: var(--radius-card);
   padding: var(--card-pad);
-  margin-bottom: 16px;
 }
 .card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 650; }
 /* Page layouts are grids of .card/.stack columns. Grid and flex children
    default to min-width:auto, so one wide table pushes its column past the
    viewport and the card is clipped off-screen. */
 .app-main .card, .app-main .stack { min-width: 0; }
+
+/* Layout primitives own all spacing between blocks; cards carry no outer
+   margin. .stack is the vertical page flow (every multi-block page root and
+   column uses it) and zeroes its children's block margins so the gap is the
+   only space between them — a view may still tune one child with a scoped
+   (more specific) rule. .tile-row lays out stat tiles: auto-fit on wide
+   panes, a 2-up grid below 1100px where an odd last tile spans the row
+   instead of dangling alone. */
+.stack { display: flex; flex-direction: column; gap: var(--gap); }
+.stack > * { margin-top: 0; margin-bottom: 0; }
+.tile-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--gap); }
+@media (max-width: 1100px) {
+  .tile-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile-row > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
+
+/* Card header: title on the left, tags/actions after it; wraps on narrow
+   panes. Views add only their deltas (e.g. h2 flex: 1 to push actions right). */
+.card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin-bottom: 12px; }
+.card-head h2 { margin: 0; font-size: 14px; font-weight: 650; min-width: 0; }
 
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
 .toolbar .spacer { flex: 1; }
@@ -486,6 +512,14 @@ body {
 .el-button:not(.is-disabled):active { transform: scale(0.97); }
 .el-button.is-link { color: var(--brand) !important; }
 .el-table th.el-table__cell { background: var(--table-head) !important; color: var(--muted); font-weight: 600; }
+/* Column titles stay on one line. Element's cells break anywhere
+   (word-break: break-all), so a narrow column split "Actions" into
+   "Acti / ons" and doubled the header height; columns are sized to fit
+   their titles instead. */
+.el-table th.el-table__cell > .cell { white-space: nowrap; }
+/* Element centers the empty-table message with a 60px line-height, so a hint
+   that wraps on a phone spreads across 180px; pad the block instead. */
+.el-table .el-table__empty-text { line-height: 1.5; padding: 20px 0; width: auto; max-width: 90%; }
 .el-table .el-link { font-size: 12.5px; }
 /* Element pads selection cells 14px on each side; with our 40px-wide selection
    column that leaves less room than the checkbox itself needs, so the cell
@@ -664,8 +698,8 @@ body {
 
 /* ---------- Table row actions ---------- */
 /* Icon-only buttons on one line. Views size their fixed actions column from
-   these metrics (26px per button + 2px between + 24px of cell padding), so
-   changing them here means changing the actionsColWidth formulas too. */
+   these metrics (26px per button + 2px between + 24px of cell padding) via
+   src/rowActions.js, so changing them here means changing it too. */
 .row-actions { display: flex; align-items: center; flex-wrap: nowrap; }
 .row-actions .el-button { width: 26px; height: 26px; flex: 0 0 26px; padding: 0; margin: 0; border-radius: 8px; }
 .row-actions .el-button + .el-button { margin-left: 2px; }
@@ -742,10 +776,9 @@ body {
    Element's own max-width. A plain viewport clamp here replaces that cap, so
    every confirm stretches nearly screen-wide on desktop; min() keeps both. */
 .el-message-box { max-width: min(420px, calc(100vw - 24px)); }
-/* Sub-tab switchers (el-radio-button groups) and card headers wrap instead of
-   squeezing their labels onto one crammed line. */
+/* Sub-tab switchers (el-radio-button groups) wrap instead of squeezing
+   their labels onto one crammed line. */
 .el-radio-group { flex-wrap: wrap; row-gap: 4px; }
-.card-head { flex-wrap: wrap; row-gap: 8px; }
 /* Long mono values inside flex rows must be allowed to shrink and wrap. */
 .mono { min-width: 0; overflow-wrap: anywhere; }
 
@@ -756,10 +789,8 @@ body {
   .app-main { padding: 12px; }
   .work-header { padding: 10px 12px; gap: 10px; }
   .work-header h1 { font-size: 16px; }
-  .work-header .head-actions { gap: 6px; }
-  .head-badge { margin-right: 6px; }
-  .head-badge + .head-badge { margin-left: 0; }
-  .stack > * + * { margin-top: 12px; }
+  .work-header .head-actions { gap: 2px; }
+  :root { --gap: 12px; }
   .card { padding: 12px; }
   .netdisk-toolbar, .netdisk-actions, .netdisk-pathbar { gap: 8px; }
 }

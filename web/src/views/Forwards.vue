@@ -309,9 +309,7 @@ export default {
 </script>
 
 <style scoped>
-.stack > * + * { margin-top: 16px; }
-.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.card-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.card-head h2 { flex: 1; }
 .row2 { display: flex; gap: 8px; }
 .field-label { font-size: 12.5px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }

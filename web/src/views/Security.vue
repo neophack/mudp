@@ -1,6 +1,6 @@
 <template>
-  <div>
-    <el-radio-group v-model="tab" size="small" style="margin-bottom: 16px" @change="onTab">
+  <div class="stack">
+    <el-radio-group v-model="tab" size="small" class="sec-tabs" @change="onTab">
       <el-radio-button value="overview">{{ tt("security.tabOverview") }}</el-radio-button>
       <el-radio-button value="logs">{{ tt("security.tabLogs") }}</el-radio-button>
       <el-radio-button value="settings">{{ tt("security.tabSettings") }}</el-radio-button>
@@ -9,7 +9,7 @@
 
     <!-- Overview: stat tiles + ECharts access map + top lists -->
     <template v-if="tab === 'overview'">
-      <div class="sec-stat-row">
+      <div class="tile-row">
         <section class="card stat-tile">
           <div class="stat-icon">🌐</div>
           <div class="stat-body"><div class="stat-value">{{ stats.totalVisits ?? 0 }}</div><div class="stat-label">{{ tt("security.totalVisits") }}</div></div>
@@ -637,14 +637,12 @@ export default {
 </script>
 
 <style scoped>
-.sec-stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
-.stat-tile { display: flex; gap: 12px; align-items: center; margin-bottom: 0; }
+.sec-tabs { align-self: flex-start; }
+.stat-tile { display: flex; gap: 12px; align-items: center; }
 .stat-icon { font-size: 22px; }
 .stat-value { font-size: 21px; font-weight: 750; line-height: 1.1; }
 .stat-label { color: var(--muted); font-size: 12px; }
-.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-.card-head h2 { margin: 0; font-size: 14px; }
-.sec-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; }
+.sec-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap); }
 @media (max-width: 900px) { .sec-cols { grid-template-columns: minmax(0, 1fr); } }
 .top-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
 .top-list li { display: flex; align-items: center; gap: 10px; }
@@ -668,7 +666,6 @@ export default {
 .sec-verify-result.ok { color: var(--ok); }
 .sec-verify-result.fail { color: var(--danger); }
 .sec-verify-result.pending { color: var(--muted); }
-.stack > * + * { margin-top: 16px; }
 .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .stat-cards .stat-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
 .stat-cards .stat-value { font-size: 22px; font-weight: 750; }

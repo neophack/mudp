@@ -732,8 +732,7 @@ export default {
 </script>
 
 <style scoped>
-.card-head { display: flex; align-items: center; margin-bottom: 12px; }
-.card-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.card-head h2 { flex: 1; }
 .head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .check-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }

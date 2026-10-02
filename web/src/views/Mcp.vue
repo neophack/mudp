@@ -1,5 +1,5 @@
 <template>
-  <div class="mcp-page">
+  <div class="stack">
     <section class="card mcp-hero">
       <div>
         <span class="mcp-eyebrow">{{ tt("mcp.remoteAgent") }}</span>
@@ -250,6 +250,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { api, copyText } from "@/api";
 import { store, canMutate, isAdmin, displayNameForUsername } from "@/store";
 import { tt } from "@/i18n";
+import { actionsWidth } from "@/rowActions";
 import ActionSheet from "@/components/ActionSheet.vue";
 import { registerRouteRefresh, unregisterRouteRefresh } from "@/refresh";
 import { formatDate } from "@/lib/common.js";
@@ -349,7 +350,7 @@ export default {
     // never wrap onto a second line. The count only varies with whether the
     // row has an external URL (role/remote are constants) — one row per kind.
     actionsColWidth() {
-      let n = 1;
+      let n = 0;
       const seen = new Set();
       for (const row of store.mcpTokens || []) {
         const key = this.externalUrlFor(row) ? "ext" : "plain";
@@ -357,7 +358,7 @@ export default {
         seen.add(key);
         n = Math.max(n, this.rowActions(row).length);
       }
-      return n * 26 + (n - 1) * 2 + 24;
+      return actionsWidth(n);
     },
     remote() {
       return store.mcpRemote;
@@ -623,21 +624,19 @@ export default {
 </script>
 
 <style scoped>
-.mcp-page > * + * { margin-top: 16px; }
 .mcp-hero { display: flex; gap: 20px; align-items: center; justify-content: space-between; flex-wrap: wrap; background: linear-gradient(135deg, #0b1220, #1e3a8a); color: #e2e8f0; border: none; }
 .mcp-hero h2 { margin: 6px 0; }
 .mcp-eyebrow { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #93c5fd; }
 .mcp-flow { display: flex; align-items: center; gap: 8px; font-size: 12.5px; flex-wrap: wrap; }
 .mcp-flow strong { width: 22px; height: 22px; border-radius: 50%; background: rgba(147, 197, 253, 0.2); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
-.mcp-main-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.mcp-main-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: var(--gap); align-items: start; }
 .mcp-card-note { color: var(--muted); font-size: 12px; }
 .mcp-tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
 .mcp-tool-group-title { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
 .mcp-tool { margin-bottom: 6px; }
 .mcp-tool-name { background: var(--brand-tint); color: var(--brand); border-radius: 4px; padding: 1px 6px; font-size: 11.5px; }
 .mcp-tool-desc { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
-.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-.card-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.card-head h2 { flex: 1; }
 .mcp-copy-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
 .mcp-code { background: #0f172a; color: #cbd5e1; border-radius: 8px; padding: 10px; font-size: 12px; flex: 1; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; }
 .mcp-code-inline { padding: 6px 10px; }

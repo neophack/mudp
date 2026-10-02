@@ -1,5 +1,5 @@
 <template>
-  <div class="users-page">
+  <div class="stack">
     <!-- Users -->
     <div class="card">
       <div class="form-card-head">
@@ -718,7 +718,7 @@ export default {
 </script>
 
 <style scoped>
-.users-duo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 16px; align-items: start; }
+.users-duo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap); align-items: start; }
 .form-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .form-card-titles h2 { margin: 0; font-size: 14px; }
 .form-card-titles p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }

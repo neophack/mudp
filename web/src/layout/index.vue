@@ -45,7 +45,7 @@
         </div>
         <div class="head-actions">
           <el-button class="icon-btn" :title="themeTitle" @click="toggleTheme">
-            <v-icon :name="s.isDark ? 'sun' : 'moon'" :size="16" />
+            <v-icon :name="s.isDark ? 'sun' : 'moon'" />
           </el-button>
           <el-badge :value="jobsCount" :hidden="!jobsCount" class="head-badge">
             <el-button class="icon-btn" :title="jobsTitle" @click="jobsVisible = true">

@@ -1,6 +1,6 @@
 <template>
-  <div v-if="snap" class="dash-stack">
-    <div class="dash-tiles">
+  <div v-if="snap" class="stack">
+    <div class="tile-row">
       <section class="card stat-tile">
         <div class="stat-tile-head"><span class="stat-emoji">🖥</span><span class="stat-label">{{ tt("hardware.cpu") }}</span></div>
         <div class="stat-value">{{ (host.cpuPct ?? 0).toFixed(1) }}%</div>
@@ -45,48 +45,50 @@
       </div>
     </div>
 
-    <div class="dash-section-head">
-      <h2>{{ tt("hardware.gpus") }}</h2>
-      <span class="hint">{{ tt("hardware.nDetected", { n: gpus.length }) }}</span>
-    </div>
-    <div v-if="gpus.length" class="gpu-grid">
-      <section v-for="g in gpus" :key="g.index" class="card gpu-card">
-        <div class="card-head">
-          <h3 class="ellipsis" :title="g.name || `GPU ${g.index}`">{{ g.name || "GPU " + g.index }}</h3>
-          <el-tag size="small" :type="tempTag(g.tempC)">{{ (g.tempC ?? 0).toFixed(0) }}°C</el-tag>
-        </div>
-        <div class="metric-row">
-          <div class="metric-label">{{ tt("hardware.gpuUtil") }}</div>
-          <div class="metric-value">{{ (g.utilPct ?? 0).toFixed(0) }}%</div>
-          <el-progress :percentage="clamp(g.utilPct)" :stroke-width="6" :show-text="false" />
-        </div>
-        <div class="metric-row">
-          <div class="metric-label">{{ tt("hardware.memory") }}</div>
-          <div class="metric-value">{{ fmtMB(g.memUsedMb) }} / {{ fmtMB(g.memTotalMb) }}</div>
-          <el-progress :percentage="clamp(g.memPct)" :stroke-width="6" :show-text="false" />
-        </div>
-        <div v-if="g.powerW > 0" class="metric-row">
-          <div class="metric-label">{{ tt("hardware.power") }}</div>
-          <div class="metric-value">{{ g.powerW.toFixed(1) }} W</div>
-        </div>
-        <div v-if="g.memUtilPct > 0" class="metric-row">
-          <div class="metric-label">{{ tt("hardware.memController") }}</div>
-          <div class="metric-value">{{ g.memUtilPct.toFixed(0) }}%</div>
-          <el-progress :percentage="clamp(g.memUtilPct)" :stroke-width="6" :show-text="false" />
-        </div>
-        <div class="gpu-trends">
-          <div class="trend-row">
-            <span class="trend-label">{{ tt("hardware.utilTrend") }}</span>
-            <spark :series="gpuHistory(g.index).util" />
+    <section class="stack gpu-section">
+      <div class="dash-section-head">
+        <h2>{{ tt("hardware.gpus") }}</h2>
+        <span class="hint">{{ tt("hardware.nDetected", { n: gpus.length }) }}</span>
+      </div>
+      <div v-if="gpus.length" class="gpu-grid">
+        <section v-for="g in gpus" :key="g.index" class="card gpu-card">
+          <div class="card-head">
+            <h3 class="ellipsis" :title="g.name || `GPU ${g.index}`">{{ g.name || "GPU " + g.index }}</h3>
+            <el-tag size="small" :type="tempTag(g.tempC)">{{ (g.tempC ?? 0).toFixed(0) }}°C</el-tag>
           </div>
-          <div class="trend-row">
-            <span class="trend-label">{{ tt("hardware.tempTrend") }}</span>
-            <spark :series="gpuHistory(g.index).temp" :color="trendColor(g.tempC)" />
+          <div class="metric-row">
+            <div class="metric-label">{{ tt("hardware.gpuUtil") }}</div>
+            <div class="metric-value">{{ (g.utilPct ?? 0).toFixed(0) }}%</div>
+            <el-progress :percentage="clamp(g.utilPct)" :stroke-width="6" :show-text="false" />
           </div>
-        </div>
-      </section>
-    </div>
-    <div v-else class="card"><p class="hint">{{ tt("hardware.noGpus") }}</p></div>
+          <div class="metric-row">
+            <div class="metric-label">{{ tt("hardware.memory") }}</div>
+            <div class="metric-value">{{ fmtMB(g.memUsedMb) }} / {{ fmtMB(g.memTotalMb) }}</div>
+            <el-progress :percentage="clamp(g.memPct)" :stroke-width="6" :show-text="false" />
+          </div>
+          <div v-if="g.powerW > 0" class="metric-row">
+            <div class="metric-label">{{ tt("hardware.power") }}</div>
+            <div class="metric-value">{{ g.powerW.toFixed(1) }} W</div>
+          </div>
+          <div v-if="g.memUtilPct > 0" class="metric-row">
+            <div class="metric-label">{{ tt("hardware.memController") }}</div>
+            <div class="metric-value">{{ g.memUtilPct.toFixed(0) }}%</div>
+            <el-progress :percentage="clamp(g.memUtilPct)" :stroke-width="6" :show-text="false" />
+          </div>
+          <div class="gpu-trends">
+            <div class="trend-row">
+              <span class="trend-label">{{ tt("hardware.utilTrend") }}</span>
+              <spark :series="gpuHistory(g.index).util" />
+            </div>
+            <div class="trend-row">
+              <span class="trend-label">{{ tt("hardware.tempTrend") }}</span>
+              <spark :series="gpuHistory(g.index).temp" :color="trendColor(g.tempC)" />
+            </div>
+          </div>
+        </section>
+      </div>
+      <div v-else class="card"><p class="hint">{{ tt("hardware.noGpus") }}</p></div>
+    </section>
 
     <div class="dash-row-2">
       <div class="card">
@@ -290,22 +292,21 @@ export default {
 </script>
 
 <style scoped>
-.dash-stack > * + * { margin-top: 16px; }
-.dash-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
 .stat-tile-head { display: flex; align-items: center; gap: 8px; }
 .stat-emoji { font-size: 18px; }
 .stat-label { color: var(--muted); font-size: 12.5px; }
 .stat-value { font-size: 23px; font-weight: 750; margin: 6px 0; }
 .stat-sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
-.hist-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.hist-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap); }
 .hist-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
 .hist-label { font-weight: 600; font-size: 13.5px; }
 .hist-current { font-size: 16px; font-weight: 700; }
+/* The GPU caption sits tight above its cards, closer than the page gap. */
+.gpu-section { gap: 8px; }
 .dash-section-head { display: flex; align-items: center; gap: 10px; }
 .dash-section-head h2 { margin: 0; font-size: 14px; }
-.gpu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.gpu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--gap); }
 .gpu-card h3 { margin: 0; font-size: 13.5px; flex: 1; }
-.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .metric-row { margin-bottom: 10px; }
 .metric-label { color: var(--muted); font-size: 12px; }
 .metric-value { font-size: 13.5px; font-weight: 600; margin: 2px 0 4px; }
@@ -317,7 +318,7 @@ export default {
 .kv span { color: var(--muted); flex-shrink: 0; }
 .kv strong { text-align: right; }
 .sensor-row { padding: 6px 0; border-bottom: 1px dashed var(--line); }
-.dash-row-2 { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
+.dash-row-2 { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: var(--gap); }
 .error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 @media (max-width: 1000px) { .hist-row, .dash-row-2 { grid-template-columns: minmax(0, 1fr); } }
 </style>
