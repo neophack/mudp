@@ -233,6 +233,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { api, copyText } from "@/api";
 import { store, canMutate, isAdmin, displayNameForUsername } from "@/store";
 import { tt, errText } from "@/i18n";
+import { actionsWidth } from "@/rowActions";
 import { fmtBytes, joinPath } from "@/lib/common.js";
 import { fileIconSvg } from "@/lib/fileicon.js";
 import { beginLocalCopy } from "@/overlays";
@@ -306,7 +307,7 @@ export default {
     // The count only varies with the mode and, on the shared disk, whether the
     // row belongs to the caller — one representative row per kind suffices.
     actionsColWidth() {
-      let n = 1;
+      let n = 0;
       const seen = new Set();
       for (const row of this.sortedItems) {
         const key = this.mode + "|" + (this.mode === "shareddisk" && this.isOwnSharedDiskRow(row) ? "own" : "");
@@ -314,7 +315,7 @@ export default {
         seen.add(key);
         n = Math.max(n, this.rowActions(row).length);
       }
-      return n * 26 + (n - 1) * 2 + 24;
+      return actionsWidth(n);
     },
     fileCount() {
       return this.items.filter((f) => !f.dir).length;
@@ -827,7 +828,6 @@ export default {
 </script>
 
 <style scoped>
-.stack > * + * { margin-top: 16px; }
 .netdisk-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .netdisk-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .netdisk-mode-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
@@ -859,8 +859,7 @@ export default {
    ellipsis instead of stretching the row. */
 .name-link >>> span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .name-mobile { color: var(--brand); }
-.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.card-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.card-head h2 { flex: 1; }
 .share-link { color: var(--brand); font-size: 12px; }
 >>> .row-muted { opacity: 0.55; }
 
@@ -869,6 +868,8 @@ export default {
    width they need. */
 @media (max-width: 860px) {
   .netdisk-file-meta { display: block; }
+  /* Breadcrumb links are 18px-tall text buttons; give fingers a real target. */
+  .netdisk-crumbs .el-button { min-height: 28px; padding: 0 4px; }
   >>> .netdisk-size-col,
   >>> .netdisk-time-col { display: none; }
 }

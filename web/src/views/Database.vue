@@ -3,7 +3,7 @@
     <div v-if="error" class="card"><div class="error-box">✗ {{ error }}</div></div>
     <div v-if="!data && !error" class="card"><div class="empty-state">{{ tt("common.loadingDots") }}</div></div>
     <template v-if="data">
-      <div class="db-stat-row">
+      <div class="tile-row">
         <div class="card stat">
           <span class="stat-label">{{ tt("database.dbFile") }}</span>
           <span class="stat-value mono">{{ fmtBytes(report.fileBytes) }}</span>
@@ -127,12 +127,9 @@ export default {
 </script>
 
 <style scoped>
-.stack > * + * { margin-top: 16px; }
-.db-stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
-.stat { display: flex; flex-direction: column; gap: 4px; margin-bottom: 0; }
+.stat { display: flex; flex-direction: column; gap: 4px; }
 .stat-label { color: var(--muted); font-size: 12.5px; }
 .stat-value { font-size: 20px; font-weight: 750; }
-.card-head { display: flex; align-items: center; margin-bottom: 10px; }
-.card-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.card-head h2 { flex: 1; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 </style>

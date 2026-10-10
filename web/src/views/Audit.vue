@@ -80,7 +80,6 @@ export default {
 </script>
 
 <style scoped>
-.card-head { display: flex; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px; }
-.card-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.card-head h2 { flex: 1; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
 </style>

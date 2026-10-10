@@ -1,9 +1,9 @@
 <template>
-  <div v-if="d" class="dash-stack">
+  <div v-if="d" class="stack">
     <p v-if="!admin" class="hint dash-scope">{{ tt("dash.scopeMine") }}</p>
 
     <!-- Row 1: four stat tiles with tinted icon squares -->
-    <div class="dash-tiles">
+    <div class="tile-row">
       <section class="card stat-tile">
         <span class="stat-icon tint-blue"><v-icon name="containers" :size="17" /></span>
         <div class="stat-body">
@@ -159,7 +159,7 @@
           <el-table-column :label="tt('common.user')">
             <template #default="{ row }"><span class="primary-line" :title="row.displayName || row.username">{{ row.displayName || row.username }}</span></template>
           </el-table-column>
-          <el-table-column prop="containers" :label="tt('common.containers')" width="90" />
+          <el-table-column prop="containers" :label="tt('common.containers')" width="100" />
           <el-table-column :label="tt('hardware.memory')" width="90">
             <template #default="{ row }">{{ fmtMB(row.memoryMb) }}</template>
           </el-table-column>
@@ -428,17 +428,15 @@ export default {
 </script>
 
 <style scoped>
-.dash-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
-.dash-row-2, .dash-row-3 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }
+.dash-row-2, .dash-row-3 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: var(--gap); }
 /* On a user's own dashboard the donut card is row 2's only card, and the
    Feishu identity card is a small info tile: cap the column so neither
    stretches across the full page. */
 .dash-row-2.user-home { grid-template-columns: minmax(0, 460px); }
 .dash-row-feishu { display: grid; grid-template-columns: minmax(0, 460px); }
-.dash-stack > * + * { margin-top: 16px; }
 
 /* Stat tiles: tinted icon square + big number. */
-.stat-tile { display: flex; gap: 13px; align-items: center; margin-bottom: 0; padding: 16px; }
+.stat-tile { display: flex; gap: 13px; align-items: center; padding: 16px; }
 .stat-icon {
   width: 36px;
   height: 36px;
@@ -472,8 +470,6 @@ export default {
 .env-item b { font-size: 13px; font-weight: 600; word-break: break-word; }
 .env-item-wide { grid-column: 1 / -1; }
 
-.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.card-head h2 { margin: 0; font-size: 14px; }
 .tag-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 4px; }
 dl.detail { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 13px; }
 dl.detail dt { color: var(--muted); }
@@ -517,5 +513,11 @@ dl.detail dd { margin: 0; word-break: break-word; }
 .feishu-handle { color: var(--muted); font-size: 12.5px; }
 @media (max-width: 1100px) {
   .dash-row-2, .dash-row-3 { grid-template-columns: minmax(0, 1fr); }
+}
+/* Phones run the tiles 2-up: shrink the icon square and number to fit. */
+@media (max-width: 640px) {
+  .stat-tile { padding: 12px; gap: 10px; }
+  .stat-icon { width: 30px; height: 30px; border-radius: 8px; }
+  .stat-value { font-size: 21px; }
 }
 </style>

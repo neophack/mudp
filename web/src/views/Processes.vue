@@ -252,9 +252,7 @@ export default {
 </script>
 
 <style scoped>
-.stack > * + * { margin-top: 16px; }
-.card-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-.card-head h2 { margin: 0; font-size: 14px; }
+.card-head { align-items: baseline; }
 /* Keep secondary text readable: noticeably dimmer than primary ink, but well
    clear of the muted placeholder tone used elsewhere. */
 .secondary-line { color: color-mix(in srgb, var(--ink) 65%, var(--muted)); }

@@ -221,14 +221,11 @@ export default {
 </script>
 
 <style scoped>
-.disks-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.disks-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap); align-items: start; }
 /* The disk table is far wider than a tool column, so it gets its own full-width
    row underneath instead of being squeezed into (and clipped by) a third one. */
 .disks-table-card { grid-column: 1 / -1; }
 .disks-error { grid-column: 1 / -1; }
-.tools-col, .schedule-col { display: flex; flex-direction: column; }
-.card-head { display: flex; align-items: center; margin-bottom: 10px; }
-.card-head h2 { margin: 0; font-size: 14px; }
 .mb { margin-bottom: 8px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 10px; }
 .bk-sched-time { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }

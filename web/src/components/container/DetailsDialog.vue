@@ -254,8 +254,7 @@ dl.detail dt { color: var(--muted); }
 dl.detail dd { margin: 0; word-break: break-word; }
 .detail-env { white-space: pre-wrap; }
 .detail-settings { margin-bottom: 12px; }
-.card-head { display: flex; align-items: center; margin-bottom: 10px; }
-.card-head h2 { margin: 0; font-size: 13.5px; flex: 1; }
+.card-head h2 { font-size: 13.5px; flex: 1; }
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .check.locked { opacity: 0.5; }
