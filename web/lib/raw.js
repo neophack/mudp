@@ -102,14 +102,12 @@ export function openRawViewer({ name, url, rasterUrl, bodyEl }) {
     // gray mode) and seeds the panel with the board-calibrated defaults.
     rawMode: true,
     extraControlsHtml:
-      `<div class="raster-control-group">` +
-        `<label>Bit depth</label>` +
+      `<label class="raster-field">Bit depth` +
         `<select id="rawBitDepth">${bitOptionsHtml}</select>` +
-      `</div>` +
-      `<div class="raster-control-group">` +
-        `<label>Bayer pattern</label>` +
+      `</label>` +
+      `<label class="raster-field">Bayer pattern` +
         `<select id="rawBayerPattern">${patternOptionsHtml}</select>` +
-      `</div>`,
+      `</label>`,
     bindExtraControls(root, state, onExtraChange) {
       state.bitDepth = initialBitDepth;
       state.bayerPattern = initialPattern;

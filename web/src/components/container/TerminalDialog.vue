@@ -122,6 +122,11 @@ export default {
       this.$nextTick(() => this.refit());
     },
   },
+  // Leaving the page with the terminal open unmounts it without a close: the
+  // socket, xterm instance and window listener must still be released.
+  beforeUnmount() {
+    this.stop();
+  },
   methods: {
     tt,
     onVisible(v) {

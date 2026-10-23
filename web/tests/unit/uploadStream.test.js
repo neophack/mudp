@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { makeFileIterator, prependIterator, makeDropIterator } from "../../lib/uploadStream.js";
+import { makeFileIterator, makeDropIterator } from "../../lib/uploadStream.js";
 
 describe("makeFileIterator", () => {
   it("yields plain Files with a relPath derived from name", async () => {
@@ -24,16 +24,6 @@ describe("makeFileIterator", () => {
     const it = makeFileIterator([{ file: { name: "x", size: 9 }, relPath: "deep/x" }]);
     const { value } = await it.next();
     expect(value.relPath).toBe("deep/x");
-  });
-});
-
-describe("prependIterator", () => {
-  it("yields the prepended entry first, then the rest", async () => {
-    const rest = makeFileIterator([{ name: "b", size: 1 }]);
-    const it = prependIterator(rest, { file: { name: "a", size: 1 }, relPath: "a" });
-    expect((await it.next()).value.relPath).toBe("a");
-    expect((await it.next()).value.file.name).toBe("b");
-    expect((await it.next()).done).toBe(true);
   });
 });
 

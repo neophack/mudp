@@ -311,7 +311,7 @@ export default {
       return this.update.latest || "—";
     },
   },
-  async mounted() {
+  mounted() {
     // Show the cached browser-IP result immediately, then refresh silently.
     const cached = readIPCache();
     if (cached && isCacheFresh(cached)) {
@@ -323,13 +323,15 @@ export default {
     // "Recent Activity" reads the audit section, which the route poller skips
     // (admin-only, heavier than the rest of the dashboard): refresh it here on
     // a slower cadence while the page is open.
+    // The timer is armed before the first fetch so an unmount during that
+    // fetch still finds it to clear.
     if (isAdmin()) {
-      await refreshSection("audit").catch(() => {});
       this.auditTimer = setInterval(() => {
         if (!document.hidden && !document.querySelector(".el-overlay:not([style*=\"display: none\"])")) {
           refreshSection("audit").catch(() => {});
         }
       }, 30000);
+      refreshSection("audit").catch(() => {});
     }
   },
   beforeUnmount() {

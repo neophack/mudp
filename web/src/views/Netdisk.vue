@@ -58,7 +58,7 @@
       <el-table
         ref="table"
         v-loading="loading"
-        :data="sortedItems"
+        :data="pagedItems"
         size="small"
         :empty-text="tt('netdisk.noFiles')"
         row-key="path"
@@ -112,6 +112,15 @@
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination
+        v-if="sortedItems.length > pageSize"
+        v-model:current-page="page"
+        class="netdisk-pager"
+        size="small"
+        layout="prev, pager, next"
+        :page-size="pageSize"
+        :total="sortedItems.length"
+      />
     </div>
 
     <!-- External Links cards are netdisk-only. -->
@@ -244,6 +253,12 @@ import ViewerDialog from "@/components/netdisk/ViewerDialog.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
 import { previewKind } from "@/lib/preview.js";
 
+// Rows rendered at once. A listing can hold up to 5000 entries (the server
+// cap), and every el-table row carries a dozen component instances, so
+// rendering a whole big folder (typical right after a bulk upload) cost
+// hundreds of MB and stalled the page.
+const PAGE_SIZE = 100;
+
 export default {
   name: "Netdisk",
   components: { ActionSheet, FolderPicker, ShareDialog, ViewerDialog },
@@ -258,6 +273,8 @@ export default {
         shareddisk: { path: "", selection: [] },
       },
       items: [],
+      page: 1,
+      pageSize: PAGE_SIZE,
       truncated: false,
       quota: null,
       // refreshSeq drops out-of-order responses (a slow reply for an old
@@ -293,6 +310,10 @@ export default {
         if (a.dir !== b.dir) return a.dir ? -1 : 1;
         return String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
       });
+    },
+    pagedItems() {
+      const start = (this.page - 1) * PAGE_SIZE;
+      return this.sortedItems.slice(start, start + PAGE_SIZE);
     },
     sheetSubtitle() {
       const r = this.sheet.row;
@@ -364,8 +385,11 @@ export default {
       return `${tt("netdisk.usedN", { used: fmtBytes(used) })}${estimating}`;
     },
   },
-  async mounted() {
-    await this.refresh();
+  mounted() {
+    // Start the timer before the first fetch resolves: awaiting it first let a
+    // quick navigation unmount the view before the timer existed, and the
+    // interval then kept a dead view (and its listing) refreshing forever.
+    this.refresh();
     // Self-refresh on a slow cadence, like the old self-fetching view.
     this.timer = setInterval(() => {
       if (!document.hidden && !isUploading()) this.refresh();
@@ -415,6 +439,9 @@ export default {
         ]);
         if (seq !== this.refreshSeq) return; // a newer navigation superseded us
         this.items = list.items || [];
+        // Stay on the current page across the periodic refresh, but never
+        // past the last one when the folder shrank.
+        this.page = Math.min(this.page, Math.max(1, Math.ceil(this.items.length / PAGE_SIZE)));
         this.truncated = !!list.truncated;
         this.quota = this.mode === "backup" ? (list.quota || null) : quota;
         this.shares = shares || [];
@@ -451,11 +478,13 @@ export default {
       // the old per-mode modeState.
       this.modeState[this.mode].selection = [...this.selection];
       this.mode = mode;
+      this.page = 1;
       this.selection = this.modeState[mode].selection || [];
       this.refresh();
     },
     navigate(path) {
       this.modeState[this.mode].path = path;
+      this.page = 1;
       this.selection = [];
       this.modeState[this.mode].selection = [];
       this.refresh();
@@ -828,6 +857,7 @@ export default {
 </script>
 
 <style scoped>
+.netdisk-pager { margin-top: 10px; justify-content: flex-end; }
 .netdisk-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .netdisk-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .netdisk-mode-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }

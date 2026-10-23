@@ -160,6 +160,9 @@ export default {
       langs: SUPPORTED_LANGS,
     };
   },
+  beforeUnmount() {
+    if (this.captchaUrl) URL.revokeObjectURL(this.captchaUrl);
+  },
   async created() {
     // Apply saved language for the login page (no user session yet).
     initI18n(localStorage.getItem("mudp_language"), null);

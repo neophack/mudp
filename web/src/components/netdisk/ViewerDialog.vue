@@ -30,26 +30,28 @@
       </el-button>
     </div>
 
-    <div v-else ref="body" class="viewer-body" :class="{ fullscreen }">
+    <div v-else ref="body" class="viewer-body" :class="{ fullscreen, 'fullscreen-video': fullscreen && kind === 'video', 'fullscreen-raster': fullscreen && (kind === 'yuv' || kind === 'raw') }">
       <div v-if="loading" class="viewer-loading">{{ tt("netdisk.viewerLoading") }}</div>
       <div v-else-if="error" class="viewer-error">{{ error }}</div>
       <img v-else-if="kind === 'image'" ref="media" class="viewer-media" :src="rawUrl" :alt="name" />
       <audio v-else-if="kind === 'audio'" ref="media" class="viewer-media" controls preload="metadata" :src="rawUrl" />
-      <!-- Video is deliberately fullscreen-free (no player button via
-           controlslist, no header button), so it always plays inline. -->
-      <video v-else-if="kind === 'video'" ref="media" class="viewer-media" controls controlslist="nofullscreen" preload="metadata" :src="rawUrl" />
+      <video v-else-if="kind === 'video'" ref="media" class="viewer-media" controls preload="metadata" :src="rawUrl" />
       <pre v-else-if="kind === 'text' || kind === 'json'" class="viewer-text">{{ text }}</pre>
       <!-- csvToTableHtml escapes every cell itself, so v-html is safe here. -->
       <div v-else-if="kind === 'csv'" class="viewer-csv" v-html="csvHtml"></div>
       <div v-else-if="kind === 'markdown'" ref="md" class="viewer-md"></div>
       <div v-else-if="kind === 'pdf'" ref="pdf" class="viewer-canvas-wrap"></div>
       <div v-else-if="kind === 'docx' || kind === 'xlsx'" ref="office" class="viewer-md viewer-doc"></div>
-      <div v-else-if="kind === 'yuv' || kind === 'raw'" ref="raster" class="viewer-canvas-wrap"></div>
+      <!-- The raster viewer (lib/yuv.js scaffold) builds its own professional
+           layout — toolbar, viewport, parameter panel, status bar — and sizes
+           itself via its stylesheet (lib/raster.css). -->
+      <div v-else-if="kind === 'yuv' || kind === 'raw'" ref="raster" class="viewer-raster"></div>
     </div>
   </el-dialog>
 </template>
 
 <script>
+import { markRaw } from "vue";
 import { tt } from "@/i18n";
 import { renderMarkdownInto } from "@/lib/viewer.js";
 import { openYuvViewer } from "@/lib/yuv.js";
@@ -87,9 +89,9 @@ export default {
       const base = this.fromBackup ? "/api/netdisk/backup/raster" : "/api/netdisk/raster";
       return `${base}?path=${encodeURIComponent(this.path)}&ts=${Date.now()}`;
     },
-    // Video is deliberately fullscreen-free: the player plays inline only.
+    // Audio has no visual surface worth fullscreening; every other kind does.
     supportsFullscreen() {
-      return ["pdf", "image", "yuv", "raw", "csv", "docx", "xlsx"].includes(this.kind);
+      return ["pdf", "image", "video", "yuv", "raw", "csv", "docx", "xlsx"].includes(this.kind);
     },
   },
   watch: {
@@ -99,6 +101,10 @@ export default {
         if (this.controller && this.controller.repaint) this.controller.repaint();
       });
     },
+  },
+  // Leaving the page with the viewer open unmounts it without a close.
+  beforeUnmount() {
+    this.reset();
   },
   methods: {
     tt,
@@ -127,7 +133,14 @@ export default {
         if (this.controller.destroy) this.controller.destroy();
         this.controller = null;
       }
+      // pdf.js keeps a document loaded in its worker until destroyed.
+      if (this.pdfDoc) this.pdfDoc.destroy();
       this.pdfDoc = null;
+      // The rendered pages (full-resolution PDF canvases, docx/xlsx/markdown
+      // DOM, the raster canvas) outlive a hidden dialog; drop them on close.
+      for (const ref of ["md", "pdf", "office", "raster"]) {
+        if (this.$refs[ref]) this.$refs[ref].replaceChildren();
+      }
     },
     // Images go through the native Fullscreen API so zoom/pan stays smooth;
     // other kinds use the CSS .fullscreen overlay, which also serves as the
@@ -211,7 +224,8 @@ export default {
         return;
       }
       pdfjs.workerSrc = "/vendor/pdf.worker.min.js";
-      this.pdfDoc = await pdfjs.getDocument({ url: this.rawUrl }).promise;
+      // markRaw: Vue must not wrap pdf.js's internals in deep reactive proxies.
+      this.pdfDoc = markRaw(await pdfjs.getDocument({ url: this.rawUrl }).promise);
       await this.paintPdf();
     },
     // Lays out each PDF page in a vertical scroll container. The canvas is
@@ -224,6 +238,7 @@ export default {
       pages.innerHTML = "";
       const maxWidth = Math.max(360, pages.clientWidth || 820);
       for (let i = 1; i <= pdf.numPages; i++) {
+        if (this.pdfDoc !== pdf) return; // closed or replaced mid-paint
         const page = await pdf.getPage(i);
         const baseViewport = page.getViewport({ scale: 1 });
         const scale = Math.max(1, maxWidth / baseViewport.width);
@@ -254,6 +269,12 @@ export default {
 .viewer-head-actions { display: flex; gap: 8px; }
 .viewer-body { min-height: 320px; max-height: 70vh; overflow: auto; text-align: center; }
 .viewer-body.fullscreen { position: fixed; inset: 0; z-index: 3001; max-height: none; background: #fff; padding: 16px; }
+/* Video's overlay fullscreen is a player surface: black backdrop, video fills the viewport. */
+.viewer-body.fullscreen.fullscreen-video { background: #000; display: flex; align-items: center; justify-content: center; }
+.viewer-body.fullscreen.fullscreen-video .viewer-media { max-height: calc(100vh - 32px); }
+/* The raster viewer keeps its own dark surround in fullscreen; the page
+   behind it must match or the viewer floats on a white sheet. */
+.viewer-body.fullscreen.fullscreen-raster { background: #0d0e11; }
 .viewer-media { max-width: 100%; max-height: 66vh; }
 .viewer-text { text-align: left; background: var(--fill); border-radius: 8px; padding: 12px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; overflow: auto; max-height: 66vh; }
 .viewer-md { text-align: left; max-height: 66vh; overflow: auto; }

@@ -37,6 +37,23 @@ export function activeJobCount() {
   return (store.jobs || []).filter((j) => j.active).length;
 }
 
+// Finished jobs stay listed until dismissed, but only the newest
+// MAX_FINISHED_JOBS of them: every image pull, stack run and long netdisk task
+// leaves a row behind, so an unbounded list grew for the life of the tab.
+const MAX_FINISHED_JOBS = 50;
+
+function capFinished(jobs) {
+  let finished = 0;
+  for (const j of jobs) if (!j.active) finished++;
+  if (finished <= MAX_FINISHED_JOBS) return jobs;
+  const drop = new Set(
+    jobs.filter((j) => !j.active)
+      .sort((a, b) => a.startedAt - b.startedAt)
+      .slice(0, finished - MAX_FINISHED_JOBS),
+  );
+  return jobs.filter((j) => !drop.has(j));
+}
+
 function generateId() {
   return `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -52,13 +69,11 @@ export function registerJob({ kind, name }) {
     name: name || kind,
     status: "running",
     startedAt: Date.now(),
-    logs: "",
     message: "Running…",
     controller,
     active: true,
   });
-  store.jobs = store.jobs || [];
-  store.jobs.push(job);
+  store.jobs = capFinished([...(store.jobs || []), job]);
 
   const setStatus = (status, message) => {
     job.status = status;
@@ -70,9 +85,7 @@ export function registerJob({ kind, name }) {
     id,
     signal: controller.signal,
     log(message) {
-      const line = String(message || "");
-      job.logs += line + "\n";
-      job.message = line;
+      job.message = String(message || "");
     },
     setStatus,
     done(message) {
@@ -164,7 +177,7 @@ function mergeBackupJobs(serverJobs) {
   // Preserve the local "removed" intent: a server job the user dismissed is
   // tracked in dismissedBackupIds so it doesn't reappear next poll.
   const kept = mapped.filter((j) => !dismissedBackupIds.has(j.id));
-  store.jobs = [...clientJobs, ...kept];
+  store.jobs = capFinished([...clientJobs, ...kept]);
 }
 
 function mapServerJob(j) {
@@ -241,7 +254,7 @@ function mergeUserTasks(serverTasks) {
     // by the fresh entry built from this poll's data.
   }
   const mapped = serverTasks.map(mapServerTask);
-  store.jobs = [...kept, ...mapped];
+  store.jobs = capFinished([...kept, ...mapped]);
 }
 
 function mapServerTask(t) {

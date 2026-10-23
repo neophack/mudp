@@ -1,0 +1,440 @@
+/* Styles for the YUV/RAW raster frame viewer (lib/yuv.js + lib/raw.js),
+   rendered inside the netdisk viewer dialog (Vue app) and the public share
+   page viewer. Loaded by src/styles/index.css and share.css.
+
+   The chrome is deliberately a fixed dark palette, independent of either
+   host's theme: a neutral dark surround is how professional image viewers
+   (FastRawViewer, Lightroom, Capture One) present sensor data, because a
+   themed background around the image skews color judgement. All tokens are
+   scoped to .raster-root so nothing leaks into (or depends on) the host. */
+
+.raster-root,
+.raster-root * { box-sizing: border-box; }
+
+.raster-root {
+  --rs-bg: #141519;          /* viewport surround */
+  --rs-chrome: #1b1d23;      /* toolbar / panel background */
+  --rs-hover: #262a33;
+  --rs-field: #101116;       /* input / select fields */
+  --rs-line: #2a2d37;
+  --rs-track: #343845;       /* slider tracks */
+  --rs-ink: #d7dae2;
+  --rs-dim: #8b90a0;
+  --rs-accent: #4c8dff;
+  --rs-danger: #ff7373;
+  display: flex;
+  flex-direction: column;
+  height: clamp(420px, 64vh, 780px);
+  min-height: 0;
+  text-align: left;
+  color: var(--rs-ink);
+  background: var(--rs-bg);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+/* Fullscreen hosts stretch the viewer to the window: the console dialog
+   (.viewer-body.fullscreen) and the share page (.viewer-fullscreen). */
+.viewer-body.fullscreen .raster-root { height: calc(100vh - 48px); }
+.modal-backdrop.viewer-fullscreen .raster-root { height: calc(100vh - 92px); }
+
+/* ---------------- Toolbar ---------------- */
+
+.raster-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  flex: none;
+  padding: 0 8px;
+  background: var(--rs-chrome);
+  border-bottom: 1px solid var(--rs-line);
+}
+
+.raster-tb-group { display: flex; align-items: center; gap: 2px; flex: none; }
+
+.raster-ibtn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rs-dim);
+  cursor: pointer;
+  padding: 0;
+}
+.raster-ibtn:hover:not(:disabled) { background: var(--rs-hover); color: var(--rs-ink); }
+.raster-ibtn:active:not(:disabled) { transform: translateY(0.5px); }
+.raster-ibtn:disabled { opacity: 0.35; cursor: default; }
+.raster-ibtn svg { width: 15px; height: 15px; fill: currentColor; display: block; }
+
+/* Small text buttons (Fit, 1:1). */
+.raster-tbtn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--rs-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rs-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.raster-tbtn:hover:not(:disabled) { background: var(--rs-hover); color: var(--rs-ink); }
+.raster-tbtn:disabled { opacity: 0.35; cursor: default; }
+
+/* Zoom percentage doubles as a "reset to 100%" button. */
+.raster-zoom-readout {
+  min-width: 54px;
+  height: 26px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rs-ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.raster-zoom-readout:hover { background: var(--rs-hover); }
+
+/* Frame scrubber fills the toolbar's remaining width. */
+.raster-tb-scrub { flex: 1; min-width: 120px; display: flex; align-items: center; gap: 10px; }
+.raster-tb-scrub input[type="range"] { flex: 1; }
+
+.raster-frame-readout {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  flex: none;
+  color: var(--rs-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.raster-frame-readout input {
+  width: 52px;
+  text-align: right;
+  padding: 3px 5px;
+}
+
+/* ---------------- Main area: viewport + parameter panel ---------------- */
+
+.raster-main { flex: 1; display: flex; min-height: 0; }
+
+/* The canvas wrap doubles as the zoom/pan scroll container. The canvas is a
+   flex child with margin:auto — centered when it fits, margins collapse to 0
+   when it overflows — which the cursor-anchored wheel-zoom scroll math in
+   lib/yuv.js depends on (it reads this padding). */
+.raster-canvas-wrap {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  display: flex;
+  padding: 20px;
+  background: #0d0e11;
+}
+.raster-canvas-wrap.panning { cursor: grabbing; }
+.raster-canvas {
+  margin: auto;
+  display: block;
+  flex: none;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+}
+
+.raster-panel {
+  width: 240px;
+  flex: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--rs-chrome);
+  border-left: 1px solid var(--rs-line);
+  padding-bottom: 8px;
+}
+.raster-root.panel-collapsed .raster-panel { display: none; }
+
+/* Panel sections. Always-visible header rows use .raster-sec-fixed; the rest
+   are native <details> collapsibles — a chevron rotates on open. */
+.raster-sec-fixed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 2px;
+}
+.raster-sec-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--rs-dim);
+}
+
+.raster-root details.raster-sec { border-bottom: 1px solid var(--rs-line); }
+.raster-root details.raster-sec:last-child { border-bottom: none; }
+.raster-root details.raster-sec > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 12px 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--rs-dim);
+}
+.raster-root details.raster-sec > summary::-webkit-details-marker { display: none; }
+.raster-root details.raster-sec > summary:hover { color: var(--rs-ink); }
+.raster-root details.raster-sec > summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  flex: none;
+  border-left: 4px solid currentColor;
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  transition: transform 0.15s ease;
+}
+.raster-root details.raster-sec[open] > summary::before { transform: rotate(90deg); }
+
+.raster-sec-body {
+  padding: 2px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ISP mode badge (Auto / Manual / Off) next to the section title. */
+.raster-isp-badge {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--rs-line);
+  color: var(--rs-dim);
+}
+.raster-isp-badge[data-mode="auto"] { color: var(--rs-accent); border-color: color-mix(in srgb, var(--rs-accent) 45%, transparent); }
+.raster-isp-badge[data-mode="manual"] { color: #e8b93d; border-color: rgba(232, 185, 61, 0.45); }
+
+/* ---------------- Form controls ---------------- */
+
+.raster-root input[type="number"],
+.raster-root select {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--rs-line);
+  border-radius: 6px;
+  background: var(--rs-field);
+  color: var(--rs-ink);
+  font-size: 12px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.raster-root input[type="number"]:focus-visible,
+.raster-root select:focus-visible { outline: none; border-color: var(--rs-accent); }
+.raster-root input:disabled,
+.raster-root select:disabled,
+.raster-root button:disabled { opacity: 0.38; cursor: default; }
+
+.raster-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--rs-dim);
+  min-width: 0;
+}
+.raster-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.raster-inline-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.raster-field-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--rs-dim); }
+.raster-field-inline input { width: 56px; }
+
+/* Slider rows: label + live value readout on one line, track below. */
+.isp-row { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.isp-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.isp-row-head label { font-size: 11.5px; color: var(--rs-dim); cursor: default; }
+.isp-val {
+  font-size: 11.5px;
+  color: var(--rs-ink);
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.isp-row-multi { gap: 6px; }
+.isp-row-multi > label { font-size: 11.5px; color: var(--rs-dim); }
+.isp-blc-grid, .raster-ccm-grid { display: grid; gap: 4px; }
+.isp-blc-grid { grid-template-columns: repeat(4, 1fr); }
+.isp-blc-grid input { padding: 4px 2px; text-align: center; }
+.raster-ccm-grid { grid-template-columns: repeat(3, 1fr); }
+.raster-ccm-grid input { padding: 4px 3px; text-align: right; }
+
+.isp-actions { display: flex; gap: 8px; }
+.raster-mini-btn {
+  flex: 1;
+  height: 26px;
+  border: 1px solid var(--rs-line);
+  border-radius: 6px;
+  background: var(--rs-field);
+  color: var(--rs-ink);
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.raster-mini-btn:hover:not(:disabled) { border-color: var(--rs-accent); color: #fff; }
+.raster-mini-btn:disabled { opacity: 0.38; cursor: default; }
+
+/* Toggle switch (ISP master, Loop, Sharpen, Gray). The <i> is the track;
+   the checkbox itself stays in the DOM (visually hidden but focusable). */
+.raster-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--rs-ink);
+  cursor: pointer;
+  user-select: none;
+}
+.raster-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  margin: 0;
+}
+.raster-switch i {
+  flex: none;
+  width: 30px;
+  height: 17px;
+  border-radius: 9px;
+  background: var(--rs-track);
+  position: relative;
+  transition: background 0.15s ease;
+}
+.raster-switch i::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #a8aeba;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.raster-switch input:checked + i { background: var(--rs-accent); }
+.raster-switch input:checked + i::after { transform: translateX(13px); background: #fff; }
+.raster-switch input:focus-visible + i { outline: 2px solid var(--rs-accent); outline-offset: 1px; }
+.raster-switch input:disabled + i { opacity: 0.38; }
+.raster-switch input:disabled { opacity: 1; }
+
+/* Sliders. Native range restyle for both engines; the toolbar frame scrubber
+   and the ISP parameter sliders share this base. */
+.raster-root input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.raster-root input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--rs-track);
+}
+.raster-root input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: #d0d4dd;
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.raster-root input[type="range"]:hover:not(:disabled)::-webkit-slider-thumb { background: #fff; }
+.raster-root input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--rs-track);
+}
+.raster-root input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #d0d4dd;
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.raster-root input[type="range"]:disabled { opacity: 0.35; cursor: default; }
+
+/* ---------------- Status bar ---------------- */
+
+.raster-statusbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 30px;
+  padding: 0 10px;
+  background: var(--rs-chrome);
+  border-top: 1px solid var(--rs-line);
+  font-size: 11.5px;
+  color: var(--rs-dim);
+}
+#rasterStatus {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+#rasterStatus.is-error { color: var(--rs-danger); }
+
+/* Pixel probe: color swatch + R/G/B/hex + image coordinates, monospaced and
+   tabular so the readout doesn't jitter as the cursor moves. */
+.raster-pixel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--rs-ink);
+}
+.raster-swatch {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+/* ---------------- Scrollbars ---------------- */
+
+.raster-canvas-wrap::-webkit-scrollbar,
+.raster-panel::-webkit-scrollbar { width: 10px; height: 10px; }
+.raster-canvas-wrap::-webkit-scrollbar-track,
+.raster-panel::-webkit-scrollbar-track { background: transparent; }
+.raster-canvas-wrap::-webkit-scrollbar-thumb,
+.raster-panel::-webkit-scrollbar-thumb {
+  background: var(--rs-track);
+  border-radius: 5px;
+  border: 2px solid #0d0e11;
+}
+.raster-panel::-webkit-scrollbar-thumb { border-color: var(--rs-chrome); }

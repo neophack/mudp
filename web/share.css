@@ -2,6 +2,10 @@
    self-contained — the page loads no framework — and visually aligned with the
    Element-UI console (brand #3370ff, same greys and radii). */
 
+/* YUV/RAW frame viewer chrome (lib/yuv.js renders it inside this page's
+   viewer modal; it ships its own scoped dark palette). */
+@import "./lib/raster.css";
+
 :root {
   --brand: #3370ff;
   --brand-dark: #2757c8;
@@ -194,6 +198,9 @@ td.actions { text-align: right; white-space: nowrap; }
 .modal-backdrop.viewer-fullscreen .modal { max-width: none; width: 100vw; height: 100vh; max-height: none; border-radius: 0; }
 .modal-backdrop.viewer-fullscreen .modal-head { position: absolute; top: 0; left: 0; right: 0; z-index: 2; background: rgba(255, 255, 255, 0.92); }
 .modal-backdrop.viewer-fullscreen .viewer-body { max-height: none; height: 100vh; padding-top: 52px; }
+/* Video's overlay fullscreen is a player surface: black backdrop, video fills the viewport. */
+.modal-backdrop.viewer-fullscreen.viewer-video { background: #000; }
+.modal-backdrop.viewer-fullscreen.viewer-video .viewer-media { max-height: calc(100vh - 76px); }
 .viewer-loading, .viewer-error { color: var(--muted); padding: 40px 0; }
 .viewer-error { color: var(--danger); }
 .viewer-media { max-width: 100%; max-height: 64vh; }

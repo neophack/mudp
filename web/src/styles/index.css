@@ -5,6 +5,11 @@
    and every pack defines both. Pack blocks live at the end of the token
    section; everything else derives from the variables below. */
 
+/* YUV/RAW frame viewer chrome (lib/yuv.js + lib/raw.js render it inside the
+   netdisk viewer dialog; it ships its own scoped dark palette so it looks the
+   same in every theme pack and on the public share page). */
+@import "../../lib/raster.css";
+
 :root {
   /* Accent base color — the single value every pack overrides; the whole
      tint/tint-line/dark ladder and Element's primary scale derive from it

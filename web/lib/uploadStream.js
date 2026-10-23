@@ -1,12 +1,11 @@
 // Bounded async iterators that feed a streaming upload queue.
 //
-// The three adapters here are the memory side of "don't crash on a
+// The two adapters here are the memory side of "don't crash on a
 // million-file folder": none of them ever materialize the whole file list.
 //   - makeFileIterator   : wraps an already-lazy FileList/array (input picks).
 //   - makeDropIterator   : walks a dropped folder behind a tiny bounded buffer so
 //                          traversal and upload run concurrently and only ~one
 //                          batch of File references is held at a time.
-//   - prependIterator    : pushes a peeked entry back to the head of a stream.
 //
 // All return an async iterator (have [Symbol.asyncIterator]) so a consumer can
 // write `for await (const entry of it)` or call .next() directly.
@@ -24,21 +23,6 @@ export function makeFileIterator(list) {
       const e = list[i++];
       const entry = e && e.file ? e : { file: e, relPath: e.webkitRelativePath || e.name };
       return Promise.resolve({ done: false, value: entry });
-    },
-    [Symbol.asyncIterator]() { return this; },
-  };
-}
-
-// prependIterator returns an async iterator that yields `first` and then
-// continues with `rest`. Used to push a peeked entry back to the head of the
-// stream when it overflowed the current batch's byte cap.
-export function prependIterator(rest, first) {
-  let emitted = false;
-  const restIter = rest[Symbol.asyncIterator] ? rest[Symbol.asyncIterator]() : rest;
-  return {
-    next() {
-      if (!emitted) { emitted = true; return Promise.resolve({ done: false, value: first }); }
-      return Promise.resolve(restIter.next());
     },
     [Symbol.asyncIterator]() { return this; },
   };

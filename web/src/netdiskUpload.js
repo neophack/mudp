@@ -7,7 +7,7 @@ import { readCSRFCookie } from "@/api";
 import { store } from "@/store";
 import { tt } from "@/i18n";
 import { showUploadOverlay } from "@/uploadOverlay";
-import { makeFileIterator, prependIterator, makeDropIterator } from "@/lib/uploadStream.js";
+import { makeFileIterator, makeDropIterator } from "@/lib/uploadStream.js";
 import { hashFileCRC32 } from "@/lib/hashfile.js";
 import { uploadLargeFile } from "@/lib/chunkupload.js";
 import { uploadWithProgress } from "@/lib/upload.js";
@@ -121,12 +121,18 @@ export async function uploadFilesHandler(source, path, onDone) {
     return;
   }
 
-  const nextEntry = () => Promise.resolve(iter.next()).then((r) => (r.done ? null : r.value));
-
-  // failedFiles collects entries the server rejected (write error or CRC32
-  // mismatch) so they can be retried. Appended to while batches resolve, so it
-  // must not be re-traversed concurrently — only after the run completes.
-  const failedFiles = [];
+  // pending holds the one entry peeked past the previous batch's byte cap; it
+  // opens the next batch.
+  let pending = null;
+  const nextEntry = async () => {
+    if (pending) {
+      const entry = pending;
+      pending = null;
+      return entry;
+    }
+    const r = await iter.next();
+    return r.done ? null : r.value;
+  };
 
   function uploadBatch(cur, curBytes) {
     const slots = cur.map((e) =>
@@ -184,7 +190,6 @@ export async function uploadFilesHandler(source, path, onDone) {
         }
       }
     }
-    failedFiles.push(entry);
     failed++;
     armRetry(slot, entry, lastErr?.message);
   }
@@ -233,7 +238,6 @@ export async function uploadFilesHandler(source, path, onDone) {
     } catch (err) {
       // Network/HTTP failure for the whole request: every file is retriable.
       for (let i = 0; i < cur.length; i++) {
-        failedFiles.push(cur[i]);
         failed++;
         armRetry(slots[i], cur[i], err.message);
       }
@@ -251,7 +255,6 @@ export async function uploadFilesHandler(source, path, onDone) {
         overlay.settleActive(slots[i], "done");
         ok++;
       } else {
-        failedFiles.push(cur[i]);
         failed++;
         const why = r.error || (clientCrc32 ? tt("netdisk.crc32Mismatch") : "Failed");
         armRetry(slots[i], cur[i], why);
@@ -266,8 +269,6 @@ export async function uploadFilesHandler(source, path, onDone) {
   function armRetry(slot, entry, msg) {
     overlay.markFailedWithRetry(slot, msg, async () => {
       overlay.reactivate(slot, { name: entry.relPath || entry.file.name, size: entry.file.size });
-      const idx = failedFiles.indexOf(entry);
-      if (idx >= 0) failedFiles.splice(idx, 1);
       failed = Math.max(0, failed - 1);
       refreshOverall();
       await sendBatch([entry], [slot], entry.file.size || 0);
@@ -298,7 +299,7 @@ export async function uploadFilesHandler(source, path, onDone) {
         const size = entry.file.size || 0;
         // A single oversized file forms its own batch rather than being split.
         if (cur.length > 0 && curBytes + size > UPLOAD_BATCH_BYTES) {
-          iter = prependIterator(iter, entry); // push back for the next batch
+          pending = entry; // opens the next batch
           break;
         }
         cur.push(entry);

@@ -15,7 +15,6 @@
 // 4 MiB slice at a time, but unbounded parallelism would still allocate one
 // Worker + transferable per file.
 const MAX_WORKERS = 4;
-const workerUrl = new URL("./crc32worker.js", import.meta.url).href;
 
 let worker = null;
 let nextId = 1;
@@ -27,8 +26,13 @@ function ensureWorker() {
   if (worker) return worker;
   try {
     // A module worker would let us import, but classic workers are more broadly
-    // supported and crc32worker.js is self-contained.
-    worker = new Worker(workerUrl);
+    // supported and crc32worker.js is self-contained. The URL must be written
+    // inline in the constructor: that is the form Vite recognizes and emits as
+    // a same-origin worker file. A URL computed beforehand is treated as a
+    // plain asset and inlined as a data: URL, and a data: worker runs in an
+    // opaque origin where every File it reads stays pinned in memory, so a
+    // long upload grew the browser by many GB.
+    worker = new Worker(new URL("./crc32worker.js", import.meta.url));
     worker.onmessage = (e) => {
       const { id, type } = e.data || {};
       const slot = pending.get(id);

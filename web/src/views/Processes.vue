@@ -152,13 +152,15 @@ export default {
       );
     },
   },
-  async mounted() {
+  mounted() {
     // The Feishu send history only exists once an admin configures SSO; the
     // public config endpoint says whether that is the case.
     api("/api/feishu/config")
       .then((cfg) => { this.feishuEnabled = !!cfg.enabled; })
       .catch(() => { this.feishuEnabled = false; });
-    await this.refresh();
+    // Not awaited: the timer must exist before an early unmount can run
+    // beforeUnmount, or it would never be cleared.
+    this.refresh();
     this.timer = setInterval(this.refresh, POLL_MS);
   },
   beforeUnmount() {

@@ -551,10 +551,11 @@ function openViewer(path) {
   const kind = previewKind(name);
   resetViewerState(); // clears any previous fullscreen / cached PDF
   $("#viewerTitle").textContent = name;
-  // Hide the fullscreen button for types that can't use it; video is
-  // deliberately fullscreen-free and always plays inline.
+  // Hide the fullscreen button for types that can't use it (audio has no
+  // visual surface worth fullscreening).
   const fsBtn = $("#viewerFullscreen");
-  if (fsBtn) fsBtn.hidden = !["pdf", "image", "yuv", "raw", "csv", "docx", "xlsx"].includes(kind);
+  if (fsBtn) fsBtn.hidden = !["pdf", "image", "video", "yuv", "raw", "csv", "docx", "xlsx"].includes(kind);
+  $("#viewerBackdrop").classList.toggle("viewer-video", kind === "video");
   $("#viewerDownload").href = downloadURL(path);
   $("#viewerBackdrop").hidden = false;
   if (!kind) {
@@ -585,6 +586,8 @@ function closeViewer() {
 // resetViewerState clears fullscreen and cached PDF/YUV state. Called on close
 // and before each new preview so the previous file's resources don't leak.
 function resetViewerState() {
+  // pdf.js keeps a document loaded in its worker until destroyed.
+  if (pdfRenderState) pdfRenderState.pdf.destroy();
   pdfRenderState = null;
   if (yuvController) {
     yuvController.destroy();
@@ -674,7 +677,7 @@ async function renderViewerContent(kind, name, url, path) {
       body.innerHTML = `<audio class="viewer-media" controls preload="metadata" src="${url}"></audio>`;
       return;
     case "video":
-      body.innerHTML = `<video class="viewer-media" controls controlslist="nofullscreen" preload="metadata" src="${url}"></video>`;
+      body.innerHTML = `<video class="viewer-media" controls preload="metadata" src="${url}"></video>`;
       return;
     case "yuv":
       return renderYuv(url, rasterURL(path), body, name);

@@ -1,7 +1,7 @@
 // YUV raw-file viewer: previews raw YUV byte streams by rendering them on a
 // canvas.
 //
-// Used by both the in-app netdisk viewer (modules/netdisk.js) and the public
+// Used by both the in-app netdisk viewer (ViewerDialog.vue) and the public
 // share page (share.js). Both call openYuvViewer() with two URLs for the file:
 //   - rawURL  — the byte-serving endpoint (/api/netdisk/raw), used only to
 //               learn the file size (and thus the frame count) via a Range
@@ -9,15 +9,17 @@
 //   - rasterURL — the server-side decode endpoint (/api/netdisk/raster) that
 //               decodes one frame and returns it as a JPEG.
 //
-// Decoding (YUV->RGB, the ISP pass) now runs entirely in the backend
-// (internal/raster), which is the same code that used to be compiled to WASM.
-// This file just knows each format's per-frame byte size (to compute the frame
-// count from the probed file size) and asks the backend for a JPEG per frame.
+// Decoding (YUV->RGB, the ISP pass) runs entirely in the backend
+// (internal/raster). This file just knows each format's per-frame byte size
+// (to compute the frame count from the probed file size) and asks the backend
+// for a JPEG per frame.
 //
-// The generic scaffold (canvas, frame nav/playback, zoom, ISP toggle + the
-// collapsible ISP parameter panel, JPEG fetching, cached wheel-zoom) lives in
-// openRasterFrameViewer and is also reused by the RAW Bayer viewer in
-// lib/raw.js — see that function for the shared contract.
+// The UI is a professional-viewer layout (lib/raster.css): a toolbar with
+// frame transport + scrubber + zoom cluster, a dark viewport with wheel-zoom /
+// drag-pan / pixel-probe, a collapsible right-hand parameter panel, and a
+// status bar. The generic scaffold lives in openRasterFrameViewer and is also
+// reused by the RAW Bayer viewer in lib/raw.js — see that function for the
+// shared contract.
 
 // ---------------- Format table ----------------
 
@@ -148,12 +150,12 @@ export { YUV_FORMATS };
 
 // ---------------- ISP parameter panel ----------------
 //
-// The collapsible panel under the master ISP checkbox exposes the ported
-// MiniIsp pipeline's tunables (see internal/raster/miniisp.go). Until the user
-// touches a control the viewer stays in "auto" mode and sends no ispX
-// parameters — the backend then runs the kind's defaults (board-calibrated
-// for RAW, neutral for YUV). The first edit flips to manual mode and every
-// subsequent frame request carries the full parameter set.
+// The ISP section of the parameter panel exposes the ported MiniIsp pipeline's
+// tunables (see internal/raster/miniisp.go). Until the user touches a control
+// the viewer stays in "auto" mode and sends no ispX parameters — the backend
+// then runs the kind's defaults (board-calibrated for RAW, neutral for YUV).
+// The first edit flips to manual mode and every subsequent frame request
+// carries the full parameter set.
 
 // CCM presets, mirrored from internal/raster/miniisp.go. Index 0 is "manual"
 // (the 3x3 matrix inputs become editable); the RAW default is the board's
@@ -236,17 +238,31 @@ export function ispQuerySuffix(state) {
   return `&${parts.join("&")}`;
 }
 
+// ---------------- Toolbar icons ----------------
+
+// 16x16 filled icons, currentColor. Inline SVG keeps the viewer
+// framework-free (no icon-font dependency on the share page).
+const ICONS = {
+  prev: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.8h1.6v10.4H3zM13 2.8 6.2 8l6.8 5.2z"/></svg>`,
+  next: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.4 2.8H13v10.4h-1.6zM3 2.8 9.8 8 3 13.2z"/></svg>`,
+  play: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 2.6v10.8L13.4 8z"/></svg>`,
+  pause: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.8h2.8v10.4H4zM9.2 2.8H12v10.4H9.2z"/></svg>`,
+  zoomIn: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 1.5a5 5 0 1 0 3.09 8.93l3.49 3.49 1.06-1.06-3.49-3.49A5 5 0 0 0 6.5 1.5m0 1.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7M5.75 4.2h1.5v1.55h1.55v1.5H7.25V8.8h-1.5V7.25H4.2v-1.5h1.55z"/></svg>`,
+  zoomOut: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 1.5a5 5 0 1 0 3.09 8.93l3.49 3.49 1.06-1.06-3.49-3.49A5 5 0 0 0 6.5 1.5m0 1.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7M4.2 5.75h4.6v1.5H4.2z"/></svg>`,
+  panel: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h13v1.4h-13zM1.5 7.3h13v1.4h-13zM1.5 11.1h13v1.4h-13z"/><circle cx="5" cy="4.2" r="1.9" fill="#1b1d23"/><circle cx="11" cy="8" r="1.9" fill="#1b1d23"/><circle cx="6.5" cy="11.8" r="1.9" fill="#1b1d23"/></svg>`,
+};
+
 // ---------------- Viewer ----------------
-//
+
 // openYuvViewer builds the YUV preview UI inside bodyEl. It returns a control
 // object with destroy() so the host can tear down fetches + canvas when the
 // modal closes (registered via onModalClose / resetViewerState).
 //
 // It's a thin config wrapper over openRasterFrameViewer, the generic frame
-// viewer scaffold (canvas, dimension inputs, frame nav/playback, zoom, ISP
-// toggle, JPEG fetching) shared with the RAW Bayer viewer in lib/raw.js — only
-// the format dropdown, the frameSize function, and the per-frame raster URL
-// builder are YUV-specific.
+// viewer scaffold (toolbar, canvas, parameter panel, frame nav/playback, zoom,
+// ISP toggle, JPEG fetching) shared with the RAW Bayer viewer in lib/raw.js —
+// only the format dropdown, the frameSize function, and the per-frame raster
+// URL builder are YUV-specific.
 
 export function openYuvViewer({ name, url, rasterUrl, bodyEl }) {
   const parsed = parseYuvInfoFromName(name) || {};
@@ -266,10 +282,9 @@ export function openYuvViewer({ name, url, rasterUrl, bodyEl }) {
     // the user can still toggle it off to compare. The ISP pass runs server-side.
     isp: !!parsed.linear,
     extraControlsHtml:
-      `<div class="raster-control-group">` +
-        `<label>Format</label>` +
+      `<label class="raster-field">Format` +
         `<select id="yuvFormat">${formatOptionsHtml}</select>` +
-      `</div>`,
+      `</label>`,
     bindExtraControls(root, state, onExtraChange) {
       state.format = initialFormat;
       const formatSelect = root.querySelector("#yuvFormat");
@@ -287,11 +302,16 @@ export function openYuvViewer({ name, url, rasterUrl, bodyEl }) {
 }
 
 // openRasterFrameViewer is the generic scaffold behind both the YUV and RAW
-// viewers: it owns the canvas, dimension inputs, frame slider/playback, zoom,
-// ISP toggle, and on-demand JPEG fetching. Callers supply the format-specific
-// pieces: extra control markup + wiring (bindExtraControls), and functions to
-// compute per-frame byte size (frameSize — only for the frame-count math) and
-// build the backend decode URL for the current frame (frameURL).
+// viewers. Layout (lib/raster.css):
+//
+//   ┌ toolbar: ◀ ▶ ▶|  [frame scrubber  3/120]  − 100% + Fit 1:1  ⚙ ┐
+//   │ viewport (dark, wheel-zoom, drag-pan, pixel probe) │ panel    │
+//   └ status bar: dims · format · frame · zoom · size | #hex R G B ┘
+//
+// Callers supply the format-specific pieces: extra control markup + wiring
+// (bindExtraControls), and functions to compute per-frame byte size (frameSize
+// — only for the frame-count math) and build the backend decode URL for the
+// current frame (frameURL).
 //
 // Decoding is server-side: each paint fetches one JPEG from frameURL, decodes
 // it to an ImageBitmap, and draws it onto the canvas at the current zoom. The
@@ -326,6 +346,9 @@ export function openRasterFrameViewer({
     frameCount: 0,
     totalBytes: 0,
     zoom: 1,
+    // Until the user zooms manually, the first successfully painted frame is
+    // auto-fitted to the viewport (what every desktop viewer does on open).
+    autoFit: true,
     // Manual ISP panel state: ispParams mirrors the panel controls,
     // ispManual flips on the first user edit (until then no ispX params are
     // sent and the backend runs its defaults), and ispRev keys the frame
@@ -357,10 +380,12 @@ export function openRasterFrameViewer({
   };
 
   bodyEl.innerHTML = rasterLayoutHtml({ isp: state.isp, rawMode: state.rawMode, extraControlsHtml });
+  const rootEl = bodyEl.querySelector("#rasterRoot");
   const canvas = bodyEl.querySelector("#rasterCanvas");
   const canvasWrap = bodyEl.querySelector("#rasterCanvasWrap");
   const ctx = canvas.getContext("2d");
   const ispCheckbox = bodyEl.querySelector("#rasterIsp");
+  const ispBadge = bodyEl.querySelector("#rasterIspBadge");
   const widthInput = bodyEl.querySelector("#rasterWidth");
   const heightInput = bodyEl.querySelector("#rasterHeight");
   const frameSlider = bodyEl.querySelector("#rasterFrameSlider");
@@ -372,10 +397,15 @@ export function openRasterFrameViewer({
   const loopCheckbox = bodyEl.querySelector("#rasterLoop");
   const fpsInput = bodyEl.querySelector("#rasterFps");
   const zoomVal = bodyEl.querySelector("#rasterZoomVal");
+  const zoomInBtn = bodyEl.querySelector("#rasterZoomIn");
+  const zoomOutBtn = bodyEl.querySelector("#rasterZoomOut");
   const zoomFitBtn = bodyEl.querySelector("#rasterZoomFit");
   const zoomResetBtn = bodyEl.querySelector("#rasterZoomReset");
+  const panelToggle = bodyEl.querySelector("#rasterPanelToggle");
   const status = bodyEl.querySelector("#rasterStatus");
-  const colorTip = bodyEl.querySelector("#rasterColorTip");
+  const pixelBox = bodyEl.querySelector("#rasterPixel");
+  const pixelSwatch = bodyEl.querySelector("#rasterPixelSwatch");
+  const pixelText = bodyEl.querySelector("#rasterPixelText");
 
   // ISP panel plumbing. paintCurrentFrame is defined below via function
   // hoisting, so the debounce timer can reference it directly.
@@ -392,7 +422,16 @@ export function openRasterFrameViewer({
   function markIspManual() {
     state.ispManual = true;
     state.ispRev++;
+    updateIspBadge();
     if (state.isp) scheduleIspRepaint();
+  }
+  // The badge in the ISP section header tells at a glance which parameter
+  // source is active: the backend defaults (Auto), the panel (Manual), or
+  // no ISP pass at all (Off).
+  function updateIspBadge() {
+    const mode = !state.isp ? "off" : state.ispManual ? "manual" : "auto";
+    ispBadge.dataset.mode = mode;
+    ispBadge.textContent = mode === "off" ? "Off" : mode === "manual" ? "Manual" : "Auto";
   }
   // The cached bitmap's key is the frame's own fetch URL, which already
   // encodes every input that decides the decoded pixels: frame index,
@@ -405,11 +444,23 @@ export function openRasterFrameViewer({
   function frameCacheKey() {
     return frameURL(state);
   }
+  function setStatus(text, isError = false) {
+    status.textContent = text;
+    status.classList.toggle("is-error", isError);
+  }
+  function statusLine() {
+    const size = state.totalBytes > 0 ? ` · ${fmtBytes(state.totalBytes)}` : "";
+    return (
+      `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount}` +
+      ` · zoom ${Math.round(state.zoom * 100)}%${ispStatusSuffix(state)}${size}`
+    );
+  }
 
   widthInput.value = state.width;
   heightInput.value = state.height;
-  if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
+  zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
   fpsInput.value = state.fps;
+  updateIspBadge();
 
   if (bindExtraControls) bindExtraControls(bodyEl, state, recomputeFrameCount);
 
@@ -437,10 +488,11 @@ export function openRasterFrameViewer({
     frameSlider.value = state.frame;
     frameInput.value = state.frame + 1;
     frameInput.max = state.frameCount;
-    frameMax.textContent = ` / ${state.frameCount}`;
+    frameMax.textContent = `/ ${state.frameCount}`;
     // Dim the navigation/playback controls when there's only one frame.
     const multi = state.frameCount > 1;
     frameSlider.disabled = !multi;
+    frameInput.disabled = !multi;
     prevBtn.disabled = !multi;
     nextBtn.disabled = !multi;
     playBtn.disabled = !multi;
@@ -452,11 +504,11 @@ export function openRasterFrameViewer({
     if (state.destroyed) return;
     const per = frameSize(state);
     if (state.width <= 0 || state.height <= 0) {
-      status.textContent = "Enter a valid width and height.";
+      setStatus("Enter a valid width and height.", true);
       return;
     }
     if (per <= 0) {
-      status.textContent = "Unsupported dimensions for this format.";
+      setStatus("Unsupported dimensions for this format.", true);
       return;
     }
     // Cancel any in-flight fetch before starting a new one so rapid frame
@@ -464,7 +516,7 @@ export function openRasterFrameViewer({
     if (state.abort) state.abort.abort();
     const controller = new AbortController();
     state.abort = controller;
-    status.textContent = `Loading frame ${state.frame + 1}/${state.frameCount}…`;
+    setStatus(`Loading frame ${state.frame + 1}/${state.frameCount}…`);
     // Capture the key before awaiting so the cache records the URL that was
     // actually fetched, not whatever the controls hold when it resolves.
     const key = frameCacheKey();
@@ -484,11 +536,18 @@ export function openRasterFrameViewer({
       state.cachedBitmap = bitmap;
       state.cachedFrame = state.frame;
       state.cachedKey = key;
-      if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
-      status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${ispStatusSuffix(state)}`;
+      zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
+      setStatus(statusLine());
+      // First paint: fit the frame to the viewport once, synchronously (the
+      // host laid the viewer out before this fetch resolved) — unless the
+      // user already zoomed manually.
+      if (state.autoFit) {
+        state.autoFit = false;
+        fitToWindow();
+      }
     } catch (err) {
       if (state.destroyed || controller.signal.aborted) return;
-      status.textContent = `Failed to load frame: ${err.message || err}`;
+      setStatus(`Failed to load frame: ${err.message || err}`, true);
     } finally {
       if (state.abort === controller) state.abort = null;
     }
@@ -521,6 +580,7 @@ export function openRasterFrameViewer({
   // JPEG) before the canvas has its new size to scroll against.
   function applyZoom(newZoom, anchorClientX, anchorClientY) {
     const clamped = Math.max(0.1, Math.min(64, newZoom));
+    state.autoFit = false;
     if (clamped === state.zoom) return;
     let anchor = null;
     if (anchorClientX != null && anchorClientY != null) {
@@ -537,7 +597,7 @@ export function openRasterFrameViewer({
       };
     }
     state.zoom = clamped;
-    if (zoomVal) zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
+    zoomVal.textContent = `${Math.round(state.zoom * 100)}%`;
     const canRedrawFromCache = !!state.cachedBitmap && state.cachedKey === frameCacheKey();
     if (canRedrawFromCache) {
       // Fast path: same pixel data, only the display scale changed. Redraw
@@ -545,7 +605,7 @@ export function openRasterFrameViewer({
       // immediately — no network round-trip, so there's no window for a
       // stale/out-of-order completion to jerk the view during fast scrolling.
       drawFrame(ctx, canvas, state.cachedBitmap, state.width, state.height, state.zoom);
-      status.textContent = `${state.width}×${state.height} ${statusLabel(state)} · frame ${state.frame + 1}/${state.frameCount} · zoom ${Math.round(state.zoom * 100)}%${ispStatusSuffix(state)}`;
+      setStatus(statusLine());
       if (anchor) {
         applyAnchorScroll(anchor);
       }
@@ -593,19 +653,23 @@ export function openRasterFrameViewer({
     const padY = parseFloat(cs.paddingTop || "0") + parseFloat(cs.paddingBottom || "0");
     const availW = Math.max(1, canvasWrap.clientWidth - padX);
     const availH = Math.max(1, canvasWrap.clientHeight - padY);
-    return Math.min(availW / state.width, availH / state.height);
+    const z = Math.min(availW / state.width, availH / state.height);
+    // Guards for headless/hidden hosts where clientWidth is 0 or the
+    // dimensions aren't numbers yet: fall back to 100% instead of NaN.
+    return Number.isFinite(z) && z > 0 ? z : 1;
   }
   function fitToWindow() {
     applyZoom(computeFitZoom());
   }
   function onIspToggle() {
     state.isp = !!ispCheckbox.checked;
+    updateIspBadge();
     updateIspPanelDisabled();
     paintCurrentFrame();
   }
 
-  // ---- Collapsible ISP parameter panel ----
-  // All controls live inside #rasterIspPanel (a <details>, collapsed by
+  // ---- ISP parameter panel ----
+  // The tunables live inside #rasterIspPanel (a <details>, collapsed by
   // default). They write into state.ispParams and go through markIspManual(),
   // which flips the viewer into manual mode and schedules a debounced repaint.
   const ispPanel = bodyEl.querySelector("#rasterIspPanel");
@@ -664,7 +728,7 @@ export function openRasterFrameViewer({
     updateIspPanelDisabled();
   }
 
-  // The panel only has effect while the master ISP checkbox is on, and the
+  // The panel only has effect while the master ISP switch is on, and the
   // sharpen strength/radius controls only while sharpening is enabled.
   function updateIspPanelDisabled() {
     const sharpenOn = state.ispParams.sharpenOn;
@@ -754,7 +818,7 @@ export function openRasterFrameViewer({
   awbBtn.addEventListener("click", async () => {
     if (state.destroyed || !state.isp) return;
     awbBtn.disabled = true;
-    status.textContent = "Computing gray-world AWB…";
+    setStatus("Computing gray-world AWB…");
     try {
       const res = await fetch(`${frameURL(state)}&awb=1`, { credentials: "same-origin" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -765,7 +829,7 @@ export function openRasterFrameViewer({
       syncIspControls();
       markIspManual();
     } catch (err) {
-      if (!state.destroyed) status.textContent = `AWB failed: ${err.message || err}`;
+      if (!state.destroyed) setStatus(`AWB failed: ${err.message || err}`, true);
     } finally {
       if (!state.destroyed) awbBtn.disabled = false;
     }
@@ -779,6 +843,7 @@ export function openRasterFrameViewer({
     state.ispManual = false;
     state.ispRev++;
     syncIspControls();
+    updateIspBadge();
     if (state.isp) paintCurrentFrame();
   });
 
@@ -829,13 +894,14 @@ export function openRasterFrameViewer({
   }
 
   // --- Playback: play advances one frame per 1000/fps ms, looping or stopping
-  // at the last frame depending on the Loop checkbox. Pause on user frame nav
+  // at the last frame depending on the Loop switch. Pause on user frame nav
   // (prev/next/slider) is intentionally NOT done — the user may scrub while
   // playing — but pressing Play again toggles to Pause.
   function play() {
     if (state.playing || state.frameCount <= 1) return;
     state.playing = true;
-    playBtn.textContent = "⏸ Pause";
+    playBtn.innerHTML = ICONS.pause;
+    playBtn.title = "Pause (Space)";
     scheduleNextFrame();
   }
   function pause() {
@@ -844,7 +910,10 @@ export function openRasterFrameViewer({
       clearTimeout(state.playTimer);
       state.playTimer = null;
     }
-    if (playBtn) playBtn.textContent = "▶ Play";
+    if (playBtn) {
+      playBtn.innerHTML = ICONS.play;
+      playBtn.title = "Play (Space)";
+    }
   }
   function togglePlay() {
     if (state.playing) pause();
@@ -872,6 +941,65 @@ export function openRasterFrameViewer({
     }, interval);
   }
 
+  // --- Keyboard shortcuts, the way desktop viewers bind them: arrows step
+  // frames, Space toggles playback, +/- zoom, 0 fits, 1 goes to 100%. Skipped
+  // while focus is in a form control so typing dimensions never fights the
+  // shortcuts. The listener dies with the viewer (removed in destroy()).
+  function onKeydown(e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    switch (e.key) {
+      case "ArrowLeft":
+        onFrameChange(state.frame - 1);
+        e.preventDefault();
+        break;
+      case "ArrowRight":
+        onFrameChange(state.frame + 1);
+        e.preventDefault();
+        break;
+      case " ":
+        togglePlay();
+        e.preventDefault();
+        break;
+      case "+":
+      case "=":
+        applyZoom(state.zoom * 1.25);
+        break;
+      case "-":
+      case "_":
+        applyZoom(state.zoom / 1.25);
+        break;
+      case "0":
+        fitToWindow();
+        break;
+      case "1":
+        applyZoom(1);
+        break;
+    }
+  }
+
+  // --- Pixel probe: hovering the canvas reads the pixel under the cursor into
+  // the status bar (swatch + R,G,B + hex + image coordinates) — the info-panel
+  // readout professional viewers put under the image. Uses a single-pixel
+  // getImageData read, cheap enough for mousemove.
+  function onCanvasMove(e) {
+    const rect = canvas.getBoundingClientRect();
+    const px = Math.floor(e.clientX - rect.left);
+    const py = Math.floor(e.clientY - rect.top);
+    if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height || state.zoom <= 0) {
+      pixelBox.hidden = true;
+      return;
+    }
+    const [r, g, b] = ctx.getImageData(px, py, 1, 1).data;
+    const hex = `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1).toUpperCase()}`;
+    const ix = Math.min(state.width - 1, Math.floor(px / state.zoom));
+    const iy = Math.min(state.height - 1, Math.floor(py / state.zoom));
+    pixelSwatch.style.background = hex;
+    pixelText.textContent = `${hex}  R${r} G${g} B${b}  ${ix},${iy}`;
+    pixelBox.hidden = false;
+  }
+
   widthInput.addEventListener("change", onDimChange);
   heightInput.addEventListener("change", onDimChange);
   ispCheckbox.addEventListener("change", onIspToggle);
@@ -885,8 +1013,16 @@ export function openRasterFrameViewer({
     state.fps = Math.max(1, Math.min(120, parseInt(fpsInput.value, 10) || 24));
     fpsInput.value = state.fps;
   });
+  zoomOutBtn.addEventListener("click", () => applyZoom(state.zoom / 1.25));
+  zoomInBtn.addEventListener("click", () => applyZoom(state.zoom * 1.25));
+  // The percentage readout is itself a button: click it to snap to 100%.
+  zoomVal.addEventListener("click", () => applyZoom(1));
   zoomFitBtn.addEventListener("click", fitToWindow);
   zoomResetBtn.addEventListener("click", () => applyZoom(1));
+  panelToggle.addEventListener("click", () => {
+    const collapsed = rootEl.classList.toggle("panel-collapsed");
+    panelToggle.setAttribute("aria-pressed", String(!collapsed));
+  });
   // Wheel zoom on the canvas area. passive:false so we can preventDefault and
   // stop the page/scroll container from also scrolling while zooming.
   canvasWrap.addEventListener("wheel", onWheel, { passive: false });
@@ -895,34 +1031,9 @@ export function openRasterFrameViewer({
   canvasWrap.addEventListener("pointerup", endPan);
   canvasWrap.addEventListener("pointercancel", endPan);
   canvasWrap.addEventListener("dblclick", onDblClick);
-  // --- Color value tooltip: shows R,G,B + hex under the cursor when hovering
-  // over the canvas. Uses a single-pixel getImageData read — cheap enough for
-  // mousemove, no full-frame copy needed. The tip uses position:fixed so it
-  // always tracks the cursor in viewport coordinates, immune to scroll/zoom
-  // changes that would otherwise shift a position:absolute element inside the
-  // scroll container.
-  canvas.addEventListener("mousemove", (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const px = Math.floor(e.clientX - rect.left);
-    const py = Math.floor(e.clientY - rect.top);
-    if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) {
-      colorTip.hidden = true;
-      return;
-    }
-    const [r, g, b] = ctx.getImageData(px, py, 1, 1).data;
-    const hex = `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1).toUpperCase()}`;
-    colorTip.textContent = `R${r} G${g} B${b}  ${hex}`;
-    colorTip.hidden = false;
-    let tipX = e.clientX + 14;
-    let tipY = e.clientY + 14;
-    const tipW = colorTip.offsetWidth || 180;
-    const tipH = colorTip.offsetHeight || 22;
-    if (tipX + tipW > window.innerWidth) tipX = e.clientX - tipW - 6;
-    if (tipY + tipH > window.innerHeight) tipY = e.clientY - tipH - 6;
-    colorTip.style.left = `${tipX}px`;
-    colorTip.style.top = `${tipY}px`;
-  });
-  canvas.addEventListener("mouseleave", () => { colorTip.hidden = true; });
+  canvas.addEventListener("mousemove", onCanvasMove);
+  canvas.addEventListener("mouseleave", () => { pixelBox.hidden = true; });
+  document.addEventListener("keydown", onKeydown);
 
   return {
     state,
@@ -932,6 +1043,7 @@ export function openRasterFrameViewer({
     destroy() {
       state.destroyed = true;
       pause();
+      document.removeEventListener("keydown", onKeydown);
       if (ispDebounceTimer) {
         clearTimeout(ispDebounceTimer);
         ispDebounceTimer = null;
@@ -948,62 +1060,80 @@ export function openRasterFrameViewer({
 
 function rasterLayoutHtml({ isp, rawMode, extraControlsHtml }) {
   return (
-    `<div class="viewer-raster-layout">` +
-      `<div class="raster-canvas-wrap" id="rasterCanvasWrap"><canvas id="rasterCanvas" class="viewer-page raster-canvas"></canvas><span class="raster-color-tip" id="rasterColorTip" hidden></span></div>` +
-      `<aside class="raster-controls">` +
-        `<div class="raster-control-group">` +
-          `<label>Width</label>` +
-          `<input id="rasterWidth" type="number" min="1" step="1">` +
+    `<div class="raster-root" id="rasterRoot">` +
+      `<div class="raster-toolbar">` +
+        `<div class="raster-tb-group">` +
+          `<button id="rasterPrevFrame" class="raster-ibtn" title="Previous frame (←)" disabled>${ICONS.prev}</button>` +
+          `<button id="rasterPlayBtn" class="raster-ibtn" title="Play (Space)" disabled>${ICONS.play}</button>` +
+          `<button id="rasterNextFrame" class="raster-ibtn" title="Next frame (→)" disabled>${ICONS.next}</button>` +
         `</div>` +
-        `<div class="raster-control-group">` +
-          `<label>Height</label>` +
-          `<input id="rasterHeight" type="number" min="1" step="1">` +
+        `<div class="raster-tb-scrub">` +
+          `<input id="rasterFrameSlider" type="range" min="0" max="0" value="0" disabled>` +
+          `<span class="raster-frame-readout">` +
+            `<input id="rasterFrameInput" type="number" min="1" max="1" value="1" disabled>` +
+            `<span id="rasterFrameMax">/ 1</span>` +
+          `</span>` +
         `</div>` +
-        (extraControlsHtml || "") +
-        `<div class="raster-control-group raster-checkbox-group">` +
-          `<label class="check"><input type="checkbox" id="rasterIsp"${isp ? " checked" : ""}><span>ISP</span></label>` +
+        `<div class="raster-tb-group">` +
+          `<button id="rasterZoomOut" class="raster-ibtn" title="Zoom out (−)">${ICONS.zoomOut}</button>` +
+          `<button id="rasterZoomVal" class="raster-zoom-readout" title="Zoom to 100% (1)">100%</button>` +
+          `<button id="rasterZoomIn" class="raster-ibtn" title="Zoom in (+)">${ICONS.zoomIn}</button>` +
+          `<button id="rasterZoomFit" class="raster-tbtn" title="Fit to window (0)">Fit</button>` +
+          `<button id="rasterZoomReset" class="raster-tbtn" title="Actual pixels (1)">1:1</button>` +
         `</div>` +
-        ispPanelHtml(rawMode) +
-        `<div class="raster-control-group">` +
-          `<label>Playback</label>` +
-          `<div class="raster-play-bar">` +
-            `<button id="rasterPrevFrame" class="ghost" title="Previous frame">◀</button>` +
-            `<button id="rasterPlayBtn" class="ghost" title="Play / Pause">▶ Play</button>` +
-            `<button id="rasterNextFrame" class="ghost" title="Next frame">▶|</button>` +
-          `</div>` +
-          `<div class="raster-frame-slider-row">` +
-            `<input id="rasterFrameSlider" type="range" min="0" max="0" value="0">` +
-            `<span class="raster-frame-readout"><input id="rasterFrameInput" type="number" min="1" value="1"><span id="rasterFrameMax" class="hint"> / 1</span></span>` +
-          `</div>` +
-          `<div class="raster-fps-row">` +
-            `<label class="check"><input type="checkbox" id="rasterLoop" checked><span>Loop</span></label>` +
-            `<label class="raster-fps-label">FPS <input id="rasterFps" type="number" min="1" max="120" step="1" value="24"></label>` +
-          `</div>` +
-        `</div>` +
-        `<div class="raster-control-group raster-zoom-readout">` +
-          `<label>Zoom (scroll on the image, centered on cursor)</label>` +
-          `<div class="raster-zoom-row">` +
-            `<span id="rasterZoomVal">100%</span>` +
-            `<div class="raster-zoom-btns">` +
-              `<button class="ghost" id="rasterZoomFit" title="Fit image to window">Fit</button>` +
-              `<button class="ghost" id="rasterZoomReset" title="Reset zoom to 100%">Reset</button>` +
+        `<button id="rasterPanelToggle" class="raster-ibtn" title="Toggle parameter panel" aria-pressed="true">${ICONS.panel}</button>` +
+      `</div>` +
+      `<div class="raster-main">` +
+        `<div class="raster-canvas-wrap" id="rasterCanvasWrap"><canvas id="rasterCanvas" class="raster-canvas"></canvas></div>` +
+        `<aside class="raster-panel" id="rasterPanel">` +
+          `<details class="raster-sec" open>` +
+            `<summary class="raster-sec-head">Decode</summary>` +
+            `<div class="raster-sec-body">` +
+              `<div class="raster-grid2">` +
+                `<label class="raster-field">Width<input id="rasterWidth" type="number" min="1" step="1"></label>` +
+                `<label class="raster-field">Height<input id="rasterHeight" type="number" min="1" step="1"></label>` +
+              `</div>` +
+              (extraControlsHtml || "") +
             `</div>` +
+          `</details>` +
+          `<div class="raster-sec-fixed">` +
+            `<span class="raster-sec-title">ISP</span>` +
+            `<span class="raster-isp-badge" id="rasterIspBadge">Auto</span>` +
+            `<label class="raster-switch" title="Run the ISP pipeline (demosaic, white balance, gamma…) on the decoded frame.">` +
+              `<input type="checkbox" id="rasterIsp"${isp ? " checked" : ""}><i></i>Enable` +
+            `</label>` +
           `</div>` +
-        `</div>` +
-        `<div class="raster-status" id="rasterStatus">Loading…</div>` +
-      `</aside>` +
+          ispPanelHtml(rawMode) +
+          `<details class="raster-sec" open>` +
+            `<summary class="raster-sec-head">Playback</summary>` +
+            `<div class="raster-sec-body">` +
+              `<div class="raster-inline-row">` +
+                `<label class="raster-switch"><input type="checkbox" id="rasterLoop" checked><i></i>Loop</label>` +
+                `<label class="raster-field-inline">FPS<input id="rasterFps" type="number" min="1" max="120" step="1" value="24"></label>` +
+              `</div>` +
+            `</div>` +
+          `</details>` +
+        `</aside>` +
+      `</div>` +
+      `<div class="raster-statusbar">` +
+        `<span id="rasterStatus" class="raster-status-info">Loading…</span>` +
+        `<span class="raster-pixel" id="rasterPixel" hidden>` +
+          `<i class="raster-swatch" id="rasterPixelSwatch"></i>` +
+          `<span id="rasterPixelText"></span>` +
+        `</span>` +
+      `</div>` +
     `</div>`
   );
 }
 
-// ispPanelHtml renders the collapsible ISP parameter panel — a native
+// ispPanelHtml renders the collapsible ISP parameter section — a native
 // <details> with no "open" attribute, so it starts collapsed. Bayer-only
 // stages (black level, chroma NR, gray mode) render for RAW files only; the
 // values are seeded from defaultIspPanelValues by syncIspControls().
 function ispPanelHtml(rawMode) {
   const sliderRow = (id, label, min, max, step, title) =>
     `<div class="isp-row" title="${title || ""}">` +
-      `<label for="${id}">${label}<span class="isp-val" id="${id}Val"></span></label>` +
+      `<div class="isp-row-head"><label for="${id}">${label}</label><output class="isp-val" id="${id}Val"></output></div>` +
       `<input type="range" id="${id}" min="${min}" max="${max}" step="${step}">` +
     `</div>`;
   const blcInputs = ["R", "Gr", "Gb", "B"]
@@ -1019,22 +1149,22 @@ function ispPanelHtml(rawMode) {
     .map((p, i) => `<option value="${i}">${p.label}</option>`)
     .join("");
   return (
-    `<details id="rasterIspPanel" class="raster-isp-panel">` +
+    `<details id="rasterIspPanel" class="raster-sec raster-isp-panel">` +
       `<summary>ISP parameters</summary>` +
-      `<div class="raster-isp-body">` +
+      `<div class="raster-sec-body">` +
         (rawMode
           ? `<div class="isp-row isp-row-multi" title="Black level correction per CFA channel (R/Gr/Gb/B). Sensor black floor; subtract before anything else.">` +
               `<label>Black level R/Gr/Gb/B</label>` +
-              `<div class="isp-inputs">${blcInputs}</div>` +
+              `<div class="isp-blc-grid">${blcInputs}</div>` +
             `</div>`
           : "") +
         sliderRow("ispGainR", "WB gain R", "0.1", "8", "0.01",
           "White balance gain for the red channel (G is fixed at 1.0).") +
         sliderRow("ispGainB", "WB gain B", "0.1", "8", "0.01",
           "White balance gain for the blue channel (G is fixed at 1.0).") +
-        `<div class="isp-row isp-actions">` +
-          `<button type="button" class="ghost" id="ispAwbBtn" title="Compute gray-world white balance gains from this frame's pixels (server-side).">Gray-world AWB</button>` +
-          `<button type="button" class="ghost" id="ispResetBtn" title="Restore the default ISP parameters for this file kind.">Reset</button>` +
+        `<div class="isp-actions">` +
+          `<button type="button" class="raster-mini-btn" id="ispAwbBtn" title="Compute gray-world white balance gains from this frame's pixels (server-side).">Gray-world AWB</button>` +
+          `<button type="button" class="raster-mini-btn" id="ispResetBtn" title="Restore the default ISP parameters for this file kind.">Reset</button>` +
         `</div>` +
         sliderRow("ispGamma", "Gamma", "0.5", "4", "0.01",
           "Gamma encoding: output = pow(v, 1/gamma). 2.2 ≈ sRGB.") +
@@ -1045,22 +1175,22 @@ function ispPanelHtml(rawMode) {
         sliderRow("ispBrightness", "Brightness", "-100", "100", "1",
           "Offset added after gamma.") +
         `<div class="isp-row" title="Color correction matrix applied in the linear domain.">` +
-          `<label for="ispCcmPreset">CCM preset</label>` +
+          `<div class="isp-row-head"><label for="ispCcmPreset">CCM preset</label></div>` +
           `<select id="ispCcmPreset">${presetOptions}</select>` +
         `</div>` +
         `<div class="isp-row isp-row-multi" id="ispCcmMatrixRow" hidden>` +
           `<label>CCM matrix (row-major)</label>` +
-          `<div class="isp-ccm-grid">${ccmMatrix}</div>` +
+          `<div class="raster-ccm-grid">${ccmMatrix}</div>` +
         `</div>` +
         (rawMode
           ? sliderRow("ispChromaNr", "Chroma NR radius", "0", "8", "1",
               "Box-blur radius on the chroma-difference planes (0 = off). Smooths color noise.") +
-            `<div class="isp-row isp-row-check" title="Skip the demosaic and show the raw Bayer as grayscale.">` +
-              `<label class="check"><input type="checkbox" id="ispGray"><span>Gray mode (raw Bayer)</span></label>` +
+            `<div class="isp-row" title="Skip the demosaic and show the raw Bayer as grayscale.">` +
+              `<label class="raster-switch"><input type="checkbox" id="ispGray"><i></i>Gray mode (raw Bayer)</label>` +
             `</div>`
           : "") +
-        `<div class="isp-row isp-row-check" title="Multi-band luma unsharp mask (high/mid/low-mid bands with luma-dependent gain).">` +
-          `<label class="check"><input type="checkbox" id="ispSharpenOn"><span>Sharpen</span></label>` +
+        `<div class="isp-row" title="Multi-band luma unsharp mask (high/mid/low-mid bands with luma-dependent gain).">` +
+          `<label class="raster-switch"><input type="checkbox" id="ispSharpenOn"><i></i>Sharpen</label>` +
         `</div>` +
         sliderRow("ispSharpen", "Sharpen strength", "0", "4", "0.05",
           "Overall sharpen multiplier (1.0 = calibrated default).") +
@@ -1080,7 +1210,9 @@ function ispPanelHtml(rawMode) {
 // matches the backing size 1:1, and the surrounding .raster-canvas-wrap
 // scrolls to reveal the parts that overflow the viewport (the image is never
 // squashed to fit). `bitmap` is an ImageBitmap decoded from the backend's
-// JPEG response.
+// JPEG response. Downscaling (zoom < 1, e.g. fit-to-window) switches to
+// smooth interpolation — nearest-neighbor minification aliases badly; scaling
+// up stays nearest-neighbor so individual pixels stay crisp.
 function drawFrame(ctx, canvas, bitmap, w, h, zoom) {
   const dispW = Math.max(1, Math.round(w * zoom));
   const dispH = Math.max(1, Math.round(h * zoom));
@@ -1089,9 +1221,16 @@ function drawFrame(ctx, canvas, bitmap, w, h, zoom) {
   canvas.style.width = `${dispW}px`;
   canvas.style.height = `${dispH}px`;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.imageSmoothingEnabled = false; // nearest-neighbor for pixel-peeping zoom
+  ctx.imageSmoothingEnabled = zoom < 1;
   ctx.clearRect(0, 0, dispW, dispH);
   ctx.drawImage(bitmap, 0, 0, w, h, 0, 0, dispW, dispH);
+}
+
+// fmtBytes renders a byte count for the status bar (KB/MB/GB).
+function fmtBytes(n) {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
 }
 
 // probeFileSize learns the file's total byte length without downloading it.

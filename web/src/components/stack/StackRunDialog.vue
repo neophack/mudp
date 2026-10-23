@@ -72,6 +72,10 @@ export default {
       this.flush();
     },
   },
+  // Leaving the page with the dialog open unmounts it without a close.
+  beforeUnmount() {
+    this.stop();
+  },
   methods: {
     tt,
     onVisible(v) {
