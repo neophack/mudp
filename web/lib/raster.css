@@ -151,6 +151,10 @@
   flex: none;
   overflow-y: auto;
   overflow-x: hidden;
+  /* Keep wheel events from chaining to the host dialog/page once the panel
+     reaches its scroll limit (e.g. after a section collapses and the panel no
+     longer overflows), which otherwise scrolls the whole viewer out of view. */
+  overscroll-behavior: contain;
   background: var(--rs-chrome);
   border-left: 1px solid var(--rs-line);
   padding-bottom: 8px;
