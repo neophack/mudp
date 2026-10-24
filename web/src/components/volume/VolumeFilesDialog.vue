@@ -195,6 +195,7 @@ export default {
       const batchStart = performance.now();
       try {
         for (let i = 0; i < files.length; i++) {
+          if (overlay.signal.aborted) break;
           const file = files[i];
           overlay.setLabel(`${i + 1}/${files.length}: ${file.name}`);
           if ((file.size || 0) >= CHUNK_THRESHOLD) {
@@ -202,6 +203,7 @@ export default {
             const sendLarge = () => uploadLargeFile(file, file.name, {
               base: "/api/volumes/files", dir: this.path || "", volume: this.name,
               csrfToken: readCSRFCookie() || store.csrfToken || "",
+              signal: overlay.signal,
               onProgress: ({ loaded, total }) => {
                 overlay.updateActive(slot, {
                   loaded, total,
@@ -222,6 +224,7 @@ export default {
               overlay.settleActive(slot, "done");
               ok++;
             } catch (err) {
+              if (overlay.signal.aborted) break;
               failed++;
               overlay.markFailedWithRetry(slot, err.message, async () => {
                 overlay.reactivate(slot, { name: file.name, size: file.size });
@@ -247,6 +250,7 @@ export default {
             try {
               resp = await uploadWithProgress("/api/volumes/files/upload", fd, {
                 csrfToken: readCSRFCookie() || store.csrfToken || "",
+                signal: overlay.signal,
                 onProgress: (p) => {
                   const fileTotal = file.size || 0;
                   const fileLoaded = p.total > 0 ? Math.min(fileTotal, Math.round(fileTotal * (p.loaded / p.total))) : 0;
@@ -266,6 +270,7 @@ export default {
                 },
               });
             } catch (err) {
+              if (overlay.signal.aborted) return;
               failed++;
               overlay.markFailedWithRetry(slot, err.message, async () => {
                 overlay.reactivate(slot, { name: file.name, size: file.size });
@@ -296,7 +301,9 @@ export default {
           await sendOne();
           baseBytes += file.size || 0;
         }
-        ElMessage.success(tt("volfiles.uploadedN", { n: ok }));
+        overlay.finish();
+        if (overlay.signal.aborted) ElMessage.error(tt("netdisk.uploadCancelled"));
+        else ElMessage.success(tt("volfiles.uploadedN", { n: ok }));
         await this.load();
         this.status = "";
       } catch (err) {

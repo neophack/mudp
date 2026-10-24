@@ -41,8 +41,9 @@ export function computeTotalChunks(size, chunkSize) {
 }
 
 // postJSON is a tiny fetch wrapper that sends CSRF + JSON and parses JSON back.
-async function postJSON(url, body, csrfToken) {
+async function postJSON(url, body, csrfToken, signal) {
   const resp = await fetch(url, {
+    signal,
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken || "" },
@@ -79,7 +80,7 @@ function buildQuery(dir, volume) {
 export async function uploadLargeFile(file, relPath, opts) {
   const {
     base, dir = "", volume = "", csrfToken = "", chunkSize = DEFAULT_CHUNK_SIZE,
-    concurrency = DEFAULT_CHUNK_CONCURRENCY, onProgress,
+    concurrency = DEFAULT_CHUNK_CONCURRENCY, onProgress, signal,
   } = opts || {};
   const size = file.size;
   const totalChunks = computeTotalChunks(size, chunkSize);
@@ -89,7 +90,7 @@ export async function uploadLargeFile(file, relPath, opts) {
   // 1) init — learn uploadId and which chunks the server already has (resume).
   const init = await postJSON(`${base}/chunk/init${qs}`, {
     path: dir, name: relPath, size, chunkSize, totalChunks, fileCRC32: "",
-  }, csrfToken);
+  }, csrfToken, signal);
   const uploadId = init.uploadId;
   const received = new Set(Array.isArray(init.received) ? init.received : []);
   // committed = bytes belonging to chunks the server has fully accepted.
@@ -129,7 +130,7 @@ export async function uploadLargeFile(file, relPath, opts) {
 
   let idx = 0;
   async function worker() {
-    while (idx < missing.length) {
+    while (idx < missing.length && !signal?.aborted) {
       const myIdx = missing[idx++];
       const [start, end] = chunkRange(myIdx, totalChunks, chunkSize, size);
       const hash = await hashChunkCRC32(file, start, end);
@@ -138,7 +139,7 @@ export async function uploadLargeFile(file, relPath, opts) {
       }, csrfToken, (chunkLoaded) => {
         inFlight.set(myIdx, chunkLoaded);
         reportProgress();
-      });
+      }, signal);
       inFlight.delete(myIdx);
       received.add(myIdx);
       committed += end - start;
@@ -148,6 +149,7 @@ export async function uploadLargeFile(file, relPath, opts) {
   const pool = [];
   for (let i = 0; i < Math.min(concurrency, missing.length); i++) pool.push(worker());
   await Promise.all(pool);
+  if (signal?.aborted) throw new Error("Upload aborted");
 
   // 3) complete — assemble + whole-file CRC32 verify on the server. If it
   //    reports missing chunks (a late failure dropped one), re-send them and
@@ -156,7 +158,7 @@ export async function uploadLargeFile(file, relPath, opts) {
     try {
       const done = await postJSON(`${base}/chunk/complete${qs}`, {
         uploadId, name: relPath, fileCRC32: "",
-      }, csrfToken);
+      }, csrfToken, signal);
       // Treat as delivered only when the server confirms with a crc32.
       return { ok: !!done.ok, crc32: done.crc32 || "", path: done.path || relPath };
     } catch (err) {
@@ -175,7 +177,7 @@ export async function uploadLargeFile(file, relPath, opts) {
           }, csrfToken, (chunkLoaded) => {
             inFlight.set(i, chunkLoaded);
             reportProgress();
-          });
+          }, signal);
           inFlight.delete(i);
           reportProgress();
         }
@@ -193,7 +195,7 @@ export async function uploadLargeFile(file, relPath, opts) {
 // re-slicing + re-POSTing a fresh body is the reliable fix for a transport garble.
 // Uses XHR (via uploadWithProgress) rather than fetch so `onProgress` sees live
 // byte counts as this chunk itself streams out, not just once it fully lands.
-async function uploadOneChunkWithRetry(url, chunk, csrfToken, onProgress) {
+async function uploadOneChunkWithRetry(url, chunk, csrfToken, onProgress, signal) {
   let lastErr;
   for (let attempt = 0; attempt < CHUNK_MAX_RETRIES; attempt++) {
     try {
@@ -204,11 +206,12 @@ async function uploadOneChunkWithRetry(url, chunk, csrfToken, onProgress) {
       fd.append("hash", chunk.hash || "");
       fd.append("chunk", chunk.blob, chunk.name);
       return await uploadWithProgress(url, fd, {
-        csrfToken,
+        csrfToken, signal,
         onProgress: onProgress ? (p) => onProgress(p.loaded) : undefined,
       });
     } catch (err) {
       lastErr = err;
+      if (signal?.aborted) throw err;
       onProgress?.(0); // this attempt's bytes don't count; next attempt restarts from 0
       // Back off before retrying so a flaky/slow link isn't hammered with
       // back-to-back attempts; the delay grows with each attempt.

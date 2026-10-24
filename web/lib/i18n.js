@@ -103,6 +103,10 @@ const translations = {
     // Common
     "common.save": "保存",
     "common.cancel": "取消",
+    "common.collapse": "折叠",
+    "common.expand": "展开",
+    "netdisk.uploadCancelled": "上传已取消",
+    "netdisk.cancelUpload": "取消上传",
     "common.search": "搜索",
     "common.close": "关闭",
     "common.edit": "编辑",
@@ -1632,6 +1636,10 @@ const translations = {
     // Common
     "common.save": "Save",
     "common.cancel": "Cancel",
+    "common.collapse": "Collapse",
+    "common.expand": "Expand",
+    "netdisk.uploadCancelled": "Upload cancelled",
+    "netdisk.cancelUpload": "Cancel upload",
     "common.search": "Search",
     "common.close": "Close",
     "common.edit": "Edit",

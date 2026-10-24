@@ -2,9 +2,12 @@
   <div v-if="s" v-show="s.visible" class="upload-overlay">
     <div class="upload-head">
       <div class="upload-title">{{ s.label }}</div>
-      <button type="button" class="upload-close" aria-label="Close" :title="tt('common.close')" @click="s.visible = false">&times;</button>
+      <span v-if="s.collapsed" class="upload-mini">{{ Math.round(s.overall.percent) }}% · {{ fmtSpeed(s.overall.speedBps) }}</span>
+      <button type="button" class="upload-btn" :aria-label="s.collapsed ? tt('common.expand') : tt('common.collapse')" :title="s.collapsed ? tt('common.expand') : tt('common.collapse')" @click="s.collapsed = !s.collapsed">{{ s.collapsed ? "▴" : "▾" }}</button>
+      <button type="button" class="upload-btn" aria-label="Close" :title="s.finished ? tt('common.close') : tt('netdisk.cancelUpload')" @click="dismissUploadOverlay()">&times;</button>
     </div>
     <div class="upload-bar"><div class="bar-fill" :style="{ transform: 'scaleX(' + s.overall.percent / 100 + ')' }"></div></div>
+    <template v-if="!s.collapsed">
     <div class="upload-meta">
       {{ fmtBytes(s.overall.loaded) }} / {{ fmtBytes(s.overall.bytesTotal) }} · {{ fmtSpeed(s.overall.speedBps) }} · {{ Math.round(s.overall.percent) }}%
       <template v-if="s.overall.etaSec > 0 && s.overall.percent < 100"> · {{ fmtEta(s.overall.etaSec) }} left</template>
@@ -36,11 +39,12 @@
         </div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
 <script>
-import { getUploadOverlayState, fmtSpeed } from "@/uploadOverlay";
+import { getUploadOverlayState, dismissUploadOverlay, fmtSpeed } from "@/uploadOverlay";
 import { fmtBytes } from "@/lib/common.js";
 import { tt } from "@/i18n";
 
@@ -65,6 +69,7 @@ export default {
   },
   methods: {
     tt,
+    dismissUploadOverlay,
     fmtBytes,
     fmtSpeed,
     fmtEta,
@@ -90,8 +95,9 @@ export default {
 }
 .upload-head { display: flex; align-items: center; margin-bottom: 8px; }
 .upload-title { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.upload-close { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; line-height: 1; }
-.upload-close:hover { color: var(--ink); }
+.upload-mini { font-size: 11.5px; color: var(--muted); margin: 0 8px; white-space: nowrap; }
+.upload-btn { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; line-height: 1; padding: 0 4px; }
+.upload-btn:hover { color: var(--ink); }
 .upload-bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .upload-bar .bar-fill { height: 100%; background: var(--brand); transform-origin: 0 50%; transition: transform 0.16s var(--ease-out, ease-out); }
 .upload-meta, .upload-counts { font-size: 11.5px; color: var(--muted); margin-top: 4px; }

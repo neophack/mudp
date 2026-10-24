@@ -10,9 +10,11 @@ import { escapeHtml, fmtBytes } from "./common.js";
 // body on 2xx; any other status rejects with the server's error message.
 // onProgress receives { loaded, total, percent, speedBps } where speedBps is
 // an exponentially-smoothed transfer rate derived between progress events.
-export function uploadWithProgress(url, formData, { csrfToken = "", onProgress } = {}) {
+export function uploadWithProgress(url, formData, { csrfToken = "", onProgress, signal } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error("Upload aborted"));
     const xhr = new XMLHttpRequest();
+    signal?.addEventListener("abort", () => xhr.abort(), { once: true });
     xhr.open("POST", url);
     xhr.withCredentials = true;
     if (csrfToken) xhr.setRequestHeader("X-CSRF-Token", csrfToken);

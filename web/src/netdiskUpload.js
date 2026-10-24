@@ -109,6 +109,7 @@ export async function uploadFilesHandler(source, path, onDone) {
   let ok = 0;
   let failed = 0;
   let seen = 0;
+  const { signal } = overlay;
   const batchStart = performance.now();
   let iter;
   try {
@@ -168,7 +169,7 @@ export async function uploadFilesHandler(source, path, onDone) {
     for (let attempt = 0; attempt < LARGE_FILE_MAX_ATTEMPTS; attempt++) {
       try {
         await uploadLargeFile(entry.file, entry.relPath, {
-          base: "/api/netdisk", dir: path, csrfToken,
+          base: "/api/netdisk", dir: path, csrfToken, signal,
           onProgress: ({ loaded, total, speedBps }) => {
             const delta = Math.max(0, loaded - lastLoaded);
             lastLoaded = loaded;
@@ -178,12 +179,14 @@ export async function uploadFilesHandler(source, path, onDone) {
               percent: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0,
               speedBps,
             });
+            refreshOverallThrottled();
           },
         });
         overlay.settleActive(slot, "done");
         ok++;
         return;
       } catch (err) {
+        if (signal.aborted) return;
         lastErr = err;
         if (attempt < LARGE_FILE_MAX_ATTEMPTS - 1) {
           await sleep(LARGE_FILE_RETRY_BASE_MS * 2 ** attempt);
@@ -199,6 +202,7 @@ export async function uploadFilesHandler(source, path, onDone) {
     // verify integrity. Files that can't be hashed yield "" and are still
     // uploaded — the server checksums them.
     const hashes = await Promise.all(cur.map((e) => hashFileCRC32(e.file)));
+    if (signal.aborted) return;
 
     const fd = new FormData();
     fd.append("path", path);
@@ -215,10 +219,11 @@ export async function uploadFilesHandler(source, path, onDone) {
     let resp;
     try {
       resp = await uploadWithProgress("/api/netdisk/upload", fd, {
-        csrfToken,
+        csrfToken, signal,
         onProgress: (p) => {
           // uploadWithProgress reports bytes for the whole batch request;
-          // attribute them proportionally so each row still advances.
+          // attribute them proportionally so each row still advances; the
+          // batch's wire speed is split the same way, so row speeds sum to it.
           const batchTotal = p.total || curBytes;
           const ratio = batchTotal > 0 ? p.loaded / batchTotal : 0;
           for (let i = 0; i < cur.length; i++) {
@@ -230,12 +235,14 @@ export async function uploadFilesHandler(source, path, onDone) {
               loaded: fileLoaded,
               total: fileTotal,
               percent: fileTotal > 0 ? Math.min(100, Math.round((fileLoaded / fileTotal) * 100)) : 100,
-              speedBps: p.speedBps,
+              speedBps: batchTotal > 0 ? p.speedBps * (fileTotal / batchTotal) : 0,
             });
           }
+          refreshOverallThrottled();
         },
       });
     } catch (err) {
+      if (signal.aborted) return;
       // Network/HTTP failure for the whole request: every file is retriable.
       for (let i = 0; i < cur.length; i++) {
         failed++;
@@ -276,9 +283,28 @@ export async function uploadFilesHandler(source, path, onDone) {
     });
   }
 
+  // Speed is measured over a sliding window of recent samples, not the whole
+  // run: hashing, batch hand-offs and stalls would otherwise drag the average
+  // far from the current wire rate (and make the ETA meaningless).
+  const SPEED_WINDOW_MS = 5000;
+  const samples = [];
+  function windowSpeed(now) {
+    samples.push({ t: now, b: doneBytes });
+    while (samples.length > 2 && now - samples[0].t > SPEED_WINDOW_MS) samples.shift();
+    const first = samples[0];
+    const span = (now - first.t) / 1000;
+    return span > 0 ? Math.max(0, doneBytes - first.b) / span : 0;
+  }
+
+  let lastRefresh = 0;
+  function refreshOverallThrottled() {
+    if (performance.now() - lastRefresh >= 250) refreshOverall();
+  }
+
   function refreshOverall() {
-    const elapsed = (performance.now() - batchStart) / 1000;
-    const speedBps = elapsed > 0 ? doneBytes / elapsed : 0;
+    const now = performance.now();
+    lastRefresh = now;
+    const speedBps = windowSpeed(now);
     const percent = totalBytes > 0 ? Math.min(100, (doneBytes / totalBytes) * 100) : 0;
     const etaSec = speedBps > 0 ? (totalBytes - doneBytes) / speedBps : 0;
     overlay.updateOverall({
@@ -290,7 +316,7 @@ export async function uploadFilesHandler(source, path, onDone) {
   // the next batch from the stream whenever a slot frees.
   const inflight = new Set();
   for (;;) {
-    while (inflight.size < UPLOAD_CONCURRENCY) {
+    while (inflight.size < UPLOAD_CONCURRENCY && !signal.aborted) {
       const cur = [];
       let curBytes = 0;
       while (cur.length < UPLOAD_BATCH_FILES) {
@@ -321,13 +347,18 @@ export async function uploadFilesHandler(source, path, onDone) {
   }
   if (inflight.size) { await Promise.allSettled(inflight); refreshOverall(); }
 
-  overlay.setLabel(tt("netdisk.uploadedN", { ok, total: seen }));
-  const summary = failed
-    ? tt("netdisk.uploadedNFailed", { ok, fail: failed })
-    : tt("netdisk.uploadedN", { ok, total: seen });
-  toast(summary, !failed);
+  overlay.finish();
+  if (signal.aborted) {
+    toast(tt("netdisk.uploadCancelled"), false);
+  } else {
+    overlay.setLabel(tt("netdisk.uploadedN", { ok, total: seen }));
+    const summary = failed
+      ? tt("netdisk.uploadedNFailed", { ok, fail: failed })
+      : tt("netdisk.uploadedN", { ok, total: seen });
+    toast(summary, !failed);
+    refreshOverall();
+  }
   if (onDone) onDone();
-  refreshOverall();
   // The card stays open until the user closes it: an auto-dismiss can hide a
   // failure before the user gets to click Retry.
   uploading = false;

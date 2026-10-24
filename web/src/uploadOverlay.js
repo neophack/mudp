@@ -4,7 +4,7 @@
 // multi-file upload never grows the DOM (or the state) without bound.
 // UploadOverlay.vue renders whatever this module holds.
 
-import { reactive } from "vue";
+import { reactive, markRaw } from "vue";
 import { fmtBytes } from "@/lib/common.js";
 
 export function fmtSpeed(bps) {
@@ -23,8 +23,12 @@ const overlayHost = reactive({ current: null });
 let overlaySeq = 0;
 
 export function showUploadOverlay() {
+  const controller = new AbortController();
   const s = reactive({
+    controller: markRaw(controller),
     visible: true,
+    collapsed: false,
+    finished: false, // set once the batch settled; the close button then just dismisses
     label: "Uploading…",
     overall: { done: 0, failed: 0, total: 0, loaded: 0, bytesTotal: 0, speedBps: 0, etaSec: 0, percent: 0 },
     active: [], // { id, name, size, loaded, total, percent, speedBps }
@@ -36,7 +40,12 @@ export function showUploadOverlay() {
   const findSettled = (slot) => s.settled.find((r) => r.id === slot);
 
   return {
+    signal: controller.signal,
     setLabel(text) { s.label = text; },
+
+    // The batch is over (all settled, or cancelled): closing no longer aborts.
+    finish() { s.finished = true; },
+
 
     addActive(meta) {
       if (s.active.length >= MAX_ACTIVE) return null;
@@ -138,6 +147,15 @@ export function showUploadOverlay() {
       if (overlayHost.current === s) overlayHost.current = null;
     },
   };
+}
+
+// Close button: dismiss a finished card, or abort the running batch.
+export function dismissUploadOverlay() {
+  const s = overlayHost.current;
+  if (!s) return;
+  if (!s.finished) s.controller.abort();
+  s.visible = false;
+  overlayHost.current = null;
 }
 
 export function getUploadOverlayState() {
