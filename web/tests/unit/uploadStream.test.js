@@ -78,4 +78,31 @@ describe("makeDropIterator back-pressure", () => {
     expect(r.value.relPath).toBe("loose.bin");
     expect((await it.next()).done).toBe(true);
   });
+
+  it("uploads every item even after the item list is neutered mid-walk", async () => {
+    // Browsers clear dataTransfer.items once the drop event finishes
+    // dispatching; from the first await on, webkitGetAsEntry()/getAsFile()
+    // come back null. Regression test: all entries must be captured before
+    // the first await, or only the first dropped file would upload.
+    let neutered = false;
+    const mkItem = (name) => ({
+      kind: "file",
+      webkitGetAsEntry: () => (neutered ? null : { name, isFile: true }),
+      getAsFile: () => null,
+    });
+    const itemList = [mkItem("a.txt"), mkItem("b.txt"), mkItem("c.txt")];
+    const walkFn = async (entry, prefix, push) => {
+      void prefix;
+      await push({ file: { name: entry.name, size: 1 }, relPath: entry.name });
+      neutered = true; // the drop event has returned by now
+    };
+    const it = makeDropIterator(itemList, walkFn, 8);
+    const names = [];
+    for (;;) {
+      const r = await it.next();
+      if (r.done) break;
+      names.push(r.value.relPath);
+    }
+    expect(names).toEqual(["a.txt", "b.txt", "c.txt"]);
+  });
 });

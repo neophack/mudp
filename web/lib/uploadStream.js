@@ -63,17 +63,28 @@ export function makeDropIterator(itemList, walkFn, bufferCap = 10) {
   };
   const signalDone = () => { done = true; wakeConsumers(); };
 
+  // A DataTransferItemList is only valid while the drop event is dispatching:
+  // the browser clears it as soon as the handler returns to the event loop, so
+  // a lazy read after the first await sees an empty list and only the first
+  // dropped file would upload. Snapshot every entry synchronously here — the
+  // FileSystemEntry / File references themselves stay usable afterwards and
+  // remain lazy (no contents read), so the bounded-memory property is untouched.
+  const snapshot = [];
+  for (let i = 0; i < itemList.length; i++) {
+    const item = itemList[i];
+    if (item?.kind !== "file") continue;
+    const entry = item.webkitGetAsEntry?.();
+    if (entry) { snapshot.push({ walk: true, value: entry }); continue; }
+    const file = item.getAsFile?.();
+    if (file) snapshot.push({ walk: false, value: { file, relPath: file.name } });
+  }
+
   // Kick the walk off in the background; it self-paces via enqueue's gate.
   (async () => {
     try {
-      for (let i = 0; i < itemList.length; i++) {
-        const item = itemList[i];
-        if (item.kind === "file") {
-          const entry = item.webkitGetAsEntry?.();
-          if (entry) { await walkFn(entry, "", enqueue); continue; }
-        }
-        const file = item.getAsFile?.();
-        if (file) await enqueue({ file, relPath: file.name });
+      for (const { walk, value } of snapshot) {
+        if (walk) await walkFn(value, "", enqueue);
+        else await enqueue(value);
       }
     } finally {
       signalDone();
