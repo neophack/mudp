@@ -695,6 +695,11 @@ func (a *App) authMiddleware(next http.Handler) http.Handler {
 			writeErr(w, http.StatusUnauthorized, "login required")
 			return
 		}
+		// Sliding session: active clients (e.g. a long upload) are never
+		// logged out mid-task by the fixed 24h expiry.
+		if a.auth.Renew(w, r) {
+			middleware.RenewCSRF(w, r)
+		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))
 	})
 }

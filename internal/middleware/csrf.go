@@ -56,6 +56,19 @@ func CSRFToken(w http.ResponseWriter, r *http.Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	setCSRFCookie(w, r, token)
+	return token, nil
+}
+
+// RenewCSRF re-sets the existing CSRF cookie with a fresh expiry, keeping its
+// value so tokens already captured by in-flight clients stay valid.
+func RenewCSRF(w http.ResponseWriter, r *http.Request) {
+	if token := CSRFTokenFromRequest(r); token != "" {
+		setCSRFCookie(w, r, token)
+	}
+}
+
+func setCSRFCookie(w http.ResponseWriter, r *http.Request, token string) {
 	cookie := &http.Cookie{
 		Name:  csrfCookieName,
 		Value: token,
@@ -72,7 +85,6 @@ func CSRFToken(w http.ResponseWriter, r *http.Request) (string, error) {
 		SameSite: http.SameSiteStrictMode,
 	}
 	http.SetCookie(w, cookie)
-	return token, nil
 }
 
 func randomToken(n int) (string, error) {

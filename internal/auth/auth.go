@@ -64,35 +64,50 @@ func (s Signer) Clear(w http.ResponseWriter, r *http.Request) {
 // instantly invalidates every session already in the wild, so a leaked or
 // remembered cookie cannot outlive the credential it was minted from.
 func (s Signer) UserID(r *http.Request) (int64, int64, bool) {
+	uid, epoch, _, ok := s.parse(r)
+	return uid, epoch, ok
+}
+
+// Renew reissues the session cookie once less than half of SessionTTL is left,
+// so an active client (e.g. a multi-hour upload sending request after request)
+// never hits the fixed expiry mid-flight. It reports whether it renewed.
+func (s Signer) Renew(w http.ResponseWriter, r *http.Request) bool {
+	uid, epoch, exp, ok := s.parse(r)
+	if !ok || time.Until(time.Unix(exp, 0)) > SessionTTL/2 {
+		return false
+	}
+	s.Set(w, r, uid, epoch)
+	return true
+}
+
+func (s Signer) parse(r *http.Request) (uid, epoch, exp int64, ok bool) {
 	c, err := r.Cookie(CookieName)
 	if err != nil {
-		return 0, 0, false
+		return
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
 	if err != nil {
-		return 0, 0, false
+		return
 	}
 	parts := strings.Split(string(raw), ":")
 	if len(parts) != 4 {
-		return 0, 0, false
+		return
 	}
 	body := parts[0] + ":" + parts[1] + ":" + parts[2]
 	if !hmac.Equal([]byte(parts[3]), []byte(s.sign(body))) {
-		return 0, 0, false
+		return
 	}
-	exp, err := strconv.ParseInt(parts[1], 10, 64)
+	exp, err = strconv.ParseInt(parts[1], 10, 64)
 	if err != nil || time.Now().Unix() > exp {
-		return 0, 0, false
+		return
 	}
-	uid, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return 0, 0, false
+	if uid, err = strconv.ParseInt(parts[0], 10, 64); err != nil {
+		return
 	}
-	epoch, err := strconv.ParseInt(parts[2], 10, 64)
-	if err != nil {
-		return 0, 0, false
+	if epoch, err = strconv.ParseInt(parts[2], 10, 64); err != nil {
+		return
 	}
-	return uid, epoch, true
+	return uid, epoch, exp, true
 }
 
 func (s Signer) sign(body string) string {
