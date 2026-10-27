@@ -247,7 +247,7 @@ function renderItems() {
       <td class="actions"><a class="ghost-link" href="${downloadURL(f.path)}">Download</a></td>
     </tr>`;
   }).join("");
-  $("#shareBody").innerHTML = `<table class="data share-table"><thead><tr><th class="chk-col"><input type="checkbox" class="chk" id="selectAllBox"></th><th>Name</th><th>Size</th><th>Modified</th><th class="actions">Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $("#shareBody").innerHTML = `<table class="data share-table"><thead><tr><th class="chk-col"><input type="checkbox" class="chk" id="selectAllBox"></th><th>Name</th><th class="size-col">Size</th><th class="time-col">Modified</th><th class="actions">Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
 
   // Bind events
   document.querySelectorAll("[data-open]").forEach((btn) => {
@@ -550,12 +550,14 @@ function openViewer(path) {
   const name = path.split("/").pop() || path;
   const kind = previewKind(name);
   resetViewerState(); // clears any previous fullscreen / cached PDF
-  $("#viewerTitle").textContent = name;
-  // Hide the fullscreen button for types that can't use it (audio has no
-  // visual surface worth fullscreening).
+  const titleEl = $("#viewerTitle");
+  titleEl.textContent = name;
+  titleEl.title = name; // full name on hover — the header itself ellipsizes
+  // Hide the fullscreen button for types that don't need it: audio has no
+  // visual surface worth fullscreening, and video's player bar already ships
+  // its own native fullscreen control.
   const fsBtn = $("#viewerFullscreen");
-  if (fsBtn) fsBtn.hidden = !["pdf", "image", "video", "yuv", "raw", "csv", "docx", "xlsx"].includes(kind);
-  $("#viewerBackdrop").classList.toggle("viewer-video", kind === "video");
+  if (fsBtn) fsBtn.hidden = !["pdf", "image", "yuv", "raw", "csv", "docx", "xlsx"].includes(kind);
   $("#viewerDownload").href = downloadURL(path);
   $("#viewerBackdrop").hidden = false;
   if (!kind) {

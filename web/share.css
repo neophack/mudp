@@ -76,6 +76,9 @@ button, .ghost-link { font: inherit; }
   border: 1px solid transparent; display: inline-flex; align-items: center; gap: 6px;
   text-decoration: none; transition: background 0.15s, border-color 0.15s;
 }
+/* The display above beats the UA stylesheet's [hidden] rule, so hidden buttons
+   must be re-suppressed here (same as .modal-backdrop[hidden] below). */
+.primary[hidden], .ghost[hidden] { display: none; }
 .primary { background: var(--brand); color: #fff; font-weight: 500; }
 .primary:hover { background: var(--brand-dark); }
 .primary[disabled] { background: #b6c6ee; cursor: not-allowed; }
@@ -115,13 +118,24 @@ table.data td { padding: 9px 10px; border-bottom: 1px solid #f1f5f9; vertical-al
 table.data tbody tr:hover { background: #f8fafc; }
 table.data tbody tr:last-child td { border-bottom: none; }
 .chk { accent-color: var(--brand); width: 15px; height: 15px; cursor: pointer; }
+/* Fixed layout gives every column but Name a reserved width and lets Name
+   absorb all the space left over: a long name only ellipsizes once the row is
+   genuinely full, and the Size/Modified/Actions columns can never be pushed
+   out of the card by a long file name. */
+.share-table { table-layout: fixed; }
 .chk-cell, .chk-col { width: 36px; }
-.share-name { max-width: 420px; }
+.share-table .size-col { width: 88px; }
+.share-table .time-col { width: 175px; }
+.share-table th.actions { width: 96px; }
+/* The name button spans the whole Name column (whatever the fixed columns
+   left over); an inline-flex won't shrink below its text on its own, so cap
+   it at its cell and let the inner span carry the ellipsis. */
+.share-name { max-width: 100%; }
 .share-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Size and fill are baked into the fileicon.js svg markup; the span only
    reserves the row slot. */
 .share-ico { width: 22px; height: 22px; flex-shrink: 0; display: inline-flex; }
-.share-size, .share-time { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.share-size, .share-time { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 td.actions { text-align: right; white-space: nowrap; }
 .share-loading, .share-error { color: var(--muted); padding: 26px 0; text-align: center; }
 .share-error { color: var(--danger); }
@@ -158,7 +172,13 @@ td.actions { text-align: right; white-space: nowrap; }
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 12px 20px 16px;
 }
-.modal-tools { display: flex; gap: 8px; align-items: center; }
+.modal-tools { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+/* Long filenames can't wrap; let the title shrink and ellipsize so the
+   action buttons stay inside the card. */
+.viewer-head-text { min-width: 0; flex: 1; }
+.viewer-head-text h2 {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .input {
   width: 100%; font: inherit; color: var(--ink);
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none;
@@ -198,9 +218,6 @@ td.actions { text-align: right; white-space: nowrap; }
 .modal-backdrop.viewer-fullscreen .modal { max-width: none; width: 100vw; height: 100vh; max-height: none; border-radius: 0; }
 .modal-backdrop.viewer-fullscreen .modal-head { position: absolute; top: 0; left: 0; right: 0; z-index: 2; background: rgba(255, 255, 255, 0.92); }
 .modal-backdrop.viewer-fullscreen .viewer-body { max-height: none; height: 100vh; padding-top: 52px; }
-/* Video's overlay fullscreen is a player surface: black backdrop, video fills the viewport. */
-.modal-backdrop.viewer-fullscreen.viewer-video { background: #000; }
-.modal-backdrop.viewer-fullscreen.viewer-video .viewer-media { max-height: calc(100vh - 76px); }
 .viewer-loading, .viewer-error { color: var(--muted); padding: 40px 0; }
 .viewer-error { color: var(--danger); }
 .viewer-media { max-width: 100%; max-height: 64vh; }
@@ -251,9 +268,7 @@ td.actions { text-align: right; white-space: nowrap; }
   .share-wrap { padding: 14px 10px 40px; }
   .share-card { padding: 14px; }
   .share-head-actions { margin-left: 0; width: 100%; }
-  .share-name { max-width: 46vw; }
-  .share-time { display: none; }
-  table.data th:nth-child(4), table.data td:nth-child(4) { display: none; }
+  .time-col, .share-time { display: none; }
   .picker-layout { flex-direction: column; }
   .picker-tree { width: 100%; border-right: none; border-bottom: 1px solid var(--line); max-height: 130px; padding: 0 0 8px; }
 }
