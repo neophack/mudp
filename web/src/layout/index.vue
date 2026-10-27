@@ -110,9 +110,9 @@
 <script>
 import { ElMessage } from "element-plus";
 import { api } from "@/api";
-import { store, refreshAll, isAdmin, setTheme } from "@/store";
+import { store, refreshAll, isAdmin, setTheme, resetSession } from "@/store";
 import { tt, errText } from "@/i18n";
-import { activeJobCount } from "@/jobs";
+import { activeJobCount, stopJobsPolling } from "@/jobs";
 import { refreshActiveRoute } from "@/refresh";
 import VIcon from "@/components/VIcon.vue";
 import JobsPanel from "@/layout/JobsPanel.vue";
@@ -228,7 +228,8 @@ export default {
     },
     async logout() {
       await api("/api/logout", { method: "POST" }).catch(() => {});
-      store.me = null;
+      stopJobsPolling();
+      resetSession();
       this.$router.push("/login");
     },
     async refresh() {

@@ -276,7 +276,8 @@ export default {
     // Skip while the tab is hidden — there's no point sampling sensors nobody
     // is looking at; the interval keeps running so sampling resumes on focus.
     async refresh() {
-      if (document.hidden) return;
+      if (document.hidden || this._refreshing) return;
+      this._refreshing = true;
       try {
         const snap = await api("/api/hardware");
         this.snap = snap;
@@ -285,6 +286,8 @@ export default {
       } catch (err) {
         // Keep polling so the page recovers when the host comes back.
         this.error = err.message;
+      } finally {
+        this._refreshing = false;
       }
     },
   },

@@ -38,7 +38,7 @@
     <p class="hint" style="margin: 10px 0 0">{{ hint }}</p>
     <template #footer>
       <el-button @click="$emit('update:visible', false)">{{ tt("netdisk.pickCancel") }}</el-button>
-      <el-button type="primary" :disabled="alreadyHere" @click="confirm">{{ tt("netdisk.pickConfirm", { action }) }}</el-button>
+      <el-button type="primary" :loading="confirming" :disabled="alreadyHere || confirming" @click="confirm">{{ tt("netdisk.pickConfirm", { action }) }}</el-button>
     </template>
   </el-dialog>
 </template>
@@ -64,6 +64,11 @@ export default {
       targetDisk: "netdisk",
       loading: false,
       error: "",
+      confirming: false,
+      // loadSeq drops out-of-order list responses: a slow reply for a folder
+      // the user has already navigated away from must not replace the newer
+      // directory's listing.
+      loadSeq: 0,
       sharedDiskResolved: false,
       sharedDiskOwnFolder: "",
     };
@@ -109,7 +114,8 @@ export default {
         this.path = this.targetDisk === this.sourceDisk ? (store.netdisk?.path || "") : "";
         this.sharedDiskResolved = false;
         this.sharedDiskOwnFolder = "";
-        this.load("");
+        this.confirming = false;
+        this.load(this.path);
       }
     },
   },
@@ -167,6 +173,7 @@ export default {
         await this.loadPickerSharedDiskTarget();
         return;
       }
+      const seq = ++this.loadSeq;
       this.path = path;
       this.loading = true;
       this.error = "";
@@ -177,11 +184,13 @@ export default {
             ? `/api/shareddisk?path=${encodeURIComponent(path)}`
             : `/api/netdisk?path=${encodeURIComponent(path)}`;
         const data = await api(url);
+        if (seq !== this.loadSeq) return; // a newer navigation superseded us
         this.folders = (data.items || []).filter((f) => f.dir);
       } catch (err) {
+        if (seq !== this.loadSeq) return;
         this.error = err.message;
       } finally {
-        this.loading = false;
+        if (seq === this.loadSeq) this.loading = false;
       }
     },
     async mkdir() {
@@ -205,6 +214,8 @@ export default {
       }
     },
     confirm() {
+      if (this.confirming) return;
+      this.confirming = true;
       const items = this.paths.map((p) => ({ from: p, to: this.path }));
       this.$emit("update:visible", false);
       this.$emit("confirm", { items, targetDisk: this.targetDisk, move: this.move });

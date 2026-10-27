@@ -99,11 +99,18 @@ export default {
       return parts.join(" · ");
     },
   },
+  watch: {
+    // A route-poll refresh that succeeds after a failed first load fills
+    // store.disks; clear the error bar when that happens.
+    "s.disks"(disks) {
+      if (disks) this.loadFailed = "";
+    },
+  },
   async mounted() {
     if (!store.disks) {
       store.disks = await api("/api/admin/disks").catch((err) => {
         this.loadFailed = err.message;
-        return [];
+        return null;
       });
     }
     try {

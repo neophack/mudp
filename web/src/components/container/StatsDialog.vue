@@ -124,6 +124,7 @@ export default {
     reconnect() {
       this.closeStream();
       this.sample = null;
+      this.error = "";
       this.sawGPU = false;
       this.history = { cpu: [], mem: [], netRx: [], netTx: [], gpu: [], gpuMem: [] };
       const url = `/api/containers/stats/stream?id=${encodeURIComponent(this.id)}&interval=${this.interval}`;

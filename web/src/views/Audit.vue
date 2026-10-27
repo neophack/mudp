@@ -3,8 +3,8 @@
     <div class="card-head">
       <h2>{{ tt("audit.title") }}</h2>
       <div class="filters">
-        <el-input v-model="actor" :placeholder="tt('audit.filterActor')" clearable size="small" style="width: 160px" @input="reload" />
-        <el-input v-model="action" :placeholder="tt('audit.filterAction')" clearable size="small" style="width: 160px" @input="reload" />
+        <el-input v-model="actor" :placeholder="tt('audit.filterActor')" clearable size="small" style="width: 160px" @input="debouncedReload" />
+        <el-input v-model="action" :placeholder="tt('audit.filterAction')" clearable size="small" style="width: 160px" @input="debouncedReload" />
         <el-button size="small" @click="exportCsv">{{ tt("audit.exportCsv") }}</el-button>
       </div>
     </div>
@@ -38,17 +38,29 @@ export default {
   data() {
     return { s: store, actor: "", action: "" };
   },
+  beforeUnmount() {
+    clearTimeout(this._reloadTimer);
+    store.auditSearch = {};
+  },
   methods: {
     tt,
     displayNameForUsername,
+    debouncedReload() {
+      clearTimeout(this._reloadTimer);
+      this._reloadTimer = setTimeout(() => this.reload(), 300);
+    },
     async reload() {
+      const seq = (this._reloadSeq = (this._reloadSeq || 0) + 1);
       store.auditSearch = { actor: this.actor, action: this.action };
       const params = new URLSearchParams();
       if (this.actor) params.set("actor", this.actor);
       if (this.action) params.set("action", this.action);
       try {
-        store.audit = await api("/api/admin/audit?" + params.toString());
+        const audit = await api("/api/admin/audit?" + params.toString());
+        if (seq !== this._reloadSeq) return;
+        store.audit = audit;
       } catch (err) {
+        if (seq !== this._reloadSeq) return;
         ElMessage.error(errText(err));
       }
     },

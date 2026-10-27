@@ -379,6 +379,10 @@ export default {
   async mounted() {
     this.onTab("overview");
   },
+  beforeUnmount() {
+    clearTimeout(this._filterTimer);
+    clearTimeout(this._attackTimer);
+  },
   methods: {
     tt,
     displayNameForUsername,
@@ -439,6 +443,7 @@ export default {
       this._attackTimer = setTimeout(() => this.reloadAttacks(), 300);
     },
     async loadLogs() {
+      const seq = (this._logsSeq = (this._logsSeq || 0) + 1);
       const f = this.filter;
       const params = new URLSearchParams();
       if (f.event) params.set("event", f.event);
@@ -450,11 +455,13 @@ export default {
       params.set("offset", this.page * this.pageSize);
       try {
         const data = await api("/api/admin/access/logs?" + params.toString());
+        if (seq !== this._logsSeq) return;
         // The handler returns a flat array, so "more pages exist" is inferred
         // from whether this page came back full.
         this.logs = Array.isArray(data) ? data : [];
         this.hasMore = this.logs.length === this.pageSize;
       } catch (err) {
+        if (seq !== this._logsSeq) return;
         ElMessage.error(errText(err));
       }
     },
@@ -490,12 +497,13 @@ export default {
       }
     },
     async saveSettings() {
+      const parsedRetention = parseInt(this.settings.retentionDays, 10);
       const s = {
         enabled: !!this.settings.enabled,
         geoipLookup: !!this.settings.geoipLookup,
         vpnDetect: !!this.settings.vpnDetect,
         collectClient: !!this.settings.collectClient,
-        retentionDays: parseInt(this.settings.retentionDays, 10) || 90,
+        retentionDays: Number.isNaN(parsedRetention) ? 90 : parsedRetention,
         ipWorkerUrl: (this.settings.ipWorkerUrl || "").trim(),
       };
       try {

@@ -110,6 +110,7 @@ export default {
       editNetworks: [],
       saving: false,
       rawJson: "",
+      loadSeq: 0,
     };
   },
   computed: {
@@ -141,10 +142,12 @@ export default {
       this.$emit("update:visible", v);
     },
     async load() {
+      const seq = ++this.loadSeq;
       this.loaded = false;
       this.error = "";
       try {
         const i = await api("/api/containers/inspect?id=" + encodeURIComponent(this.id));
+        if (seq !== this.loadSeq) return;
         this.i = i;
         this.editRestart = (i.restartPolicy || "unless-stopped").toLowerCase();
         const current = new Set((i.networks || []).map((n) => n.name));
@@ -152,10 +155,11 @@ export default {
           .filter((n) => current.has(n.name) || current.has(n.fullName || n.name))
           .map((n) => n.fullName || n.name);
       } catch (err) {
+        if (seq !== this.loadSeq) return;
         this.error = err.message;
         this.i = null;
       } finally {
-        this.loaded = true;
+        if (seq === this.loadSeq) this.loaded = true;
       }
     },
     originOf(n) {

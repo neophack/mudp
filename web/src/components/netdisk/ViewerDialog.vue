@@ -66,7 +66,7 @@ export default {
     fromBackup: { type: Boolean, default: false },
   },
   data() {
-    return { loading: false, error: "", text: "", csvHtml: "", fullscreen: false, controller: null, pdfDoc: null };
+    return { loading: false, error: "", text: "", csvHtml: "", fullscreen: false, controller: null, pdfDoc: null, renderSeq: 0 };
   },
   computed: {
     name() {
@@ -95,24 +95,48 @@ export default {
     },
   },
   watch: {
-    fullscreen() {
+    fullscreen(on) {
+      if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
       this.$nextTick(() => {
         if (this.pdfDoc) this.paintPdf();
         if (this.controller && this.controller.repaint) this.controller.repaint();
       });
     },
   },
+  mounted() {
+    document.addEventListener("keydown", this.onKeydown, true);
+    document.addEventListener("fullscreenchange", this.onNativeFullscreenChange);
+  },
   // Leaving the page with the viewer open unmounts it without a close.
   beforeUnmount() {
+    document.removeEventListener("keydown", this.onKeydown, true);
+    document.removeEventListener("fullscreenchange", this.onNativeFullscreenChange);
     this.reset();
   },
   methods: {
     tt,
+    // Esc while fullscreen only leaves fullscreen; it must not reach the
+    // dialog, which would close the whole viewer. Capture phase runs first.
+    onKeydown(e) {
+      if (e.key !== "Escape" || !this.fullscreen) return;
+      e.stopPropagation();
+      e.preventDefault();
+      this.fullscreen = false;
+    },
+    // The browser consumes Esc itself when leaving native fullscreen (images),
+    // so sync the overlay state from the event instead of the key.
+    onNativeFullscreenChange() {
+      if (!document.fullscreenElement && this.fullscreen && this.kind === "image") this.fullscreen = false;
+    },
     onVisible(v) {
       this.$emit("update:visible", v);
       if (!v) this.reset();
     },
     reset() {
+      // Bump the generation so a slow render still in flight (fetch, pdf.js
+      // getDocument) finds itself stale on resume and drops its result
+      // instead of writing the old file into the newly opened viewer.
+      this.renderSeq++;
       this.text = "";
       this.csvHtml = "";
       this.error = "";
@@ -159,6 +183,11 @@ export default {
     // old console had, so a huge log can't be pulled into the DOM.
     async fetchText() {
       const res = await fetch(this.rawUrl, { credentials: "same-origin" });
+      if (!res.ok) {
+        // The error body is the server's JSON {error}, not file content.
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
       const len = Number(res.headers.get("Content-Length") || 0);
       if (len > 2 * 1024 * 1024) throw new Error(tt("netdisk.viewerLarge"));
       return res.text();
@@ -166,16 +195,20 @@ export default {
     async render() {
       const kind = this.kind;
       if (!kind) return;
+      const seq = ++this.renderSeq;
       this.loading = true;
       this.error = "";
       try {
         if (kind === "text" || kind === "json") {
           const raw = await this.fetchText();
+          if (seq !== this.renderSeq) return;
           // Invalid JSON falls back to the plain-text view rather than erroring.
           this.text = kind === "json" ? (prettyJsonOrNull(raw) ?? raw) : raw;
         } else if (kind === "csv") {
           const sep = this.name.toLowerCase().endsWith(".tsv") ? "\t" : ",";
-          this.csvHtml = csvToTableHtml(await this.fetchText(), sep);
+          const raw = await this.fetchText();
+          if (seq !== this.renderSeq) return;
+          this.csvHtml = csvToTableHtml(raw, sep);
         } else if (kind === "markdown") {
           this.loading = false;
           await this.$nextTick();
@@ -194,7 +227,7 @@ export default {
         } else if (kind === "pdf") {
           this.loading = false;
           await this.$nextTick();
-          await this.renderPdf();
+          await this.renderPdf(seq);
           return;
         } else if (kind === "yuv") {
           this.loading = false;
@@ -212,12 +245,12 @@ export default {
           return;
         }
       } catch (err) {
-        this.error = err.message || "Failed to load file";
+        if (seq === this.renderSeq) this.error = err.message || "Failed to load file";
       } finally {
-        this.loading = false;
+        if (seq === this.renderSeq) this.loading = false;
       }
     },
-    async renderPdf() {
+    async renderPdf(seq) {
       const pdfjs = window.pdfjsLib;
       if (!pdfjs) {
         this.error = tt("netdisk.viewerPdfFail");
@@ -225,7 +258,13 @@ export default {
       }
       pdfjs.workerSrc = "/vendor/pdf.worker.min.js";
       // markRaw: Vue must not wrap pdf.js's internals in deep reactive proxies.
-      this.pdfDoc = markRaw(await pdfjs.getDocument({ url: this.rawUrl }).promise);
+      const pdf = markRaw(await pdfjs.getDocument({ url: this.rawUrl }).promise);
+      if (seq !== this.renderSeq) {
+        // Closed or superseded while loading: free the worker-side document.
+        pdf.destroy();
+        return;
+      }
+      this.pdfDoc = pdf;
       await this.paintPdf();
     },
     // Lays out each PDF page in a vertical scroll container. The canvas is

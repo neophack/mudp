@@ -245,6 +245,7 @@ export default {
         await api("/api/networks", { method: "POST", body: JSON.stringify({ ...this.form, name: this.form.name.trim() }) });
         await refreshSection("networks");
         this.dialog = false;
+        this.form = { name: "", driver: "bridge", subnet: "", gateway: "", ipRange: "", ipv6: false, internal: false };
         ElMessage.success(tt("networks.created"));
       } catch (err) {
         ElMessage.error(errText(err));

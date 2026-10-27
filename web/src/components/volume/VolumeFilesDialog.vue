@@ -77,6 +77,7 @@ export default {
     visible(v) {
       if (v) {
         this.path = "";
+        this.items = [];
         this.selected = [];
         this.status = "";
         this.load();
@@ -185,6 +186,7 @@ export default {
     async doUpload(fileList) {
       const files = [...(fileList || [])];
       if (files.length === 0) return;
+      const dir = this.path || "";
       this.status = tt("volfiles.uploading", { n: files.length });
       this.busy = true;
       let ok = 0;
@@ -201,7 +203,7 @@ export default {
           if ((file.size || 0) >= CHUNK_THRESHOLD) {
             const slot = overlay.addActive({ name: file.name, size: file.size });
             const sendLarge = () => uploadLargeFile(file, file.name, {
-              base: "/api/volumes/files", dir: this.path || "", volume: this.name,
+              base: "/api/volumes/files", dir, volume: this.name,
               csrfToken: readCSRFCookie() || store.csrfToken || "",
               signal: overlay.signal,
               onProgress: ({ loaded, total }) => {
@@ -243,7 +245,7 @@ export default {
           const sendOne = async () => {
             const fd = new FormData();
             fd.append("name", this.name);
-            fd.append("path", this.path || "");
+            fd.append("path", dir);
             fd.append("hashes", clientCrc32);
             fd.append("files", file, file.name);
             let resp;

@@ -146,6 +146,7 @@ export default {
         await api("/api/volumes", { method: "POST", body: JSON.stringify({ name: this.form.name.trim(), driver: this.form.driver || "local" }) });
         await refreshSection("volumes");
         this.dialog = false;
+        this.form = { name: "", driver: "local" };
         ElMessage.success(tt("volumes.created"));
       } catch (err) {
         ElMessage.error(errText(err));

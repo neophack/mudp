@@ -87,6 +87,8 @@ export default {
       netdisk: { path: "", items: [], selected: [] },
       status: "",
       busy: false,
+      containerSeq: 0,
+      netdiskSeq: 0,
     };
   },
   watch: {
@@ -135,23 +137,29 @@ export default {
       }
     },
     async loadContainer() {
+      const seq = ++this.containerSeq;
       try {
         const res = await api(`/api/containers/files/list?id=${encodeURIComponent(this.id)}&path=${encodeURIComponent(this.container.path)}`);
+        if (seq !== this.containerSeq) return;
         this.container.path = res.path || this.container.path;
         this.container.items = res.items || [];
         this.status = "";
       } catch (err) {
+        if (seq !== this.containerSeq) return;
         this.container.items = [];
         this.status = err.message;
       }
     },
     async loadNetdisk() {
+      const seq = ++this.netdiskSeq;
       try {
         const res = await api(`/api/netdisk?path=${encodeURIComponent(this.netdisk.path)}`);
+        if (seq !== this.netdiskSeq) return;
         this.netdisk.path = res.path || "";
         this.netdisk.items = res.items || [];
         this.status = "";
       } catch (err) {
+        if (seq !== this.netdiskSeq) return;
         this.netdisk.items = [];
         this.status = err.message;
       }

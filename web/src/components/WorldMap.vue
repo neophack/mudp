@@ -111,10 +111,11 @@ export default {
     this.chart.showLoading();
     try {
       await ensureWorld();
+      if (!this.chart) return;
       this.ready = true;
       this.apply();
     } finally {
-      this.chart.hideLoading();
+      if (this.chart) this.chart.hideLoading();
     }
     this.ro = new ResizeObserver(() => this.chart && this.chart.resize());
     this.ro.observe(this.$refs.el);
@@ -142,7 +143,7 @@ export default {
           calculable: true,
           right: i === 0 ? 10 : undefined,
           left: i === 1 ? 10 : undefined,
-          bottom: 10 - i * 34,
+          bottom: 10 + i * 34,
           seriesIndex: i,
           min: 0,
           max: gMax,

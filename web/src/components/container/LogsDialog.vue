@@ -64,6 +64,7 @@ export default {
         this.fetchLogs();
       } else {
         this.stopFollow();
+        this.follow = false;
       }
     },
     follow(v) {

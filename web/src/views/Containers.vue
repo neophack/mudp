@@ -44,6 +44,7 @@
 
     <div class="card">
       <el-table
+        ref="table"
         :data="filtered"
         size="small"
         row-key="id"
@@ -341,6 +342,7 @@ export default {
         await api("/api/containers/action", { method: "POST", body: JSON.stringify({ id, action }) });
         if (action === "remove") {
           store.containers = (store.containers || []).filter((c) => c.id !== id && !(c.id && c.id.startsWith(id)));
+          this.$refs.table && this.$refs.table.clearSelection();
         }
         await refreshSection("containers", "dashboard");
         ElMessage.success(tt("containers.done"));
@@ -371,6 +373,7 @@ export default {
           store.containers = (store.containers || []).filter((c) => !matchesAnyId(c.id, ids));
         }
         await refreshSection("containers", "dashboard");
+        this.$refs.table && this.$refs.table.clearSelection();
         this.selected = new Set();
         const okN = (res.ok || []).length;
         const failN = (res.failed || []).length;

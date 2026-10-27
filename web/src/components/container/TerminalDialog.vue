@@ -6,6 +6,7 @@
     top="4vh"
     append-to-body
     :close-on-click-modal="false"
+    :close-on-press-escape="false"
     @update:model-value="onVisible"
     @opened="start"
   >
@@ -147,6 +148,8 @@ export default {
       }
     },
     start() {
+      this.conn = "opening";
+      this.meta = tt("terminal.loadingMeta");
       this.fetchMeta();
       if (!window.Terminal || !window.FitAddon || !window.FitAddon.FitAddon) {
         this.conn = "error";

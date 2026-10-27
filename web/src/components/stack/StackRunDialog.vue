@@ -64,11 +64,14 @@ export default {
       if (stackRun.done) return tt("stacks.complete");
       return tt("stacks.running");
     },
+    stackRunLineCount() {
+      return stackRun.lines.length;
+    },
   },
   watch: {
     // Streamed lines are appended to the module state by the Stacks view; the
     // dialog writes any new ones into the terminal as they land.
-    "stackRun.lines"() {
+    stackRunLineCount() {
       this.flush();
     },
   },

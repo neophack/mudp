@@ -270,7 +270,7 @@
       <el-input v-model="registryDialog.form.token" type="password" show-password :placeholder="registryDialog.existing ? tt('settings.appSecretKeep') : tt('settings.regTokenPlaceholder2')" size="small" />
       <template #footer>
         <el-button @click="registryDialog.visible = false">{{ tt("common.cancel") }}</el-button>
-        <el-button type="primary" @click="saveRegistry">{{ tt("common.save") }}</el-button>
+        <el-button type="primary" :loading="registryDialog.saving" @click="saveRegistry">{{ tt("common.save") }}</el-button>
       </template>
     </el-dialog>
 
@@ -281,7 +281,7 @@
       <el-input v-model="pw.confirm" type="password" show-password :placeholder="tt('settings.confirmPassword')" size="small" @keyup.enter="savePassword" />
       <template #footer>
         <el-button @click="pw.visible = false">{{ tt("common.cancel") }}</el-button>
-        <el-button type="primary" @click="savePassword">{{ tt("common.confirm") }}</el-button>
+        <el-button type="primary" :loading="pw.saving" @click="savePassword">{{ tt("common.confirm") }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -316,8 +316,8 @@ export default {
       feishu: { appId: "", appSecret: "", enabled: false },
       mcpForm: { enabled: false, port: 19090, domain: "", safeNetwork: "openwrt-lan" },
       mcpRemote: null,
-      pw: { visible: false, current: "", next: "", confirm: "" },
-      registryDialog: { visible: false, existing: null, form: { name: "", url: "", username: "", token: "" } },
+      pw: { visible: false, current: "", next: "", confirm: "", saving: false },
+      registryDialog: { visible: false, existing: null, saving: false, form: { name: "", url: "", username: "", token: "" } },
     };
   },
   computed: {
@@ -390,17 +390,25 @@ export default {
         if (store.me) store.me.sharedDiskReadWrite = readWrite;
         ElMessage.success(tt("settings.sharedDiskAccessSaved"));
       } catch (err) {
+        // Roll the select back so it never shows a state the server refused.
+        this.sharedDiskReadWrite = readWrite ? "ro" : "rw";
         ElMessage.error(errText(err));
       }
     },
     openPassword() {
-      this.pw = { visible: true, current: "", next: "", confirm: "" };
+      this.pw = { visible: true, current: "", next: "", confirm: "", saving: false };
     },
     async savePassword() {
+      if (this.pw.saving) return;
+      if (!this.pw.current || !this.pw.next) {
+        ElMessage.error(tt("settings.passwordRequired"));
+        return;
+      }
       if (this.pw.next !== this.pw.confirm) {
         ElMessage.error(tt("settings.passwordMismatch"));
         return;
       }
+      this.pw.saving = true;
       try {
         await api("/api/user/password", {
           method: "POST",
@@ -416,6 +424,8 @@ export default {
         };
         const msg = err?.message || "";
         ElMessage.error(known[msg] ? tt(known[msg]) : errText(err));
+      } finally {
+        this.pw.saving = false;
       }
     },
     async saveDefaultLanguage() {
@@ -519,12 +529,15 @@ export default {
       this.registryDialog = {
         visible: true,
         existing: r || null,
+        saving: false,
         form: { name: r?.name || "", url: r?.url || "", username: r?.username || "", token: "" },
       };
     },
     async saveRegistry() {
+      if (this.registryDialog.saving) return;
       const payload = { ...this.registryDialog.form };
       if (this.registryDialog.existing) payload.id = this.registryDialog.existing.id;
+      this.registryDialog.saving = true;
       try {
         await api("/api/registries", { method: "POST", body: JSON.stringify(payload) });
         this.registries = (await api("/api/registries").catch(() => this.registries)) || [];
@@ -532,6 +545,8 @@ export default {
         ElMessage.success(tt("settings.registrySaved"));
       } catch (err) {
         ElMessage.error(errText(err));
+      } finally {
+        this.registryDialog.saving = false;
       }
     },
     async deleteRegistry(r) {

@@ -472,21 +472,26 @@ export default {
       if (msg.toLowerCase().includes("not configured")) return msg;
       return tt("netdisk.backupUnavailableMsg", { msg });
     },
+    // reserve-selection keeps the table's own checked set keyed by row-key
+    // across directory and disk changes, so every place that drops the local
+    // selection must clear the table's too, or stale paths linger in
+    // selection-change (and same-keyed rows on another disk show checked).
+    clearSelection() {
+      this.$refs.table?.clearSelection();
+      this.selection = [];
+      this.modeState[this.mode].selection = [];
+    },
     switchMode(mode) {
       if (mode === this.mode) return;
-      // Park the current disk's selection so toggling back restores it, like
-      // the old per-mode modeState.
-      this.modeState[this.mode].selection = [...this.selection];
+      this.clearSelection();
       this.mode = mode;
       this.page = 1;
-      this.selection = this.modeState[mode].selection || [];
       this.refresh();
     },
     navigate(path) {
       this.modeState[this.mode].path = path;
       this.page = 1;
-      this.selection = [];
-      this.modeState[this.mode].selection = [];
+      this.clearSelection();
       this.refresh();
     },
     goUp() {
@@ -630,7 +635,7 @@ export default {
       try {
         const res = await api(endpoint, { method: "POST", body: JSON.stringify({ paths }) });
         this.reportDeleteOutcome(res);
-        this.selection = [];
+        this.clearSelection();
         this.refresh();
       } catch (err) {
         ElMessage.error(errText(err));
@@ -650,7 +655,7 @@ export default {
       try {
         const res = await api(endpoint, { method: "POST", body: JSON.stringify({ paths }) });
         this.reportDeleteOutcome(res);
-        this.selection = [];
+        this.clearSelection();
         this.refresh();
       } catch (err) {
         ElMessage.error(errText(err));
@@ -674,10 +679,16 @@ export default {
         ? { items, move, policy: "rename" }
         : { fromDisk: sourceDisk, toDisk: targetDisk, items, move, policy: "rename" };
       const kind = sameDisk ? (move ? "netdisk.move" : "netdisk.copy") : "netdisk.transfer";
-      const data = await this.runWithCopyProgress(kind, items.length, () =>
-        api(endpoint, { method: "POST", body: JSON.stringify(body) })
-      );
-      this.selection = [];
+      let data;
+      try {
+        data = await this.runWithCopyProgress(kind, items.length, () =>
+          api(endpoint, { method: "POST", body: JSON.stringify(body) })
+        );
+      } catch (err) {
+        ElMessage.error(errText(err));
+        return;
+      }
+      this.clearSelection();
       const errors = (data.results || []).filter((r) => r.status === "error").length;
       if (move) {
         if (errors) ElMessage.warning(tt("netdisk.movedNFailed", { n: data.count || 0, err: errors }));

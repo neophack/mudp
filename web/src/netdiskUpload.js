@@ -110,7 +110,6 @@ export async function uploadFilesHandler(source, path, onDone) {
   let failed = 0;
   let seen = 0;
   const { signal } = overlay;
-  const batchStart = performance.now();
   let iter;
   try {
     iter = source[Symbol.asyncIterator]
@@ -186,7 +185,10 @@ export async function uploadFilesHandler(source, path, onDone) {
         ok++;
         return;
       } catch (err) {
-        if (signal.aborted) return;
+        if (signal.aborted) {
+          overlay.cancelActive(slot);
+          return;
+        }
         lastErr = err;
         if (attempt < LARGE_FILE_MAX_ATTEMPTS - 1) {
           await sleep(LARGE_FILE_RETRY_BASE_MS * 2 ** attempt);
@@ -202,7 +204,10 @@ export async function uploadFilesHandler(source, path, onDone) {
     // verify integrity. Files that can't be hashed yield "" and are still
     // uploaded — the server checksums them.
     const hashes = await Promise.all(cur.map((e) => hashFileCRC32(e.file)));
-    if (signal.aborted) return;
+    if (signal.aborted) {
+      for (const slot of slots) overlay.cancelActive(slot);
+      return;
+    }
 
     const fd = new FormData();
     fd.append("path", path);
@@ -242,7 +247,10 @@ export async function uploadFilesHandler(source, path, onDone) {
         },
       });
     } catch (err) {
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        for (const slot of slots) overlay.cancelActive(slot);
+        return;
+      }
       // Network/HTTP failure for the whole request: every file is retriable.
       for (let i = 0; i < cur.length; i++) {
         failed++;
@@ -278,7 +286,11 @@ export async function uploadFilesHandler(source, path, onDone) {
       overlay.reactivate(slot, { name: entry.relPath || entry.file.name, size: entry.file.size });
       failed = Math.max(0, failed - 1);
       refreshOverall();
-      await sendBatch([entry], [slot], entry.file.size || 0);
+      try {
+        await sendBatch([entry], [slot], entry.file.size || 0);
+      } finally {
+        refreshOverall();
+      }
       if (onDone) onDone();
     });
   }
@@ -349,6 +361,8 @@ export async function uploadFilesHandler(source, path, onDone) {
 
   overlay.finish();
   if (signal.aborted) {
+    overlay.setLabel(tt("netdisk.uploadCancelled"));
+    refreshOverall();
     toast(tt("netdisk.uploadCancelled"), false);
   } else {
     overlay.setLabel(tt("netdisk.uploadedN", { ok, total: seen }));

@@ -257,7 +257,7 @@
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">{{ tt("common.cancel") }}</el-button>
-        <el-button type="primary" @click="createUser">{{ tt("users.createUser") }}</el-button>
+        <el-button type="primary" :loading="creating" @click="createUser">{{ tt("users.createUser") }}</el-button>
       </template>
     </el-dialog>
 
@@ -303,7 +303,7 @@
       </el-form>
       <template #footer>
         <el-button @click="editDialog.visible = false">{{ tt("common.cancel") }}</el-button>
-        <el-button type="primary" @click="saveUser">{{ tt("common.save") }}</el-button>
+        <el-button type="primary" :loading="editDialog.saving" @click="saveUser">{{ tt("common.save") }}</el-button>
       </template>
     </el-dialog>
 
@@ -365,6 +365,7 @@ export default {
     return {
       s: store,
       createVisible: false,
+      creating: false,
       userForm: { username: "", password: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, groupId: this.defaultGroupId() },
       feishuTest: { userId: null, message: "" },
       feishuTestSending: false,
@@ -372,7 +373,7 @@ export default {
       tasks: [],
       sheet: { visible: false, row: null },
       groupsDialog: { visible: false, id: 0, name: "", groupId: 0 },
-      editDialog: { visible: false, id: 0, name: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, portPrefix: "", password: "", enabled: true },
+      editDialog: { visible: false, id: 0, name: "", role: "user", containerCap: 10, netdiskQuotaGB: 0, portPrefix: "", password: "", enabled: true, saving: false },
       groupDialog: { visible: false, id: 0, name: "", netdiskPath: "", backupPath: "", sharedDiskPath: "", language: "", orig: {} },
     };
   },
@@ -547,6 +548,7 @@ export default {
       return ((store.groups || []).find((g) => g.name === "users") || {}).id || 0;
     },
     async createUser() {
+      if (this.creating) return;
       const f = this.userForm;
       const payload = {
         username: f.username,
@@ -556,6 +558,7 @@ export default {
         netdiskQuotaBytes: Math.round(Number(f.netdiskQuotaGB || 0) * 1024 * 1024 * 1024),
         groupId: Number(f.groupId) || ((store.groups || []).find((g) => g.name === "users") || {}).id || 0,
       };
+      this.creating = true;
       try {
         await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
         await refreshSection("users", "groups");
@@ -565,6 +568,8 @@ export default {
       } catch (err) {
         if (err.message === "user capacity full") ElMessage.error(tt("users.capacityFull"));
         else ElMessage.error(errText(err));
+      } finally {
+        this.creating = false;
       }
     },
     openGroupSettings(group) {
@@ -635,10 +640,12 @@ export default {
         portPrefix: user.portPrefix || "",
         password: "",
         enabled: !user.disabled,
+        saving: false,
       };
     },
     async saveUser() {
       const e = this.editDialog;
+      if (e.saving) return;
       const portPrefixRaw = String(e.portPrefix).trim();
       const payload = {
         id: Number(e.id),
@@ -649,6 +656,7 @@ export default {
         password: e.password || "",
         disabled: !e.enabled,
       };
+      e.saving = true;
       try {
         await api("/api/users/update", { method: "POST", body: JSON.stringify(payload) });
         await refreshSection("users", "groups");
@@ -656,6 +664,8 @@ export default {
         ElMessage.success(tt("users.userUpdated"));
       } catch (err) {
         ElMessage.error(errText(err));
+      } finally {
+        this.editDialog.saving = false;
       }
     },
     async approve(user) {

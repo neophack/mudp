@@ -70,6 +70,7 @@ export default {
       loaded: false,
       attachId: "",
       attaching: false,
+      loadSeq: 0,
     };
   },
   computed: {
@@ -91,16 +92,20 @@ export default {
       this.$emit("update:visible", v);
     },
     async load() {
+      const seq = ++this.loadSeq;
       this.loaded = false;
       this.error = "";
       try {
-        this.n = await api("/api/networks/inspect?name=" + encodeURIComponent(this.name));
+        const n = await api("/api/networks/inspect?name=" + encodeURIComponent(this.name));
+        if (seq !== this.loadSeq) return;
+        this.n = n;
         this.attachId = this.attachCandidates.length ? this.attachCandidates[0].id : "";
       } catch (err) {
+        if (seq !== this.loadSeq) return;
         this.error = err.message;
         this.n = null;
       } finally {
-        this.loaded = true;
+        if (seq === this.loadSeq) this.loaded = true;
       }
     },
     async attach() {

@@ -231,6 +231,18 @@ export function startTaskPolling() {
   taskPollTimer = setInterval(tick, 3000);
 }
 
+export function stopJobsPolling() {
+  if (backupPollTimer) {
+    clearInterval(backupPollTimer);
+    backupPollTimer = null;
+  }
+  if (taskPollTimer) {
+    clearInterval(taskPollTimer);
+    taskPollTimer = null;
+  }
+  dismissedBackupIds.clear();
+}
+
 function mergeUserTasks(serverTasks) {
   if (!Array.isArray(serverTasks)) return;
   // Drives the bottom-left copy/move progress overlay for operations this

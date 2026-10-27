@@ -186,6 +186,7 @@ export default {
       form: blankForm(),
       progress: { active: false, steps: [], logs: "", error: "" },
       submitting: false,
+      runSeq: 0,
       // lastPayload backs the Retry button: resubmit the original request
       // instead of wiping the form.
       lastPayload: null,
@@ -311,6 +312,7 @@ export default {
       }
     },
     submit() {
+      if (this.submitting) return;
       if (this.progress.active) {
         if (this.lastPayload) this.streamCreate(this.lastPayload);
         return;
@@ -355,7 +357,9 @@ export default {
       this.streamCreate(payload);
     },
     async streamCreate(payload) {
-      this.progress = { active: true, steps: [], logs: "", error: "" };
+      const runId = ++this.runSeq;
+      this.progress = { active: true, steps: [], logs: "", error: "", runId };
+      this.submitting = true;
       const job = registerJob({ kind: "container.create", name: payload.name || "new container" });
       try {
         const headers = { "Content-Type": "application/json", Accept: "text/event-stream" };
@@ -399,7 +403,9 @@ export default {
             job.done(data.message || tt("create.created"));
             ElMessage.success(tt("create.created"));
             refreshAll();
-            setTimeout(() => this.$emit("update:visible", false), 700);
+            setTimeout(() => {
+              if (this.progress.runId === runId) this.$emit("update:visible", false);
+            }, 700);
           } else if (event === "cancelled") {
             this.progress.active = false;
             this.progress.logs += `[cancelled] ${data.message || ""}\n`;
@@ -417,6 +423,8 @@ export default {
         }
         this.progress.logs += `[error] ${this.progress.error}\n`;
         ElMessage.error(this.progress.error);
+      } finally {
+        this.submitting = false;
       }
     },
   },

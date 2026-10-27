@@ -215,7 +215,34 @@ export async function fetchNotifications() {
     store.notifications = res.notifications || [];
     store.unreadCount = res.unreadCount || 0;
   } catch {
-    store.notifications = [];
-    store.unreadCount = 0;
+    /* keep the previous snapshot */
   }
+}
+
+export function resetSession() {
+  store.me = null;
+  store.csrfToken = "";
+  store.feishu = false;
+  store.dashboard = null;
+  store.images = [];
+  store.users = [];
+  store.groups = [];
+  store.containers = [];
+  store.volumes = [];
+  store.networks = [];
+  store.stacks = [];
+  store.forwards = null;
+  store.disks = null;
+  store.usage = [];
+  store.audit = [];
+  store.auditSearch = {};
+  store.netdisk = { path: "", items: [], quota: null };
+  store.mcpTokens = [];
+  store.mcpRemote = null;
+  store.gpuCount = 0;
+  store.notifications = [];
+  store.unreadCount = 0;
+  store.jobs = [];
+  store.runningJobs = 0;
+  store.sectionErrors = {};
 }

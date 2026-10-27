@@ -605,14 +605,17 @@ export default {
       }
     },
     async showUsage(tk) {
+      const seq = (this._usageSeq = (this._usageSeq || 0) + 1);
       this.usage = { visible: true, loading: true, error: "", rows: [], name: tk.containerName, label: tk.label };
       try {
         const rows = (await api(`/api/mcp/tokens/${tk.id}/usage?limit=200`)) || [];
+        if (seq !== this._usageSeq) return;
         this.usage.rows = rows;
       } catch (err) {
+        if (seq !== this._usageSeq) return;
         this.usage.error = err.message || tt("mcp.usageFail");
       } finally {
-        this.usage.loading = false;
+        if (seq === this._usageSeq) this.usage.loading = false;
       }
     },
     endpointFor(transport, base) {

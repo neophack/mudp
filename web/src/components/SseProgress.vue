@@ -26,9 +26,14 @@ export default {
   },
   watch: {
     "state.logs"() {
-      this.$nextTick(() => {
-        if (this.$refs.log) this.$refs.log.scrollTop = this.$refs.log.scrollHeight;
-      });
+      const el = this.$refs.log;
+      if (!el) return;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      if (atBottom) {
+        this.$nextTick(() => {
+          if (this.$refs.log) this.$refs.log.scrollTop = this.$refs.log.scrollHeight;
+        });
+      }
     },
   },
   methods: {

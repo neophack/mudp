@@ -170,17 +170,22 @@ export default {
     tt,
     displayNameForUsername,
     async refresh() {
-      if (document.hidden) return;
-      const data = await api("/api/processes").catch(() => null);
-      if (!data) {
-        this.failed = true;
-        return;
-      }
-      this.failed = false;
-      this.processes = data.processes || [];
-      this.watches = data.watches || [];
-      if (this.feishuEnabled) {
-        this.history = await api("/api/me/feishu_messages").catch(() => this.history);
+      if (document.hidden || this._refreshing) return;
+      this._refreshing = true;
+      try {
+        const data = await api("/api/processes").catch(() => null);
+        if (!data) {
+          this.failed = true;
+          return;
+        }
+        this.failed = false;
+        this.processes = data.processes || [];
+        this.watches = data.watches || [];
+        if (this.feishuEnabled) {
+          this.history = await api("/api/me/feishu_messages").catch(() => this.history);
+        }
+      } finally {
+        this._refreshing = false;
       }
     },
     // The process name is the basename of the command's first token, e.g.

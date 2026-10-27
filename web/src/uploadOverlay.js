@@ -75,7 +75,7 @@ export function showUploadOverlay() {
       let target = findActive(slot);
       if (target) {
         s.active = s.active.filter((r) => r.id !== slot);
-        target = { id: target.id, name: target.name, size: target.size, status: "error", msg: msg || "Failed", retry: onRetry || null };
+        target = { id: target.id, name: target.name, size: target.size, percent: target.percent, status: "error", msg: msg || "Failed", retry: onRetry || null };
         s.settled.unshift(target);
       } else {
         target = findSettled(slot);
@@ -86,6 +86,12 @@ export function showUploadOverlay() {
         }
       }
       return !!target;
+    },
+
+    // A cancelled upload's row must not linger in the active list as a frozen
+    // "uploading" row; it is simply dropped.
+    cancelActive(slot) {
+      s.active = s.active.filter((r) => r.id !== slot);
     },
 
     // Moves a settled (failed) row back into the active area, reusing the same

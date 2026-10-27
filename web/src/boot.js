@@ -65,6 +65,9 @@ export async function boot() {
 export async function afterLogin(user, csrfToken) {
   store.me = user;
   store.csrfToken = csrfToken || "";
+  initI18n(user.language, user.defaultLanguage, user.groupLanguage);
+  applyElementLocale();
+  fetchNotifications().catch(() => {});
   if (user.pending) return "pending";
   refreshAll().catch(() => {});
   api("/api/hardware/gpus").then((r) => { store.gpuCount = r.count || 0; }).catch(() => {});

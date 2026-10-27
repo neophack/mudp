@@ -365,7 +365,8 @@ export default {
       presetSaving: false,
       reregisterName: "",
       importFile: null,
-      progress: { active: false, label: "", logs: "", error: "" },
+      progress: { active: false, label: "", logs: "", error: "", runId: 0 },
+      progressRunId: 0,
       progressTitle: "",
       progressKind: "",
       progressRetryFn: null,
@@ -585,7 +586,13 @@ export default {
     },
     // Common SSE job runner for pull/build/import.
     async runStream({ kind, title, label, url, body, signal, job, onDone, retry }) {
-      this.progress = { active: true, label, logs: "", error: "" };
+      if (this.progress.active) {
+        job.cancel();
+        ElMessage.warning(tt("images.streamBusy"));
+        return;
+      }
+      const runId = ++this.progressRunId;
+      this.progress = { active: true, label, logs: "", error: "", runId };
       this.progressTitle = title;
       this.progressKind = kind;
       this.progressRetryFn = retry || null;
@@ -623,7 +630,9 @@ export default {
             this.progress.active = false;
             if (onDone) onDone(data);
             refreshSection("images");
-            setTimeout(() => { this.dialogs.progress = false; }, 800);
+            setTimeout(() => {
+              if (this.progress.runId === runId) this.dialogs.progress = false;
+            }, 800);
           } else if (event === "cancelled") {
             this.progress.active = false;
             this.progress.logs += `[cancelled] ${data.message || ""}\n`;

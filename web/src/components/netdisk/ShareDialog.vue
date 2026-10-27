@@ -107,6 +107,13 @@ export default {
     randomCode,
     onVisible(v) {
       this.$emit("update:visible", v);
+      // Any close path (X, Esc, mask) after a link was generated must refresh
+      // the parent's external-links list, not just the footer buttons.
+      if (!v) this.emitDone();
+    },
+    emitDone() {
+      if (!this.created) return;
+      this.$emit("done");
     },
     async copy(text) {
       try {
@@ -138,7 +145,7 @@ export default {
     },
     close() {
       this.$emit("update:visible", false);
-      this.$emit("done");
+      this.emitDone();
     },
   },
 };

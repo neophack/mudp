@@ -206,7 +206,6 @@ export default {
     async reload() {
       try {
         store.forwards = await api("/api/admin/forwards");
-        this.syncNetworkForm();
         this.loaded = true;
       } catch (err) {
         this.error = err.message;
@@ -281,6 +280,7 @@ export default {
           body: JSON.stringify({ networks: this.selectedNetworks, networksRaw: this.networksRaw }),
         });
         await this.reload();
+        this.syncNetworkForm();
         if (res.warning) ElMessage.warning(tt("forwards.savedWithWarn", { warn: res.warning }));
         else ElMessage.success(tt("forwards.networksSaved"));
       } catch (err) {

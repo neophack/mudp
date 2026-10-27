@@ -60,7 +60,7 @@
         </el-select>
         <template #footer>
           <el-button @click="prune.visible = false">{{ tt("common.cancel") }}</el-button>
-          <el-button type="danger" @click="confirmPrune">{{ tt("database.cleanNow") }}</el-button>
+          <el-button type="danger" :loading="prune.busy" @click="confirmPrune">{{ tt("database.cleanNow") }}</el-button>
         </template>
       </el-dialog>
     </template>
@@ -79,7 +79,7 @@ export default {
     return {
       data: null,
       error: "",
-      prune: { visible: false, table: "", days: 30 },
+      prune: { visible: false, table: "", days: 30, busy: false },
     };
   },
   computed: {
@@ -98,6 +98,7 @@ export default {
     async refresh() {
       try {
         this.data = await api("/api/admin/db/usage");
+        this.error = "";
       } catch (err) {
         this.error = err.message;
       }
@@ -106,9 +107,11 @@ export default {
       return this.maxBytes > 0 ? Math.round(((tb.bytes || 0) / this.maxBytes) * 100) : 0;
     },
     openPrune(tb) {
-      this.prune = { visible: true, table: tb.name, days: 30 };
+      this.prune = { visible: true, table: tb.name, days: 30, busy: false };
     },
     async confirmPrune() {
+      if (this.prune.busy) return;
+      this.prune.busy = true;
       try {
         const res = await api("/api/admin/db/prune", {
           method: "POST",
@@ -120,6 +123,8 @@ export default {
         this.refresh();
       } catch (err) {
         ElMessage.error(errText(err));
+      } finally {
+        this.prune.busy = false;
       }
     },
   },
