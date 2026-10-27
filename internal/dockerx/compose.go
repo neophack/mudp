@@ -81,15 +81,19 @@ func (p *ComposeProject) Cleanup() {
 }
 
 // CountServices parses the compose YAML and returns the number of services
-// defined. Used for quota checks before running Up.
+// defined. Used for quota checks before running Up. Multi-document files count
+// every document, matching what `docker compose` loads.
 func CountServices(composeYAML string) (int, error) {
-	var doc struct {
-		Services map[string]yaml.Node `yaml:"services"`
-	}
-	if err := yaml.Unmarshal([]byte(composeYAML), &doc); err != nil {
+	docs, err := parseComposeDocuments(composeYAML)
+	if err != nil {
 		return 0, fmt.Errorf("invalid compose YAML: %w", err)
 	}
-	return len(doc.Services), nil
+	n := 0
+	for _, doc := range docs {
+		services, _ := doc["services"].(map[string]any)
+		n += len(services)
+	}
+	return n, nil
 }
 
 // ComposeLimits carries the per-user restrictions ValidateCompose enforces.
@@ -128,6 +132,20 @@ var forbiddenServiceKeys = map[string]string{
 	"build":               "building images from a stack is not allowed; ask an admin to publish the image",
 	"runtime":             "selecting a container runtime requires admin privileges",
 	"group_add":           "group_add is not allowed",
+	"secrets":             "secrets can inject arbitrary host files into the container",
+	"configs":             "configs can inject arbitrary host files into the container",
+	"env_file":            "env_file can read arbitrary host files into the service environment",
+}
+
+// forbiddenTopLevelKeys lists top-level compose fields that reach outside the
+// file being validated. `include` merges another file (local path or URL) into
+// the model without any of the checks below ever seeing it; top-level
+// `secrets`/`configs` name host files that the service-level counterparts
+// mount into containers.
+var forbiddenTopLevelKeys = map[string]string{
+	"include": "include merges unvalidated files into the stack and is not allowed",
+	"secrets": "secrets can inject arbitrary host files into containers",
+	"configs": "configs can inject arbitrary host files into containers",
 }
 
 // allowedNetworkModes are the network_mode values that keep a container inside
@@ -147,18 +165,62 @@ var allowedNetworkModes = map[string]bool{
 // Callers must validate the body that will actually be written to disk, i.e.
 // after SubstituteEnv — see runStackSSE. Validating only the stored template
 // would let `privileged: ${P}` pass and resolve to true at deploy time.
+//
+// Every document of a multi-document stream is validated: `docker compose`
+// loads and merges all documents in a file, while a single Unmarshal call
+// would only see the first one.
 func ValidateCompose(composeYAML string, limits ComposeLimits) error {
 	if limits.Admin {
 		return nil
 	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(composeYAML), &doc); err != nil {
+	docs, err := parseComposeDocuments(composeYAML)
+	if err != nil {
 		return fmt.Errorf("invalid compose YAML: %w", err)
 	}
-	services, _ := doc["services"].(map[string]any)
-	if len(services) == 0 {
+	sawServices := false
+	for _, doc := range docs {
+		if err := validateComposeDocument(doc, limits); err != nil {
+			return err
+		}
+		if services, _ := doc["services"].(map[string]any); len(services) > 0 {
+			sawServices = true
+		}
+	}
+	if !sawServices {
 		return errors.New("compose file defines no services")
 	}
+	return nil
+}
+
+// parseComposeDocuments decodes every YAML document in the stream. yaml.Unmarshal
+// would silently ignore everything after the first `---` separator, but
+// `docker compose` merges all documents — so validation must see them all.
+func parseComposeDocuments(composeYAML string) ([]map[string]any, error) {
+	dec := yaml.NewDecoder(strings.NewReader(composeYAML))
+	var docs []map[string]any
+	for {
+		var doc map[string]any
+		if err := dec.Decode(&doc); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+		if doc == nil {
+			continue // separator-only or comment-only document
+		}
+		docs = append(docs, doc)
+	}
+	return docs, nil
+}
+
+func validateComposeDocument(doc map[string]any, limits ComposeLimits) error {
+	for key, reason := range forbiddenTopLevelKeys {
+		if v, present := doc[key]; present && !isZeroComposeValue(v) {
+			return fmt.Errorf("%s (%s)", reason, key)
+		}
+	}
+	services, _ := doc["services"].(map[string]any)
 	names := make([]string, 0, len(services))
 	for name := range services {
 		names = append(names, name)
@@ -312,6 +374,9 @@ func validateTopLevelVolumes(doc map[string]any) error {
 		spec, ok := volumes[name].(map[string]any)
 		if !ok {
 			continue // `myvol:` with an empty body is the plain named volume
+		}
+		if vn, ok := spec["name"].(string); ok && strings.ContainsAny(vn, `/\`) {
+			return fmt.Errorf("volume %q: name %q must not be a path", name, vn)
 		}
 		if !isZeroComposeValue(spec["external"]) {
 			return fmt.Errorf("volume %q: external volumes are not allowed", name)

@@ -210,6 +210,7 @@ import { store, isAdmin, refreshSection } from "@/store";
 import { tt } from "@/i18n";
 import { openUpgrade, isUpgrading } from "@/upgrade";
 import { detectClientIP, readIPCache, isCacheFresh } from "@/lib/publicip.js";
+import { escapeHtml } from "@/lib/common.js";
 import EChart from "@/components/EChart.vue";
 import VIcon from "@/components/VIcon.vue";
 
@@ -398,10 +399,14 @@ export default {
         this.clientLoc = "";
         return;
       }
+      // The geo fields come from external sources (the ip-api proxy or an
+      // operator-configured IP worker) and land in v-html, so every
+      // interpolated value must be escaped — a poisoned worker or WHOIS org
+      // name must not become markup in an admin's session.
       const flag = countryCodeFlag(geo.countryCode);
-      const place = [geo.city, geo.country].filter(Boolean).join(", ") || "—";
+      const place = [geo.city, geo.country].filter(Boolean).map(escapeHtml).join(", ") || "—";
       let html = `${flag} ${place}`;
-      if (geo.isp) html += ` · ${geo.isp}`;
+      if (geo.isp) html += ` · ${escapeHtml(geo.isp)}`;
       if (geo.proxy || geo.hosting) html += ` <span class="badge-warn-text">[${tt("dash.vpnProxy")}]</span>`;
       this.clientLoc = html;
     },

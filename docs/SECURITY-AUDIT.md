@@ -6,7 +6,7 @@
 `web/tests/unit/chunkupload-layout.test.js`、`web/tests/e2e/security-hardening.spec.js`。
 
 **修复状态（2026-08-14 第二轮）**：M-1/M-2/M-3、L-1/L-2/L-3/L-4/L-5 及 Windows rename 竞态
-已全部修复并通过反转后的回归测试；**H-1（会话吊销）仍未修复**（需要产品决策 + DB 迁移，见下）。
+已全部修复并通过反转后的回归测试；**H-1（会话吊销）已于 2026-10-27 修复**（cookie 增加 `iat` + 绝对寿命上限，登出 bump `session_epoch`，见下）。
 测试约定：
 
 - **正向回归测试**：验证已存在且正确、但此前无测试覆盖的防护，防止将来被无意削弱。
@@ -17,17 +17,20 @@
 
 ## 1. 漏洞清单
 
-### H-1 会话不可吊销，登出仅是客户端行为（已知缺口）
+### H-1 会话不可吊销，登出仅是客户端行为（已修复 ✅ 2026-10-27）
 
-- 位置：`internal/auth/auth.go:49-59`（`Signer.Clear` 只覆写浏览器 cookie）、
-  `internal/server/server.go:655-658`（`logout` 不做任何服务端记录）。
-- 会话是无状态 HMAC cookie（`auth.go:34-47`），body 仅 `userID:expiry`，**无 nonce**：
-  同一 (uid, 秒级过期时刻) 的 token 完全相同，无法单独吊销或轮换。
-- 影响：被窃取的 cookie 在登出后仍然有效最长 24h；管理员禁用账号可拦截（每次请求查库），
-  但无法踢出活跃会话。
-- 建议：用户表增加 `sessions_valid_after` 水位列（登出/改密时更新为当前时间，
-  校验时要求 token 的签发时间 ≥ 水位），或引入服务端会话表 + 吊销列表。
-- 既有测试：`TestSecuritySessionSurvivesLogout`（security_regression_test.go:407）已钉住该缺口。
+- 原问题：会话是无状态 HMAC cookie（body 仅 `userID:expiry`），`logout` 只清浏览器
+  cookie，被窃取的 cookie 在登出后仍有效最长 24h，且滑动续期可无限延长寿命。
+- **修复（两层）**：
+  1. cookie body 改为 `uid:iat:exp:epoch:sig`（`internal/auth/auth.go`），`Renew` 保留
+     原始 `iat`，`parse` 强制 `now-iat ≤ MaxSessionAge`（7 天绝对寿命）——滑动续期
+     不再能无限延长登录；
+  2. `logout` 调用 `db.BumpSessionEpoch(uid)`（`internal/server/server.go`），复用既有
+     epoch 吊销机制，登出立即杀死该账号所有在外的 cookie（含其它设备）。
+- 既有测试：原钉住缺口的 `TestSecuritySessionSurvivesLogout` 已反转为
+  `TestSecurityLogoutRevokesSession`；`internal/auth` 新增
+  `TestSignerAbsoluteAgeCap`、`TestSignerRenewPreservesIAT`。
+- 行为变化：旧格式 cookie（无 iat）全部失效，升级后所有用户需重新登录一次。
 
 ### M-1 分块上传配额可绕过（已修复 ✅）
 

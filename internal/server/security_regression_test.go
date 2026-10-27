@@ -415,15 +415,12 @@ func TestSecuritySessionForgeryRejected(t *testing.T) {
 	})
 }
 
-// TestSecuritySessionSurvivesLogout is a KNOWN GAP, not a "this is fine"
-// regression: sessions are stateless HMAC cookies with no server-side store,
-// so /api/logout can only clear the cookie in the browser that calls it. A
-// captured token keeps authenticating for up to auth.SessionTTL after the
-// legitimate user logs out. This test documents today's actual behavior so a
-// future fix (a per-user "sessions issued after" watermark, or a small
-// revocation list) is visible as an intentional behavior change, not a
-// silent regression, when this test starts failing.
-func TestSecuritySessionSurvivesLogout(t *testing.T) {
+// TestSecurityLogoutRevokesSession closes the gap this file used to pin: the
+// session cookie is stateless, so /api/logout used to only clear the calling
+// browser's cookie and a captured copy kept authenticating until its expiry.
+// Logout now bumps the user's session epoch server-side, and a saved copy of
+// the pre-logout cookie must be rejected on the next request.
+func TestSecurityLogoutRevokesSession(t *testing.T) {
 	baseURL, _, user := newSecurityTestServer(t)
 	savedCookie := user.sessionCookieValue()
 
@@ -433,10 +430,12 @@ func TestSecuritySessionSurvivesLogout(t *testing.T) {
 	}
 
 	resp2, body2 := rawCookieGet(t, baseURL, "/api/me", savedCookie)
-	if resp2.StatusCode != http.StatusOK || !strings.Contains(string(body2), "secuser") {
-		t.Fatalf("KNOWN-GAP assumption changed: a saved session cookie no longer works after logout "+
-			"(status=%d body=%s) -- if this was fixed intentionally, delete this test and add a positive "+
-			"one asserting the cookie is rejected", resp2.StatusCode, body2)
+	// /api/me answers 200 with authenticated:false for anonymous requests, so
+	// the assertion is on the body: the saved cookie must no longer identify
+	// the user.
+	if strings.Contains(string(body2), "secuser") || !strings.Contains(string(body2), `"authenticated":false`) {
+		t.Fatalf("saved session cookie still authenticates after logout "+
+			"(status=%d body=%s)", resp2.StatusCode, body2)
 	}
 }
 

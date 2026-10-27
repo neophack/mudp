@@ -443,7 +443,7 @@ func (a *App) mcpTokenCreate(w http.ResponseWriter, r *http.Request) {
 		expiresAt = time.Now().Add(time.Duration(req.ExpiresInHours) * time.Hour).Format(time.RFC3339)
 	}
 	containerName := a.docker.ContainerName(r.Context(), req.ContainerID)
-	id, err := a.db.CreateMCPToken(u.ID, req.ContainerID, containerName, req.Label, cleartext, hash, expiresAt)
+	id, err := a.db.CreateMCPToken(u.ID, req.ContainerID, containerName, req.Label, hash, expiresAt)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -490,7 +490,7 @@ func (a *App) mcpTokenRotate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := a.db.RotateMCPToken(u.ID, u.Role == "admin", id, cleartext, hash); err != nil {
+	if err := a.db.RotateMCPToken(u.ID, u.Role == "admin", id, hash); err != nil {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -536,7 +536,7 @@ func (a *App) mcpTokenRotateExternal(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := a.db.RotateMCPExternalKey(u.ID, u.Role == "admin", id, cleartext, hash); err != nil {
+	if err := a.db.RotateMCPExternalKey(u.ID, u.Role == "admin", id, hash); err != nil {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}

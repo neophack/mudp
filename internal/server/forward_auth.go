@@ -96,13 +96,22 @@ func (a *App) checkForwardAuth(rule portfwd.Rule, client net.Conn) ([]byte, bool
 	}
 
 	// A valid session cookie means the browser is already logged into the
-	// console — let it straight through, replaying the peeked request upstream.
-	// The epoch check matches authMiddleware so a cookie revoked by a password
-	// change is refused here too; the lookup is a primary-key select, noise
-	// next to the TCP relay itself.
+	// console. The epoch check matches authMiddleware so a cookie revoked by a
+	// password change is refused here too; the lookup is a primary-key select,
+	// noise next to the TCP relay itself. Beyond "is logged in", a gated port
+	// belongs to the user whose container published it: any other authenticated
+	// account (including read-only ones) must not ride someone else's desktop
+	// or dev server. Admins pass every gate — they own the host anyway — and
+	// unattributed rules (manual forwards an admin left without an owner)
+	// stay open to every signed-in user, matching their curated nature.
 	if uid, epoch, ok := a.auth.UserID(req); ok && uid != 0 {
 		if u, err := a.db.UserByID(uid); err == nil && !u.Disabled && u.SessionEpoch == epoch {
-			return headerBlock, true
+			if u.Role == "admin" || rule.Owner == "" || u.Username == rule.Owner {
+				return headerBlock, true
+			}
+			writeHTTP(client, http.StatusForbidden, "text/plain; charset=utf-8",
+				"This port belongs to another user.\n")
+			return nil, false
 		}
 	}
 

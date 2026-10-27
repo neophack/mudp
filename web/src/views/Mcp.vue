@@ -159,6 +159,9 @@
       <template v-if="config.oldToken">
         <p>{{ tt("mcp.oldTokenBody", { name: config.name || "" }) }}</p>
         <p class="hint">{{ tt("mcp.oldTokenHint") }}</p>
+        <div class="mcp-config-actions">
+          <el-button type="primary" size="small" :loading="rotating" @click="rotateToken(config.tokenId)">{{ tt("mcp.rotateAndView") }}</el-button>
+        </div>
       </template>
       <template v-else>
         <p class="hint">{{ config.placeholder ? tt("mcp.notePlaceholder") : tt("mcp.noteDone") }}</p>
@@ -325,10 +328,11 @@ export default {
       s: store,
       form: { containerId: "", label: "", expiresInHours: 0 },
       creating: false,
+      rotating: false,
       sheet: { visible: false, row: null },
       config: {
         visible: false, oldToken: false, placeholder: false,
-        token: "", externalKey: "", name: "", label: "",
+        token: "", externalKey: "", name: "", label: "", tokenId: 0,
         onSafeNetwork: false, remoteBase: "", scope: "local", transport: "sse",
       },
       usage: { visible: false, loading: false, error: "", rows: [], name: "", label: "" },
@@ -347,15 +351,12 @@ export default {
       return this.rowActions(this.sheet.row);
     },
     // Size the fixed column to the widest action set on screen so the icons
-    // never wrap onto a second line. The count only varies with whether the
-    // row has an external URL (role/remote are constants) — one row per kind.
+    // never wrap onto a second line. Every row has the same action count now
+    // that the external-link copy moved into the config dialog (the list no
+    // longer carries the token cleartext to build that URL from).
     actionsColWidth() {
       let n = 0;
-      const seen = new Set();
       for (const row of store.mcpTokens || []) {
-        const key = this.externalUrlFor(row) ? "ext" : "plain";
-        if (seen.has(key)) continue;
-        seen.add(key);
         n = Math.max(n, this.rowActions(row).length);
       }
       return actionsWidth(n);
@@ -452,7 +453,6 @@ export default {
         { key: "cfg", label: tt("mcp.viewConfig"), icon: "Document" },
         { key: "log", label: tt("mcp.usageLog"), icon: "DataLine" },
       ];
-      if (this.externalUrlFor(r)) items.push({ key: "www", label: tt("mcp.copyExternal"), icon: "Link" });
       // The external key only matters once an admin published a remote
       // domain; on a LAN deployment there is nothing to authenticate.
       if (canMutate() && this.remotePublished) items.push({ key: "gen", label: tt("mcp.generateExternalKey"), icon: "Key" });
@@ -463,7 +463,6 @@ export default {
       if (!row) return;
       if (a.key === "cfg") this.showConfig(row);
       else if (a.key === "log") this.showUsage(row);
-      else if (a.key === "www") this.copy(this.externalUrlFor(row));
       else if (a.key === "gen") this.generateKey(row);
       else if (a.key === "del") this.deleteToken(row);
     },
@@ -491,14 +490,6 @@ export default {
       } catch {
         store.mcpRemote = null;
       }
-    },
-    // The external URL is gated on onSafeNetwork — only offered when the
-    // safe-network rule would actually let the remote listener through.
-    externalUrlFor(tk) {
-      const remote = store.mcpRemote;
-      if (!remote || !remote.enabled || !remote.baseUrl || !tk.token) return "";
-      if (!tk.onSafeNetwork) return "";
-      return `${remote.baseUrl}/mcp/${tk.token}/sse`;
     },
     async createToken() {
       if (!this.form.containerId) {
@@ -544,14 +535,31 @@ export default {
         this.creating = false;
       }
     },
-    // Older tokens (created when only the hash was stored) have no recoverable
-    // cleartext — tell the user to recreate it.
+    // Tokens are hash-only on the server: the cleartext is shown exactly once
+    // at creation/rotation. Viewing an existing token's config therefore
+    // offers rotation, which mints a fresh cleartext and reopens the dialog.
     showConfig(tk) {
-      if (!tk.token) {
-        this.config = { ...this.config, visible: true, oldToken: true, name: tk.containerName };
-        return;
+      this.config = { ...this.config, visible: true, oldToken: true, name: tk.containerName, tokenId: tk.id };
+    },
+    async rotateToken(id) {
+      try {
+        await ElMessageBox.confirm(tt("mcp.rotateConfirm"), tt("mcp.rotateAndView"), {
+          confirmButtonText: tt("common.confirm"),
+          cancelButtonText: tt("common.cancel"),
+          type: "warning",
+        });
+      } catch { return; }
+      this.rotating = true;
+      try {
+        const res = await api(`/api/mcp/tokens/${id}/rotate`, { method: "POST" });
+        await this.refreshTokens();
+        const updated = (store.mcpTokens || []).find((x) => x.id === res.id);
+        this.openConfigRaw(res.token, "", res.label || "", false, !!updated?.onSafeNetwork, "local");
+      } catch (err) {
+        ElMessage.error(err.message || tt("mcp.rotateFail"));
+      } finally {
+        this.rotating = false;
       }
-      this.openConfigRaw(tk.token, tk.externalKey || "", tk.label || "", false, !!tk.onSafeNetwork, "local");
     },
     openConfigRaw(token, externalKey, label, placeholder, onSafeNetwork, initialScope) {
       const remote = store.mcpRemote;
@@ -583,7 +591,10 @@ export default {
         await this.refreshTokens();
         const updated = (store.mcpTokens || []).find((x) => x.id === res.id);
         // Opens straight to the External scope the new credential matters for.
-        this.openConfigRaw(updated ? updated.token : "", res.externalKey, res.label || tk.label || "", false, updated ? updated.onSafeNetwork : !!tk.onSafeNetwork, "remote");
+        // The main token cleartext is one-shot (creation/rotation only), so the
+        // dialog opens with just the new external key; rotating the main token
+        // later re-fills the URL.
+        this.openConfigRaw("", res.externalKey, res.label || tk.label || "", false, !!updated?.onSafeNetwork, "remote");
       } catch (err) {
         ElMessage.error(err.message || tt("mcp.generateExternalKeyFail"));
       }

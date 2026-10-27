@@ -195,3 +195,55 @@ func TestComposeInterpolationCannotBypassValidation(t *testing.T) {
 		t.Errorf("already-escaped dollar should pass through: got %q", got)
 	}
 }
+
+// Multi-document files: `docker compose` loads and merges every document in a
+// stream while a single Unmarshal only sees the first, so a privileged service
+// hidden behind a `---` separator must still be rejected. The file-reaching
+// keys (include/secrets/configs/env_file, path-shaped volume names) are covered
+// in the same table.
+func TestValidateComposeMultiDocumentAndFileReach(t *testing.T) {
+	limits := ComposeLimits{PortPrefix: 101}
+	cases := []struct {
+		name       string
+		yaml       string
+		wantSubstr string
+	}{
+		{"privileged behind separator", "services:\n  ok:\n    image: nginx\n---\nservices:\n  pwn:\n    image: alpine\n    privileged: true\n", "(privileged)"},
+		{"host bind behind separator", "services:\n  ok:\n    image: nginx\n---\nservices:\n  pwn:\n    image: alpine\n    volumes: [\"/:/host\"]\n", "bind mounting host path"},
+		{"host port behind separator", "services:\n  ok:\n    image: nginx\n---\nservices:\n  pwn:\n    image: alpine\n    ports: [\"22:22\"]\n", ""},
+		{"top-level volumes behind separator", "services:\n  ok:\n    image: nginx\n---\nvolumes:\n  esc:\n    driver_opts:\n      type: none\n      o: bind\n      device: /\n", ""},
+		{"include url", "include:\n  - path: https://attacker.example/evil.yaml\nservices:\n  ok:\n    image: nginx\n", "(include)"},
+		{"include local path", "include:\n  - /srv/netdisk/evil.yaml\nservices:\n  ok:\n    image: nginx\n", "(include)"},
+		{"service secrets", "services:\n  x:\n    image: alpine\n    secrets: [db]\nsecrets:\n  db:\n    file: /opt/mudp/mudp.db\n", "(secrets)"},
+		{"top-level secrets only", "services:\n  ok:\n    image: nginx\nsecrets:\n  db:\n    file: /etc/shadow\n", "(secrets)"},
+		{"service configs", "services:\n  x:\n    image: alpine\n    configs: [db]\nconfigs:\n  db:\n    file: /etc/passwd\n", "(configs)"},
+		{"env_file absolute", "services:\n  x:\n    image: alpine\n    env_file: /etc/environment\n", "(env_file)"},
+		{"env_file list", "services:\n  x:\n    image: alpine\n    env_file: [/etc/environment]\n", "(env_file)"},
+		{"volume name path", "services:\n  x:\n    image: alpine\n    volumes: [\"esc:/x\"]\nvolumes:\n  esc:\n    name: /host\n", "must not be a path"},
+	}
+	for _, c := range cases {
+		err := ValidateCompose(c.yaml, limits)
+		if err == nil {
+			t.Errorf("%s: expected rejection, got nil", c.name)
+			continue
+		}
+		if c.wantSubstr != "" && !strings.Contains(err.Error(), c.wantSubstr) {
+			t.Errorf("%s: error %q does not mention %q", c.name, err, c.wantSubstr)
+		}
+	}
+}
+
+// A benign multi-document stack stays valid and every document's services are
+// counted, so the quota cannot be halved behind a separator.
+func TestCountServicesMultiDocument(t *testing.T) {
+	n, err := CountServices("services:\n  a:\n    image: x\n---\nservices:\n  b:\n    image: y\n  c:\n    image: z\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("got %d services, want 3", n)
+	}
+	if err := ValidateCompose("services:\n  a:\n    image: x\n---\nservices:\n  b:\n    image: y\n", ComposeLimits{PortPrefix: 101}); err != nil {
+		t.Errorf("benign multi-document stack should pass, got %v", err)
+	}
+}

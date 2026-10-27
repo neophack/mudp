@@ -176,10 +176,6 @@ type NetdiskShare struct {
 	Expired      bool     `json:"expired"`
 	PasswordHash string   `json:"-"`
 	HasPassword  bool     `json:"hasPassword"`
-	// Password holds the cleartext extraction code so the owner (or an admin)
-	// can view it again later, mirroring mcp_tokens.token_plaintext. It is only
-	// populated by the owner/admin list queries, never on the public share path.
-	Password string `json:"password,omitempty"`
 }
 
 // defaultMaxOpenConns is the connection-pool cap Open() applies and Migrate()
@@ -235,7 +231,7 @@ const (
 
 // schemaVersion is bumped whenever a new migration is added. New databases are
 // created directly at this version; existing databases are migrated forward.
-const schemaVersion = 48
+const schemaVersion = 50
 
 // executor is implemented by both *sql.DB and *sql.Tx.
 type executor interface {
@@ -300,6 +296,8 @@ var migrations = []migration{
 	{46, "user single group", migrateUserSingleGroup},
 	{47, "add users.session_epoch", migrateAddSessionEpoch},
 	{48, "add log filter indexes", migrateAddLogFilterIndexes},
+	{49, "drop mcp_tokens plaintext columns", migrateDropMCPTokenPlaintext},
+	{50, "drop netdisk_shares.password", migrateDropSharePassword},
 }
 
 // migrateAddSessionEpoch adds the per-user session revocation counter. Zero is
@@ -632,15 +630,14 @@ func migrateAddImageEnvSeq(db executor) error {
 }
 
 // migrateCreateMCPTokens creates the table backing per-container MCP access
-// tokens. The cleartext token is stored (token_plaintext) so an admin or owner
-// can view the connection config again later; token_hash remains for fast
-// lookup on incoming requests.
+// tokens. Only the SHA-256 hash is stored: the cleartext is returned to the
+// client once at creation and can never be viewed again, so a stolen database
+// file contains no usable credentials.
 func migrateCreateMCPTokens(db executor) error {
 	stmts := []string{
 		`create table if not exists mcp_tokens (
 			id integer primary key autoincrement,
 			token_hash text not null unique,
-			token_plaintext text not null default '',
 			container_id text not null,
 			container_name text not null,
 			owner_id integer not null references users(id) on delete cascade,
@@ -669,16 +666,31 @@ func migrateAddMCPTokenPlaintext(db executor) error {
 
 // migrateAddMCPTokenExternalKey adds the credential sent as the
 // Authorization: Bearer header on the external (remote) MCP listener. It is
-// a separate secret from token_hash/token_plaintext — the one embedded in the
+// a separate secret from the token hash — the one embedded in the
 // /mcp/{token} URL — so a URL that leaks through a tunnel's access log cannot
 // by itself authenticate a remote request, and rotating it never disturbs the
-// URL that LAN clients already have configured. Empty until a user generates
-// one for a token.
+// URL that LAN clients already have configured. Only the hash is stored;
+// empty until a user generates one for a token.
 func migrateAddMCPTokenExternalKey(db executor) error {
-	if err := execIgnoring(db, `alter table mcp_tokens add column external_key_hash text not null default ''`, sqliteDuplicateColumn); err != nil {
+	return execIgnoring(db, `alter table mcp_tokens add column external_key_hash text not null default ''`, sqliteDuplicateColumn)
+}
+
+// migrateDropSharePassword removes the legacy cleartext extraction-code column
+// from databases created before shares became hash-only, scrubbing the stored
+// codes the same way migrateDropMCPTokenPlaintext scrubs token cleartexts.
+func migrateDropSharePassword(db executor) error {
+	return execIgnoring(db, `alter table netdisk_shares drop column password`, "no such column")
+}
+
+// migrateDropMCPTokenPlaintext removes the legacy cleartext columns from
+// databases created before tokens became hash-only. Dropping the columns
+// scrubs the stored secrets: anyone who later reads the database file (a
+// leaked backup, for instance) must not find ready-to-use /mcp/{token} URLs.
+func migrateDropMCPTokenPlaintext(db executor) error {
+	if err := execIgnoring(db, `alter table mcp_tokens drop column token_plaintext`, "no such column"); err != nil {
 		return err
 	}
-	return execIgnoring(db, `alter table mcp_tokens add column external_key_plaintext text not null default ''`, sqliteDuplicateColumn)
+	return execIgnoring(db, `alter table mcp_tokens drop column external_key_plaintext`, "no such column")
 }
 
 // migrateDeleteOrphanedMCPTokens removes tokens whose owning user no longer
@@ -2122,6 +2134,15 @@ func (db *DB) UpdateUser(id int64, password, role string, containerCap int, netd
 	return tx.Commit()
 }
 
+// BumpSessionEpoch invalidates every outstanding session cookie for the user
+// without touching any credential. Logout calls it so a captured copy of the
+// pre-logout cookie stops authenticating immediately; password set/reset bump
+// the epoch inline for the same reason.
+func (db *DB) BumpSessionEpoch(userID int64) error {
+	_, err := db.Exec(`update users set session_epoch=session_epoch+1 where id=?`, userID)
+	return err
+}
+
 // ChangeOwnPassword rotates the caller's own credential: it verifies the
 // current password (SSO-only accounts have none to verify and are rejected),
 // stores the new hash, and bumps the session epoch — all in one transaction.
@@ -2285,7 +2306,10 @@ func (db *DB) ResourceSamples(userID int64, admin bool, since time.Time) ([]Reso
 	return out, nil
 }
 
-func (db *DB) CreateNetdiskShare(ownerID int64, token, name string, paths []string, expiresAt string, permanent bool, passwordHash, password string) error {
+// CreateNetdiskShare stores a share. Only the bcrypt hash of the extraction
+// code is persisted: the code itself is shown to the creator once and can
+// never be recovered, so a stolen database file unlocks nothing.
+func (db *DB) CreateNetdiskShare(ownerID int64, token, name string, paths []string, expiresAt string, permanent bool, passwordHash string) error {
 	raw, err := json.Marshal(paths)
 	if err != nil {
 		return err
@@ -2294,8 +2318,8 @@ func (db *DB) CreateNetdiskShare(ownerID int64, token, name string, paths []stri
 	if permanent {
 		permanentInt = 1
 	}
-	_, err = db.Exec(`insert into netdisk_shares(token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash, password) values(?,?,?,?,?,?,?,?,?)`,
-		token, ownerID, strings.TrimSpace(name), string(raw), time.Now().Format(time.RFC3339), expiresAt, permanentInt, passwordHash, password)
+	_, err = db.Exec(`insert into netdisk_shares(token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash) values(?,?,?,?,?,?,?,?)`,
+		token, ownerID, strings.TrimSpace(name), string(raw), time.Now().Format(time.RFC3339), expiresAt, permanentInt, passwordHash)
 	return err
 }
 
@@ -2319,12 +2343,12 @@ func (db *DB) NetdiskShare(token string) (NetdiskShare, error) {
 }
 
 func (db *DB) NetdiskShares(ownerID int64) ([]NetdiskShare, error) {
-	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash, password from netdisk_shares where owner_id=? order by created_at desc`, ownerID)
+	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash from netdisk_shares where owner_id=? order by created_at desc`, ownerID)
 	return scanNetdiskShares(rows, err)
 }
 
 func (db *DB) AllNetdiskShares() ([]NetdiskShare, error) {
-	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash, password from netdisk_shares order by created_at desc`)
+	rows, err := db.Query(`select token, owner_id, name, paths_json, created_at, expires_at, permanent, password_hash from netdisk_shares order by created_at desc`)
 	items, err := scanNetdiskShares(rows, err)
 	if err != nil {
 		return nil, err
@@ -2347,7 +2371,7 @@ func scanNetdiskShares(rows *sql.Rows, err error) ([]NetdiskShare, error) {
 		var s NetdiskShare
 		var raw string
 		var permanent int
-		if err := rows.Scan(&s.Token, &s.OwnerID, &s.Name, &raw, &s.CreatedAt, &s.ExpiresAt, &permanent, &s.PasswordHash, &s.Password); err != nil {
+		if err := rows.Scan(&s.Token, &s.OwnerID, &s.Name, &raw, &s.CreatedAt, &s.ExpiresAt, &permanent, &s.PasswordHash); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(raw), &s.Paths)

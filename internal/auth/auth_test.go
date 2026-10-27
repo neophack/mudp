@@ -14,12 +14,12 @@ import (
 )
 
 // mintCookie replicates the signing scheme from auth.go to hand-craft cookie
-// values for tests: the value is base64url("uid:exp:epoch:sig") where sig is
-// base64url(HMAC-SHA256(secret, "uid:exp:epoch")). Tests must not rely on the
-// unexported Signer.sign so a broken signer cannot make UserID agree with
-// itself.
-func mintCookie(secret string, uid, exp, epoch int64) string {
-	body := fmt.Sprintf("%d:%d:%d", uid, exp, epoch)
+// values for tests: the value is base64url("uid:iat:exp:epoch:sig") where sig
+// is base64url(HMAC-SHA256(secret, "uid:iat:exp:epoch")). Tests must not rely
+// on the unexported Signer.sign so a broken signer cannot make UserID agree
+// with itself.
+func mintCookie(secret string, uid, iat, exp, epoch int64) string {
+	body := fmt.Sprintf("%d:%d:%d:%d", uid, iat, exp, epoch)
 	m := hmac.New(sha256.New, []byte(secret))
 	m.Write([]byte(body))
 	sig := base64.RawURLEncoding.EncodeToString(m.Sum(nil))
@@ -54,7 +54,7 @@ func TestSignerEpochRoundTrip(t *testing.T) {
 	if _, epoch, ok := s.UserID(requestWithCookie(value)); !ok || epoch != 4 {
 		t.Fatalf("UserID = (epoch %d, ok %v), want (4, true)", epoch, ok)
 	}
-	stale := mintCookie("test-secret", 11, time.Now().Add(time.Hour).Unix(), 3)
+	stale := mintCookie("test-secret", 11, time.Now().Unix(), time.Now().Add(time.Hour).Unix(), 3)
 	if _, epoch, ok := s.UserID(requestWithCookie(stale)); !ok || epoch != 3 {
 		t.Fatalf("hand-minted cookie rejected: (epoch %d, ok %v), want (3, true)", epoch, ok)
 	}
@@ -102,17 +102,17 @@ func TestSignerTamperedSignature(t *testing.T) {
 		t.Fatalf("issued cookie is not base64: %v", err)
 	}
 	parts := strings.Split(string(raw), ":")
-	if len(parts) != 4 {
-		t.Fatalf("issued cookie has %d parts, want 4", len(parts))
+	if len(parts) != 5 {
+		t.Fatalf("issued cookie has %d parts, want 5", len(parts))
 	}
 	// Flip the first signature char to a different base64url char, keeping the
 	// length and charset valid so the rejection comes from the HMAC check.
-	sig := parts[3]
+	sig := parts[4]
 	replacement := byte('A')
 	if sig[0] == 'A' {
 		replacement = 'B'
 	}
-	parts[3] = string(replacement) + sig[1:]
+	parts[4] = string(replacement) + sig[1:]
 	tampered := base64.RawURLEncoding.EncodeToString([]byte(strings.Join(parts, ":")))
 
 	if uid, _, ok := s.UserID(requestWithCookie(tampered)); ok {
@@ -139,10 +139,60 @@ func TestSignerWrongSecret(t *testing.T) {
 // the past; a valid signature must not rescue an expired session.
 func TestSignerExpiredCookie(t *testing.T) {
 	s := New("test-secret")
-	value := mintCookie("test-secret", 5, time.Now().Add(-time.Hour).Unix(), 0)
+	now := time.Now().Unix()
+	value := mintCookie("test-secret", 5, now-2*3600, now-3600, 0)
 
 	if uid, _, ok := s.UserID(requestWithCookie(value)); ok {
 		t.Errorf("expired cookie accepted as user %d", uid)
+	}
+}
+
+// TestSignerAbsoluteAgeCap pins the anti-fixation contract: sliding renewal
+// must never let a login outlive MaxSessionAge. A correctly-signed cookie with
+// a still-future expiry but an issue time past the cap is rejected.
+func TestSignerAbsoluteAgeCap(t *testing.T) {
+	s := New("test-secret")
+	now := time.Now()
+	old := mintCookie("test-secret", 5, now.Add(-MaxSessionAge-time.Hour).Unix(), now.Add(time.Hour).Unix(), 0)
+	if uid, _, ok := s.UserID(requestWithCookie(old)); ok {
+		t.Errorf("cookie past MaxSessionAge accepted as user %d", uid)
+	}
+	// One second inside the cap is still fine — the boundary belongs to the
+	// user, not the attacker.
+	fresh := mintCookie("test-secret", 5, now.Add(-MaxSessionAge+30*time.Second).Unix(), now.Add(time.Hour).Unix(), 0)
+	if _, _, ok := s.UserID(requestWithCookie(fresh)); !ok {
+		t.Error("cookie just inside MaxSessionAge rejected")
+	}
+}
+
+// TestSignerRenewPreservesIAT: Renew slides the expiry but must carry the
+// original issue time forward, so a renewed login still dies at MaxSessionAge.
+func TestSignerRenewPreservesIAT(t *testing.T) {
+	s := New("test-secret")
+	now := time.Now()
+	// iat ~23h ago (inside the cap), expiry ~2h out (inside the renewal
+	// window of TTL/2) — exactly the cookie of a long active session.
+	value := mintCookie("test-secret", 9, now.Add(-23*time.Hour).Unix(), now.Add(2*time.Hour).Unix(), 1)
+
+	rec := httptest.NewRecorder()
+	if !s.Renew(rec, requestWithCookie(value)) {
+		t.Fatal("Renew declined a cookie inside the renewal window")
+	}
+	renewed := rec.Result().Cookies()[0].Value
+	if _, _, ok := s.UserID(requestWithCookie(renewed)); !ok {
+		t.Fatal("renewed cookie does not verify")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(renewed)
+	if err != nil {
+		t.Fatalf("renewed cookie is not base64: %v", err)
+	}
+	parts := strings.Split(string(raw), ":")
+	if len(parts) != 5 {
+		t.Fatalf("renewed cookie has %d parts, want 5", len(parts))
+	}
+	wantIAT := now.Add(-23 * time.Hour).Unix()
+	if got := parts[1]; got != fmt.Sprintf("%d", wantIAT) {
+		t.Errorf("renewed iat = %s, want the original %d (renewal must not reset the age clock)", got, wantIAT)
 	}
 }
 
@@ -160,13 +210,15 @@ func TestSignerMalformedCookies(t *testing.T) {
 		{"base64 of garbage", b64("\x00\x01\x02\xff")},
 		{"two parts", b64("1:9999999999")},
 		{"three parts", b64("1:9999999999:0")},
-		{"five parts", b64("1:9999999999:0:abc:def")},
-		{"bad signature", b64("1:9999999999:0:AAAA")},
-		{"non-numeric expiry", b64("1:abc:0:x")},
-		{"non-numeric epoch", b64("1:9999999999:abc:" + sig("test-secret", "1:9999999999:abc"))},
+		{"four parts", b64("1:111:9999999999:0")},
+		{"six parts", b64("1:111:9999999999:0:abc:def")},
+		{"bad signature", b64("1:111:9999999999:0:AAAA")},
+		{"non-numeric iat", b64("1:abc:9999999999:0:x")},
+		{"non-numeric expiry", b64("1:111:abc:0:x")},
+		{"non-numeric epoch", b64("1:111:9999999999:abc:" + sig("test-secret", "1:111:9999999999:abc"))},
 		{"non-numeric uid with valid sig", func() string {
 			// Hand-signed payload whose uid is not a number.
-			body := "abc:9999999999:0"
+			body := "abc:111:9999999999:0"
 			m := hmac.New(sha256.New, []byte("test-secret"))
 			m.Write([]byte(body))
 			return b64(body + ":" + base64.RawURLEncoding.EncodeToString(m.Sum(nil)))

@@ -15,7 +15,7 @@ const baselineCSP = "default-src 'self'; " +
 	"img-src 'self' data: blob:; " +
 	"media-src 'self' blob:; " +
 	"font-src 'self' data:; " +
-	"connect-src 'self' ws: wss: https://api.ipify.org https://api64.ipify.org https://ifconfig.me; " +
+	"connect-src 'self' https://api.ipify.org https://api64.ipify.org https://ifconfig.me; " +
 	"object-src 'none'; " +
 	"base-uri 'none'; " +
 	"form-action 'self'; " +
@@ -152,7 +152,7 @@ func TestSanitisedIPWorkerOrigin(t *testing.T) {
 func TestBuildCSPIncludesSanitisedWorkerOrigin(t *testing.T) {
 	setWorkerOrigin(t, "https://worker.example.com:8443")
 	csp := buildCSP()
-	want := "connect-src 'self' ws: wss: https://api.ipify.org https://api64.ipify.org https://ifconfig.me https://worker.example.com:8443;"
+	want := "connect-src 'self' https://api.ipify.org https://api64.ipify.org https://ifconfig.me https://worker.example.com:8443;"
 	if !strings.Contains(csp, want) {
 		t.Errorf("buildCSP() missing worker origin in connect-src\n got: %s\nwant substring: %s", csp, want)
 	}

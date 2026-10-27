@@ -635,13 +635,14 @@ func TestServeRasterFrameJPEGRejectsHugeDimensions(t *testing.T) {
 		}
 	}
 	// A frame just inside the cap must still be accepted (it fails later, on
-	// the truncated read, not on the dimension check).
+	// the truncated read, not on the dimension check). 4000x4000 = 16 MP is
+	// within the cap and its 24 MB frame size dwarfs the 64-byte file.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/netdisk/raster", nil)
 	serveRasterFrameJPEG(rec, req, path, rasterFrameParams{
-		Kind: "yuv", Width: 8192, Height: 8192, Format: "i420",
+		Kind: "yuv", Width: 4000, Height: 4000, Format: "i420",
 	})
 	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
-		t.Errorf("8192x8192: status = %d, want 416 (truncated), not a dimension rejection", rec.Code)
+		t.Errorf("4000x4000: status = %d, want 416 (truncated), not a dimension rejection", rec.Code)
 	}
 }

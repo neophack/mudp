@@ -233,7 +233,10 @@
         </div>
         <p class="hint">{{ tt("settings.mcpSafeHint") }}</p>
         <p class="hint">{{ tt("settings.mcpTunnel") }}<span class="mono">cloudflared tunnel --url http://127.0.0.1:{{ mcpForm.port || 19090 }}</span></p>
-        <p v-if="mcpRemote && mcpRemote.baseUrl" class="hint" v-html="tt('settings.mcpUsersSee', { url: `<span class='mono'>${mcpRemote.baseUrl}</span>` })"></p>
+        <!-- tt() interpolates params without escaping, and this string lands in
+     v-html for the .mono span; escape the admin-supplied baseUrl so it can
+     never carry markup into other users' settings page. -->
+        <p v-if="mcpRemote && mcpRemote.baseUrl" class="hint" v-html="tt('settings.mcpUsersSee', { url: `<span class='mono'>${escapeHtml(mcpRemote.baseUrl)}</span>` })"></p>
         <div class="form-actions">
           <el-button type="primary" size="small" @click="saveMcpRemote">{{ tt("settings.saveExternal") }}</el-button>
         </div>
@@ -292,6 +295,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api";
 import { store, isAdmin, applySiteName, setTheme, setPack, PACKS } from "@/store";
 import { tt, setLanguage, errText } from "@/i18n";
+import { escapeHtml } from "@/lib/common.js";
 import { SUPPORTED_LANGS, getLanguageName, getCurrentLanguage } from "@/lib/i18n.js";
 import VIcon from "@/components/VIcon.vue";
 import ActionSheet from "@/components/ActionSheet.vue";

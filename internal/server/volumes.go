@@ -387,6 +387,19 @@ func (a *App) volumeFilesUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	files := r.MultipartForm.File["files"]
+	// Volumes have no per-user quota, but the host disk is still finite: a
+	// batch larger than the remaining free space would fill the disk under
+	// every other tenant (and the database). Mirror the netdisk guard.
+	var total int64
+	for _, fh := range files {
+		total += fh.Size
+	}
+	if total > 0 {
+		if free, err := diskFree(dir); err == nil && free >= 0 && total > free {
+			writeErr(w, http.StatusInsufficientStorage, "not enough free disk space for this upload")
+			return
+		}
+	}
 	// Per-file CRC32 digests the client computed (parallel to "files"). Absent for
 	// legacy clients: files are still written + checksummed, just not compared.
 	hashes := r.MultipartForm.Value["hashes"]

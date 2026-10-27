@@ -593,9 +593,8 @@ func TestMCPTokenCRUD(t *testing.T) {
 	}
 
 	// Create a token for alice on a (mock) container.
-	cleartext := "tok-abc123"
 	hash := "abc123hash"
-	id, err := db.CreateMCPToken(alice.ID, "container-id-1", "dev", "claude-code", cleartext, hash, "")
+	id, err := db.CreateMCPToken(alice.ID, "container-id-1", "dev", "claude-code", hash, "")
 	if err != nil || id == 0 {
 		t.Fatalf("CreateMCPToken: %v (id=%d)", err, id)
 	}
@@ -611,8 +610,10 @@ func TestMCPTokenCRUD(t *testing.T) {
 	if got.Expired() {
 		t.Fatal("non-expiring token reports expired")
 	}
-	if got.Token != cleartext {
-		t.Errorf("token cleartext not persisted: got %q, want %q", got.Token, cleartext)
+	// The cleartext is never stored: only the hash is persisted, so a stolen
+	// database file holds no usable credential.
+	if got.ExternalKeyHash != "" {
+		t.Errorf("fresh token should have no external key hash: %+v", got)
 	}
 
 	// Alice sees her token; the list includes owner.
@@ -672,8 +673,8 @@ func TestMCPTokenExternalKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleartext, hash := "tok-ext1", "ext1hash"
-	id, err := db.CreateMCPToken(bob.ID, "container-id-2", "dev2", "codex", cleartext, hash, "")
+	hash := "ext1hash"
+	id, err := db.CreateMCPToken(bob.ID, "container-id-2", "dev2", "codex", hash, "")
 	if err != nil || id == 0 {
 		t.Fatalf("CreateMCPToken: %v (id=%d)", err, id)
 	}
@@ -683,44 +684,41 @@ func TestMCPTokenExternalKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MCPTokenByHash: %v", err)
 	}
-	if got.ExternalKey != "" || got.ExternalKeyHash != "" {
+	if got.ExternalKeyHash != "" {
 		t.Fatalf("fresh token should have no external key, got %+v", got)
 	}
 
 	// A non-owner cannot generate one.
-	if err := db.RotateMCPExternalKey(1, false, id, "ext-tok-1", "ext-hash-1"); err == nil {
+	if err := db.RotateMCPExternalKey(1, false, id, "ext-hash-1"); err == nil {
 		t.Fatal("non-owner should not rotate bob's external key")
 	}
 
 	// The owner can, and it does not disturb the main token/hash.
-	if err := db.RotateMCPExternalKey(bob.ID, false, id, "ext-tok-1", "ext-hash-1"); err != nil {
+	if err := db.RotateMCPExternalKey(bob.ID, false, id, "ext-hash-1"); err != nil {
 		t.Fatalf("RotateMCPExternalKey: %v", err)
 	}
 	got, err = db.MCPTokenByHash(hash)
 	if err != nil {
 		t.Fatalf("MCPTokenByHash after rotate: %v", err)
 	}
-	if got.Token != cleartext {
-		t.Errorf("main token changed by external-key rotation: got %q, want %q", got.Token, cleartext)
-	}
-	if got.ExternalKey != "ext-tok-1" || got.ExternalKeyHash != "ext-hash-1" {
-		t.Errorf("external key not stored: %+v", got)
+	if got.ExternalKeyHash != "ext-hash-1" {
+		t.Errorf("external key hash not stored: %+v", got)
 	}
 
 	// Rotating again replaces the old external key outright.
-	if err := db.RotateMCPExternalKey(bob.ID, false, id, "ext-tok-2", "ext-hash-2"); err != nil {
+	if err := db.RotateMCPExternalKey(bob.ID, false, id, "ext-hash-2"); err != nil {
 		t.Fatalf("second RotateMCPExternalKey: %v", err)
 	}
 	got, err = db.MCPTokenByHash(hash)
 	if err != nil {
 		t.Fatalf("MCPTokenByHash after second rotate: %v", err)
 	}
-	if got.ExternalKey != "ext-tok-2" || got.ExternalKeyHash != "ext-hash-2" {
-		t.Errorf("external key not replaced: %+v", got)
+	if got.ExternalKeyHash != "ext-hash-2" {
+		t.Errorf("external key hash not replaced: %+v", got)
 	}
 
 	// Admins may rotate any token's external key.
-	if err := db.RotateMCPExternalKey(1, true, id, "ext-tok-3", "ext-hash-3"); err != nil {
+	if err := db.RotateMCPExternalKey(1, true, id, "ext-hash-3"); err != nil {
 		t.Fatalf("admin RotateMCPExternalKey: %v", err)
 	}
 }
@@ -741,7 +739,7 @@ func TestMCPTokenListOrphanedOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.CreateMCPToken(bob.ID, "container-id-9", "dev", "claude", "tok-orphan", "orphan-hash", ""); err != nil {
+	if _, err := db.CreateMCPToken(bob.ID, "container-id-9", "dev", "claude", "orphan-hash", ""); err != nil {
 		t.Fatal(err)
 	}
 	// Recreate a legacy orphan: with foreign_keys off, deleting the user does
@@ -785,7 +783,7 @@ func TestMCPTokenListOrphanedOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.CreateMCPToken(charlie.ID, "c2", "dev2", "bot", "tok-casc", "casc-hash", ""); err != nil {
+	if _, err := db.CreateMCPToken(charlie.ID, "c2", "dev2", "bot", "casc-hash", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.DeleteUser(charlie.ID); err != nil {
@@ -801,7 +799,7 @@ func TestMCPTokenExpiry(t *testing.T) {
 	db := newTestDB(t)
 	// A token that already expired.
 	past := "2000-01-01T00:00:00Z"
-	id, err := db.CreateMCPToken(1, "c1", "dev", "bot", "expired-tok", "expired-hash", past)
+	id, err := db.CreateMCPToken(1, "c1", "dev", "bot", "expired-hash", past)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -815,7 +813,7 @@ func TestMCPTokenExpiry(t *testing.T) {
 
 	// A token that expires in the future.
 	future := "2099-01-01T00:00:00Z"
-	if _, err := db.CreateMCPToken(1, "c2", "dev2", "bot2", "future-tok", "future-hash", future); err != nil {
+	if _, err := db.CreateMCPToken(1, "c2", "dev2", "bot2", "future-hash", future); err != nil {
 		t.Fatal(err)
 	}
 	got2, err := db.MCPTokenByHash("future-hash")
@@ -983,7 +981,7 @@ func TestNetdiskSharePassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, _ := db.Authenticate("shareowner", "pw-valid-123")
-	if err := db.CreateNetdiskShare(u.ID, "tok1", "files", []string{"a.txt"}, "", true, "hashed-password", "secret"); err != nil {
+	if err := db.CreateNetdiskShare(u.ID, "tok1", "files", []string{"a.txt"}, "", true, "hashed-password"); err != nil {
 		t.Fatal(err)
 	}
 	s, err := db.NetdiskShare("tok1")
@@ -996,17 +994,14 @@ func TestNetdiskSharePassword(t *testing.T) {
 	if s.PasswordHash != "hashed-password" {
 		t.Errorf("PasswordHash = %q, want %q", s.PasswordHash, "hashed-password")
 	}
-	// The public single-fetch path must not expose the cleartext code...
-	if s.Password != "" {
-		t.Errorf("Password = %q on single fetch, want empty", s.Password)
-	}
-	// ...while the owner/admin list queries expose it for later viewing.
+	// Only the hash is stored: neither the public single fetch nor the
+	// owner/admin list exposes a recoverable cleartext code.
 	items, err := db.NetdiskShares(u.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Password != "secret" {
-		t.Errorf("NetdiskShares Password = %q, want %q", items[0].Password, "secret")
+	if len(items) != 1 || items[0].PasswordHash != "hashed-password" {
+		t.Errorf("NetdiskShares = %+v, want the stored hash only", items)
 	}
 }
 

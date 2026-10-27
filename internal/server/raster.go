@@ -30,7 +30,11 @@ import (
 
 // maxRasterPixels bounds the frame size serveRasterFrameJPEG will decode. See
 // the check there for why an unbounded value is fatal rather than merely slow.
-const maxRasterPixels = 64 << 20
+// 16 MP: the decode path allocates several bytes per pixel (RGBA plus ISP work
+// planes), so the cap is also the per-request memory ceiling — 64 MP allowed a
+// single request to demand gigabytes and OOM a small host, reachable through
+// the unauthenticated public-share endpoint.
+const maxRasterPixels = 16 << 20
 
 // rasterFrameParams carries everything serveRasterFrameJPEG needs to decode a
 // single frame. The Kind is either "yuv" (use Format) or "raw" (use BitDepth +

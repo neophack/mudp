@@ -148,7 +148,7 @@
           </el-table-column>
           <el-table-column v-if="!s.isMobile" :label="tt('netdisk.colAccess')" width="110">
             <template #default="{ row }">
-              <span :title="row.hasPassword ? tt('netdisk.extractionCode') : ''">{{ row.hasPassword ? (row.password || tt("netdisk.password")) : tt("netdisk.public") }}</span>
+              <span>{{ row.hasPassword ? tt("netdisk.protected") : tt("netdisk.public") }}</span>
             </template>
           </el-table-column>
           <el-table-column v-if="!s.isMobile" :label="tt('common.actions')" width="150" fixed="right">
@@ -191,7 +191,7 @@
             </template>
           </el-table-column>
           <el-table-column v-if="!s.isMobile" :label="tt('netdisk.colAccess')" width="110">
-            <template #default="{ row }">{{ row.hasPassword ? (row.password || tt("netdisk.password")) : tt("netdisk.public") }}</template>
+            <template #default="{ row }">{{ row.hasPassword ? tt("netdisk.protected") : tt("netdisk.public") }}</template>
           </el-table-column>
         </el-table>
       </div>

@@ -61,7 +61,10 @@ func buildCSP() string {
 	cspMu.RLock()
 	extra := cspConnectExtra
 	cspMu.RUnlock()
-	connectSrc := "connect-src 'self' ws: wss: https://api.ipify.org https://api64.ipify.org https://ifconfig.me"
+	// 'self' already covers same-origin ws/wss upgrades under CSP3, so no bare
+	// ws:/wss: scheme-sources: those would let any injected script exfiltrate
+	// to an arbitrary WebSocket host.
+	connectSrc := "connect-src 'self' https://api.ipify.org https://api64.ipify.org https://ifconfig.me"
 	if extra != "" {
 		connectSrc += " " + extra
 	}

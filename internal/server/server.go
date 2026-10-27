@@ -780,6 +780,16 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
+	// Revoking server-side matters: clearing only the calling browser's cookie
+	// would leave a captured copy authenticating until its expiry even though
+	// the user logged out. Bumping the epoch kills every outstanding cookie
+	// for the account, including other devices.
+	if uid, _, ok := a.auth.UserID(r); ok {
+		if err := a.db.BumpSessionEpoch(uid); err != nil {
+			http.Error(w, "logout failed", http.StatusInternalServerError)
+			return
+		}
+	}
 	a.auth.Clear(w, r)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -2080,7 +2090,7 @@ func (a *App) feishuLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "feishu login is not configured")
 		return
 	}
-	redirect := feishuRedirectURL(r)
+	redirect := a.feishuRedirectURL(r)
 	state, err := a.feishuState(w, r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -2182,9 +2192,15 @@ func (a *App) feishuCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-func feishuRedirectURL(r *http.Request) string {
+func (a *App) feishuRedirectURL(r *http.Request) string {
+	// The scheme runs through the same trusted-proxy gate as cookie Secure
+	// flags and HSTS (middleware.RequestIsSecure): a direct client must not be
+	// able to flip the redirect_uri scheme with a spoofed X-Forwarded-Proto.
+	// The Host header is inherently client-controlled at the HTTP layer;
+	// deployments behind a proxy that validates Host are fine, and an admin
+	// who needs a fixed callback can front the console with one.
 	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+	if middleware.RequestIsSecure(r, a.trusted) {
 		scheme = "https"
 	}
 	host := r.Host

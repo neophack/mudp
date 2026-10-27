@@ -1227,8 +1227,7 @@ func (a *App) netdiskShareCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	passwordHash := ""
-	password := strings.TrimSpace(req.Password)
-	if password != "" {
+	if password := strings.TrimSpace(req.Password); password != "" {
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), store.BcryptCost)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
@@ -1236,7 +1235,7 @@ func (a *App) netdiskShareCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		passwordHash = string(hash)
 	}
-	if err := a.db.CreateNetdiskShare(u.ID, token, name, clean, expiresAt, req.Permanent, passwordHash, password); err != nil {
+	if err := a.db.CreateNetdiskShare(u.ID, token, name, clean, expiresAt, req.Permanent, passwordHash); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1546,8 +1545,18 @@ func (a *App) netdiskShareSave(w http.ResponseWriter, r *http.Request) {
 	// Validate selection and compute required space.
 	toCopy, required := planShareSave(dstDir, ownerRoot, share, req.Paths, policy)
 
-	// Quota / free-space guard.
+	// Quota / free-space guard. The quota projection mirrors the upload path:
+	// saving someone's share into your own netdisk consumes your quota, so
+	// without this check the share/save endpoint would be the one write path
+	// that ignores it.
 	if required > 0 {
+		if u.NetdiskQuotaBytes > 0 {
+			used := a.netdiskUsedEstimate(dstRoot)
+			if used+required > u.NetdiskQuotaBytes {
+				writeErr(w, http.StatusInsufficientStorage, "saving this share would exceed netdisk quota")
+				return
+			}
+		}
 		free, err := diskFree(dstDir)
 		if err == nil && free >= 0 && required > free {
 			writeErr(w, http.StatusInsufficientStorage, "not enough free space on destination disk")
@@ -1576,6 +1585,9 @@ func (a *App) netdiskShareSave(w http.ResponseWriter, r *http.Request) {
 			count++
 		}
 		results = append(results, res)
+	}
+	if count > 0 {
+		a.invalidateDirSize(dstRoot)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})
 }

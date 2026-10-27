@@ -12,6 +12,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"mudp/internal/config"
+	"mudp/internal/middleware"
 	"mudp/internal/store"
 )
 
@@ -145,17 +146,22 @@ func TestSameOriginWS(t *testing.T) {
 }
 
 // TestFeishuRedirectURL covers the OAuth callback URL built from r.Host and
-// X-Forwarded-Proto: https only when TLS is present or the exact header value
-// is "https" (anything else, including "HTTPS", falls back to http).
+// X-Forwarded-Proto: https only counts behind the trusted-proxy gate (or real
+// TLS): a direct client must not flip the OAuth redirect_uri scheme.
 func TestFeishuRedirectURL(t *testing.T) {
+	trusted, _ := middleware.ParseTrustedProxies("192.0.2.0/24") // covers httptest's 192.0.2.1 peer
+	untrusted, _ := middleware.ParseTrustedProxies("")
 	cases := []struct {
-		name, target, forwardedProto, want string
+		name, target, forwardedProto string
+		trusted                      *middleware.TrustedProxies
+		want                         string
 	}{
-		{name: "plain http", target: "http://panel.example.com/login", forwardedProto: "", want: "http://panel.example.com/api/feishu/callback"},
-		{name: "forwarded https", target: "http://panel.example.com/login", forwardedProto: "https", want: "https://panel.example.com/api/feishu/callback"},
-		{name: "forwarded http stays http", target: "http://panel.example.com/login", forwardedProto: "http", want: "http://panel.example.com/api/feishu/callback"},
-		{name: "uppercase forwarded proto not matched", target: "http://panel.example.com/login", forwardedProto: "HTTPS", want: "http://panel.example.com/api/feishu/callback"},
-		{name: "tls request", target: "https://panel.example.com/login", forwardedProto: "", want: "https://panel.example.com/api/feishu/callback"},
+		{name: "plain http", target: "http://panel.example.com/login", forwardedProto: "", trusted: untrusted, want: "http://panel.example.com/api/feishu/callback"},
+		{name: "forwarded https from trusted proxy", target: "http://panel.example.com/login", forwardedProto: "https", trusted: trusted, want: "https://panel.example.com/api/feishu/callback"},
+		{name: "forwarded https from direct client ignored", target: "http://panel.example.com/login", forwardedProto: "https", trusted: untrusted, want: "http://panel.example.com/api/feishu/callback"},
+		{name: "forwarded http stays http", target: "http://panel.example.com/login", forwardedProto: "http", trusted: trusted, want: "http://panel.example.com/api/feishu/callback"},
+		{name: "uppercase forwarded proto from trusted proxy", target: "http://panel.example.com/login", forwardedProto: "HTTPS", trusted: trusted, want: "https://panel.example.com/api/feishu/callback"},
+		{name: "tls request", target: "https://panel.example.com/login", forwardedProto: "", trusted: untrusted, want: "https://panel.example.com/api/feishu/callback"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -163,7 +169,8 @@ func TestFeishuRedirectURL(t *testing.T) {
 			if c.forwardedProto != "" {
 				r.Header.Set("X-Forwarded-Proto", c.forwardedProto)
 			}
-			if got := feishuRedirectURL(r); got != c.want {
+			a := &App{trusted: c.trusted}
+			if got := a.feishuRedirectURL(r); got != c.want {
 				t.Errorf("feishuRedirectURL = %q, want %q", got, c.want)
 			}
 		})
