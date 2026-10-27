@@ -355,6 +355,5 @@ export default {
 <style scoped>
 .card-head h2 { flex: 1; }
 .tag-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 4px; }
-.ok-text { color: #10b981 !important; }
-.warn-text { color: #e6a23c !important; }
+.ok-text { color: var(--ok) !important; }
 </style>

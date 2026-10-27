@@ -156,10 +156,10 @@ export default {
   padding: 6px;
   height: 55vh;
 }
-.term-statusbar { display: flex; gap: 16px; align-items: center; margin-top: 8px; font-size: 12px; color: #94a3b8; }
+.term-statusbar { display: flex; gap: 16px; align-items: center; margin-top: 8px; font-size: 12px; color: var(--muted); }
 .term-stat .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-.dot-ok { background: #10b981; }
-.dot-danger { background: #ef4444; }
-.dot-muted { background: #94a3b8; }
+.dot-ok { background: var(--ok); }
+.dot-danger { background: var(--danger); }
+.dot-muted { background: var(--muted); }
 .term-keys { flex: 1; text-align: center; }
 </style>

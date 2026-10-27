@@ -236,6 +236,5 @@ export default {
 .mb { margin-bottom: 8px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 10px; }
 .bk-sched-time { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 @media (max-width: 1000px) { .disks-layout { grid-template-columns: minmax(0, 1fr); } }
 </style>

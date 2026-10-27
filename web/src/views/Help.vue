@@ -74,7 +74,7 @@ export default {
 </script>
 
 <style scoped>
-.grid.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.grid.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap); }
 @media (max-width: 800px) { .grid.two { grid-template-columns: minmax(0, 1fr); } }
 .col { display: flex; flex-direction: column; gap: var(--gap); }
 .card.inner { box-shadow: none; background: var(--fill); }

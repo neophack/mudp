@@ -59,11 +59,14 @@
       </div>
     </section>
 
-    <!-- Row 2: environment (wide) + donut chart -->
-    <div class="dash-row-2" :class="{ 'user-home': !admin }">
+    <!-- Card grid (12 columns). Admins: environment + donut, then workspace /
+         feishu / top users, then activity. Users: donut + workspace + feishu
+         side by side, then their containers. Spans adapt so no row is left
+         half empty. -->
+    <div class="dash-grid">
       <!-- Host details (public IP, kernel, agent runtime) are admin-only: a
            plain user should see their own workspace, not server internals. -->
-      <section v-if="admin" class="card">
+      <section v-if="admin" class="card s8">
         <div class="card-head">
           <h2>{{ tt("dash.environment") }}</h2>
           <el-tag size="small" :type="healthy ? 'success' : 'danger'">
@@ -87,7 +90,7 @@
         </div>
       </section>
 
-      <section class="card">
+      <section class="card" :class="donutSpan">
         <div class="card-head"><h2>{{ tt("dash.containers") }}</h2></div>
         <div class="card-body chart-row">
           <e-chart :option="donutOption" height="190px" width="190px" />
@@ -99,34 +102,8 @@
           </ul>
         </div>
       </section>
-    </div>
 
-    <!-- Row 2.5: Feishu identity card (only for Feishu-SSO users) -->
-    <div v-if="feishuUser" class="dash-row-feishu">
-      <section class="card feishu-card">
-        <div class="card-head">
-          <h2>{{ tt("dash.feishuProfile") }}</h2>
-          <el-tag size="small" type="success">{{ tt("dash.feishuLoginMethod") }}</el-tag>
-        </div>
-        <div class="card-body feishu-card-body">
-          <div class="feishu-header">
-            <div class="feishu-avatar">{{ userInitial }}</div>
-            <div class="feishu-title">
-              <div class="feishu-name ellipsis" :title="user.displayName || user.username">{{ user.displayName || user.username || "—" }}</div>
-              <div class="feishu-handle mono ellipsis" :title="user.feishuOpenId">{{ user.feishuOpenId || "—" }}</div>
-            </div>
-          </div>
-          <dl class="detail feishu-detail">
-            <dt>{{ tt("dash.feishuTenant") }}</dt><dd>{{ user.feishuTenantName || user.feishuTenantKey || "—" }}</dd>
-            <dt>{{ tt("dash.feishuLastLogin") }}</dt><dd>{{ user.lastLoginAt || "—" }}</dd>
-          </dl>
-        </div>
-      </section>
-    </div>
-
-    <!-- Row 3: my workspace + top users (admin) or my containers -->
-    <div class="dash-row-3">
-      <section class="card">
+      <section class="card" :class="workspaceSpan">
         <div class="card-head"><h2>{{ tt("dash.myWorkspace") }}</h2></div>
         <div class="card-body">
           <div class="kv"><span>{{ tt("nav.containers") }}</span><strong>{{ used }}{{ mine.cap ? ` / ${mine.cap}` : "" }}</strong></div>
@@ -153,7 +130,28 @@
         </div>
       </section>
 
-      <section v-if="admin" class="card">
+      <!-- Feishu identity card (only for Feishu-SSO users) -->
+      <section v-if="feishuUser" class="card" :class="feishuSpan">
+        <div class="card-head">
+          <h2>{{ tt("dash.feishuProfile") }}</h2>
+          <el-tag size="small" type="success">{{ tt("dash.feishuLoginMethod") }}</el-tag>
+        </div>
+        <div class="card-body feishu-card-body">
+          <div class="feishu-header">
+            <div class="feishu-avatar">{{ userInitial }}</div>
+            <div class="feishu-title">
+              <div class="feishu-name ellipsis" :title="user.displayName || user.username">{{ user.displayName || user.username || "—" }}</div>
+              <div class="feishu-handle mono ellipsis" :title="user.feishuOpenId">{{ user.feishuOpenId || "—" }}</div>
+            </div>
+          </div>
+          <dl class="detail feishu-detail">
+            <dt>{{ tt("dash.feishuTenant") }}</dt><dd>{{ user.feishuTenantName || user.feishuTenantKey || "—" }}</dd>
+            <dt>{{ tt("dash.feishuLastLogin") }}</dt><dd>{{ user.lastLoginAt || "—" }}</dd>
+          </dl>
+        </div>
+      </section>
+
+      <section v-if="admin" class="card" :class="feishuUser ? 's12' : 's8'">
         <div class="card-head"><h2>{{ tt("dash.topUsers") }}</h2></div>
         <el-table :data="topUsers" size="small" empty-text="—">
           <el-table-column :label="tt('common.user')">
@@ -172,10 +170,10 @@
         </el-table>
       </section>
 
-      <section v-else class="card">
+      <section v-else class="card s12">
         <div class="card-head"><h2>{{ tt("dash.myContainers") }}</h2></div>
         <div class="card-body">
-          <ul class="mini-list">
+          <ul class="mini-list cols">
             <li v-for="c in myContainers" :key="c.id">
               <el-tag size="small" :type="stateTag(c.state)">{{ stateLabel(c.state) }}</el-tag>
               <span class="primary-line" :title="c.name || c.fullName">{{ c.name || c.fullName }}</span>
@@ -185,11 +183,9 @@
           </ul>
         </div>
       </section>
-    </div>
 
-    <!-- Row 4: recent activity (admin only) -->
-    <div v-if="admin" class="dash-row-full">
-      <section class="card">
+      <!-- Recent activity (admin only) -->
+      <section v-if="admin" class="card s12">
         <div class="card-head"><h2>{{ tt("dash.recentActivity") }}</h2></div>
         <div class="card-body">
           <ul class="mini-list activity">
@@ -217,12 +213,15 @@ import { detectClientIP, readIPCache, isCacheFresh } from "@/lib/publicip.js";
 import EChart from "@/components/EChart.vue";
 import VIcon from "@/components/VIcon.vue";
 
-// Containers-by-state donut.
-function donutOptionFor(c) {
+// Containers-by-state donut. Semantic slices match the legend swatches
+// (var(--ok)/--warn/--muted/--danger); the gray tones come in light/dark
+// pairs because ECharts can't read CSS variables.
+function donutOptionFor(c, dark) {
+  const muted = dark ? "#98989d" : "#6e6e73";
   const data = [
     { name: "running", value: c.running || 0, itemStyle: { color: "#10b981" } },
     { name: "paused", value: c.paused || 0, itemStyle: { color: "#f59e0b" } },
-    { name: "stopped", value: c.stopped || 0, itemStyle: { color: "#94a3b8" } },
+    { name: "stopped", value: c.stopped || 0, itemStyle: { color: muted } },
   ];
   if ((c.unhealthy || 0) > 0) data.push({ name: "unhealthy", value: c.unhealthy, itemStyle: { color: "#ef4444" } });
   const total = data.reduce((sum, d) => sum + d.value, 0);
@@ -237,7 +236,7 @@ function donutOptionFor(c) {
         radius: ["62%", "88%"],
         label: { show: false },
         silent: true,
-        data: [{ value: 1, itemStyle: { color: "#cbd5e1", opacity: 0.45 } }],
+        data: [{ value: 1, itemStyle: { color: dark ? "#55555c" : "#cbd5e1", opacity: 0.45 } }],
       }],
       graphic: [],
     };
@@ -287,13 +286,18 @@ export default {
       const name = (this.user.displayName || this.user.username || "").trim();
       return name ? name[0].toUpperCase() : "?";
     },
+    // Column spans (of 12) per card, chosen so every row fills the width.
+    donutSpan() { return this.admin || this.feishuUser ? "s4" : "s6"; },
+    workspaceSpan() { return this.admin ? (this.feishuUser ? "s6" : "s4") : this.feishuUser ? "s4" : "s6"; },
+    feishuSpan() { return this.admin ? "s6" : "s4"; },
     healthy() { return !!this.sys.healthy; },
     used() { return this.mine.containers || 0; },
     quotaPct() {
       const cap = this.mine.cap || 0;
       return cap > 0 ? Math.min(100, Math.round((this.used / cap) * 100)) : 0;
     },
-    donutOption() { return donutOptionFor(this.sys.containers || {}); },
+    // Reading store.isDark re-derives the slice colors on theme switches.
+    donutOption() { return donutOptionFor(this.sys.containers || {}, store.isDark); },
     topUsers() {
       return [...(this.d?.usage || [])]
         .sort((a, b) => (b.containers || 0) - (a.containers || 0))
@@ -430,12 +434,11 @@ export default {
 </script>
 
 <style scoped>
-.dash-row-2, .dash-row-3 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: var(--gap); }
-/* On a user's own dashboard the donut card is row 2's only card, and the
-   Feishu identity card is a small info tile: cap the column so neither
-   stretches across the full page. */
-.dash-row-2.user-home { grid-template-columns: minmax(0, 460px); }
-.dash-row-feishu { display: grid; grid-template-columns: minmax(0, 460px); }
+.dash-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--gap); }
+.dash-grid > .s4 { grid-column: span 4; }
+.dash-grid > .s6 { grid-column: span 6; }
+.dash-grid > .s8 { grid-column: span 8; }
+.dash-grid > .s12 { grid-column: span 12; }
 
 /* Stat tiles: tinted icon square + big number. */
 .stat-tile { display: flex; gap: 13px; align-items: center; padding: 16px; }
@@ -488,12 +491,16 @@ dl.detail dd { margin: 0; word-break: break-word; }
 .client-ip-block { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .client-ip-main { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
 .client-loc { font-size: 12px; }
-.badge-warn-text { color: var(--warn); font-size: 11px; }
+/* Injected via v-html (renderClientLocation), so it needs :deep — plain
+   scoped selectors never reach generated markup. */
+:deep(.badge-warn-text) { color: var(--warn); font-size: 11px; }
 
 /* Compact list rows (my containers, recent activity) with hairlines. */
 .mini-list { list-style: none; margin: 0; padding: 0; font-size: 12.5px; }
 .mini-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0; }
 .mini-list li + li { border-top: 1px solid var(--line); }
+.mini-list.cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); column-gap: 28px; }
+.mini-list.cols li { border-top: 0; border-bottom: 1px solid var(--line); }
 .audit-act { color: var(--brand); }
 .audit-target { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 .audit-time { margin-left: auto; color: var(--muted); white-space: nowrap; }
@@ -514,7 +521,7 @@ dl.detail dd { margin: 0; word-break: break-word; }
 .feishu-name { font-weight: 650; }
 .feishu-handle { color: var(--muted); font-size: 12.5px; }
 @media (max-width: 1100px) {
-  .dash-row-2, .dash-row-3 { grid-template-columns: minmax(0, 1fr); }
+  .dash-grid > * { grid-column: 1 / -1; }
 }
 /* Phones run the tiles 2-up: shrink the icon square and number to fit. */
 @media (max-width: 640px) {

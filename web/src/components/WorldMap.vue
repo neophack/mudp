@@ -9,6 +9,7 @@
 // symbolSize, and (optionally) a map series sharing the geo for a choropleth.
 // The country-polygon geojson is fetched once and registered as "world".
 import echarts from "@/echarts";
+import { store } from "@/store";
 
 let worldPromise = null;
 
@@ -26,16 +27,22 @@ function ensureWorld() {
   return worldPromise;
 }
 
-const AREA_STYLE = {
-  areaColor: "#e8edf3",
-  borderColor: "#94a3b8",
-  borderWidth: 0.5,
+// Map chrome follows the appearance: land masses sit one step off the card
+// surface, borders read as hairlines, and the visualMap text uses the muted
+// tone. Hex pairs (not CSS vars) because ECharts paints to canvas.
+const LAND = {
+  light: { area: "#e8edf3", border: "#94a3b8", hover: "#dbe4ee", text: "#6e6e73", ramp: ["#deebf7", "#3182bd"] },
+  dark: { area: "#34343a", border: "#55555c", hover: "#45454d", text: "#98989d", ramp: ["#26303c", "#5aa3e0"] },
 };
-const EMPHASIS_STYLE = {
-  areaColor: "#dbe4ee",
-  shadowBlur: 6,
-  shadowColor: "rgba(0, 0, 0, 0.2)",
-};
+
+// Mix two #rrggbb colors (weight w on a) so scatter outlines can derive from
+// the theme accent.
+function mix(a, b, w) {
+  const x = parseInt(a.slice(1), 16);
+  const y = parseInt(b.slice(1), 16);
+  const ch = [16, 8, 0].map((s) => Math.round(((x >> s) & 255) * w + ((y >> s) & 255) * (1 - w)).toString(16).padStart(2, "0"));
+  return "#" + ch.join("");
+}
 
 // Builds the scatter series entry for one class of points.
 function scatterSeries(points, color, borderColor) {
@@ -92,10 +99,18 @@ export default {
           { title: "heavy", points: this.points.filter((p) => p.kind !== "access" && (p.severity || 0) >= 2), color: "#ef4444", border: "#991b1b" },
         ].filter((g) => g.points.length);
       }
-      return [{ points: this.points, color: "#3882ff", border: "#1d4ed8" }];
+      // The single mode follows the theme pack accent (like SparkE); the mcp
+      // mode keeps its semantic access/probe/heavy colors, which the Security
+      // legend dots mirror.
+      const accent = store.accentColor;
+      return [{ points: this.points, color: accent, border: mix(accent, "#10131f", 0.5) }];
     },
     maxCount() {
       return this.points.reduce((m, p) => Math.max(m, p.count || 0), 0) || 1;
+    },
+    // Re-derives whenever the appearance flips so apply() repaints the map.
+    themeKey() {
+      return `${store.isDark}:${store.accentColor}`;
     },
   },
   watch: {
@@ -103,6 +118,9 @@ export default {
       this.apply();
     },
     countryData() {
+      this.apply();
+    },
+    themeKey() {
       this.apply();
     },
   },
@@ -130,6 +148,7 @@ export default {
   methods: {
     apply() {
       if (!this.chart || !this.ready) return;
+      const land = store.isDark ? LAND.dark : LAND.light;
       const groups = this.seriesGroups;
       const series = groups.map((g) => scatterSeries(g.points, g.color, g.border));
       const visualMap = [];
@@ -149,6 +168,7 @@ export default {
           max: gMax,
           dimension: 2,
           text: [legendTitle || String(gMax), "0"],
+          textStyle: { color: land.text },
           inRange: { symbolSize: [6, 26] },
           controller: { inRange: { color: [g.color] } },
           formatter: (v) => String(Math.round(v)),
@@ -173,7 +193,8 @@ export default {
           min: 0,
           max: cMax,
           dimension: 0,
-          inRange: { color: ["#deebf7", "#3182bd"] },
+          textStyle: { color: land.text },
+          inRange: { color: land.ramp },
         });
       }
       const tooltipHtml = this.tooltipHtml;
@@ -197,8 +218,8 @@ export default {
         geo: {
           map: "world",
           roam: true,
-          itemStyle: AREA_STYLE,
-          emphasis: EMPHASIS_STYLE,
+          itemStyle: { areaColor: land.area, borderColor: land.border, borderWidth: 0.5 },
+          emphasis: { areaColor: land.hover, shadowBlur: 6, shadowColor: "rgba(0, 0, 0, 0.2)" },
           label: { show: false },
           scaleLimit: { min: 0.8, max: 12 },
         },

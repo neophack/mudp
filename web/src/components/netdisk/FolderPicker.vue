@@ -13,7 +13,7 @@
       <section class="picker-main">
         <div class="picker-toolbar">
           <el-button size="small" :disabled="upDisabled" @click="goUp">{{ tt("netdisk.pickUp") }}</el-button>
-          <div class="picker-path">/{{ path }}</div>
+          <div class="picker-path mono">/{{ path }}</div>
           <el-button size="small" @click="mkdir">{{ tt("netdisk.pickNewFolder") }}</el-button>
         </div>
         <div class="picker-list">
@@ -238,12 +238,19 @@ export default {
 }
 .picker-tree-item.active { border-color: var(--brand); color: var(--brand); background: var(--brand-tint); }
 .picker-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.picker-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.picker-path { flex: 1; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; }
+.picker-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.picker-path { flex: 1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-list { border: 1px solid var(--line); border-radius: 8px; flex: 1; overflow-y: auto; max-height: 320px; padding: 6px; }
 .picker-row { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; }
-.picker-row:hover { background: var(--fill); }
+.picker-row:hover { background: var(--hover); }
 .picker-row.disabled { opacity: 0.45; cursor: not-allowed; }
 .picker-folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .picker-empty { color: var(--muted); text-align: center; padding: 24px 0; font-size: 12.5px; }
+/* Phones: the disk rail stacks above the folder list as a horizontal row so
+   the list keeps the full dialog width. */
+@media (max-width: 640px) {
+  .picker-layout { flex-direction: column; min-height: 0; }
+  .picker-tree { width: auto; flex-direction: row; flex-wrap: wrap; }
+  .picker-tree-item { flex: 1; text-align: center; white-space: nowrap; }
+}
 </style>

@@ -102,7 +102,7 @@ export default {
 .upload-bar .bar-fill { height: 100%; background: var(--brand); transform-origin: 0 50%; transition: transform 0.16s var(--ease-out, ease-out); }
 .upload-meta, .upload-counts { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 .upload-file-list { margin-top: 8px; overflow-y: auto; max-height: 40vh; }
-.upload-file-row { padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.upload-file-row { padding: 6px 0; border-top: 1px solid var(--line); }
 .upload-file-head { display: flex; gap: 8px; font-size: 12px; }
 .upload-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upload-file-size { color: var(--muted); }
@@ -112,6 +112,6 @@ export default {
 .upload-file-row.is-error .upload-file-bar .bar-fill { background: var(--danger); }
 .upload-file-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
 .upload-file-retry { margin-left: auto; background: none; border: 1px solid var(--line); color: var(--ink); border-radius: 4px; font-size: 10.5px; padding: 1px 8px; cursor: pointer; }
-.upload-file-retry:hover { border-color: var(--brand); color: #fff; }
+.upload-file-retry:hover { border-color: var(--brand); color: var(--brand); }
 .upload-overflow { font-size: 11px; color: var(--muted); padding: 4px 0; }
 </style>

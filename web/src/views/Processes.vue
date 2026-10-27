@@ -265,7 +265,6 @@ export default {
 .secondary-line { color: color-mix(in srgb, var(--ink) 65%, var(--muted)); }
 .error-line { color: var(--danger-text); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmd-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .tag-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 4px; }
 .filter-input { margin-bottom: 10px; max-width: 320px; }
 .clear-btn { margin-left: auto; }

@@ -29,7 +29,7 @@ export default {
     ringStyle() {
       if (this.indeterminate || this.o.done) return {};
       const clamped = Math.max(0, Math.min(100, this.o.pct));
-      return { background: `conic-gradient(var(--brand) ${clamped}%, #e2e8f0 0)` };
+      return { background: `conic-gradient(var(--brand) ${clamped}%, #334155 0)` };
     },
     ringText() {
       if (this.o.done === "ok") return "✓";

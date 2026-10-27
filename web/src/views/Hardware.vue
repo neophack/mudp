@@ -38,7 +38,7 @@
       <div class="card hist-card">
         <div class="hist-head">
           <span class="hist-label">{{ tt("hardware.memUsage") }}</span>
-          <span class="hist-current" style="color: #10b981">{{ last(history.mem).toFixed(1) }}%</span>
+          <span class="hist-current" style="color: var(--ok)">{{ last(history.mem).toFixed(1) }}%</span>
         </div>
         <e-chart v-if="history.mem.length > 1" :option="memOption" height="140px" />
         <p v-else class="hint">{{ tt("common.collectingData") }}</p>
@@ -322,6 +322,5 @@ export default {
 .kv strong { text-align: right; }
 .sensor-row { padding: 6px 0; border-bottom: 1px dashed var(--line); }
 .dash-row-2 { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: var(--gap); }
-.error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 @media (max-width: 1000px) { .hist-row, .dash-row-2 { grid-template-columns: minmax(0, 1fr); } }
 </style>

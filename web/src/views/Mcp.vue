@@ -19,7 +19,7 @@
     <section class="card">
       <div class="card-head">
         <h2>{{ tt("mcp.externalAccess") }}</h2>
-        <span class="mcp-card-note">{{ remote && remote.enabled ? tt("mcp.safeNetworkNote", { net: remote.safeNetwork || "-" }) : tt("mcp.notConfigured") }}</span>
+        <span class="hint">{{ remote && remote.enabled ? tt("mcp.safeNetworkNote", { net: remote.safeNetwork || "-" }) : tt("mcp.notConfigured") }}</span>
       </div>
       <template v-if="remote && remote.enabled">
         <p class="hint">{{ tt("mcp.externalHintOn") }}</p>
@@ -36,7 +36,7 @@
       <section class="card">
         <div class="card-head">
           <h2>{{ tt("mcp.agentTools") }}</h2>
-          <span class="mcp-card-note">{{ tt("mcp.scopedNote") }}</span>
+          <span class="hint">{{ tt("mcp.scopedNote") }}</span>
         </div>
         <div class="mcp-tool-grid">
           <div v-for="g in toolGroups" :key="g.title" class="mcp-tool-group">
@@ -633,7 +633,6 @@ export default {
 .mcp-flow { display: flex; align-items: center; gap: 8px; font-size: 12.5px; flex-wrap: wrap; }
 .mcp-flow strong { width: 22px; height: 22px; border-radius: 50%; background: rgba(147, 197, 253, 0.2); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
 .mcp-main-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: var(--gap); align-items: start; }
-.mcp-card-note { color: var(--muted); font-size: 12px; }
 .mcp-tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
 .mcp-tool-group-title { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
 .mcp-tool { margin-bottom: 6px; }

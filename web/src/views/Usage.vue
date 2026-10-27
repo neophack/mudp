@@ -41,7 +41,7 @@
       <div v-if="!trends.length" class="empty-state">{{ tt("usage.noHistory") }}</div>
       <div v-else class="stats-grid">
         <div v-for="tr in trends" :key="tr.user" class="stat-card">
-          <div class="stat-card-head">{{ displayNameForUsername(tr.user) }}</div>
+          <div class="stat-card-head ellipsis" :title="displayNameForUsername(tr.user)">{{ displayNameForUsername(tr.user) }}</div>
           <div class="stat-card-value">{{ tr.maxCpu }}% {{ tt("hardware.cpu") }}</div>
           <div class="stat-card-sub">{{ tt("usage.peakGpu", { mem: tr.maxMem, gpu: tr.maxGpu }) }}</div>
           <spark :series="tr.cpu" height="34px" />

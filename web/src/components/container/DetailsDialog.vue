@@ -262,7 +262,7 @@ dl.detail dd { margin: 0; word-break: break-word; }
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .check.locked { opacity: 0.5; }
-.field-label { font-size: 12.5px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+.field-label { margin-bottom: 6px; }
 .raw-json { max-height: 320px; }
 .log-output {
   background: #0f172a;
@@ -275,5 +275,4 @@ dl.detail dd { margin: 0; word-break: break-word; }
   word-break: break-word;
   margin: 0;
 }
-.error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 </style>

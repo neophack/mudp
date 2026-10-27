@@ -883,8 +883,10 @@ export default {
 .netdisk-crumbs { display: flex; align-items: center; flex-wrap: wrap; font-size: 13px; }
 .crumb-sep { color: var(--muted); margin: 0 2px; }
 .netdisk-used { margin-left: auto; font-size: 12.5px; color: var(--muted); }
-.quota-bar { display: inline-block; vertical-align: middle; width: 120px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 0 4px; }
-.quota-bar span { display: block; height: 100%; background: var(--brand); }
+/* The quota bar rides into the DOM via v-html (quotaHtml), which scoped
+   selectors can't reach — go deep, like .name-link above. */
+.netdisk-used >>> .quota-bar { display: inline-block; vertical-align: middle; width: 120px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 0 4px; }
+.netdisk-used >>> .quota-bar span { display: block; height: 100%; background: var(--brand); }
 .netdisk-card.drag-over { outline: 2px dashed var(--brand); outline-offset: -6px; }
 .netdisk-file { display: flex; align-items: center; gap: 10px; }
 /* Size and fill are baked into the fileicon.js markup: the svgs arrive via

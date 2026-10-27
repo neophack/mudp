@@ -26,7 +26,7 @@
       <p>{{ tt("netdisk.viewerUnsupported") }}</p>
       <p class="hint">{{ tt("netdisk.viewerDownloadToView") }}</p>
       <el-button type="primary" size="small">
-        <a :href="dlUrl" :download="name" style="color: #fff; text-decoration: none">⬇ {{ tt("netdisk.download") }}</a>
+        <a :href="dlUrl" :download="name" style="color: inherit; text-decoration: none">⬇ {{ tt("netdisk.download") }}</a>
       </el-button>
     </div>
 
@@ -307,7 +307,7 @@ export default {
 .viewer-head-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14.5px; font-weight: 650; }
 .viewer-head-actions { display: flex; gap: 8px; }
 .viewer-body { min-height: 320px; max-height: 70vh; overflow: auto; text-align: center; }
-.viewer-body.fullscreen { position: fixed; inset: 0; z-index: 3001; max-height: none; background: #fff; padding: 16px; }
+.viewer-body.fullscreen { position: fixed; inset: 0; z-index: 3001; max-height: none; background: var(--card); padding: 16px; }
 /* Video's overlay fullscreen is a player surface: black backdrop, video fills the viewport. */
 .viewer-body.fullscreen.fullscreen-video { background: #000; display: flex; align-items: center; justify-content: center; }
 .viewer-body.fullscreen.fullscreen-video .viewer-media { max-height: calc(100vh - 32px); }

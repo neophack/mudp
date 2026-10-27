@@ -104,7 +104,7 @@ export default {
   margin: 0 auto 10px;
   border-radius: 50%;
   background: var(--brand-tint);
-  box-shadow: inset 0 0 0 2px #bfdbfe;
+  box-shadow: inset 0 0 0 2px var(--brand-tint-line);
   display: flex;
   align-items: center;
   justify-content: center;

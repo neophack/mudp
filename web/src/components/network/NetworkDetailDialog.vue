@@ -156,6 +156,4 @@ dl.detail dd { margin: 0; word-break: break-word; }
 .detail-settings { margin-bottom: 12px; }
 .detail-settings h3 { margin: 0 0 8px; font-size: 13.5px; }
 .attach-row { display: flex; gap: 10px; }
-.warn-text { color: #e6a23c !important; }
-.error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 </style>

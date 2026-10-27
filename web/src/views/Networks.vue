@@ -280,5 +280,5 @@ export default {
 .check-grid { display: flex; flex-direction: column; gap: 8px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .adv-input { margin-bottom: 8px; }
-.ok-text { color: #10b981 !important; }
+.ok-text { color: var(--ok) !important; }
 </style>

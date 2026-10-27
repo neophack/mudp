@@ -136,5 +136,4 @@ export default {
 .stat-label { color: var(--muted); font-size: 12.5px; }
 .stat-value { font-size: 20px; font-weight: 750; }
 .card-head h2 { flex: 1; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 </style>

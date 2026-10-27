@@ -101,7 +101,7 @@
         </el-select>
       </div>
       <div class="field-label" style="margin-top: 10px">{{ tt("forwards.targetContainer") }}</div>
-      <el-select v-model="add.form.containerId" style="width: 100%" size="small">
+      <el-select v-model="add.form.containerId" style="width: 100%">
         <el-option value="" :label="tt('forwards.fixedInstead')" />
         <el-option v-for="tg in targets" :key="tg.id" :value="tg.id" :label="targetLabel(tg)" />
       </el-select>
@@ -311,9 +311,8 @@ export default {
 <style scoped>
 .card-head h2 { flex: 1; }
 .row2 { display: flex; gap: 8px; }
-.field-label { font-size: 12.5px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+.field-label { margin-bottom: 6px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .check.locked { opacity: 0.5; }
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; margin-bottom: 10px; }
-.error-box { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-line); border-radius: 8px; padding: 10px 12px; }
 </style>

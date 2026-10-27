@@ -409,15 +409,13 @@ export default {
   border: 1px solid var(--brand-tint-line);
   border-radius: 10px;
   padding: 8px 14px;
-  margin-bottom: 12px;
 }
 .batch-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .batch-actions .el-button { margin-left: 0; }
 .batch-count { font-weight: 600; color: var(--brand); font-size: 13px; }
 .port-link { color: var(--brand); }
 .sep { margin: 0 4px; color: var(--muted); }
-.ok-text { color: #10b981 !important; }
-.warn-text { color: #e6a23c !important; }
+.ok-text { color: var(--ok) !important; }
 .tag-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 4px; }
 .sheet-meta { display: flex; flex-direction: column; gap: 3px; margin: 8px 0 12px; }
 .sheet-meta-line { color: var(--muted); font-size: 12px; word-break: break-word; }

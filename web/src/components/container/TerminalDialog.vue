@@ -280,7 +280,7 @@ export default {
 .term-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
 .term-title h2 { margin: 0; font-size: 15px; }
 .term-toolbar { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
-.cmd-label { color: #909399; margin-left: 8px; }
+.cmd-label { color: var(--muted); margin-left: 8px; }
 .term-box {
   background: #1a1b26;
   border-radius: 8px;
@@ -299,11 +299,11 @@ export default {
   align-items: center;
   margin-top: 8px;
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--muted);
 }
 .term-stat .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .dot-ok { background: var(--ok); }
 .dot-danger { background: var(--danger); }
-.dot-muted { background: #94a3b8; }
+.dot-muted { background: var(--muted); }
 .term-keys { flex: 1; text-align: center; }
 </style>

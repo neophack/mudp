@@ -605,7 +605,7 @@ export default {
 .tint-teal { background: #14b8a6; }
 .tint-indigo { background: #6366f1; }
 .tint-orange { background: var(--warn); }
-.tint-red { background: var(--danger, #ef4444); }
+.tint-red { background: var(--danger); }
 .row-main { flex: 1; min-width: 0; }
 .row-title { font-size: 13.5px; font-weight: 600; }
 .row-desc { font-size: 12px; color: var(--muted); margin-top: 1px; }
@@ -709,7 +709,6 @@ export default {
   .theme-seg-btn { flex: 1; }
   .pack-grid { grid-template-columns: minmax(0, 1fr); }
 }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: minmax(0, 1fr); }
   .form-grid .el-input:last-child:nth-child(odd) { grid-column: auto; }

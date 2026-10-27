@@ -2,7 +2,7 @@
   <!-- Baidu-style share creation: expiry + extraction code, then the ready
        link step with copy chips. -->
   <el-dialog :model-value="visible" :title="step === 'form' ? (paths.length === 1 ? tt('netdisk.shareFile') : tt('netdisk.shareItems')) : tt('netdisk.shareLinkReady')" width="500px" append-to-body @update:model-value="onVisible">
-    <p class="hint share-name-line" :title="name">{{ name }}</p>
+    <p class="hint share-name-line ellipsis" :title="name">{{ name }}</p>
 
     <template v-if="step === 'form'">
       <div class="share-row">

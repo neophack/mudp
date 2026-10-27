@@ -137,6 +137,6 @@ export default {
 .stat-value { font-size: 22px; font-weight: 750; }
 .stat-label { color: var(--muted); font-size: 12.5px; }
 .card-head h2 { flex: 1; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .stack-pre { background: #0f172a; color: #cbd5e1; border-radius: 8px; padding: 12px; font-size: 11.5px; max-height: 50vh; overflow: auto; white-space: pre-wrap; }
 </style>
