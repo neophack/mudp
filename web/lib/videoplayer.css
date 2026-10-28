@@ -17,6 +17,9 @@
   overflow: hidden;
 }
 
+/* Holds the white-balance <filter>; takes no space. */
+.vp-defs { position: absolute; width: 0; height: 0; }
+
 .vp-video {
   display: block;
   flex: 1 1 auto;
@@ -26,17 +29,22 @@
   cursor: pointer;
 }
 
+/* Native fullscreen (the bar's ⛶ button): the player fills the screen and
+   the frame takes all height above the bar. */
+.vp-root:fullscreen { width: 100%; height: 100%; max-height: none; border-radius: 0; }
+.vp-root:fullscreen .vp-video { flex: 1 1 0; }
+
+/* Two rows: transport on top, picture adjustments below. */
 .vp-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 40px;
   flex: none;
   padding: 0 10px;
   background: #1b1d23;
   color: #d7dae2;
   font-size: 12px;
 }
+
+.vp-row { display: flex; align-items: center; gap: 10px; min-height: 38px; }
+.vp-adjust { column-gap: 18px; row-gap: 0; flex-wrap: wrap; padding: 2px 0; border-top: 1px solid #2a2d37; }
 
 .vp-btn {
   width: 28px;
@@ -57,7 +65,7 @@
 
 .vp-time { flex: none; color: #8b90a0; font-variant-numeric: tabular-nums; }
 
-.vp-seek { flex: 1; min-width: 60px; margin: 0; accent-color: #4c8dff; cursor: pointer; }
+.vp-seek { flex: 1; min-width: 60px; }
 
 .vp-speed {
   flex: none;
@@ -70,3 +78,46 @@
   font-size: 12px;
   cursor: pointer;
 }
+
+/* Each adjustment shares the row equally, within a width that keeps the
+   slider precise enough to drag yet leaves room for its neighbours. */
+.vp-adj { display: flex; align-items: center; gap: 8px; flex: 1 1 0; min-width: 150px; max-width: 240px; min-height: 32px; }
+.vp-adj-label { flex: none; color: #8b90a0; }
+.vp-adj input { flex: 1; min-width: 70px; }
+/* Fixed width (fits "10000K") so dragging never shifts the slider. */
+.vp-adj-value { flex: none; width: 42px; font-variant-numeric: tabular-nums; }
+.vp-reset { margin-left: auto; }
+
+.vp-root input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  --vp-track: #343845;
+}
+/* Temperature runs warm (low K) to cool (high K), as the track shows. */
+.vp-adj-temperature input[type="range"] { --vp-track: linear-gradient(90deg, #ff9a3c, #f4f1ea 53%, #7fb2ff); }
+.vp-root input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--vp-track); }
+.vp-root input[type="range"]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--vp-track); }
+.vp-root input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: #d0d4dd;
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.vp-root input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #d0d4dd;
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.vp-root input[type="range"]:hover::-webkit-slider-thumb { background: #fff; }
+.vp-root input[type="range"]:hover::-moz-range-thumb { background: #fff; }
