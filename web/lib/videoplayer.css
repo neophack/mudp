@@ -1,0 +1,72 @@
+/* Styles for the video player (lib/videoplayer.js), rendered inside the
+   netdisk viewer dialog (Vue app) and the public share page viewer. Loaded by
+   src/styles/index.css and share.css.
+
+   Like the raster viewer, the player is a fixed dark surface independent of
+   the host theme. The control bar sits below the frame, never on top of it,
+   so no part of the picture is darkened or covered. The host sizes the root
+   (.viewer-media max-height); the video shrinks to leave room for the bar. */
+
+.vp-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin: 0 auto;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.vp-video {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  object-fit: contain;
+  cursor: pointer;
+}
+
+.vp-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  flex: none;
+  padding: 0 10px;
+  background: #1b1d23;
+  color: #d7dae2;
+  font-size: 12px;
+}
+
+.vp-btn {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #d7dae2;
+  cursor: pointer;
+  padding: 0;
+}
+.vp-btn:hover { background: #262a33; }
+.vp-btn svg { width: 15px; height: 15px; fill: currentColor; display: block; }
+
+.vp-time { flex: none; color: #8b90a0; font-variant-numeric: tabular-nums; }
+
+.vp-seek { flex: 1; min-width: 60px; margin: 0; accent-color: #4c8dff; cursor: pointer; }
+
+.vp-speed {
+  flex: none;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid #2a2d37;
+  border-radius: 6px;
+  background: #101116;
+  color: #d7dae2;
+  font-size: 12px;
+  cursor: pointer;
+}

@@ -9,6 +9,8 @@
    netdisk viewer dialog; it ships its own scoped dark palette so it looks the
    same in every theme pack and on the public share page). */
 @import "../../lib/raster.css";
+/* Video player (lib/videoplayer.js): control bar below the frame, not over it. */
+@import "../../lib/videoplayer.css";
 
 :root {
   /* Accent base color — the single value every pack overrides; the whole

@@ -1,7 +1,8 @@
 <template>
   <!-- Inline file preview. PDF via pdf.js, markdown via marked+DOMPurify,
        text/JSON in a <pre>, CSV/TSV as a table, docx/xlsx through the lazily
-       loaded mammoth/SheetJS bundles, media via native elements, YUV/RAW
+       loaded mammoth/SheetJS bundles, images/audio via native elements, video
+       via lib/videoplayer.js (controls below the frame), YUV/RAW
        through the server-side raster decode (lib/yuv.js, lib/raw.js). The
        type dispatch lives in lib/preview.js, shared with the share page. -->
   <el-dialog :model-value="visible" width="860px" top="3vh" append-to-body custom-class="viewer-dialog" @update:model-value="onVisible" @opened="render">
@@ -35,7 +36,7 @@
       <div v-else-if="error" class="viewer-error">{{ error }}</div>
       <img v-else-if="kind === 'image'" ref="media" class="viewer-media" :src="rawUrl" :alt="name" />
       <audio v-else-if="kind === 'audio'" ref="media" class="viewer-media" controls preload="metadata" :src="rawUrl" />
-      <video v-else-if="kind === 'video'" ref="media" class="viewer-media" controls preload="metadata" :src="rawUrl" />
+      <div v-else-if="kind === 'video'" ref="video"></div>
       <pre v-else-if="kind === 'text' || kind === 'json'" class="viewer-text">{{ text }}</pre>
       <!-- csvToTableHtml escapes every cell itself, so v-html is safe here. -->
       <div v-else-if="kind === 'csv'" class="viewer-csv" v-html="csvHtml"></div>
@@ -56,6 +57,7 @@ import { tt } from "@/i18n";
 import { renderMarkdownInto } from "@/lib/viewer.js";
 import { openYuvViewer } from "@/lib/yuv.js";
 import { openRawViewer } from "@/lib/raw.js";
+import { mountVideoPlayer } from "@/lib/videoplayer.js";
 import { previewKind, csvToTableHtml, prettyJsonOrNull, renderDocxInto, renderXlsxInto } from "@/lib/preview.js";
 
 export default {
@@ -162,7 +164,7 @@ export default {
       this.pdfDoc = null;
       // The rendered pages (full-resolution PDF canvases, docx/xlsx/markdown
       // DOM, the raster canvas) outlive a hidden dialog; drop them on close.
-      for (const ref of ["md", "pdf", "office", "raster"]) {
+      for (const ref of ["md", "pdf", "office", "raster", "video"]) {
         if (this.$refs[ref]) this.$refs[ref].replaceChildren();
       }
     },
@@ -228,6 +230,11 @@ export default {
           this.loading = false;
           await this.$nextTick();
           await this.renderPdf(seq);
+          return;
+        } else if (kind === "video") {
+          this.loading = false;
+          await this.$nextTick();
+          if (this.$refs.video) this.controller = mountVideoPlayer({ url: this.rawUrl, bodyEl: this.$refs.video });
           return;
         } else if (kind === "yuv") {
           this.loading = false;

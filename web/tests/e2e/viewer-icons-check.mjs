@@ -1,7 +1,7 @@
 // One-off visual check for the file-icon + viewer-header work:
 //   1. the netdisk list shows per-extension icons (unknown = gray),
 //   2. the viewer dialog puts fullscreen/download on the title row,
-//   3. the video player carries controlslist="nofullscreen".
+//   3. the video player draws its control bar below the frame, not over it.
 // Boots a throwaway mudp server via the shared e2e fixtures. Run:
 //   node tests/e2e/viewer-icons-check.mjs
 import fs from "node:fs";
@@ -65,16 +65,18 @@ try {
   const imageButtons = await page.locator(".viewer-head-actions button").count();
   console.log("viewer head actions:", JSON.stringify({ ...headRight, imageButtons }));
 
-  // Video preview: no fullscreen anywhere — the header offers download only
-  // and the player itself hides its fullscreen control.
+  // Video preview: the player's control bar sits below the frame instead of
+  // the native overlay that darkens the bottom of the picture.
   await page.keyboard.press("Escape");
   await page.click('.netdisk-file:has-text("clip.mp4") .name-link');
-  await page.waitForSelector("video.viewer-media");
+  await page.waitForSelector(".vp-bar");
   const videoButtons = await page.locator(".viewer-head-actions button").count();
   const videoButtonTexts = await page.locator(".viewer-head-actions button").allTextContents();
-  const ctl = await page.$eval("video.viewer-media", (v) => ({
-    controlslist: v.getAttribute("controlslist"),
-  }));
+  const ctl = await page.$eval(".vp-root", (root) => {
+    const v = root.querySelector("video").getBoundingClientRect();
+    const bar = root.querySelector(".vp-bar").getBoundingClientRect();
+    return { nativeControls: root.querySelector("video").controls, barBelowFrame: bar.top >= v.bottom };
+  });
   await page.screenshot({ path: `${OUT}/viewer-video.png` });
   console.log("video header buttons:", videoButtons, JSON.stringify(videoButtonTexts));
   console.log("video controls:", JSON.stringify(ctl));

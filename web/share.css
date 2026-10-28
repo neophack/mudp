@@ -5,6 +5,7 @@
 /* YUV/RAW frame viewer chrome (lib/yuv.js renders it inside this page's
    viewer modal; it ships its own scoped dark palette). */
 @import "./lib/raster.css";
+@import "./lib/videoplayer.css";
 
 :root {
   --brand: #3370ff;

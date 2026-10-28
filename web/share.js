@@ -3,6 +3,7 @@
 import { escapeHtml, fmtBytes, joinPath } from "/lib/common.js";
 import { openYuvViewer } from "/lib/yuv.js";
 import { openRawViewer } from "/lib/raw.js";
+import { mountVideoPlayer } from "/lib/videoplayer.js";
 import { renderMarkdownInto } from "/lib/viewer.js";
 // Shared with the console viewer: type dispatch + CSV/JSON/Office renderers
 // (docx via mammoth, xlsx via SheetJS, both lazy-loaded from /vendor/).
@@ -599,10 +600,14 @@ function resetViewerState() {
     rawController.destroy();
     rawController = null;
   }
+  if (videoController) {
+    videoController.destroy();
+    videoController = null;
+  }
   $("#viewerBackdrop").classList.remove("viewer-fullscreen");
   const fsBtn = $("#viewerFullscreen");
   if (fsBtn) fsBtn.textContent = "⛶ Fullscreen";
-  const media = $("#viewerBody").querySelector("video.viewer-media, audio.viewer-media");
+  const media = $("#viewerBody").querySelector("audio.viewer-media");
   if (media) {
     try { media.pause(); } catch { /* best-effort */ }
   }
@@ -679,7 +684,7 @@ async function renderViewerContent(kind, name, url, path) {
       body.innerHTML = `<audio class="viewer-media" controls preload="metadata" src="${url}"></audio>`;
       return;
     case "video":
-      body.innerHTML = `<video class="viewer-media" controls preload="metadata" src="${url}"></video>`;
+      videoController = mountVideoPlayer({ url, bodyEl: body });
       return;
     case "yuv":
       return renderYuv(url, rasterURL(path), body, name);
@@ -716,6 +721,10 @@ let yuvController = null;
 
 // rawController mirrors yuvController for the RAW Bayer viewer.
 let rawController = null;
+
+// videoController holds the active video player so resetViewerState can stop
+// playback and unload the source.
+let videoController = null;
 
 async function renderPdf(url, body) {
   const pdfjs = window.pdfjsLib;
