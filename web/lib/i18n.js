@@ -984,6 +984,8 @@ const translations = {
     // Video player (lib/videoplayer.js)
     "video.play": "播放",
     "video.pause": "暂停",
+    "video.prev": "上一个视频",
+    "video.next": "下一个视频",
     "video.seek": "进度",
     "video.mute": "静音",
     "video.unmute": "取消静音",
@@ -2537,6 +2539,8 @@ const translations = {
     // Video player (lib/videoplayer.js)
     "video.play": "Play",
     "video.pause": "Pause",
+    "video.prev": "Previous video",
+    "video.next": "Next video",
     "video.seek": "Seek",
     "video.mute": "Mute",
     "video.unmute": "Unmute",

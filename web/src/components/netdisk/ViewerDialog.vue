@@ -66,6 +66,9 @@ export default {
     visible: { type: Boolean, default: false },
     path: { type: String, default: "" },
     fromBackup: { type: Boolean, default: false },
+    // Paths of every video in the open folder, in listing order; the player's
+    // prev/next buttons step through them. Empty for a lone or foreign file.
+    playlist: { type: Array, default: () => [] },
   },
   data() {
     return { loading: false, error: "", text: "", csvHtml: "", fullscreen: false, controller: null, pdfDoc: null, renderSeq: 0 };
@@ -95,8 +98,26 @@ export default {
     supportsFullscreen() {
       return ["pdf", "image", "video", "yuv", "raw", "csv", "docx", "xlsx"].includes(this.kind);
     },
+    // Index of the open file inside the folder's video list.
+    videoIndex() {
+      return this.playlist.indexOf(this.path);
+    },
+    // Nav buttons only make sense with at least one other clip to step to.
+    hasVideoSiblings() {
+      return this.playlist.length > 1 && this.videoIndex >= 0;
+    },
+    navPosition() {
+      return this.hasVideoSiblings ? `${this.videoIndex + 1} / ${this.playlist.length}` : "";
+    },
   },
   watch: {
+    // Stepping between clips swaps the source inside the mounted player via
+    // load() instead of re-rendering, so playback settings and the player's
+    // own fullscreen state survive the change. Reopening the dialog for a new
+    // file takes the @opened path (controller is null after reset).
+    path() {
+      if (this.visible && this.controller && this.controller.load) this.controller.load(this.rawUrl, this.navPosition);
+    },
     fullscreen(on) {
       if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
       this.$nextTick(() => {
@@ -133,6 +154,18 @@ export default {
     onVisible(v) {
       this.$emit("update:visible", v);
       if (!v) this.reset();
+    },
+    // Folder playback. Manual steps wrap around the folder; auto-advance
+    // (a clip ended, auto=true) stops at the last clip instead of looping.
+    prevVideo() {
+      this.navigateVideo(this.videoIndex <= 0 ? this.playlist.length - 1 : this.videoIndex - 1);
+    },
+    nextVideo(auto = false) {
+      if (auto && this.videoIndex === this.playlist.length - 1) return;
+      this.navigateVideo((this.videoIndex + 1) % this.playlist.length);
+    },
+    navigateVideo(i) {
+      this.$emit("update:path", this.playlist[i]);
     },
     reset() {
       // Bump the generation so a slow render still in flight (fetch, pdf.js
@@ -234,7 +267,14 @@ export default {
         } else if (kind === "video") {
           this.loading = false;
           await this.$nextTick();
-          if (this.$refs.video) this.controller = mountVideoPlayer({ url: this.rawUrl, bodyEl: this.$refs.video });
+          if (this.$refs.video)
+            this.controller = mountVideoPlayer({
+              url: this.rawUrl,
+              bodyEl: this.$refs.video,
+              onPrev: this.hasVideoSiblings ? this.prevVideo : undefined,
+              onNext: this.hasVideoSiblings ? this.nextVideo : undefined,
+              position: this.navPosition,
+            });
           return;
         } else if (kind === "yuv") {
           this.loading = false;

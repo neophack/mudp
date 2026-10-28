@@ -14,14 +14,24 @@
 // fullscreen rather than the <video> alone, which would bring back the
 // browser's overlay controls.
 //
-// mountVideoPlayer({ url, bodyEl }) renders into bodyEl and returns
-// { destroy }, which stops playback, leaves fullscreen and unloads the source;
-// both hosts call it when the viewer closes or switches files.
+// With onPrev/onNext the transport row also grows ⏮/⏭ buttons and a
+// "current / total" position label, so a whole folder of clips can be played
+// through; a video that ends calls onNext(true) for continuous playback. The
+// host decides what "next" means — the netdisk viewer steps through the open
+// folder's videos and calls load(url, position) to swap the source, which
+// keeps the player (and its fullscreen state) alive across clips.
+//
+// mountVideoPlayer({ url, bodyEl, onPrev, onNext, position }) renders into
+// bodyEl and returns { destroy, load }, where destroy stops playback, leaves
+// fullscreen and unloads the source; both hosts call it when the viewer
+// closes or switches files.
 
 import { t } from "./i18n.js";
 
 const ICON_PLAY = `<svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z"/></svg>`;
 const ICON_PAUSE = `<svg viewBox="0 0 16 16"><path d="M4 2.5h3v11H4zm5 0h3v11H9z"/></svg>`;
+const ICON_PREV = `<svg viewBox="0 0 16 16"><path d="M3 2.5h1.5v11H3zm10.5 0v11l-8-5.5z"/></svg>`;
+const ICON_NEXT = `<svg viewBox="0 0 16 16"><path d="M11.5 2.5H13v11h-1.5zM2.5 2.5l8 5.5-8 5.5z"/></svg>`;
 const ICON_SOUND = `<svg viewBox="0 0 16 16"><path d="M2 6h3l4-3.5v11L5 10H2z"/><path d="M11 5.2a4 4 0 0 1 0 5.6l-.8-.8a2.9 2.9 0 0 0 0-4z"/></svg>`;
 const ICON_MUTED = `<svg viewBox="0 0 16 16"><path d="M2 6h3l4-3.5v11L5 10H2z"/><path d="m10.5 5.5 4 4-.8.8-4-4zm4 .8-4 4-.8-.8 4-4z"/></svg>`;
 const ICON_ENTER_FS = `<svg viewBox="0 0 16 16"><path d="M2 2h4.5v1.5h-3v3H2zm7.5 0H14v4.5h-1.5v-3h-3zM2 9.5h1.5v3h3V14H2zm10.5 0H14V14H9.5v-1.5h3z"/></svg>`;
@@ -83,8 +93,11 @@ function temperatureGains(k) {
   return kelvinRgb(k).map((c, i) => c / ref[i]);
 }
 
-export function mountVideoPlayer({ url, bodyEl }) {
+export function mountVideoPlayer({ url, bodyEl, onPrev, onNext, position }) {
   const filterId = `vp-wb-${++filterSeq}`;
+  const prevBtn = onPrev ? `<button type="button" class="vp-btn vp-prev" title="${t("video.prev")}">${ICON_PREV}</button>` : "";
+  const nextBtn = onNext ? `<button type="button" class="vp-btn vp-next" title="${t("video.next")}">${ICON_NEXT}</button>` : "";
+  const posEl = onNext ? `<span class="vp-pos">${position || ""}</span>` : "";
   bodyEl.innerHTML =
     `<div class="vp-root viewer-media">` +
       // color-interpolation-filters=sRGB: scale the encoded values directly,
@@ -95,7 +108,10 @@ export function mountVideoPlayer({ url, bodyEl }) {
       `<video class="vp-video" preload="metadata" playsinline></video>` +
       `<div class="vp-bar">` +
         `<div class="vp-row">` +
+          prevBtn +
           `<button type="button" class="vp-btn vp-play" title="${t("video.play")}">${ICON_PLAY}</button>` +
+          nextBtn +
+          posEl +
           `<span class="vp-time">0:00 / 0:00</span>` +
           `<input type="range" class="vp-seek" min="0" max="0" step="any" value="0" aria-label="${t("video.seek")}" />` +
           `<button type="button" class="vp-btn vp-mute" title="${t("video.mute")}">${ICON_SOUND}</button>` +
@@ -172,6 +188,13 @@ export function mountVideoPlayer({ url, bodyEl }) {
   video.addEventListener("click", toggle);
 
   playBtn.addEventListener("click", toggle);
+  // onPrev/onNext(false) fire on the buttons; onNext(true) when a clip ends,
+  // for continuous play. The host decides what "next" is and may ignore it.
+  if (onPrev) root.querySelector(".vp-prev").addEventListener("click", onPrev);
+  if (onNext) {
+    root.querySelector(".vp-next").addEventListener("click", () => onNext(false));
+    video.addEventListener("ended", () => onNext(true));
+  }
   muteBtn.addEventListener("click", () => {
     video.muted = !video.muted;
   });
@@ -249,6 +272,14 @@ export function mountVideoPlayer({ url, bodyEl }) {
   video.src = url;
 
   return {
+    // Folder stepping: swap the source inside the mounted player so playback
+    // settings and the fullscreen state survive the clip change.
+    load(nextUrl, nextPosition) {
+      const pos = root.querySelector(".vp-pos");
+      if (pos && nextPosition != null) pos.textContent = nextPosition;
+      video.src = nextUrl;
+      video.play().catch(() => {});
+    },
     destroy() {
       cancelAnimationFrame(raf);
       document.removeEventListener("fullscreenchange", onFullscreenChange);

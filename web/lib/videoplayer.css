@@ -64,6 +64,8 @@
 .vp-btn svg { width: 15px; height: 15px; fill: currentColor; display: block; }
 
 .vp-time { flex: none; color: #8b90a0; font-variant-numeric: tabular-nums; }
+/* Folder position ("3 / 12") between the ⏭ button and the timecode. */
+.vp-pos { flex: none; color: #8b90a0; font-variant-numeric: tabular-nums; }
 
 .vp-seek { flex: 1; min-width: 60px; }
 

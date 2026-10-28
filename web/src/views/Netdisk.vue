@@ -232,7 +232,9 @@
     <viewer-dialog
       v-model:visible="viewer.visible"
       :path="viewer.path"
+      @update:path="viewer.path = $event"
       :from-backup="viewer.fromBackup"
+      :playlist="videoPlaylist"
     />
   </div>
 </template>
@@ -310,6 +312,12 @@ export default {
         if (a.dir !== b.dir) return a.dir ? -1 : 1;
         return String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
       });
+    },
+    // Every video of the open folder in listing order (not just the visible
+    // page), fed to the viewer so the player's ⏮/⏭ buttons can play through
+    // the whole folder.
+    videoPlaylist() {
+      return this.sortedItems.filter((f) => !f.dir && previewKind(f.name) === "video").map((f) => f.path);
     },
     pagedItems() {
       const start = (this.page - 1) * PAGE_SIZE;
