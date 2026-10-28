@@ -217,20 +217,20 @@
     />
 
     <folder-picker
-      v-model="picker.visible"
+      v-model:visible="picker.visible"
       :move="picker.move"
       :paths="picker.paths"
       :source-disk="picker.sourceDisk"
       @confirm="onPickerConfirm"
     />
     <share-dialog
-      v-model="share.visible"
+      v-model:visible="share.visible"
       :paths="share.paths"
       :name="share.name"
       @done="refresh"
     />
     <viewer-dialog
-      v-model="viewer.visible"
+      v-model:visible="viewer.visible"
       :path="viewer.path"
       :from-backup="viewer.fromBackup"
     />
