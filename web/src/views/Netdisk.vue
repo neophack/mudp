@@ -331,10 +331,11 @@ export default {
     sheetItems() {
       return this.rowActions(this.sheet.row);
     },
-    // Six icon buttons at most (download/rename/copy/move/share/delete); size
-    // the fixed column to the widest set on screen so nothing wraps or clips.
-    // The count only varies with the mode and, on the shared disk, whether the
-    // row belongs to the caller — one representative row per kind suffices.
+    // Seven icon buttons at most (download/copy-path/rename/copy/move/share/
+    // delete); size the fixed column to the widest set on screen so nothing
+    // wraps or clips. The count only varies with the mode and, on the shared
+    // disk, whether the row belongs to the caller — one representative row per
+    // kind suffices.
     actionsColWidth() {
       let n = 0;
       const seen = new Set();
@@ -556,16 +557,37 @@ export default {
       if (previewKind(row.name)) return () => this.openViewer(row);
       return () => this.downloadRow(row);
     },
+    // Containers bind-mount the netdisk at /workspace and the shared-disk
+    // pool at /data (dockerx/docker.go), so a row's absolute path as seen
+    // inside the containers is derivable client-side from its relative one.
+    // The backup disk is mounted into no container, so it has no such path.
+    containerPath(r) {
+      if (this.mode === "netdisk") return "/workspace/" + (r.path || "");
+      if (this.mode === "shareddisk") return "/data/" + (r.path || "");
+      return "";
+    },
+    async copyRowPath(r) {
+      try {
+        await copyText(this.containerPath(r));
+        ElMessage.success(tt("netdisk.pathCopied"));
+      } catch {
+        ElMessage.error(tt("common.copyFailed"));
+      }
+    },
     // One action list per row, shared by the desktop icon column and the
     // phone action sheet so both surfaces can never drift apart.
     rowActions(r) {
       if (!r) return [];
+      const copyPath = this.containerPath(r) ? { key: "copyPath", label: tt("netdisk.copyPath"), icon: "Link" } : null;
       if (!canMutate()) {
-        if (this.mode !== "shareddisk") return [{ key: "download", label: tt("netdisk.download"), icon: "Download" }];
-        return [];
+        const items = [];
+        if (this.mode !== "shareddisk") items.push({ key: "download", label: tt("netdisk.download"), icon: "Download" });
+        if (copyPath) items.push(copyPath);
+        return items;
       }
       if (this.mode === "shareddisk") {
         const items = [{ key: "copy", label: tt("netdisk.copy"), icon: "CopyDocument" }];
+        if (copyPath) items.push(copyPath);
         if (this.isOwnSharedDiskRow(r)) {
           items.push(
             { key: "move", label: tt("netdisk.move"), icon: "Rank" },
@@ -577,10 +599,13 @@ export default {
       }
       const items = [
         { key: "download", label: tt("netdisk.download"), icon: "Download" },
+      ];
+      if (copyPath) items.push(copyPath);
+      items.push(
         { key: "rename", label: tt("netdisk.rename"), icon: "Edit" },
         { key: "copy", label: tt("netdisk.copy"), icon: "CopyDocument" },
         { key: "move", label: tt("netdisk.move"), icon: "Rank" },
-      ];
+      );
       if (this.mode === "netdisk") items.push({ key: "share", label: tt("netdisk.share"), icon: "Share" });
       items.push({ key: "delete", label: tt("common.delete"), icon: "Delete", danger: true });
       return items;
@@ -588,6 +613,7 @@ export default {
     runRowAction(item, row) {
       if (!row) return;
       if (item.key === "download") this.downloadRow(row);
+      else if (item.key === "copyPath") this.copyRowPath(row);
       else if (item.key === "rename") this.rename(row);
       else if (item.key === "copy") this.openPicker(false, [row.path]);
       else if (item.key === "move") this.openPicker(true, [row.path]);

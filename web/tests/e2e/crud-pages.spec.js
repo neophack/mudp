@@ -8,6 +8,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 test.use({ baseURL: "http://127.0.0.1:19041" });
+// The copy-path test reads the clipboard back to assert what landed there.
+test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 
 let server;
 let info;
@@ -66,6 +68,20 @@ test("netdisk: create folder, rename it, then delete it", async ({ page }) => {
   await page.locator(".el-message-box:visible").waitFor();
   await page.locator(".el-message-box__btns button").last().click();
   await expect(row(page, "crud-folder-2")).toHaveCount(0);
+});
+
+test("netdisk: row copy-path puts the container path on the clipboard", async ({ page }) => {
+  await openTab(page, "netdisk");
+  await row(page, "notes.txt").waitFor();
+
+  // Containers bind-mount the netdisk at /workspace, so the copy-path action
+  // must produce that absolute path — for a file and for a folder alike.
+  await row(page, "notes.txt").locator('.row-action-btn[title="复制路径"]').click();
+  await expect(page.locator(".el-message").last()).toContainText("路径已复制");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("/workspace/notes.txt");
+
+  await row(page, "docs").locator('.row-action-btn[title="复制路径"]').click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("/workspace/docs");
 });
 
 test("netdisk: batch copy via the FolderPicker", async ({ page }) => {
