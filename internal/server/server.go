@@ -658,8 +658,7 @@ func (a *App) staticHandler() http.Handler {
 			if _, err := fs.Stat(spa, path); err == nil {
 				// Vite emits content-hashed file names under assets/: they never
 				// change for a given URL, so browsers may skip revalidation
-				// entirely. Unhashed root files (share.js, world map data) stay
-				// unmarked and index.html is always revalidated.
+				// entirely. index.html and the root files are always revalidated.
 				if strings.HasPrefix(path, "assets/") {
 					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 				}
@@ -667,6 +666,11 @@ func (a *App) staticHandler() http.Handler {
 				return
 			}
 			if _, err := fs.Stat(web.Files, path); err == nil {
+				// Root-level files (share.js, share.css, lib/*) are unhashed and
+				// mutable: always revalidate, so a page from an upgraded server
+				// never runs against a stale cached helper (e.g. an old
+				// videoplayer.js that ignores the newer share.js's callbacks).
+				w.Header().Set("Cache-Control", "no-cache")
 				rootServer.ServeHTTP(w, r)
 				return
 			}
