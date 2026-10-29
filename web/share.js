@@ -21,6 +21,7 @@ const state = {
   pickerPath: "",
   pickerItems: [],
   password: "",
+  viewerPath: "",
 };
 
 const $ = (s) => document.querySelector(s);
@@ -547,9 +548,48 @@ function closeTopModal() {
 
 // ---------- File preview ----------
 
+// The share's videos at the current browse level, in listing order — the only
+// pool the player's prev/next buttons step through on this page.
+function shareVideoPaths() {
+  return state.items.filter((f) => !f.dir && previewKind(f.name) === "video").map((f) => f.path);
+}
+
+function videoPositionLabel(path) {
+  const list = shareVideoPaths();
+  const idx = list.indexOf(path);
+  return list.length > 1 && idx >= 0 ? `${idx + 1} / ${list.length}` : "";
+}
+
+// Manual steps wrap around the share's video list; auto-advance (a clip
+// ended, auto=true) stops at the last clip instead of looping forever.
+function stepShareVideo(delta, auto = false) {
+  const list = shareVideoPaths();
+  const cur = list.indexOf(state.viewerPath);
+  if (cur < 0) return;
+  let next = cur + delta;
+  if (next >= list.length) {
+    if (auto) return;
+    next = 0;
+  } else if (next < 0) next = list.length - 1;
+  openViewer(list[next]);
+}
+
 function openViewer(path) {
   const name = path.split("/").pop() || path;
   const kind = previewKind(name);
+  // Stepping between clips swaps the source inside the mounted player, so the
+  // viewer's fullscreen state and the player's picture settings survive the
+  // clip change; any other open goes through the full (re)mount below.
+  if (videoController && !$("#viewerBackdrop").hidden && kind === "video") {
+    state.viewerPath = path;
+    const titleEl = $("#viewerTitle");
+    titleEl.textContent = name;
+    titleEl.title = name;
+    $("#viewerDownload").href = downloadURL(path);
+    videoController.load(rawURL(path), videoPositionLabel(path));
+    return;
+  }
+  state.viewerPath = path;
   resetViewerState(); // clears any previous fullscreen / cached PDF
   const titleEl = $("#viewerTitle");
   titleEl.textContent = name;
@@ -581,6 +621,7 @@ function openViewer(path) {
 
 function closeViewer() {
   resetViewerState();
+  state.viewerPath = "";
   $("#viewerBackdrop").hidden = true;
   // Release media resources so audio/video playback stops on close.
   $("#viewerBody").innerHTML = "";
@@ -683,9 +724,17 @@ async function renderViewerContent(kind, name, url, path) {
     case "audio":
       body.innerHTML = `<audio class="viewer-media" controls preload="metadata" src="${url}"></audio>`;
       return;
-    case "video":
-      videoController = mountVideoPlayer({ url, bodyEl: body });
+    case "video": {
+      const multi = videoPositionLabel(path) !== "";
+      videoController = mountVideoPlayer({
+        url,
+        bodyEl: body,
+        onPrev: multi ? () => stepShareVideo(-1) : undefined,
+        onNext: multi ? (auto) => stepShareVideo(1, auto) : undefined,
+        position: videoPositionLabel(path),
+      });
       return;
+    }
     case "yuv":
       return renderYuv(url, rasterURL(path), body, name);
     case "raw":
