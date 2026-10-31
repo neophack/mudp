@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-var Version = "v1.1.6"
+var Version = "v1.1.7"
 
 // Compare orders two version strings the way release tags do: an optional
 // leading "v", dot-separated numeric segments, and an optional "-" suffix as
