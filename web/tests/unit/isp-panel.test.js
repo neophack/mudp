@@ -5,11 +5,15 @@
 //   - the panel renders as a <details> that is collapsed by default
 //     (no "open" attribute — the summary must be clicked to expand);
 //   - an untouched panel sends no ispX parameters (auto mode: the backend
-//     runs its own defaults) — only after the first edit does frameURL carry
-//     the manual parameter set;
+//     resolves the file context — ISO tier, sidecar black level, frame-0 AWB)
+//     — only after the first edit does frameURL carry the manual parameter
+//     set;
+//   - the X-Isp-Resolved header on a RAW response re-seeds the panel with
+//     the backend's resolved parameters while still in auto mode;
 //   - slider edits coalesce through a 250ms debounce (one server round-trip
 //     per burst, not one per "input" tick);
-//   - the master ISP checkbox disables the whole panel;
+//   - the master ISP checkbox disables the whole panel, and the DRC toggle
+//     disables its sliders;
 //   - the Gray-world AWB button fetches awb=1 and applies the returned gains;
 //   - the RAW viewer seeds the panel with the board-calibrated defaults and
 //     exposes the Bayer-only controls; the YUV viewer does not.
@@ -33,7 +37,10 @@ let fetchMock;
 let viewer;
 let bodyEl;
 
-function installFetch({ totalBytes = 1000, awbGains = null } = {}) {
+// installFetch stubs the raster endpoint. resolvedHeader (optional) is served
+// as the X-Isp-Resolved header on frame fetches — what the backend reports
+// after resolving the RAW file context.
+function installFetch({ totalBytes = 1000, awbGains = null, resolvedHeader = null } = {}) {
   fetchMock = vi.fn(async (url) => {
     if (typeof url === "string" && url.includes("awb=1")) {
       return {
@@ -44,6 +51,7 @@ function installFetch({ totalBytes = 1000, awbGains = null } = {}) {
     return {
       ok: true,
       blob: async () => new Blob(),
+      headers: { get: (k) => (k === "X-Isp-Resolved" ? resolvedHeader : null) },
     };
   });
   // probeFileSize issues a Range probe; answer it with the given total size.
@@ -119,22 +127,38 @@ describe("ISP panel layout", () => {
     expect(bodyEl.querySelector("#ispBlcR")).toBeTruthy();
     expect(bodyEl.querySelector("#ispChromaNr")).toBeTruthy();
     expect(bodyEl.querySelector("#ispGray")).toBeTruthy();
+    expect(bodyEl.querySelector("#ispDgain")).toBeTruthy();
+    expect(bodyEl.querySelector("#ispDrcOn")).toBeTruthy();
+    expect(bodyEl.querySelector("#ispDrcCompress")).toBeTruthy();
+    expect(bodyEl.querySelector("#ispLumaNr")).toBeTruthy();
+    expect(bodyEl.querySelector("#ispChromaMap")).toBeTruthy();
 
     openViewer();
     await vi.runAllTimersAsync();
     expect(bodyEl.querySelector("#ispBlcR")).toBeNull();
     expect(bodyEl.querySelector("#ispChromaNr")).toBeNull();
     expect(bodyEl.querySelector("#ispGray")).toBeNull();
+    expect(bodyEl.querySelector("#ispDgain")).toBeNull();
+    expect(bodyEl.querySelector("#ispDrcOn")).toBeNull();
+    expect(bodyEl.querySelector("#ispDrcCompress")).toBeNull();
+    expect(bodyEl.querySelector("#ispLumaNr")).toBeNull();
+    expect(bodyEl.querySelector("#ispChromaMap")).toBeNull();
   });
 
   it("seeds RAW controls with the board-calibrated defaults", async () => {
     openViewer({ raw: true, name: "RAW_8x8_12bits_RGGB_Linear.raw" });
     await vi.runAllTimersAsync();
-    expect(bodyEl.querySelector("#ispBlcR").value).toBe("39");
-    expect(bodyEl.querySelector("#ispBlcGr").value).toBe("225");
-    expect(bodyEl.querySelector("#ispGamma").value).toBe("2.27");
-    expect(bodyEl.querySelector("#ispContrast").value).toBe("1.22");
-    expect(bodyEl.querySelector("#ispCcmPreset").value).toBe("2");
+    expect(bodyEl.querySelector("#ispBlcR").value).toBe("0");
+    expect(bodyEl.querySelector("#ispGamma").value).toBe("1.43");
+    expect(bodyEl.querySelector("#ispContrast").value).toBe("0.985");
+    // The fit matrix is shown in manual form (preset 0).
+    expect(bodyEl.querySelector("#ispCcmPreset").value).toBe("0");
+    expect(bodyEl.querySelector("#ispDgain").value).toBe("1");
+    expect(bodyEl.querySelector("#ispChromaNr").value).toBe("5");
+    expect(bodyEl.querySelector("#ispLumaNr").value).toBe("0.1");
+    expect(bodyEl.querySelector("#ispDrcOn").checked).toBe(true);
+    expect(bodyEl.querySelector("#ispChromaMap").checked).toBe(true);
+    expect(bodyEl.querySelector("#ispSharpen").value).toBe("1.18");
   });
 });
 
@@ -153,10 +177,14 @@ describe("manual mode + parameter transport", () => {
 
     const manual = frameFetchCalls().at(-1)[0];
     expect(manual).toContain("ispGamma=2.6");
-    expect(manual).toContain("ispGainR=1.07");
-    expect(manual).toContain("ispBlc=39,225,225,48");
-    expect(manual).toContain("ispChromaNr=3");
+    expect(manual).toContain("ispGainR=1.51");
+    expect(manual).toContain("ispBlc=0,0,0,0");
+    expect(manual).toContain("ispChromaNr=5");
     expect(manual).toContain("ispGray=0");
+    expect(manual).toContain("ispDgain=1");
+    expect(manual).toContain("ispDrcOn=1");
+    expect(manual).toContain("ispLumaNr=0.1");
+    expect(manual).toContain("ispChromaMap=1");
     expect(manual).toContain("ispCcm=");
   });
 
@@ -210,6 +238,27 @@ describe("manual mode + parameter transport", () => {
     expect(frameFetchCalls().at(-1)[0]).toContain("ispSharpen=0");
   });
 
+  it("DRC toggle off sends ispDrcOn=0 and disables its sliders", async () => {
+    openViewer({ raw: true, name: "RAW_8x8_12bits_RGGB_Linear.raw" });
+    await vi.runAllTimersAsync();
+    const on = bodyEl.querySelector("#ispDrcOn");
+    expect(on.checked).toBe(true);
+    expect(bodyEl.querySelector("#ispDrcCompress").disabled).toBe(false);
+    on.checked = false;
+    on.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(bodyEl.querySelector("#ispDrcCompress").disabled).toBe(true);
+    expect(bodyEl.querySelector("#ispDrcRadius").disabled).toBe(true);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(frameFetchCalls().at(-1)[0]).toContain("ispDrcOn=0");
+
+    // Reset restores the defaults and drops back to auto mode.
+    bodyEl.querySelector("#ispResetBtn").click();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(bodyEl.querySelector("#ispDrcOn").checked).toBe(true);
+    expect(bodyEl.querySelector("#ispDrcCompress").disabled).toBe(false);
+    expect(frameFetchCalls().at(-1)[0]).not.toContain("ispDrcOn");
+  });
+
   it("Reset returns to auto mode (no ispX params on the wire)", async () => {
     openViewer();
     await vi.runAllTimersAsync();
@@ -223,6 +272,65 @@ describe("manual mode + parameter transport", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(frameFetchCalls().at(-1)[0]).not.toContain("ispGainR");
     expect(gainR.value).toBe("1"); // YUV neutral default
+  });
+});
+
+describe("resolved-parameter sync (file context)", () => {
+  it("re-seeds the panel from the X-Isp-Resolved header in auto mode", async () => {
+    const resolved = {
+      iso: 155629, dgain: 2, blc: [64, 68, 68, 60], blcFrom: "sidecar",
+      gainR: 1.9, gainB: 2.1, gamma: 1.43, saturation: 0.64, contrast: 0.985,
+      brightness: -12.29, drcOn: true, drcCompress: 0.646, drcDetail: 0.727,
+      drcRadius: 32, drcPivot: 0.214, drcEdge: 4, lumaNr: 19.2, chromaNr: 6,
+      chromaMapOn: true, sharpenOn: true, sharpen: 0.48,
+    };
+    installFetch({ resolvedHeader: JSON.stringify(resolved) });
+    openViewer({ raw: true, name: "RAW_8x8_12bits_RGGB_Linear.raw" });
+    await vi.runAllTimersAsync();
+
+    // The panel mirrors the backend's resolved values (auto mode, no ispX on
+    // the wire yet).
+    expect(bodyEl.querySelector("#ispIsoReadout").textContent).toBe("ISO 155629");
+    expect(bodyEl.querySelector("#ispBlcR").value).toBe("64");
+    expect(bodyEl.querySelector("#ispBlcB").value).toBe("60");
+    expect(bodyEl.querySelector("#ispDgain").value).toBe("2");
+    expect(bodyEl.querySelector("#ispLumaNr").value).toBe("19.2");
+    expect(bodyEl.querySelector("#ispChromaNr").value).toBe("6");
+    expect(bodyEl.querySelector("#ispGainR").value).toBe("1.9");
+    expect(bodyEl.querySelector("#ispDrcCompress").value).toBe("0.646");
+    expect(bodyEl.querySelector("#ispSharpen").value).toBe("0.48");
+    expect(bodyEl.querySelector("#ispCcm0").value).toBeTruthy();
+    expect(frameFetchCalls().at(-1)[0]).not.toContain("ispGainR");
+
+    // The first edit carries the resolved values for everything else.
+    const gamma = bodyEl.querySelector("#ispGamma");
+    gamma.value = "2.6";
+    gamma.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(300);
+    const manual = frameFetchCalls().at(-1)[0];
+    expect(manual).toContain("ispGamma=2.6");
+    expect(manual).toContain("ispGainR=1.9");
+    expect(manual).toContain("ispBlc=64,68,68,60");
+    expect(manual).toContain("ispDgain=2");
+    expect(manual).toContain("ispLumaNr=19.2");
+  });
+
+  it("does not clobber manual edits with later resolved headers", async () => {
+    const resolved = { iso: 4651, gainR: 1.7, gamma: 1.43 };
+    installFetch({ resolvedHeader: JSON.stringify(resolved) });
+    openViewer({ raw: true, name: "RAW_8x8_12bits_RGGB_Linear.raw" });
+    await vi.runAllTimersAsync();
+
+    const gamma = bodyEl.querySelector("#ispGamma");
+    gamma.value = "2.6";
+    gamma.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(300);
+    // A frame change refetches with the same resolved header — the user's
+    // gamma must survive it.
+    viewer.state.frame = 0;
+    viewer.repaint();
+    await vi.runAllTimersAsync();
+    expect(bodyEl.querySelector("#ispGamma").value).toBe("2.6");
   });
 });
 
@@ -261,11 +369,24 @@ describe("gray-world AWB button", () => {
 describe("defaultIspPanelValues / ispQuerySuffix", () => {
   it("RAW defaults mirror the board calibration", () => {
     const p = defaultIspPanelValues(true);
-    expect(p.blc).toEqual([39, 225, 225, 48]);
-    expect(p.gamma).toBe(2.27);
-    expect(p.ccmPreset).toBe(2);
+    expect(p.blc).toEqual([0, 0, 0, 0]);
+    expect(p.gamma).toBe(1.43);
+    expect(p.saturation).toBe(2.43);
+    expect(p.contrast).toBe(0.985);
+    expect(p.ccmPreset).toBe(0);
     expect(p.sharpenOn).toBe(true);
-    expect(p.chromaSupp).toBe(60);
+    expect(p.sharpen).toBe(1.18);
+    expect(p.chromaSupp).toBe(0);
+    expect(p.drcOn).toBe(true);
+    expect(p.drcCompress).toBe(0.891);
+    expect(p.drcDetail).toBe(1.13);
+    expect(p.drcRadius).toBe(96);
+    expect(p.drcPivot).toBe(0.214);
+    expect(p.drcEdge).toBe(4);
+    expect(p.lumaNr).toBe(0.1);
+    expect(p.chromaNr).toBe(5);
+    expect(p.chromaMapOn).toBe(true);
+    expect(p.dgain).toBe(1);
   });
 
   it("auto mode yields an empty suffix; manual yields every key", () => {
@@ -286,9 +407,40 @@ describe("defaultIspPanelValues / ispQuerySuffix", () => {
     expect(suffix).toContain("ispCcm=0,1,2,3,4,5,6,7,8");
     expect(suffix).not.toContain("ispBlc="); // YUV hides Bayer-only stages
     expect(suffix).not.toContain("ispGray=");
+    expect(suffix).not.toContain("ispDgain=");
+    expect(suffix).not.toContain("ispDrcOn=");
 
-    const rawState = { ...state, rawMode: true, ispParams: { ...state.ispParams, blc: [1, 2, 3, 4], gray: true } };
-    expect(ispQuerySuffix(rawState)).toContain("ispBlc=1,2,3,4");
-    expect(ispQuerySuffix(rawState)).toContain("ispGray=1");
+    const rawState = {
+      ...state,
+      rawMode: true,
+      ispParams: {
+        ...state.ispParams,
+        blc: [1, 2, 3, 4],
+        gray: true,
+        dgain: 2.5,
+        drcOn: false,
+        drcCompress: 0.7,
+        drcDetail: 1.4,
+        drcRadius: 48,
+        drcPivot: 0.1,
+        drcEdge: 2.5,
+        lumaNr: 12.5,
+        chromaNr: 6,
+        chromaMapOn: false,
+      },
+    };
+    const rawSuffix = ispQuerySuffix(rawState);
+    expect(rawSuffix).toContain("ispBlc=1,2,3,4");
+    expect(rawSuffix).toContain("ispGray=1");
+    expect(rawSuffix).toContain("ispDgain=2.5");
+    expect(rawSuffix).toContain("ispDrcOn=0");
+    expect(rawSuffix).toContain("ispDrcCompress=0.7");
+    expect(rawSuffix).toContain("ispDrcDetail=1.4");
+    expect(rawSuffix).toContain("ispDrcRadius=48");
+    expect(rawSuffix).toContain("ispDrcPivot=0.1");
+    expect(rawSuffix).toContain("ispDrcEdge=2.5");
+    expect(rawSuffix).toContain("ispLumaNr=12.5");
+    expect(rawSuffix).toContain("ispChromaNr=6");
+    expect(rawSuffix).toContain("ispChromaMap=0");
   });
 });

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -49,10 +50,12 @@ type rasterFrameParams struct {
 	Format       string // YUV format key (i420/yv12/nv12/nv21/yuyv/uyvy/yuv444)
 	BitDepth     int    // RAW bit depth (8/10/12/14/16)
 	BayerPattern string // RAW Bayer pattern (RGGB/BGGR/GRBG/GBRG)
-	// IspManual is non-nil when the viewer's collapsible ISP panel sent
-	// explicit parameters (any ispX query key). It starts from the defaults
-	// for the kind so partial parameter sets keep the rest at their defaults.
-	IspManual *raster.IspParams
+	// ispQ holds the ispX query values the viewer's ISP panel sent (nil until
+	// the user touches a control). They override — field by field — the
+	// file-context parameters the backend resolves for the frame, so an
+	// untouched field keeps the ISO-tier/AWB-resolved value exactly like the
+	// reference viewer's panel edits its resolved parameter struct.
+	ispQ map[string]string
 	// Awb requests the gray-world auto-white-balance gains for the frame
 	// (JSON response) instead of a decoded JPEG — the panel's "Gray-world
 	// AWB" button.
@@ -155,19 +158,35 @@ func serveRasterFrameJPEG(w http.ResponseWriter, r *http.Request, full string, p
 		return
 	}
 
+	// RAW requests that use the ISP (or ask for its AWB) resolve the
+	// parameters from the file's own context first — the reference viewer's
+	// open-file sequence: board-calibrated defaults, the .txt sidecar's black
+	// level, the ISO-tier tuning from Frame0's ISO, the sidecar's ISP digital
+	// gain, and a gray-world AWB computed from frame 0 (the reference computes
+	// it once on open and keeps those gains for every frame, so every frame
+	// must anchor to frame 0). The panel's ispX overrides then replace
+	// individual fields. The pure decode path (isp=0) skips all of it.
+	var resolved *resolvedIspParams
+	if p.Kind == "raw" && (p.ISP || p.Awb) {
+		resolved = resolveRawIspParams(f, full, buf, p)
+		if msg := applyIspQuery(resolved.Params, p.ispQ); msg != "" {
+			writeErr(w, http.StatusBadRequest, msg)
+			return
+		}
+	}
+
 	// AWB mode: report the gray-world gains for this frame instead of a
-	// JPEG. The RAW variant averages BLC-corrected Bayer sites; the YUV
-	// variant averages the decoded RGB channels. Manual BLC matters here —
-	// the gains must be computed against the same black point the preview
-	// will subtract.
+	// JPEG, multiplied by the resolved AWB biases for RAW (the reference's
+	// button runs the same autoWhiteBalance the open-file path uses). The
+	// YUV variant averages the decoded RGB channels. BLC matters here — the
+	// gains must be computed against the same black point the preview will
+	// subtract.
 	if p.Awb {
 		var gainR, gainB float64
 		if p.Kind == "raw" {
-			params := raster.DefaultIspParams(p.BitDepth)
-			if p.IspManual != nil {
-				params = *p.IspManual
-			}
-			gainR, gainB = raster.ComputeGrayWorldGains(buf, p.Width, p.Height, p.BitDepth, p.BayerPattern, params)
+			gainR, gainB = raster.ComputeGrayWorldGains(buf, p.Width, p.Height, p.BitDepth, p.BayerPattern, *resolved.Params)
+			gainR *= resolved.Params.AwbBiasR
+			gainB *= resolved.Params.AwbBiasB
 		} else {
 			gainR, gainB = raster.GrayWorldGainsRGBA(raster.YuvDecode(p.Format, buf, p.Width, p.Height))
 		}
@@ -178,23 +197,20 @@ func serveRasterFrameJPEG(w http.ResponseWriter, r *http.Request, full string, p
 	var rgba []byte
 	if p.Kind == "raw" {
 		if p.ISP {
-			// ISP on: the full ported pipeline (directional demosaic, BLC,
-			// chroma NR, WB, CCM, gamma, tone, multi-band sharpen) replaces
-			// the old "bilinear demosaic + auto WB/gamma" pass. Without
-			// manual parameters it runs the board-calibrated defaults.
-			params := raster.DefaultIspParams(p.BitDepth)
-			if p.IspManual != nil {
-				params = *p.IspManual
-			}
-			rgba = raster.ProcessBayer(buf, p.Width, p.Height, p.BitDepth, p.BayerPattern, params)
+			rgba = raster.ProcessBayer(buf, p.Width, p.Height, p.BitDepth, p.BayerPattern, *resolved.Params)
 		} else {
 			rgba = raster.BayerDecode(buf, p.Width, p.Height, p.BitDepth, p.BayerPattern, 0, p.Height)
 		}
 	} else {
 		rgba = raster.YuvDecode(p.Format, buf, p.Width, p.Height)
 		if p.ISP {
-			if p.IspManual != nil {
-				raster.ApplyIspParams(rgba, p.Width, p.Height, *p.IspManual)
+			if p.ispQ != nil {
+				params := raster.DefaultYuvIspParams()
+				if msg := applyIspQuery(&params, p.ispQ); msg != "" {
+					writeErr(w, http.StatusBadRequest, msg)
+					return
+				}
+				raster.ApplyIspParams(rgba, p.Width, p.Height, params)
 			} else {
 				raster.ApplyIsp(rgba, 1.4)
 			}
@@ -224,27 +240,38 @@ func serveRasterFrameJPEG(w http.ResponseWriter, r *http.Request, full string, p
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "private, max-age=0")
+	// The resolved ISP context rides along on every RAW response so the
+	// frontend panel can display (and, once the user edits, start from) the
+	// values the backend actually used — the ISO tier, sidecar black level
+	// and frame-0 AWB gains it cannot know client-side.
+	if resolved != nil {
+		if js, err := json.Marshal(resolved); err == nil {
+			w.Header().Set("X-Isp-Resolved", string(js))
+		}
+	}
 	w.Header().Set("Content-Length", strconv.Itoa(out.Len()))
 	_, _ = w.Write(out.Bytes())
 }
 
 // ispParamKeys are the query keys that switch the decode into manual ISP
 // mode (the viewer's collapsible panel sends them once the user touches any
-// control). Absent keys keep the kind's defaults.
+// control). Absent keys keep the file-context (RAW) or neutral (YUV) values.
 var ispParamKeys = []string{
 	"ispBlc", "ispGainR", "ispGainB", "ispCcm", "ispGamma", "ispSat",
-	"ispContrast", "ispBright", "ispChromaNr", "ispSharpen", "ispSharpenRadius",
-	"ispChromaSupp", "ispGray",
+	"ispContrast", "ispBright", "ispDgain", "ispDrcOn", "ispDrcCompress",
+	"ispDrcDetail", "ispDrcRadius", "ispDrcPivot", "ispDrcEdge", "ispLumaNr",
+	"ispChromaNr", "ispSharpen", "ispSharpenRadius", "ispChromaSupp",
+	"ispChromaMap", "ispGray",
 }
 
 // parseFloatClamped parses one optional float query value, clamped to
 // [lo,hi]. Returns (value, present, errorMessage).
-func parseFloatClamped(q map[string][]string, key string, lo, hi float64) (float64, bool, string) {
-	vs := q[key]
-	if len(vs) == 0 || vs[0] == "" {
+func parseFloatClamped(q map[string]string, key string, lo, hi float64) (float64, bool, string) {
+	vs, ok := q[key]
+	if !ok || vs == "" {
 		return 0, false, ""
 	}
-	v, err := strconv.ParseFloat(vs[0], 64)
+	v, err := strconv.ParseFloat(vs, 64)
 	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, false, "invalid " + key
 	}
@@ -256,38 +283,25 @@ func parseFloatClamped(q map[string][]string, key string, lo, hi float64) (float
 	return v, true, ""
 }
 
-// parseIspManual builds the manual ISP parameter set from the ispX query
-// keys, layered over the kind's defaults (board-calibrated for RAW, neutral
-// for YUV). Returns (nil, "") when no ispX key is present (auto mode).
-func parseIspManual(q map[string][]string, kind string, bitDepth int) (*raster.IspParams, string) {
-	anyKey := false
-	for _, k := range ispParamKeys {
-		if vs := q[k]; len(vs) > 0 && vs[0] != "" {
-			anyKey = true
-			break
-		}
-	}
-	if !anyKey {
-		return nil, ""
-	}
-
-	var p raster.IspParams
-	if kind == "raw" {
-		p = raster.DefaultIspParams(bitDepth)
-	} else {
-		p = raster.DefaultYuvIspParams()
+// applyIspQuery overlays the panel's ispX query values onto an ISP parameter
+// set (the file-context resolution for RAW, the neutral defaults for YUV).
+// q is the raw string→string query map filtered to ispParamKeys; a nil map is
+// a no-op. Returns a human-readable error for malformed values.
+func applyIspQuery(p *raster.IspParams, q map[string]string) string {
+	if len(q) == 0 {
+		return ""
 	}
 
 	// Black levels: "r,gr,gb,b", each 0..65535.
-	if vs := q["ispBlc"]; len(vs) > 0 && vs[0] != "" {
-		parts := strings.Split(vs[0], ",")
+	if vs := q["ispBlc"]; vs != "" {
+		parts := strings.Split(vs, ",")
 		if len(parts) != 4 {
-			return nil, "invalid ispBlc (want r,gr,gb,b)"
+			return "invalid ispBlc (want r,gr,gb,b)"
 		}
 		for i, s := range parts {
 			v, err := strconv.Atoi(strings.TrimSpace(s))
 			if err != nil || v < 0 || v > 65535 {
-				return nil, "invalid ispBlc value"
+				return "invalid ispBlc value"
 			}
 			p.Blc[i] = v
 		}
@@ -295,15 +309,15 @@ func parseIspManual(q map[string][]string, kind string, bitDepth int) (*raster.I
 	// CCM: 9 comma-separated floats, each clamped to -8..8 (any practical
 	// matrix plus headroom for creative edits, while keeping a malicious
 	// value from producing Inf/NaN pixels downstream).
-	if vs := q["ispCcm"]; len(vs) > 0 && vs[0] != "" {
-		parts := strings.Split(vs[0], ",")
+	if vs := q["ispCcm"]; vs != "" {
+		parts := strings.Split(vs, ",")
 		if len(parts) != 9 {
-			return nil, "invalid ispCcm (want 9 comma-separated values)"
+			return "invalid ispCcm (want 9 comma-separated values)"
 		}
 		for i, s := range parts {
 			v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 			if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
-				return nil, "invalid ispCcm value"
+				return "invalid ispCcm value"
 			}
 			p.Ccm[i] = min(8, max(-8, v))
 		}
@@ -321,12 +335,18 @@ func parseIspManual(q map[string][]string, kind string, bitDepth int) (*raster.I
 		{"ispSat", 0, 4, &p.Saturation},
 		{"ispContrast", 0.1, 4, &p.Contrast},
 		{"ispBright", -255, 255, &p.Brightness},
+		{"ispDgain", 0.1, 16, &p.DigitalGain},
+		{"ispDrcCompress", 0.1, 1.5, &p.DrcCompress},
+		{"ispDrcDetail", 0.1, 3, &p.DrcDetail},
+		{"ispDrcPivot", 0.005, 1, &p.DrcPivot},
+		{"ispDrcEdge", 0.05, 3, &p.DrcEdge},
+		{"ispLumaNr", 0, 40, &p.LumaNr},
 		{"ispSharpen", 0, 8, &p.Sharpen},
 		{"ispChromaSupp", 0, 255, &p.ChromaSuppLow},
 	} {
 		v, present, msg := parseFloatClamped(q, f.key, f.lo, f.hi)
 		if msg != "" {
-			return nil, msg
+			return msg
 		}
 		if present {
 			*f.dst = v
@@ -339,20 +359,170 @@ func parseIspManual(q map[string][]string, kind string, bitDepth int) (*raster.I
 
 	// Integer radii, parsed as clamped floats (fractional input truncates).
 	if v, present, msg := parseFloatClamped(q, "ispChromaNr", 0, 64); msg != "" {
-		return nil, msg
+		return msg
 	} else if present {
 		p.ChromaNrRadius = int(v)
 	}
 	if v, present, msg := parseFloatClamped(q, "ispSharpenRadius", 1, 32); msg != "" {
-		return nil, msg
+		return msg
 	} else if present {
 		p.SharpenRadius = int(v)
 	}
-
-	if vs := q["ispGray"]; len(vs) > 0 && (vs[0] == "1" || strings.EqualFold(vs[0], "true")) {
-		p.GrayMode = true
+	if v, present, msg := parseFloatClamped(q, "ispDrcRadius", 1, 128); msg != "" {
+		return msg
+	} else if present {
+		p.DrcRadius = int(v)
 	}
-	return &p, ""
+
+	parseBool := func(key string, dst *bool, def bool) string {
+		vs, ok := q[key]
+		if !ok || vs == "" {
+			return ""
+		}
+		switch {
+		case vs == "0" || strings.EqualFold(vs, "false"):
+			*dst = false
+		case vs == "1" || strings.EqualFold(vs, "true"):
+			*dst = true
+		default:
+			*dst = def
+		}
+		return ""
+	}
+	if msg := parseBool("ispDrcOn", &p.EnableDrc, p.EnableDrc); msg != "" {
+		return msg
+	}
+	if msg := parseBool("ispChromaMap", &p.UseChromaMap, p.UseChromaMap); msg != "" {
+		return msg
+	}
+	if msg := parseBool("ispGray", &p.GrayMode, false); msg != "" {
+		return msg
+	}
+	return ""
+}
+
+// resolvedIspParams is the RAW file-context ISP resolution reported to the
+// frontend (marshalled into the X-Isp-Resolved response header). The scalar
+// fields mirror the panel controls; iso/dgain/blc come from the sidecar.
+type resolvedIspParams struct {
+	Params  *raster.IspParams
+	Iso     int64  `json:"iso"`
+	Dgain   int64  `json:"dgainRaw"`
+	BlcFrom string `json:"blcFrom"` // "sidecar" | "default"
+}
+
+// MarshalJSON flattens the resolved parameters for the panel: every scalar
+// the panel displays, plus the sidecar provenance. (The chroma map itself is
+// keyed by ISO and stays server-side; the panel only toggles it.)
+func (r resolvedIspParams) MarshalJSON() ([]byte, error) {
+	p := r.Params
+	return json.Marshal(struct {
+		Iso           int64      `json:"iso"`
+		DgainRaw      int64      `json:"dgainRaw"`
+		Dgain         float64    `json:"dgain"`
+		Blc           [4]int     `json:"blc"`
+		BlcFrom       string     `json:"blcFrom"`
+		GainR         float64    `json:"gainR"`
+		GainB         float64    `json:"gainB"`
+		Ccm           [9]float64 `json:"ccm"`
+		Gamma         float64    `json:"gamma"`
+		Saturation    float64    `json:"saturation"`
+		Contrast      float64    `json:"contrast"`
+		Brightness    float64    `json:"brightness"`
+		DrcOn         bool       `json:"drcOn"`
+		DrcCompress   float64    `json:"drcCompress"`
+		DrcDetail     float64    `json:"drcDetail"`
+		DrcRadius     int        `json:"drcRadius"`
+		DrcPivot      float64    `json:"drcPivot"`
+		DrcEdge       float64    `json:"drcEdge"`
+		LumaNr        float64    `json:"lumaNr"`
+		ChromaNr      int        `json:"chromaNr"`
+		SharpenOn     bool       `json:"sharpenOn"`
+		Sharpen       float64    `json:"sharpen"`
+		SharpenRadius int        `json:"sharpenRadius"`
+		ChromaSupp    float64    `json:"chromaSupp"`
+		ChromaMapOn   bool       `json:"chromaMapOn"`
+	}{
+		Iso:           r.Iso,
+		DgainRaw:      r.Dgain,
+		Dgain:         p.DigitalGain,
+		Blc:           p.Blc,
+		BlcFrom:       r.BlcFrom,
+		GainR:         p.GainR,
+		GainB:         p.GainB,
+		Ccm:           p.Ccm,
+		Gamma:         p.Gamma,
+		Saturation:    p.Saturation,
+		Contrast:      p.Contrast,
+		Brightness:    p.Brightness,
+		DrcOn:         p.EnableDrc,
+		DrcCompress:   p.DrcCompress,
+		DrcDetail:     p.DrcDetail,
+		DrcRadius:     p.DrcRadius,
+		DrcPivot:      p.DrcPivot,
+		DrcEdge:       p.DrcEdge,
+		LumaNr:        p.LumaNr,
+		ChromaNr:      p.ChromaNrRadius,
+		SharpenOn:     p.EnableSharpen,
+		Sharpen:       p.Sharpen,
+		SharpenRadius: p.SharpenRadius,
+		ChromaSupp:    p.ChromaSuppLow,
+		ChromaMapOn:   p.UseChromaMap,
+	})
+}
+
+// resolveRawIspParams reproduces the reference viewer's open-file ISP setup
+// (App::openFile): board-calibrated defaults, sidecar black level (when any
+// BlackLevel_* is nonzero), Frame0 ISO tier tuning, Frame0 ISP digital gain,
+// and a gray-world AWB over frame 0 multiplied by the tier's AWB biases. buf
+// is the requested frame's bytes; frame 0 is re-read from f when the request
+// is for a later frame (the AWB always anchors to frame 0, exactly like the
+// reference keeping its on-open gains while flipping frames).
+func resolveRawIspParams(f *os.File, full string, buf []byte, p rasterFrameParams) *resolvedIspParams {
+	params := raster.DefaultIspParams(p.BitDepth)
+	res := &resolvedIspParams{Params: &params, Dgain: 1}
+
+	var info raster.RawInfo
+	if sidecar, err := openNoFollow(raster.SidecarPath(full)); err == nil {
+		data, err := io.ReadAll(sidecar)
+		sidecar.Close()
+		if err == nil {
+			info, _ = raster.ParseRawInfoBytes(data)
+		}
+	}
+	if frame0, has := info.Frames[0]; has || info.HasBlackLevel {
+		if info.HasBlackLevel &&
+			(info.BlackLevel[0] != 0 || info.BlackLevel[1] != 0 ||
+				info.BlackLevel[2] != 0 || info.BlackLevel[3] != 0) {
+			params.Blc = info.BlackLevel
+			res.BlcFrom = "sidecar"
+		}
+		if has {
+			res.Iso = frame0.Iso
+			raster.ApplyIsoTuning(&params, frame0.Iso)
+			if frame0.IspDGain0 > 0 {
+				params.DigitalGain = float64(frame0.IspDGain0) / 1024.0
+				res.Dgain = frame0.IspDGain0
+			}
+		}
+	}
+
+	// AWB from frame 0: reuse the request buffer when it already holds frame
+	// 0, otherwise read the first frame's bytes.
+	frame0 := buf
+	if p.Frame > 0 {
+		perFrame := len(buf)
+		b := make([]byte, perFrame)
+		if n, err := f.ReadAt(b, 0); err == nil || err == io.EOF || err == io.ErrUnexpectedEOF {
+			if n >= perFrame {
+				frame0 = b
+			}
+		}
+	}
+	if frame0 != nil {
+		raster.AutoWhiteBalance(frame0, p.Width, p.Height, p.BitDepth, p.BayerPattern, &params)
+	}
+	return res
 }
 
 // parseRasterParams reads the viewer's query string into rasterFrameParams.
@@ -408,23 +578,30 @@ func parseRasterParams(q map[string][]string) (rasterFrameParams, string) {
 		if vs := q["bayerPattern"]; len(vs) > 0 && vs[0] != "" {
 			p.BayerPattern = strings.ToUpper(vs[0])
 		}
-		ispManual, msg := parseIspManual(q, p.Kind, p.BitDepth)
-		if msg != "" {
-			return p, msg
-		}
-		p.IspManual = ispManual
+		p.ispQ = ispQueryMap(q)
 		return p, ""
 	}
 	p.Kind = "yuv"
 	if vs := q["format"]; len(vs) > 0 && vs[0] != "" {
 		p.Format = strings.ToLower(vs[0])
 	}
-	ispManual, msg := parseIspManual(q, p.Kind, p.BitDepth)
-	if msg != "" {
-		return p, msg
-	}
-	p.IspManual = ispManual
+	p.ispQ = ispQueryMap(q)
 	return p, ""
+}
+
+// ispQueryMap filters the query down to the ispX keys (first value each),
+// mapped to plain strings for applyIspQuery.
+func ispQueryMap(q map[string][]string) map[string]string {
+	var out map[string]string
+	for _, k := range ispParamKeys {
+		if vs := q[k]; len(vs) > 0 && vs[0] != "" {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[k] = vs[0]
+		}
+	}
+	return out
 }
 
 // netdiskRasterFrame decodes one frame of a YUV/RAW file in the current user's

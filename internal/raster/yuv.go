@@ -17,21 +17,28 @@ func clampByte(v float64) byte {
 	return byte(v)
 }
 
-// yuvToRgb uses the BT.601 studio-swing formula. u/v are 0..255 centered at 128.
-func yuvToRgb(y, u, v byte) (r, g, b float64) {
-	uu := float64(u) - 128
-	vv := float64(v) - 128
-	yy := float64(y)
-	r = yy + 1.402*vv
-	g = yy - 0.344*uu - 0.714*vv
-	b = yy + 1.772*uu
+// yuvToRgb is the BT.601 full-range conversion as integer arithmetic, exactly
+// the reference viewer's yuvPixelToRgb (imgview::ImageView.cpp): integer
+// approximations of the coefficients (1.596<<8=409, 0.392<<8≈100,
+// 0.813<<8≈208, 2.017<<8≈516) keep the decode bit-identical to the reference
+// tool's board-YUV preview. u/v are 0..255 centered at 128.
+func yuvToRgb(y, u, v byte) (r, g, b int) {
+	uu := int(u) - 128
+	vv := int(v) - 128
+	c := int(y) << 8
+	r = (c + 409*vv) >> 8
+	g = (c - 100*uu - 208*vv) >> 8
+	b = (c + 516*uu) >> 8
+	r = min(255, max(0, r))
+	g = min(255, max(0, g))
+	b = min(255, max(0, b))
 	return
 }
 
-func setPixel(out []byte, o int, r, g, b float64) {
-	out[o] = clampByte(r)
-	out[o+1] = clampByte(g)
-	out[o+2] = clampByte(b)
+func setPixel(out []byte, o int, r, g, b int) {
+	out[o] = byte(r)
+	out[o+1] = byte(g)
+	out[o+2] = byte(b)
 	out[o+3] = 255
 }
 

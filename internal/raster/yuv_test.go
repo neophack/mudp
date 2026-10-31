@@ -21,13 +21,12 @@ func TestChromaByteOrderAllFormats(t *testing.T) {
 		u    = 255 // uu = +127
 		v    = 0   // vv = -128
 	)
-	// Exact expected values from yuvToRgb(128, 255, 0) with clampByte's
-	// truncation (no tolerance needed — the unclamped channel sits at 175.704,
-	// far from any integer boundary):
-	//   r = 128 + 1.402·(-128)          =  -51.5 → clamp 0
-	//   g = 128 - 0.344·127 + 0.714·128 = 175.7  → truncate 175
-	//   b = 128 + 1.772·127             =  353.0 → clamp 255
-	const wantR, wantG, wantB = 0, 175, 255
+	// Exact expected values from the reference integer BT.601 conversion
+	// (imgview::yuvPixelToRgb, full range): with c = 128<<8,
+	//   r = (c + 409·vv)>>8 = (32768 - 52352)>>8 = -77 → clamp 0
+	//   g = (c - 100·uu - 208·vv)>>8 = 46692>>8   = 182
+	//   b = (c + 516·uu)>>8 = 98300>>8            = 384 → clamp 255
+	const wantR, wantG, wantB = 0, 182, 255
 
 	for _, tc := range []struct {
 		format string

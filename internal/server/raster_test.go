@@ -276,7 +276,7 @@ func TestServeRasterFrameJPEGRejectsSymlink(t *testing.T) {
 // keys: any ispX key switches to manual mode layered over the kind's
 // defaults, values clamp to sane bounds, and malformed input is rejected.
 func TestParseRasterParamsIspManual(t *testing.T) {
-	t.Run("raw manual full set", func(t *testing.T) {
+	t.Run("ispX keys collected into the override map", func(t *testing.T) {
 		p, msg := parseRasterParams(map[string][]string{
 			"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "bayerPattern": {"RGGB"}, "isp": {"1"},
 			"ispBlc":           {"10,20,30,40"},
@@ -287,29 +287,47 @@ func TestParseRasterParamsIspManual(t *testing.T) {
 			"ispSat":           {"1.3"},
 			"ispContrast":      {"1.1"},
 			"ispBright":        {"-5"},
+			"ispDgain":         {"2.5"},
+			"ispDrcOn":         {"0"},
+			"ispDrcCompress":   {"0.7"},
+			"ispDrcDetail":     {"1.4"},
+			"ispDrcRadius":     {"48"},
+			"ispDrcPivot":      {"0.1"},
+			"ispDrcEdge":       {"2.5"},
+			"ispLumaNr":        {"12.5"},
 			"ispChromaNr":      {"2"},
 			"ispSharpen":       {"1.5"},
 			"ispSharpenRadius": {"4"},
 			"ispChromaSupp":    {"30"},
+			"ispChromaMap":     {"0"},
 			"ispGray":          {"1"},
 		})
 		if msg != "" {
 			t.Fatalf("unexpected error: %s", msg)
 		}
-		m := p.IspManual
-		if m == nil {
-			t.Fatal("expected manual ISP params")
+		if p.ispQ == nil {
+			t.Fatal("expected collected ispX overrides")
+		}
+		// Overlaying the overrides on the raw defaults must produce exactly the
+		// requested values for the sent keys and keep the rest.
+		m := raster.DefaultIspParams(12)
+		if msg := applyIspQuery(&m, p.ispQ); msg != "" {
+			t.Fatalf("applyIspQuery: %s", msg)
 		}
 		if m.Blc != [4]int{10, 20, 30, 40} || m.GainR != 1.5 || m.GainB != 0.8 || m.Gamma != 2.0 ||
 			m.Saturation != 1.3 || m.Contrast != 1.1 || m.Brightness != -5 || m.ChromaNrRadius != 2 ||
 			m.Sharpen != 1.5 || m.SharpenRadius != 4 || m.ChromaSuppLow != 30 || !m.GrayMode {
-			t.Errorf("parsed manual params = %+v", m)
+			t.Errorf("overlaid params = %+v", m)
+		}
+		if m.DigitalGain != 2.5 || m.EnableDrc || m.DrcCompress != 0.7 || m.DrcDetail != 1.4 ||
+			m.DrcRadius != 48 || m.DrcPivot != 0.1 || m.DrcEdge != 2.5 || m.LumaNr != 12.5 {
+			t.Errorf("DRC/dgain/lumaNr overrides = %+v", m)
 		}
 		if m.Ccm != [9]float64{1, 0, 0, 0, 1, 0, 0, 0, 1} {
 			t.Errorf("ccm = %v", m.Ccm)
 		}
 		if m.MaxVal != 4095 {
-			t.Errorf("raw manual MaxVal = %d, want 4095 from bitDepth 12", m.MaxVal)
+			t.Errorf("raw MaxVal = %d, want 4095 from bitDepth 12", m.MaxVal)
 		}
 	})
 	t.Run("yuv manual keeps yuv defaults for absent keys", func(t *testing.T) {
@@ -320,14 +338,17 @@ func TestParseRasterParamsIspManual(t *testing.T) {
 		if msg != "" {
 			t.Fatalf("unexpected error: %s", msg)
 		}
-		m := p.IspManual
-		if m == nil {
-			t.Fatal("expected manual ISP params")
+		if p.ispQ == nil {
+			t.Fatal("expected collected ispX overrides")
+		}
+		m := raster.DefaultYuvIspParams()
+		if msg := applyIspQuery(&m, p.ispQ); msg != "" {
+			t.Fatalf("applyIspQuery: %s", msg)
 		}
 		want := raster.DefaultYuvIspParams()
 		want.Gamma = 2.6
-		if *m != want {
-			t.Errorf("yuv manual = %+v, want %+v", *m, want)
+		if m != want {
+			t.Errorf("yuv manual = %+v, want %+v", m, want)
 		}
 	})
 	t.Run("no isp keys stays auto", func(t *testing.T) {
@@ -337,8 +358,8 @@ func TestParseRasterParamsIspManual(t *testing.T) {
 		if msg != "" {
 			t.Fatalf("unexpected error: %s", msg)
 		}
-		if p.IspManual != nil {
-			t.Error("IspManual should be nil without ispX keys")
+		if p.ispQ != nil {
+			t.Error("ispQ should be nil without ispX keys")
 		}
 	})
 	t.Run("clamps out-of-range values", func(t *testing.T) {
@@ -350,7 +371,10 @@ func TestParseRasterParamsIspManual(t *testing.T) {
 		if msg != "" {
 			t.Fatalf("unexpected error: %s", msg)
 		}
-		m := p.IspManual
+		m := raster.DefaultIspParams(12)
+		if msg := applyIspQuery(&m, p.ispQ); msg != "" {
+			t.Fatalf("applyIspQuery: %s", msg)
+		}
 		if m.GainR != 8 || m.GainB != 0.1 || m.Gamma != 0.05 || m.Saturation != 4 ||
 			m.ChromaNrRadius != 64 || m.SharpenRadius != 1 {
 			t.Errorf("clamped params = %+v", m)
@@ -363,7 +387,11 @@ func TestParseRasterParamsIspManual(t *testing.T) {
 		if msg != "" {
 			t.Fatalf("unexpected error: %s", msg)
 		}
-		if p.IspManual.EnableSharpen {
+		m := raster.DefaultIspParams(12)
+		if msg := applyIspQuery(&m, p.ispQ); msg != "" {
+			t.Fatalf("applyIspQuery: %s", msg)
+		}
+		if m.EnableSharpen {
 			t.Error("ispSharpen=0 should disable the sharpen stage")
 		}
 	})
@@ -376,7 +404,12 @@ func TestParseRasterParamsIspManual(t *testing.T) {
 			{"width": {"8"}, "height": {"8"}, "bitDepth": {"12"}, "ispGainR": {"abc"}},
 			{"width": {"8"}, "height": {"8"}, "format": {"i420"}, "ispGamma": {"NaN"}},
 		} {
-			if _, msg := parseRasterParams(q); msg == "" {
+			p, parseMsg := parseRasterParams(q)
+			if parseMsg != "" {
+				continue
+			}
+			m := raster.DefaultYuvIspParams()
+			if msg := applyIspQuery(&m, p.ispQ); msg == "" {
 				t.Errorf("expected an error for %v", q)
 			}
 		}
@@ -415,9 +448,6 @@ func TestServeRasterFrameJPEGRawIspManualGray(t *testing.T) {
 	if msg != "" {
 		t.Fatalf("parse: %s", msg)
 	}
-	if params.IspManual == nil || !params.IspManual.GrayMode {
-		t.Fatalf("ispGray=1 did not select gray mode: %+v", params.IspManual)
-	}
 	rec := httptest.NewRecorder()
 	serveRasterFrameJPEG(rec, grayReq, path, params)
 	if rec.Code != http.StatusOK {
@@ -437,19 +467,18 @@ func TestServeRasterFrameJPEGRawIspManualGray(t *testing.T) {
 		t.Errorf("gray mode R-site pixel = %d, want ≈200", r>>8)
 	}
 
-	// Control: the same request without ispGray runs the colour pipeline, which
-	// must keep the red site clearly redder than blue (hand check: the board
-	// pipeline maps this field at (2,2) to roughly (243,90,60) — nowhere near
-	// neutral).
+	// Control: the same request without ispGray runs the colour pipeline. The
+	// explicit unity WB gains keep the raw colour imbalance (auto mode would
+	// gray-world it away — which is correct behaviour but not what this
+	// control observes); the pipeline must keep the red site clearly redder
+	// than blue.
 	colorReq := httptest.NewRequest(http.MethodGet,
 		"/api/netdisk/raster?path=frame.raw&width=8&height=8&bitDepth=16&bayerPattern=RGGB"+
-			"&isp=1&ispBlc=0,0,0,0&ispGamma=1", nil)
+			"&isp=1&ispBlc=0,0,0,0&ispGamma=1&ispGainR=1&ispGainB=1&ispCcm=1,0,0,0,1,0,0,0,1"+
+			"&ispDrcOn=0&ispSat=1&ispContrast=1", nil)
 	params, msg = parseRasterParams(colorReq.URL.Query())
 	if msg != "" {
 		t.Fatalf("parse: %s", msg)
-	}
-	if params.IspManual == nil || params.IspManual.GrayMode {
-		t.Fatalf("control request must stay in colour mode: %+v", params.IspManual)
 	}
 	rec = httptest.NewRecorder()
 	serveRasterFrameJPEG(rec, colorReq, path, params)
@@ -521,7 +550,9 @@ func writeBayerField16(t *testing.T, path string, w, h int, rSite, gSite, bSite 
 // TestServeRasterFrameJPEGAwb covers the panel's Gray-world AWB button: the
 // same raster endpoint with awb=1 returns JSON gains instead of a JPEG. The
 // RAW request carries manual zero black levels so the synthetic R=100/G=B=200
-// field yields exactly gainR=2, gainB=1.
+// field yields gray-world gains 2/1, multiplied by the default AWB biases
+// (the reference's button runs the same autoWhiteBalance as the open-file
+// path, biases included).
 func TestServeRasterFrameJPEGAwb(t *testing.T) {
 	const w, h = 8, 8
 	tmp := t.TempDir()
@@ -550,8 +581,10 @@ func TestServeRasterFrameJPEGAwb(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
 		t.Fatalf("unmarshal awb response: %v", err)
 	}
-	if res.GainR != 2 || res.GainB != 1 {
-		t.Errorf("awb gains = %v/%v, want 2/1", res.GainR, res.GainB)
+	def := raster.DefaultIspParams(16)
+	if res.GainR != 2*def.AwbBiasR || res.GainB != 1*def.AwbBiasB {
+		t.Errorf("awb gains = %v/%v, want %v/%v (gray-world × bias)",
+			res.GainR, res.GainB, 2*def.AwbBiasR, def.AwbBiasB)
 	}
 
 	// YUV variant: a flat mid-gray frame is already neutral → 1/1.
@@ -644,5 +677,113 @@ func TestServeRasterFrameJPEGRejectsHugeDimensions(t *testing.T) {
 	})
 	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
 		t.Errorf("4000x4000: status = %d, want 416 (truncated), not a dimension rejection", rec.Code)
+	}
+}
+
+// TestServeRasterFrameJPEGRawSidecarContext pins the RAW file-context
+// resolution: a dump with a .txt sidecar (nonzero black level, Frame0 ISO in a
+// high tier, ISP digital gain) must render through the sidecar-resolved
+// parameters and report them in the X-Isp-Resolved response header, while the
+// panel's overrides replace individual fields on top.
+func TestServeRasterFrameJPEGRawSidecarContext(t *testing.T) {
+	const w, h = 8, 8
+	tmp := t.TempDir()
+	rawPath := filepath.Join(tmp, "frame.raw")
+	// Uniform mid-level field; the absolute pixels don't matter here, the
+	// resolved parameters do.
+	writeBayerField16(t, rawPath, w, h, 1000, 900, 800)
+	sidecar := "[common]\nBlackLevel_R=64\nBlackLevel_Gr=68\nBlackLevel_Gb=68\nBlackLevel_B=60\n" +
+		"[Frame0]\nISO=155629\nISP_D_Gain_0=2048\n"
+	if err := os.WriteFile(filepath.Join(tmp, "frame.txt"), []byte(sidecar), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	serve := func(query string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/netdisk/raster?"+query, nil)
+		params, msg := parseRasterParams(req.URL.Query())
+		if msg != "" {
+			t.Fatalf("parse: %s", msg)
+		}
+		rec := httptest.NewRecorder()
+		serveRasterFrameJPEG(rec, req, rawPath, params)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		return rec
+	}
+
+	// Auto mode: the sidecar drives the ISO tier (155629 = exact tier),
+	// digital gain 2048/1024 = 2 and the nonzero black level.
+	rec := serve("path=frame.raw&width=8&height=8&bitDepth=16&bayerPattern=RGGB&isp=1")
+	var res struct {
+		Iso         int64   `json:"iso"`
+		Dgain       float64 `json:"dgain"`
+		DgainRaw    int64   `json:"dgainRaw"`
+		Blc         [4]int  `json:"blc"`
+		BlcFrom     string  `json:"blcFrom"`
+		Brightness  float64 `json:"brightness"`
+		LumaNr      float64 `json:"lumaNr"`
+		DrcRadius   int     `json:"drcRadius"`
+		ChromaMapOn bool    `json:"chromaMapOn"`
+	}
+	if err := json.Unmarshal([]byte(rec.Header().Get("X-Isp-Resolved")), &res); err != nil {
+		t.Fatalf("X-Isp-Resolved missing/unparsable: %q", rec.Header().Get("X-Isp-Resolved"))
+	}
+	if res.Iso != 155629 || res.Dgain != 2 || res.DgainRaw != 2048 {
+		t.Errorf("sidecar iso/dgain = %d/%v (raw %d)", res.Iso, res.Dgain, res.DgainRaw)
+	}
+	if res.Blc != [4]int{64, 68, 68, 60} || res.BlcFrom != "sidecar" {
+		t.Errorf("sidecar black level = %v (%q)", res.Blc, res.BlcFrom)
+	}
+	// Tier 155629: brightness ≈ -12.29, lumaNr ≈ 19.2, DRC radius 32, chroma
+	// map on.
+	if res.Brightness > -12 || res.Brightness < -13 || res.LumaNr < 19 || res.LumaNr > 20 ||
+		res.DrcRadius != 32 || !res.ChromaMapOn {
+		t.Errorf("tier parameters not applied: %+v", res)
+	}
+
+	// Manual override: an explicit key replaces just that field (gamma here),
+	// the rest of the file context survives.
+	rec = serve("path=frame.raw&width=8&height=8&bitDepth=16&bayerPattern=RGGB&isp=1&ispGamma=2.5")
+	var manual struct {
+		Gamma float64 `json:"gamma"`
+		Dgain float64 `json:"dgain"`
+		Blc   [4]int  `json:"blc"`
+	}
+	if err := json.Unmarshal([]byte(rec.Header().Get("X-Isp-Resolved")), &manual); err != nil {
+		t.Fatalf("manual X-Isp-Resolved: %v", err)
+	}
+	if manual.Gamma != 2.5 {
+		t.Errorf("override gamma = %v, want 2.5", manual.Gamma)
+	}
+	if manual.Dgain != 2 || manual.Blc != [4]int{64, 68, 68, 60} {
+		t.Errorf("file context lost under overrides: %+v", manual)
+	}
+
+	// A dump without a sidecar reports iso 0 and the default black level.
+	bare := filepath.Join(t.TempDir(), "bare.raw")
+	writeBayerField16(t, bare, w, h, 1000, 900, 800)
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/netdisk/raster?path=bare.raw&width=8&height=8&bitDepth=16&bayerPattern=RGGB&isp=1", nil)
+	params, msg := parseRasterParams(req.URL.Query())
+	if msg != "" {
+		t.Fatalf("parse: %s", msg)
+	}
+	rec = httptest.NewRecorder()
+	serveRasterFrameJPEG(rec, req, bare, params)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bare status = %d", rec.Code)
+	}
+	var noSc struct {
+		Iso   int64   `json:"iso"`
+		Blc   [4]int  `json:"blc"`
+		Dgain float64 `json:"dgain"`
+	}
+	if err := json.Unmarshal([]byte(rec.Header().Get("X-Isp-Resolved")), &noSc); err != nil {
+		t.Fatalf("bare X-Isp-Resolved: %v", err)
+	}
+	if noSc.Iso != 0 || noSc.Blc != [4]int{0, 0, 0, 0} || noSc.Dgain != 1 {
+		t.Errorf("sidecar-less resolution = %+v, want iso 0 / zero blc / dgain 1", noSc)
 	}
 }

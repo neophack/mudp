@@ -158,38 +158,55 @@ export { YUV_FORMATS };
 // carries the full parameter set.
 
 // CCM presets, mirrored from internal/raster/miniisp.go. Index 0 is "manual"
-// (the 3x3 matrix inputs become editable); the RAW default is the board's
-// 4032K calibration (index 2).
+// (the 3x3 matrix inputs become editable); the RAW default is the board-fit
+// matrix carried in manual mode (the backend's ISO-tier matrix lands there
+// via the resolved-params sync).
 export const ISP_CCM_PRESETS = [
   { label: "Manual" },
   { label: "Identity", ccm: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
-  { label: "Board 4032K", ccm: [0.996, -0.078, 0.082, 0.0, 1.066, -0.066, 0.195, -0.598, 1.402] },
   { label: "sRGB typical", ccm: [1.66, -0.55, -0.11, -0.25, 1.45, -0.2, -0.07, -0.28, 1.35] },
   { label: "High saturation", ccm: [1.85, -0.7, -0.15, -0.32, 1.62, -0.3, -0.1, -0.38, 1.48] },
 ];
 
+// The board-fit CCM (MiniIsp.cpp Params::reset default), shown in manual mode
+// until the backend's resolved (ISO-tier) matrix arrives.
+const CCM_BOARD_FIT = [0.7742, 0.4423, -0.2165, 0.0864, 0.9833, -0.0697, -0.0356, 0.2751, 0.7605];
+
 // defaultIspPanelValues returns the panel's initial values. RAW mirrors the
-// board-calibrated defaults (MiniIsp.cpp Params::reset) so an untouched panel
-// matches what the backend serves in auto mode; YUV uses the neutral RGB-domain
-// defaults (the Bayer-only stages are irrelevant there).
+// board-calibrated defaults (MiniIsp.cpp Params::reset — the first ISO tier)
+// so an untouched panel matches what the backend serves for a sidecar-less
+// file; the X-Isp-Resolved response header then re-seeds them with the actual
+// file context (ISO tier, sidecar black level, frame-0 AWB gains). YUV uses
+// the neutral RGB-domain defaults (the Bayer-only stages are irrelevant
+// there).
 export function defaultIspPanelValues(isRaw) {
   return isRaw
     ? {
-        blc: [39, 225, 225, 48],
-        gainR: 1.07,
-        gainB: 1.12,
-        ccmPreset: 2,
-        ccm: [...ISP_CCM_PRESETS[2].ccm],
-        gamma: 2.27,
-        saturation: 1.15,
-        contrast: 1.22,
-        brightness: 0,
-        chromaNr: 3,
+        blc: [0, 0, 0, 0],
+        gainR: 1.51,
+        gainB: 1.69,
+        ccmPreset: 0,
+        ccm: [...CCM_BOARD_FIT],
+        gamma: 1.43,
+        saturation: 2.43,
+        contrast: 0.985,
+        brightness: -1.42,
+        dgain: 1,
+        drcOn: true,
+        drcCompress: 0.891,
+        drcDetail: 1.13,
+        drcRadius: 96,
+        drcPivot: 0.214,
+        drcEdge: 4,
+        lumaNr: 0.1,
+        chromaNr: 5,
+        chromaMapOn: true,
         sharpenOn: true,
-        sharpen: 1.0,
+        sharpen: 1.18,
         sharpenRadius: 5,
-        chromaSupp: 60,
+        chromaSupp: 0,
         gray: false,
+        iso: 0,
       }
     : {
         blc: [0, 0, 0, 0],
@@ -211,8 +228,8 @@ export function defaultIspPanelValues(isRaw) {
 }
 
 // ispQuerySuffix serializes the manual ISP parameters into raster-endpoint
-// query keys (empty in auto mode). Must stay in sync with
-// parseIspManual in internal/server/raster.go.
+// query keys (empty in auto mode). Must stay in sync with applyIspQuery in
+// internal/server/raster.go.
 export function ispQuerySuffix(state) {
   if (!state.ispManual) return "";
   const p = state.ispParams;
@@ -231,7 +248,16 @@ export function ispQuerySuffix(state) {
   if (state.rawMode) {
     parts.unshift(
       `ispBlc=${p.blc.join(",")}`,
+      `ispDgain=${p.dgain}`,
+      `ispDrcOn=${p.drcOn ? 1 : 0}`,
+      `ispDrcCompress=${p.drcCompress}`,
+      `ispDrcDetail=${p.drcDetail}`,
+      `ispDrcRadius=${p.drcRadius}`,
+      `ispDrcPivot=${p.drcPivot}`,
+      `ispDrcEdge=${p.drcEdge}`,
+      `ispLumaNr=${p.lumaNr}`,
       `ispChromaNr=${p.chromaNr}`,
+      `ispChromaMap=${p.chromaMapOn ? 1 : 0}`,
       `ispGray=${p.gray ? 1 : 0}`,
     );
   }
@@ -521,11 +547,14 @@ export function openRasterFrameViewer({
     // actually fetched, not whatever the controls hold when it resolves.
     const key = frameCacheKey();
     try {
-      const bitmap = await fetchFrameBitmap(key, controller.signal);
+      const { bitmap, resolved } = await fetchFrameBitmap(key, controller.signal);
       if (state.destroyed || controller.signal.aborted) {
         bitmap?.close?.();
         return;
       }
+      // RAW responses carry the file-context parameters the backend used;
+      // seed the panel with them while we're still in auto mode.
+      if (state.rawMode && resolved) applyResolvedIsp(resolved);
       drawFrame(ctx, canvas, bitmap, state.width, state.height, state.zoom);
       // Replace the previously cached bitmap (if any) and release it; an
       // ImageBitmap owns GPU/native memory, so closing avoids leaks across
@@ -684,6 +713,13 @@ export function openRasterFrameViewer({
     ispSaturation: (v) => (+v).toFixed(2),
     ispContrast: (v) => (+v).toFixed(2),
     ispBrightness: (v) => `${Math.round(+v)}`,
+    ispDgain: (v) => `×${(+v).toFixed(3)}`,
+    ispDrcCompress: (v) => (+v).toFixed(3),
+    ispDrcDetail: (v) => (+v).toFixed(3),
+    ispDrcRadius: (v) => `${Math.round(+v)}`,
+    ispDrcPivot: (v) => (+v).toFixed(3),
+    ispDrcEdge: (v) => (+v).toFixed(2),
+    ispLumaNr: (v) => (+v).toFixed(1),
     ispChromaNr: (v) => `${Math.round(+v)}`,
     ispSharpen: (v) => (+v).toFixed(2),
     ispSharpenRadius: (v) => `${Math.round(+v)}`,
@@ -701,6 +737,13 @@ export function openRasterFrameViewer({
       num("ispBlcGr", p.blc[1]);
       num("ispBlcGb", p.blc[2]);
       num("ispBlcB", p.blc[3]);
+      num("ispDgain", p.dgain);
+      num("ispDrcCompress", p.drcCompress);
+      num("ispDrcDetail", p.drcDetail);
+      num("ispDrcRadius", p.drcRadius);
+      num("ispDrcPivot", p.drcPivot);
+      num("ispDrcEdge", p.drcEdge);
+      num("ispLumaNr", p.lumaNr);
       num("ispChromaNr", p.chromaNr);
     }
     num("ispGainR", p.gainR);
@@ -718,6 +761,10 @@ export function openRasterFrameViewer({
     if (sharpenOn) sharpenOn.checked = p.sharpenOn;
     const gray = ispPanel.querySelector("#ispGray");
     if (gray) gray.checked = p.gray;
+    const drcOn = ispPanel.querySelector("#ispDrcOn");
+    if (drcOn) drcOn.checked = p.drcOn;
+    const chromaMap = ispPanel.querySelector("#ispChromaMap");
+    if (chromaMap) chromaMap.checked = p.chromaMapOn;
     const matrixRow = ispPanel.querySelector("#ispCcmMatrixRow");
     if (matrixRow) matrixRow.hidden = p.ccmPreset !== 0;
     for (const [id, fmt] of Object.entries(readoutFormats)) {
@@ -728,17 +775,58 @@ export function openRasterFrameViewer({
     updateIspPanelDisabled();
   }
 
-  // The panel only has effect while the master ISP switch is on, and the
-  // sharpen strength/radius controls only while sharpening is enabled.
+  // applyResolvedIsp seeds the panel with the backend's resolved parameters
+  // (the X-Isp-Resolved header on a RAW response): the ISO-tier tuning, the
+  // sidecar black level and the frame-0 AWB gains the browser cannot compute.
+  // Only runs in auto mode — once the user touches a control they own the
+  // values. The resolved CCM is displayed in manual form (preset 0).
+  function applyResolvedIsp(res) {
+    if (!res || state.ispManual) return;
+    const p = state.ispParams;
+    p.blc = res.blc || p.blc;
+    p.gainR = res.gainR ?? p.gainR;
+    p.gainB = res.gainB ?? p.gainB;
+    if (Array.isArray(res.ccm) && res.ccm.length === 9) p.ccm = [...res.ccm];
+    p.ccmPreset = 0;
+    p.gamma = res.gamma ?? p.gamma;
+    p.saturation = res.saturation ?? p.saturation;
+    p.contrast = res.contrast ?? p.contrast;
+    p.brightness = res.brightness ?? p.brightness;
+    p.dgain = res.dgain ?? p.dgain;
+    p.drcOn = res.drcOn ?? p.drcOn;
+    p.drcCompress = res.drcCompress ?? p.drcCompress;
+    p.drcDetail = res.drcDetail ?? p.drcDetail;
+    p.drcRadius = res.drcRadius ?? p.drcRadius;
+    p.drcPivot = res.drcPivot ?? p.drcPivot;
+    p.drcEdge = res.drcEdge ?? p.drcEdge;
+    p.lumaNr = res.lumaNr ?? p.lumaNr;
+    p.chromaNr = res.chromaNr ?? p.chromaNr;
+    p.chromaMapOn = res.chromaMapOn ?? p.chromaMapOn;
+    p.sharpenOn = res.sharpenOn ?? p.sharpenOn;
+    p.sharpen = res.sharpen ?? p.sharpen;
+    p.sharpenRadius = res.sharpenRadius ?? p.sharpenRadius;
+    p.chromaSupp = res.chromaSupp ?? p.chromaSupp;
+    p.iso = res.iso ?? p.iso;
+    const isoEl = ispPanel.querySelector("#ispIsoReadout");
+    if (isoEl) isoEl.textContent = p.iso > 0 ? `ISO ${p.iso}` : "no sidecar";
+    syncIspControls();
+  }
+
+  // The panel only has effect while the master ISP switch is on, the
+  // sharpen strength/radius controls only while sharpening is enabled, and
+  // the DRC sliders only while DRC is on.
   function updateIspPanelDisabled() {
-    const sharpenOn = state.ispParams.sharpenOn;
+    const p = state.ispParams;
     for (const el of ispInputs()) {
-      if (el.id === "ispSharpenOn" || el.id === "ispGray" || el.id === "ispCcmPreset") {
+      if (el.id === "ispSharpenOn" || el.id === "ispGray" || el.id === "ispCcmPreset" ||
+          el.id === "ispDrcOn" || el.id === "ispChromaMap") {
         el.disabled = !state.isp;
         continue;
       }
       const sharpenChild = el.id === "ispSharpen" || el.id === "ispSharpenRadius";
-      el.disabled = !state.isp || (sharpenChild && !sharpenOn);
+      const drcChild = el.id === "ispDrcCompress" || el.id === "ispDrcDetail" ||
+        el.id === "ispDrcRadius" || el.id === "ispDrcPivot" || el.id === "ispDrcEdge";
+      el.disabled = !state.isp || (sharpenChild && !p.sharpenOn) || (drcChild && !p.drcOn);
     }
   }
 
@@ -770,8 +858,40 @@ export function openRasterFrameViewer({
         state.ispParams.blc[i] = Math.max(0, Math.min(65535, parseInt(v, 10) || 0));
       });
     }
+    bindSlider("ispDgain", (v) => {
+      state.ispParams.dgain = +v;
+    });
+    bindSlider("ispDrcCompress", (v) => {
+      state.ispParams.drcCompress = +v;
+    });
+    bindSlider("ispDrcDetail", (v) => {
+      state.ispParams.drcDetail = +v;
+    });
+    bindSlider("ispDrcRadius", (v) => {
+      state.ispParams.drcRadius = Math.max(1, Math.min(128, Math.round(+v)));
+    });
+    bindSlider("ispDrcPivot", (v) => {
+      state.ispParams.drcPivot = +v;
+    });
+    bindSlider("ispDrcEdge", (v) => {
+      state.ispParams.drcEdge = +v;
+    });
+    bindSlider("ispLumaNr", (v) => {
+      state.ispParams.lumaNr = +v;
+    });
     bindSlider("ispChromaNr", (v) => {
       state.ispParams.chromaNr = Math.max(0, Math.min(64, Math.round(+v)));
+    });
+    const drcOn = ispPanel.querySelector("#ispDrcOn");
+    drcOn.addEventListener("change", () => {
+      state.ispParams.drcOn = !!drcOn.checked;
+      updateIspPanelDisabled();
+      markIspManual();
+    });
+    const chromaMap = ispPanel.querySelector("#ispChromaMap");
+    chromaMap.addEventListener("change", () => {
+      state.ispParams.chromaMapOn = !!chromaMap.checked;
+      markIspManual();
     });
     const gray = ispPanel.querySelector("#ispGray");
     gray.addEventListener("change", () => {
@@ -1153,23 +1273,51 @@ function ispPanelHtml(rawMode) {
       `<summary>ISP parameters</summary>` +
       `<div class="raster-sec-body">` +
         (rawMode
-          ? `<div class="isp-row isp-row-multi" title="Black level correction per CFA channel (R/Gr/Gb/B). Sensor black floor; subtract before anything else.">` +
+          ? `<div class="isp-row" title="The sensor state from the dump's .txt sidecar (frame 0) that the backend resolved the ISO tier, ISP digital gain and black level from.">` +
+              `<div class="isp-row-head"><label>File context</label><output class="isp-val" id="ispIsoReadout">—</output></div>` +
+            `</div>` +
+            `<div class="isp-row isp-row-multi" title="Black level correction per CFA channel (R/Gr/Gb/B). Sensor black floor; subtract before anything else. Board dumps are taken after BLC, so the default is 0; the sidecar's BlackLevel_* overrides it.">` +
               `<label>Black level R/Gr/Gb/B</label>` +
               `<div class="isp-blc-grid">${blcInputs}</div>` +
+            `</div>` +
+            sliderRow("ispDgain", "Digital gain", "0.1", "16", "0.01",
+              "ISP digital gain (linear multiplier before white balance). The board dumps RAW before its ISP_D_Gain stage, so the viewer applies the sidecar's ISP_D_Gain_0/1024 (up to 5x on dark high-ISO frames).") +
+            `<div class="isp-row" title="Local tone mapping (log-luminance base/detail decomposition): large bright regions pushed down, shadows up, local texture kept — the board's DRC/WDR look.">` +
+              `<label class="raster-switch"><input type="checkbox" id="ispDrcOn" checked><i></i>DRC</label>` +
+            `</div>` +
+            sliderRow("ispDrcCompress", "DRC compress", "0.1", "1.5", "0.001",
+              "Base (large-scale luma) compression around the pivot in the log2 domain: 1.0 = none, <1 compresses the dynamic range.") +
+            sliderRow("ispDrcDetail", "DRC detail", "0.1", "3", "0.001",
+              "Detail gain (pixel vs. base): 1.0 = unchanged, >1 boosts local contrast/texture.") +
+            sliderRow("ispDrcRadius", "DRC radius", "1", "128", "1",
+              "Base blur radius in pixels (two box passes ≈ gaussian): larger approaches a global curve, smaller is more local but can halo.") +
+            sliderRow("ispDrcPivot", "DRC pivot", "0.005", "1", "0.001",
+              "Compression pivot (linear luma 0..1): regions whose base equals the pivot are unaffected; brighter bases darken, darker bases lift.") +
+            sliderRow("ispDrcEdge", "DRC edge", "0.05", "3", "0.01",
+              "Base edge-preservation threshold (log2 luma difference): luma steps beyond it count as different regions and the base does not cross — smaller means fewer halos.") +
+            sliderRow("ispLumaNr", "Luma NR σ", "0", "40", "0.1",
+              "Luma noise-reduction threshold (8-bit σ, edge-preserving guided filter), 0 = off. Set per ISO tier on open: bright frames barely denoise, dark high-ISO frames denoise hard.") +
+            sliderRow("ispChromaNr", "Chroma NR radius", "0", "8", "1",
+              "Box-blur radius on the chroma-difference planes (0 = off). Smooths color noise.") +
+            `<div class="isp-row" title="The board's chroma map (per ISO tier): near-neutral chroma pushed to gray while high-chroma objects stay vivid with per-hue correction.">` +
+              `<label class="raster-switch"><input type="checkbox" id="ispChromaMap" checked><i></i>Chroma map</label>` +
+            `</div>` +
+            `<div class="isp-row" title="Skip the demosaic and show the raw Bayer as grayscale.">` +
+              `<label class="raster-switch"><input type="checkbox" id="ispGray"><i></i>Gray mode (raw Bayer)</label>` +
             `</div>`
           : "") +
         sliderRow("ispGainR", "WB gain R", "0.1", "8", "0.01",
-          "White balance gain for the red channel (G is fixed at 1.0).") +
+          "White balance gain for the red channel (G is fixed at 1.0). Auto-set per file from a gray-world estimate multiplied by the board's ISO-tier AWB preference.") +
         sliderRow("ispGainB", "WB gain B", "0.1", "8", "0.01",
           "White balance gain for the blue channel (G is fixed at 1.0).") +
         `<div class="isp-actions">` +
-          `<button type="button" class="raster-mini-btn" id="ispAwbBtn" title="Compute gray-world white balance gains from this frame's pixels (server-side).">Gray-world AWB</button>` +
+          `<button type="button" class="raster-mini-btn" id="ispAwbBtn" title="Compute gray-world white balance gains from this frame's pixels (server-side), multiplied by the board's AWB preference.">Gray-world AWB</button>` +
           `<button type="button" class="raster-mini-btn" id="ispResetBtn" title="Restore the default ISP parameters for this file kind.">Reset</button>` +
         `</div>` +
         sliderRow("ispGamma", "Gamma", "0.5", "4", "0.01",
-          "Gamma encoding: output = pow(v, 1/gamma). 2.2 ≈ sRGB.") +
-        sliderRow("ispSaturation", "Saturation", "0", "2", "0.01",
-          "Color saturation around luma (1.0 = unchanged, 0 = grayscale).") +
+          "Gamma encoding: output = pow(v, 1/gamma). 2.2 ≈ sRGB; the board fit is 1.43 (joint with DRC).") +
+        sliderRow("ispSaturation", "Saturation", "0", "3", "0.01",
+          "Color saturation around luma (1.0 = unchanged, 0 = grayscale). The fitted CCM compresses the red-cyan axis, so the tiers run ~2.1-2.5 to restore the board's chroma.") +
         sliderRow("ispContrast", "Contrast", "0.5", "2", "0.01",
           "Linear stretch around mid gray (1.0 = unchanged).") +
         sliderRow("ispBrightness", "Brightness", "-100", "100", "1",
@@ -1182,13 +1330,6 @@ function ispPanelHtml(rawMode) {
           `<label>CCM matrix (row-major)</label>` +
           `<div class="raster-ccm-grid">${ccmMatrix}</div>` +
         `</div>` +
-        (rawMode
-          ? sliderRow("ispChromaNr", "Chroma NR radius", "0", "8", "1",
-              "Box-blur radius on the chroma-difference planes (0 = off). Smooths color noise.") +
-            `<div class="isp-row" title="Skip the demosaic and show the raw Bayer as grayscale.">` +
-              `<label class="raster-switch"><input type="checkbox" id="ispGray"><i></i>Gray mode (raw Bayer)</label>` +
-            `</div>`
-          : "") +
         `<div class="isp-row" title="Multi-band luma unsharp mask (high/mid/low-mid bands with luma-dependent gain).">` +
           `<label class="raster-switch"><input type="checkbox" id="ispSharpenOn"><i></i>Sharpen</label>` +
         `</div>` +
@@ -1268,7 +1409,9 @@ async function probeFileSize(url) {
 // fetchFrameBitmap fetches one decoded frame as a JPEG from the backend raster
 // endpoint and decodes it to an ImageBitmap ready to draw. Abortable so rapid
 // frame changes cancel the previous in-flight request. Throws on a non-OK
-// response (the body carries a JSON error message from the server).
+// response (the body carries a JSON error message from the server). RAW
+// responses carry the resolved ISP context in the X-Isp-Resolved header; it is
+// parsed and returned alongside the bitmap.
 async function fetchFrameBitmap(url, signal) {
   const res = await fetch(url, { credentials: "same-origin", signal });
   if (!res.ok) {
@@ -1281,8 +1424,17 @@ async function fetchFrameBitmap(url, signal) {
     }
     throw new Error(detail);
   }
+  let resolved = null;
+  const header = res.headers?.get?.("X-Isp-Resolved");
+  if (header) {
+    try {
+      resolved = JSON.parse(header);
+    } catch {
+      /* malformed header: keep the panel on its defaults */
+    }
+  }
   const blob = await res.blob();
   // createImageBitmap is the cheapest path: it decodes off the main thread and
   // hands back a handle the canvas can draw without an intermediate <img>.
-  return createImageBitmap(blob);
+  return { bitmap: await createImageBitmap(blob), resolved };
 }

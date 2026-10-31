@@ -6,9 +6,12 @@
 // parameter panel, and the ISP pipeline itself) — this module only supplies
 // the RAW-specific pieces: filename parsing, the Bayer color-filter-array
 // layout, and the per-frame byte size used to compute the frame count. The
-// full ISP pipeline (directional demosaic, BLC, WB, CCM, gamma, chroma NR,
-// sharpening — see internal/raster/miniisp.go) runs server-side via the
-// /api/netdisk/raster endpoint, which returns one decoded JPEG per frame.
+// full ISP pipeline (directional demosaic, BLC, ISO-tier DRC/chroma map,
+// AWB, CCM, gamma, chroma NR, sharpening — see internal/raster/miniisp.go)
+// runs server-side via the /api/netdisk/raster endpoint, which returns one
+// decoded JPEG per frame and resolves the per-file parameters (ISO tier,
+// sidecar black level and ISP digital gain, frame-0 gray-world AWB) from the
+// dump's .txt sidecar, matching the reference capture tool's rendering.
 
 import { openRasterFrameViewer, ispQuerySuffix } from "./yuv.js";
 
