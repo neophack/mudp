@@ -44,6 +44,13 @@
       <div v-if="mode === 'shareddisk'" class="netdisk-hint">{{ tt("netdisk.sharedDiskHint") }}</div>
 
       <div class="netdisk-pathbar">
+        <!-- VSCode-style back/forward through the visited folders; the line
+             spans disks too, so going back can also return to the previous
+             disk's folder. -->
+        <div class="netdisk-nav">
+          <el-button size="small" :disabled="!canBack" :title="tt('netdisk.navBack')" :aria-label="tt('netdisk.navBack')" @click="goBack"><v-icon name="nav-back" :size="15" /></el-button>
+          <el-button size="small" :disabled="!canForward" :title="tt('netdisk.navForward')" :aria-label="tt('netdisk.navForward')" @click="goForward"><v-icon name="nav-forward" :size="15" /></el-button>
+        </div>
         <div class="netdisk-crumbs">
           <el-button link size="small" @click="navigate('')">{{ tt("netdisk.allFiles") }}</el-button>
           <template v-for="(crumb, i) in crumbs" :key="i">
@@ -52,6 +59,15 @@
           </template>
         </div>
         <div class="netdisk-used" v-html="quotaHtml"></div>
+        <div class="netdisk-sort">
+          <el-radio-group v-model="sortKey" size="small" @change="onSortChange">
+            <el-radio-button value="name">{{ tt("netdisk.sortName") }}</el-radio-button>
+            <el-radio-button value="time">{{ tt("netdisk.sortTime") }}</el-radio-button>
+          </el-radio-group>
+          <el-button size="small" :title="sortDirTitle" :aria-label="sortDirTitle" @click="toggleSortDir">
+            <v-icon :name="sortDir === 'asc' ? 'sort-asc' : 'sort-desc'" :size="15" />
+          </el-button>
+        </div>
       </div>
 
       <el-alert v-if="truncated" type="warning" :closable="false" style="margin-bottom: 10px" :title="tt('netdisk.truncatedHint', { n: items.length })" />
@@ -249,10 +265,12 @@ import { fmtBytes, joinPath } from "@/lib/common.js";
 import { fileIconSvg } from "@/lib/fileicon.js";
 import { beginLocalCopy } from "@/overlays";
 import { uploadFilesHandler, dropStream, isUploading } from "@/netdiskUpload";
+import { registerRouteRefresh, unregisterRouteRefresh } from "@/refresh";
 import FolderPicker from "@/components/netdisk/FolderPicker.vue";
 import ShareDialog from "@/components/netdisk/ShareDialog.vue";
 import ViewerDialog from "@/components/netdisk/ViewerDialog.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
+import VIcon from "@/components/VIcon.vue";
 import { previewKind } from "@/lib/preview.js";
 
 // Rows rendered at once. A listing can hold up to 5000 entries (the server
@@ -261,10 +279,21 @@ import { previewKind } from "@/lib/preview.js";
 // hundreds of MB and stalled the page.
 const PAGE_SIZE = 100;
 
+// The sort preference outlives the view, like the sidebar collapse state.
+const SORT_STORAGE_KEY = "mudp:netdisk-sort";
+function loadSortPref() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SORT_STORAGE_KEY) || "null");
+    if ((saved?.key === "name" || saved?.key === "time") && (saved?.dir === "asc" || saved?.dir === "desc")) return saved;
+  } catch { /* absent or malformed — fall through to the default */ }
+  return { key: "name", dir: "asc" };
+}
+
 export default {
   name: "Netdisk",
-  components: { ActionSheet, FolderPicker, ShareDialog, ViewerDialog },
+  components: { ActionSheet, FolderPicker, ShareDialog, ViewerDialog, VIcon },
   data() {
+    const sort = loadSortPref();
     return {
       s: store,
       mode: "netdisk",
@@ -277,8 +306,14 @@ export default {
       items: [],
       page: 1,
       pageSize: PAGE_SIZE,
+      sortKey: sort.key,
+      sortDir: sort.dir,
       truncated: false,
       quota: null,
+      // VSCode-style location history: every navigation the user makes is
+      // appended here; back/forward walk the line without appending.
+      navHistory: [],
+      navIndex: -1,
       // refreshSeq drops out-of-order responses (a slow reply for an old
       // directory must not overwrite newer state); loading drives the table.
       loading: false,
@@ -307,10 +342,26 @@ export default {
     sharedDiskConfigured() {
       return !!store.me?.sharedDiskConfigured;
     },
+    canBack() {
+      return this.navIndex > 0;
+    },
+    canForward() {
+      return this.navIndex >= 0 && this.navIndex < this.navHistory.length - 1;
+    },
+    sortDirTitle() {
+      return this.sortDir === "asc" ? tt("netdisk.sortAsc") : tt("netdisk.sortDesc");
+    },
     sortedItems() {
+      const sign = this.sortDir === "desc" ? -1 : 1;
+      const byName = (a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
+      // modTime arrives as an RFC3339 string; unparseable values sort as 0.
+      const byTime = (a, b) => (Date.parse(a.modTime) || 0) - (Date.parse(b.modTime) || 0);
+      // Folders always group above files; the chosen key orders within a group
+      // (name sorts break time ties, so the order stays stable).
       return [...(this.items || [])].sort((a, b) => {
         if (a.dir !== b.dir) return a.dir ? -1 : 1;
-        return String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
+        if (this.sortKey === "time") return sign * byTime(a, b) || byName(a, b);
+        return sign * byName(a, b);
       });
     },
     // Every video of the open folder in listing order (not just the visible
@@ -395,17 +446,18 @@ export default {
     },
   },
   mounted() {
-    // Start the timer before the first fetch resolves: awaiting it first let a
-    // quick navigation unmount the view before the timer existed, and the
-    // interval then kept a dead view (and its listing) refreshing forever.
+    // The central refresh loop (refresh.js) drives this view's periodic and
+    // on-arrival refreshes through the route hook; the upload overlay is a
+    // plain div, not an Element overlay, so the loop's dialog guard can't see
+    // it — keep the view's own upload guard inside the hook.
+    registerRouteRefresh("netdisk", () => {
+      if (!isUploading()) this.refresh();
+    });
+    this.pushHistory(this.mode, this.path);
     this.refresh();
-    // Self-refresh on a slow cadence, like the old self-fetching view.
-    this.timer = setInterval(() => {
-      if (!document.hidden && !isUploading()) this.refresh();
-    }, 15000);
   },
   beforeUnmount() {
-    clearInterval(this.timer);
+    unregisterRouteRefresh("netdisk");
   },
   methods: {
     tt,
@@ -495,13 +547,52 @@ export default {
       this.clearSelection();
       this.mode = mode;
       this.page = 1;
+      // Disk switches are locations too — going back returns to the disk (and
+      // folder) the user just left.
+      this.pushHistory(mode, this.modeState[mode].path);
       this.refresh();
     },
     navigate(path) {
+      this.pushHistory(this.mode, path);
       this.modeState[this.mode].path = path;
       this.page = 1;
       this.clearSelection();
       this.refresh();
+    },
+    // Append a location to the history line. Navigating after going back
+    // starts a new future (the old forward entries are dropped), like a
+    // browser; landing where we already are appends nothing.
+    pushHistory(mode, path) {
+      const cur = this.navHistory[this.navIndex];
+      if (cur && cur.mode === mode && cur.path === path) return;
+      this.navHistory = [...this.navHistory.slice(0, this.navIndex + 1), { mode, path }];
+      this.navIndex = this.navHistory.length - 1;
+    },
+    goBack() {
+      this.goHistory(-1);
+    },
+    goForward() {
+      this.goHistory(1);
+    },
+    // Walk the history line without appending: restore the disk and folder of
+    // the target entry exactly as it was visited.
+    goHistory(delta) {
+      const loc = this.navHistory[this.navIndex + delta];
+      if (!loc) return;
+      this.navIndex += delta;
+      this.clearSelection();
+      this.mode = loc.mode;
+      this.modeState[loc.mode].path = loc.path;
+      this.page = 1;
+      this.refresh();
+    },
+    onSortChange() {
+      this.page = 1;
+      localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ key: this.sortKey, dir: this.sortDir }));
+    },
+    toggleSortDir() {
+      this.sortDir = this.sortDir === "asc" ? "desc" : "asc";
+      this.onSortChange();
     },
     goUp() {
       const parts = (this.path || "").split("/").filter(Boolean);
@@ -914,6 +1005,11 @@ export default {
 .netdisk-hint { background: var(--fill); border: 1px dashed var(--line); color: var(--muted); font-size: 12.5px; border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; }
 .netdisk-hint.warn { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-strong); }
 .netdisk-pathbar { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; flex-wrap: wrap; }
+.netdisk-nav { display: flex; }
+.netdisk-nav .el-button { padding: 5px 8px; }
+.netdisk-nav .el-button + .el-button { margin-left: 4px; }
+.netdisk-sort { display: flex; align-items: center; gap: 4px; }
+.netdisk-sort .el-button { padding: 5px 8px; }
 .netdisk-crumbs { display: flex; align-items: center; flex-wrap: wrap; font-size: 13px; }
 .crumb-sep { color: var(--muted); margin: 0 2px; }
 .netdisk-used { margin-left: auto; font-size: 12.5px; color: var(--muted); }

@@ -113,7 +113,7 @@ import { api } from "@/api";
 import { store, refreshAll, isAdmin, setTheme, resetSession } from "@/store";
 import { tt, errText } from "@/i18n";
 import { activeJobCount, stopJobsPolling } from "@/jobs";
-import { refreshActiveRoute } from "@/refresh";
+import { refreshActiveRoute, forceRouteRefresh } from "@/refresh";
 import VIcon from "@/components/VIcon.vue";
 import JobsPanel from "@/layout/JobsPanel.vue";
 import NotificationsPanel from "@/layout/NotificationsPanel.vue";
@@ -234,7 +234,11 @@ export default {
     },
     async refresh() {
       try {
-        await refreshAll();
+        // refreshAll reloads the store sections; forceRouteRefresh also
+        // reaches the current view's own data (e.g. the netdisk listing),
+        // which no store section carries — so the button always refreshes
+        // what is on screen immediately.
+        await Promise.all([refreshAll(), forceRouteRefresh()]);
         ElMessage.success(tt("toast.refreshed"));
       } catch (err) {
         ElMessage.error(errText(err));

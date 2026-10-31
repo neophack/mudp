@@ -11,15 +11,17 @@
 import { store, refreshSection, fetchNotifications } from "@/store";
 
 // ROUTE_REFRESH maps a route name to its poll interval and the sections to
-// refresh. Views not listed either poll themselves (netdisk, hardware,
-// processes, security) or are static forms (settings). usage/mcp keep
-// view-local data and register a hook below instead of a store section.
+// refresh. Views not listed either poll themselves (hardware, processes,
+// security) or are static forms (settings). usage/mcp/netdisk keep view-local
+// data and register a hook below instead of a store section; netdisk's hook is
+// also what the header Refresh button reaches via forceRouteRefresh.
 const ROUTE_REFRESH = {
   containers: { ms: 5000, sections: ["containers"] },
   // The dashboard renders "My Containers" from the containers section and
   // "Recent Activity" from audit, so those must move with it (audit gets its
   // own slower view-level poll — it's an admin-only, heavier endpoint).
   dashboard: { ms: 8000, sections: ["dashboard", "containers"] },
+  netdisk: { ms: 15000 },
   images: { ms: 10000, sections: ["images"] },
   volumes: { ms: 10000, sections: ["volumes"] },
   networks: { ms: 10000, sections: ["networks"] },
@@ -83,6 +85,15 @@ export function startAutoRefresh() {
 // is fresh without waiting for the next interval.
 export function refreshActiveRoute() {
   return runTick().catch(() => {});
+}
+
+// forceRouteRefresh runs the active route's hook right now, skipping the
+// quiet-poll guards (hidden page, open overlay, typing) that runTick
+// respects — the header Refresh button is an explicit user request and must
+// reach view-local data (the netdisk listing) immediately.
+export function forceRouteRefresh() {
+  const hook = routeHooks.get(store.route || "");
+  return hook ? Promise.resolve(hook()).catch(() => {}) : Promise.resolve();
 }
 
 async function tick() {

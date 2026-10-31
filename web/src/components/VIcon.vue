@@ -68,6 +68,10 @@ const ICONS = {
   "netdisk.upload.chunked": '<path d="M12 15V3m0 12-4-4m4 4 4-4"/><path d="M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17"/>',
   "netdisk.transfer": '<path d="M17 3v18"/><path d="m21 7-4-4-4 4"/><path d="m13 17 4 4 4-4"/>',
   "netdisk.restore": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  "nav-back": '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  "nav-forward": '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  "sort-asc": '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  "sort-desc": '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
 };
 
 export default {
