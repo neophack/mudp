@@ -233,10 +233,7 @@
         </div>
         <p class="hint">{{ tt("settings.mcpSafeHint") }}</p>
         <p class="hint">{{ tt("settings.mcpTunnel") }}<span class="mono">cloudflared tunnel --url http://127.0.0.1:{{ mcpForm.port || 19090 }}</span></p>
-        <!-- tt() interpolates params without escaping, and this string lands in
-     v-html for the .mono span; escape the admin-supplied baseUrl so it can
-     never carry markup into other users' settings page. -->
-        <p v-if="mcpRemote && mcpRemote.baseUrl" class="hint" v-html="tt('settings.mcpUsersSee', { url: `<span class='mono'>${escapeHtml(mcpRemote.baseUrl)}</span>` })"></p>
+        <p v-if="mcpUsersSee" class="hint" v-html="mcpUsersSee"></p>
         <div class="form-actions">
           <el-button type="primary" size="small" @click="saveMcpRemote">{{ tt("settings.saveExternal") }}</el-button>
         </div>
@@ -326,6 +323,13 @@ export default {
   },
   computed: {
     location() { return window.location; },
+    // tt() interpolates params without escaping, and this string lands in
+    // v-html for the .mono span; escape the admin-supplied baseUrl so it can
+    // never carry markup into other users' settings page.
+    mcpUsersSee() {
+      if (!this.mcpRemote?.baseUrl) return "";
+      return tt("settings.mcpUsersSee", { url: `<span class='mono'>${escapeHtml(this.mcpRemote.baseUrl)}</span>` });
+    },
   },
   async mounted() {
     this.defaultLanguage = store.me?.defaultLanguage || "";
